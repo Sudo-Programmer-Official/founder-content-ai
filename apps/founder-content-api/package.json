@@ -1,0 +1,20 @@
+{
+  "name": "founder-content-api",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Express API for FounderContent AI",
+  "main": "server.ts",
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.2"
+  },
+  "scripts": {
+    "dev": "tsx watch server.ts",
+    "start": "tsx server.ts"
+  }
+}

@@ -1,0 +1,13 @@
+:root {
+  --fc-surface: #fafaf9;
+  --fc-surface-strong: #f5f5f4;
+  --fc-text: #1c1917;
+  --fc-text-muted: #57534e;
+  --fc-border: #e7e5e4;
+}
+
+body {
+  margin: 0;
+  background: var(--fc-surface);
+  color: var(--fc-text);
+}
