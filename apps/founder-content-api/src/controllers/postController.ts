@@ -2,9 +2,9 @@ import type {
   ApiError,
   LinkedInPostGenerationRequest,
   LinkedInPostGenerationResponse,
-} from "../../../../packages/shared-types";
+} from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
-import { generatePostsWithAI } from "../services/aiService";
+import { generatePostsWithAI } from "../services/aiService.ts";
 
 export async function generatePost(
   request: Request<

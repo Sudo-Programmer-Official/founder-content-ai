@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { generateHook } from "../controllers/hookController";
+import { generateHook } from "../controllers/hookController.ts";
 
 export const generateHookRoute = Router();
 

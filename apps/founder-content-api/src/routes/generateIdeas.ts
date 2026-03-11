@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { generateIdeas } from "../controllers/ideaController";
+import { generateIdeas } from "../controllers/ideaController.ts";
 
 export const generateIdeasRoute = Router();
 

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { generatePost } from "../controllers/postController";
+import { generatePost } from "../controllers/postController.ts";
 
 export const generatePostRoute = Router();
 

@@ -1,7 +1,7 @@
 import express, { type Express } from "express";
-import { generateHookRoute } from "./src/routes/generateHook";
-import { generateIdeasRoute } from "./src/routes/generateIdeas";
-import { generatePostRoute } from "./src/routes/generatePost";
+import { generateHookRoute } from "./src/routes/generateHook.ts";
+import { generateIdeasRoute } from "./src/routes/generateIdeas.ts";
+import { generatePostRoute } from "./src/routes/generatePost.ts";
 
 export const serverConfig = {
   appName: "founder-content-api",
@@ -10,16 +10,41 @@ export const serverConfig = {
   port: Number(process.env.PORT ?? 3001),
 } as const;
 
+function buildAllowedOrigins(): Set<string> {
+  const configuredOrigins = (process.env.FRONTEND_ORIGIN ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  return new Set([
+    "http://localhost:5173",
+    "https://foundercontent.ai",
+    "https://www.foundercontent.ai",
+    ...configuredOrigins,
+  ]);
+}
+
 export function createServerApp(): Express {
   const app = express();
-  const allowedOrigin = process.env.FRONTEND_ORIGIN ?? "*";
+  const allowedOrigins = buildAllowedOrigins();
 
   app.use((request, response, next) => {
-    response.header("Access-Control-Allow-Origin", allowedOrigin);
+    const requestOrigin = request.headers.origin;
+
+    if (requestOrigin && allowedOrigins.has(requestOrigin)) {
+      response.header("Access-Control-Allow-Origin", requestOrigin);
+      response.header("Vary", "Origin");
+    }
+
     response.header("Access-Control-Allow-Headers", "Content-Type");
     response.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
 
     if (request.method === "OPTIONS") {
+      if (requestOrigin && !allowedOrigins.has(requestOrigin)) {
+        response.sendStatus(403);
+        return;
+      }
+
       response.sendStatus(204);
       return;
     }
@@ -30,11 +55,11 @@ export function createServerApp(): Express {
   app.use(express.json());
 
   app.get("/health", (_request, response) => {
-    response.json({
-      ok: true,
-      service: serverConfig.appName,
-      status: "ok",
-    });
+    response.json({ status: "ok" });
+  });
+
+  app.get("/api/health", (_request, response) => {
+    response.json({ status: "ok" });
   });
 
   app.use(generateIdeasRoute);

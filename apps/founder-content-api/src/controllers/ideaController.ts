@@ -2,9 +2,9 @@ import type {
   ApiError,
   IdeaGenerationRequest,
   IdeaGenerationResponse,
-} from "../../../../packages/shared-types";
+} from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
-import { generateIdeasWithAI } from "../services/aiService";
+import { generateIdeasWithAI } from "../services/aiService.ts";
 
 export async function generateIdeas(
   request: Request<unknown, IdeaGenerationResponse | ApiError, Partial<IdeaGenerationRequest>>,

@@ -2,9 +2,9 @@ import type {
   ApiError,
   HookGenerationRequest,
   HookGenerationResponse,
-} from "../../../../packages/shared-types";
+} from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
-import { generateHooksWithAI } from "../services/aiService";
+import { generateHooksWithAI } from "../services/aiService.ts";
 
 export async function generateHook(
   request: Request<unknown, HookGenerationResponse | ApiError, Partial<HookGenerationRequest>>,

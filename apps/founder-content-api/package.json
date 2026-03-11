@@ -14,7 +14,7 @@
     "typescript": "^5.8.2"
   },
   "scripts": {
-    "dev": "tsx watch server.ts",
-    "start": "tsx server.ts"
+    "dev": "node --watch server.ts",
+    "start": "node server.ts"
   }
 }

@@ -7,9 +7,9 @@ import type {
   LinkedInPostGenerationRequest,
   LinkedInPostGenerationResponse,
   LinkedInPostVariation,
-} from "../../../../packages/shared-types";
-import { generateCompletion } from "../../../../packages/ai-core/src/generateCompletion";
-import { loadPrompt } from "./promptLoader";
+} from "../../../../packages/shared-types/index.ts";
+import { generateCompletion } from "../../../../packages/ai-core/src/generateCompletion.ts";
+import { loadPrompt } from "./promptLoader.ts";
 
 function buildPrompt(template: string, variables: Record<string, string | undefined>): string {
   const filteredVariables = Object.fromEntries(

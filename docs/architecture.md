@@ -2,7 +2,7 @@
 
 ## Architecture Goal
 
-FounderContent AI should use a monorepo structure with separate runnable apps for the frontend and backend, plus shared packages for reusable logic.
+FounderContent AI uses a monorepo structure with separate runnable apps for the frontend and backend, plus shared packages for reusable logic.
 
 The guiding rule is:
 
@@ -10,19 +10,22 @@ The guiding rule is:
 - `packages/` contains reusable libraries
 - `docs/` contains product and architecture documentation
 
-This keeps the product clean as it grows and avoids mixing UI concerns with API and AI orchestration.
+This keeps UI, API, and shared AI logic separated while still allowing one repository and one CI/CD flow.
 
 ## Technology Stack
 
 ### Frontend
 
 - Vue
-- Tailwind CSS
+- Vite
+- Tailwind CSS-compatible styling approach
+- deployed on Vercel
 
 ### Backend
 
 - Node.js
 - Express
+- deployed on Render
 
 ### AI
 
@@ -34,7 +37,7 @@ This keeps the product clean as it grows and avoids mixing UI concerns with API 
 - `packages/prompts`
 - `packages/shared-types`
 
-## Recommended Repository Structure
+## Repository Structure
 
 ```text
 apps/
@@ -62,6 +65,36 @@ docs/
 infra/
 ```
 
+## Production Deployment Architecture
+
+Production request flow:
+
+User  
+-> Vercel frontend (`https://foundercontent.ai`)  
+-> Render backend (`https://api.foundercontent.ai`)  
+-> OpenAI API
+
+Fallback backend:
+
+- `https://founder-content-api.onrender.com`
+
+## Production Diagram
+
+```text
+User Browser
+    |
+    v
+Vercel Frontend
+foundercontent.ai
+    |
+    v
+Render API
+api.foundercontent.ai
+    |
+    v
+OpenAI API
+```
+
 ## App Responsibilities
 
 ### `apps/founder-content-ai`
@@ -72,7 +105,7 @@ Responsibilities:
 
 - render the homepage, generator pages, and SEO pages
 - capture user inputs
-- display outputs
+- display generated outputs
 - call backend API endpoints
 - handle loading, validation, and copy interactions
 
@@ -98,21 +131,20 @@ Responsibilities:
 
 This app should not contain frontend rendering or UI concerns.
 
-## System Overview
+## Runtime Request Flow
 
 High-level request flow:
 
 1. A user interacts with a Vue page in `apps/founder-content-ai`.
-2. The frontend sends a request to `apps/founder-content-api`.
-3. The API validates the request using shared contracts from `packages/shared-types`.
-4. The API loads the correct prompt from `packages/prompts`.
-5. The API calls `packages/ai-core` to execute the OpenAI request.
-6. The API returns a structured response.
-7. The frontend renders the response in a copy-ready format.
+2. The frontend calls the backend API using `VITE_API_URL`.
+3. If the primary API domain is unavailable, the frontend falls back to the Render URL.
+4. The API validates the request using shared contracts from `packages/shared-types`.
+5. The API loads the correct prompt from `packages/prompts`.
+6. The API calls `packages/ai-core` to execute the OpenAI request.
+7. The API returns a structured response.
+8. The frontend renders the response in a copy-ready format.
 
 ## Backend Structure
-
-Recommended API app structure:
 
 ```text
 apps/founder-content-api/
@@ -143,12 +175,14 @@ Recommended initial endpoints:
 - `POST /api/generate-ideas`
 - `POST /api/generate-hook`
 - `POST /api/generate-post`
+- `GET /api/health`
 
 These endpoints map directly to the MVP workflow:
 
 - ideas
 - hooks
 - posts
+- health monitoring
 
 ## Shared Packages
 
@@ -163,6 +197,7 @@ Recommended structure:
 ```text
 packages/ai-core/
   src/
+    generateCompletion.ts
     providers/
       openai.ts
     runners/
@@ -178,14 +213,9 @@ packages/ai-core/
 Responsibilities:
 
 - initialize provider clients
-- execute text or structured generations
-- standardize retries and error handling
-- capture usage metadata
-
-Recommended core interfaces:
-
-- `generateText(prompt, options)`
-- `generateStructured(prompt, schema, options)`
+- execute completions
+- standardize retries and error handling over time
+- capture usage metadata when needed later
 
 ### `packages/prompts`
 
@@ -203,7 +233,7 @@ packages/prompts/
     idea-generator.prompt
 ```
 
-Each prompt file should define:
+Each prompt file defines:
 
 - system instruction
 - input variables
@@ -233,75 +263,38 @@ Useful shared types include:
 - LinkedIn post generation request/response
 - common API success/error envelopes
 
-## MVP Feature Flows
+## CORS and Environment Alignment
 
-### Founder Content Ideas
+The backend must allow these frontend origins:
 
-1. Frontend collects `industry` and `stage`.
-2. Frontend calls `POST /api/generate-ideas`.
-3. Backend loads the idea prompt.
-4. Backend calls `ai-core`.
-5. Backend returns a list of founder-specific ideas.
+- `http://localhost:5173`
+- `https://foundercontent.ai`
+- `https://www.foundercontent.ai`
 
-### LinkedIn Hooks
+Additional origins can be added through environment configuration if needed.
 
-1. Frontend collects `topic`.
-2. Frontend calls `POST /api/generate-hook`.
-3. Backend loads the hook prompt.
-4. Backend calls `ai-core`.
-5. Backend returns hook options.
+## CI/CD Model
 
-### LinkedIn Posts
+Deployment is automatic through GitHub integration.
 
-1. Frontend collects `topic`, `tone`, and `length`.
-2. Frontend optionally passes a selected hook.
-3. Frontend calls `POST /api/generate-post`.
-4. Backend loads the LinkedIn post prompt.
-5. Backend calls `ai-core`.
-6. Backend returns three post variations:
-   - story
-   - lesson
-   - build-in-public
+Frontend:
 
-## Response Design
+- Git push -> Vercel auto deploy
 
-The backend should return structured payloads instead of raw text blobs whenever possible.
+Backend:
 
-Recommended output shapes:
+- Git push -> Render auto deploy
 
-- ideas: array of idea objects
-- hooks: array of hook strings
-- posts: array of post variation objects with `angle` and `content`
+No manual deployment step is required for standard changes.
 
-This makes UI rendering more stable and keeps later analytics work easier.
+## Non-Goals for Current Infrastructure Phase
 
-## State and Persistence Strategy
+Do not add in this phase:
 
-The MVP can start mostly stateless.
-
-Required at launch:
-
-- frontend form state
-- backend request handling
-- prompt loading
-- optional lightweight generation logging
-
-Not required at launch:
-
-- saved drafts
-- user accounts
-- content calendar storage
-- social integration tokens
-
-## Non-Goals for MVP Architecture
-
-Do not build these into the first implementation slice:
-
-- scheduling workers
-- social publishing integrations
+- background workers
+- scheduled jobs
 - analytics pipelines
-- team permissions
-- multi-workspace data models
-- multi-platform content orchestration
+- multi-region deployment
+- infrastructure orchestration complexity
 
-These capabilities belong to future roadmap phases, not the MVP foundation.
+The current goal is production alignment for the existing MVP architecture.
