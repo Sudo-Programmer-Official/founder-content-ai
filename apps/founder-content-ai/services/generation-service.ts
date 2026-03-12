@@ -20,11 +20,15 @@ declare global {
   }
 }
 
+function normalizeApiBaseUrl(value: string): string {
+  return value.trim().replace(/\/$/, "").replace(/\/health$/i, "");
+}
+
 function resolveApiBaseUrl(): string {
   const envBaseUrl = import.meta.env.VITE_API_URL;
 
   if (typeof envBaseUrl === "string" && envBaseUrl.trim() !== "") {
-    return envBaseUrl.replace(/\/$/, "");
+    return normalizeApiBaseUrl(envBaseUrl);
   }
 
   if (typeof window === "undefined") {
@@ -32,7 +36,7 @@ function resolveApiBaseUrl(): string {
   }
 
   if (typeof window.__FOUNDER_CONTENT_API_BASE_URL__ === "string") {
-    return window.__FOUNDER_CONTENT_API_BASE_URL__.replace(/\/$/, "");
+    return normalizeApiBaseUrl(window.__FOUNDER_CONTENT_API_BASE_URL__);
   }
 
   if (window.location.hostname === "localhost") {
@@ -46,6 +50,14 @@ function resolveFallbackApiBaseUrl(primaryApiBaseUrl: string): string | null {
   const fallbackApiUrl = "https://founder-content-api.onrender.com/api";
 
   return primaryApiBaseUrl === fallbackApiUrl ? null : fallbackApiUrl;
+}
+
+function parseJsonSafely<T>(value: string): T | null {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
 }
 
 async function postJson<TRequest, TResponse>(
@@ -75,14 +87,19 @@ async function postJson<TRequest, TResponse>(
       throw error;
     }
 
-    const responseBody = (await response.json()) as TResponse | ApiError;
+    const responseText = await response.text();
+    const responseBody = parseJsonSafely<TResponse | ApiError>(responseText);
 
     if (!response.ok) {
       const message =
-        "error" in responseBody
+        responseBody && "error" in responseBody
           ? responseBody.error.message
           : `Request failed with status ${response.status}.`;
       throw new Error(message);
+    }
+
+    if (!responseBody) {
+      throw new Error("API returned a non-JSON response.");
     }
 
     return responseBody as TResponse;
