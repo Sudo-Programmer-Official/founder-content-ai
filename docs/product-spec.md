@@ -2,7 +2,7 @@
 
 ## Product Summary
 
-FounderContent AI is a founder-focused content product that helps startup builders turn experiences, lessons, and milestones into LinkedIn-ready content.
+FounderContent AI is a founder-led content product that helps startup builders and business operators turn experiences, lessons, and milestones into LinkedIn-ready content.
 
 The long-term product vision is a **Founder Personal Branding OS**. The MVP is intentionally narrower:
 
@@ -12,14 +12,14 @@ That workflow gives founders immediate value without pulling the product into sc
 
 ## Product Vision
 
-FounderContent AI should become the system founders use to:
+FounderContent AI should become the system founders use first, and the system operators, marketers, consultants, and business owners can also rely on to:
 
 - discover what to post
 - find stronger hooks
 - turn founder stories into publishable content
 - build a recognizable personal brand over time
 
-In roadmap terms, the product grows toward a broader branding OS. In MVP terms, it remains a focused content workflow for LinkedIn.
+In roadmap terms, the product grows toward a broader branding OS. In MVP terms, it remains a focused LinkedIn workflow with founder-first positioning and broader practical usage.
 
 ## Positioning
 
@@ -27,14 +27,19 @@ FounderContent AI is not a general AI writer.
 
 It is:
 
-- a founder-specific content workflow
+- a founder-first content workflow
 - a personal branding tool for startup founders
-- a system for turning founder experience into content
+- a system for turning ideas, lessons, and business experience into content
 
 Suggested messaging:
 
-- Turn your founder journey into content.
+- Turn your ideas, lessons, and business insights into LinkedIn content.
 - The personal branding OS for startup founders.
+
+Positioning rule:
+
+- keep founders as the primary acquisition hook
+- make the supporting product language broad enough for operators, marketers, consultants, and small business owners
 
 ## Target Users
 
@@ -54,23 +59,27 @@ These users usually:
 - prefer LinkedIn as their first content channel
 - do not have a repeatable system for content creation
 
-### Secondary Users Later
+### Secondary Users
 
+- startup operators
+- marketers
 - consultants
 - coaches
 - local business operators
+- small business owners
+- agencies creating founder-led content for clients
 
-These audiences are intentionally deferred until the founder use case is proven.
+These audiences are supported by the product capability, but they should not displace founders as the primary positioning.
 
 ## Problem Statement
 
-Founders often know they should publish content, but they struggle with three specific problems:
+Founders and business content creators often know they should publish content, but they struggle with three specific problems:
 
 1. They do not know what to post.
 2. They do not know how to start a post strongly.
 3. They do not know how to turn real founder experience into structured content.
 
-Existing tools are either generic AI writers or broader marketing tools. They do not solve the founder-specific workflow well.
+Existing tools are either generic AI writers or broader marketing tools. They do not solve the founder-led LinkedIn workflow well.
 
 ## Core Workflow
 
@@ -81,7 +90,7 @@ The MVP workflow is:
 3. The founder chooses a hook or angle and generates a full LinkedIn post.
 4. The founder copies the final post and publishes manually.
 
-This manual publishing step is deliberate. Human review stays in the loop, and the MVP avoids direct publishing or scheduling complexity.
+This manual publishing step is deliberate. Human review stays in the loop, and the MVP avoids direct publishing or scheduling complexity. While the workflow is written around founders, it also works for operators, consultants, and business teams creating LinkedIn content.
 
 ## MVP Feature Modules
 
@@ -118,7 +127,8 @@ The MVP should feel:
 
 - fast
 - simple
-- specific to founders
+- specific enough to feel founder-led
+- broad enough to still work for business content creators
 
 Product rules:
 
@@ -135,7 +145,7 @@ The core outputs should be:
 - hook sets with strong curiosity or storytelling openings
 - three LinkedIn post variations for a selected topic
 
-The product should optimize for usable output, not novelty for its own sake.
+The product should optimize for usable output, not novelty for its own sake. Even when broader users adopt the tool, the output style should stay grounded in practical LinkedIn communication rather than generic marketing copy.
 
 ## SEO Entry Points
 

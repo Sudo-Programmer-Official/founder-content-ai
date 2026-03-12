@@ -2,10 +2,10 @@
   <main class="page-shell">
     <section class="hero">
       <p class="eyebrow">Founder Personal Branding OS</p>
-      <h1>Turn your founder journey into content.</h1>
+      <h1>Turn your ideas, lessons, and business insights into LinkedIn content.</h1>
       <p class="description">
-        FounderContent AI helps startup founders move from idea to hook to LinkedIn post without
-        staring at a blank page.
+        FounderContent AI helps founders, operators, and marketers turn ideas into powerful
+        LinkedIn posts without staring at a blank page.
       </p>
 
       <div class="cta-row">
@@ -22,19 +22,19 @@
       <router-link class="card" to="/founder-content-ideas">
         <p class="card-eyebrow">Step 1</p>
         <h2>Founder Content Ideas</h2>
-        <p>Generate founder-specific posting angles based on your industry and startup stage.</p>
+        <p>Generate founder-led posting angles based on your industry, stage, and business context.</p>
       </router-link>
 
       <router-link class="card" to="/linkedin-hook-generator">
         <p class="card-eyebrow">Step 2</p>
         <h2>LinkedIn Hook Generator</h2>
-        <p>Create stronger opening lines that make founder posts easier to read.</p>
+        <p>Create stronger opening lines for founder stories, operator insights, and business posts.</p>
       </router-link>
 
       <router-link class="card" to="/linkedin-post-generator">
         <p class="card-eyebrow">Step 3</p>
         <h2>LinkedIn Post Generator</h2>
-        <p>Generate story, lesson, and build-in-public post variations from one topic.</p>
+        <p>Generate story, lesson, and build-in-public post variations from one business topic.</p>
       </router-link>
     </section>
 

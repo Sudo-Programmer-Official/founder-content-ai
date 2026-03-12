@@ -1,6 +1,6 @@
 # FounderContent AI
 
-FounderContent AI is a founder-focused content product that helps startup builders turn experiences, lessons, and milestones into LinkedIn-ready content.
+FounderContent AI is a founder-led content product that helps startup builders, operators, and marketers turn experiences, lessons, and business insights into LinkedIn-ready content.
 
 ## MVP Scope
 
@@ -17,6 +17,16 @@ Planned MVP routes:
 Early SEO entry page:
 
 - `/linkedin-post-ideas-for-founders`
+
+## Positioning
+
+The homepage and core messaging stay founder-first, but the product workflow also works for:
+
+- operators
+- marketers
+- consultants
+- agencies
+- small business owners
 
 ## Development Structure
 
