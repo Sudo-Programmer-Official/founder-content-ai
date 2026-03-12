@@ -65,12 +65,13 @@ Required environment variables:
 Recommended production values:
 
 - `OPENAI_MODEL=gpt-4o-mini`
-- `FRONTEND_ORIGIN=https://foundercontent.ai,https://www.foundercontent.ai`
+- `FRONTEND_ORIGIN=https://foundercontent.ai,https://www.foundercontent.ai,https://founder-content-ai.vercel.app`
 
 Notes:
 
 - Render usually injects `PORT` automatically.
 - `FRONTEND_ORIGIN` may be provided as a comma-separated list.
+- the backend also allows the main Vercel project domain and Vercel preview URLs for browser-based testing and preview deploys
 
 ## Health Check
 

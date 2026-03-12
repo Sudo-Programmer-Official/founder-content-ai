@@ -20,8 +20,17 @@ function buildAllowedOrigins(): Set<string> {
     "http://localhost:5173",
     "https://foundercontent.ai",
     "https://www.foundercontent.ai",
+    "https://founder-content-ai.vercel.app",
     ...configuredOrigins,
   ]);
+}
+
+function isAllowedOrigin(origin: string, allowedOrigins: Set<string>): boolean {
+  if (allowedOrigins.has(origin)) {
+    return true;
+  }
+
+  return /^https:\/\/founder-content-ai(?:-[a-z0-9-]+)?\.vercel\.app$/i.test(origin);
 }
 
 export function createServerApp(): Express {
@@ -31,7 +40,7 @@ export function createServerApp(): Express {
   app.use((request, response, next) => {
     const requestOrigin = request.headers.origin;
 
-    if (requestOrigin && allowedOrigins.has(requestOrigin)) {
+    if (requestOrigin && isAllowedOrigin(requestOrigin, allowedOrigins)) {
       response.header("Access-Control-Allow-Origin", requestOrigin);
       response.header("Vary", "Origin");
     }
@@ -40,7 +49,7 @@ export function createServerApp(): Express {
     response.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
 
     if (request.method === "OPTIONS") {
-      if (requestOrigin && !allowedOrigins.has(requestOrigin)) {
+      if (requestOrigin && !isAllowedOrigin(requestOrigin, allowedOrigins)) {
         response.sendStatus(403);
         return;
       }

@@ -78,7 +78,7 @@ Supported format:
 
 Example production value:
 
-- `https://foundercontent.ai,https://www.foundercontent.ai`
+- `https://foundercontent.ai,https://www.foundercontent.ai,https://founder-content-ai.vercel.app`
 
 ## Current Default Allowed Origins
 
@@ -87,6 +87,11 @@ The backend also supports these built-in origins:
 - `http://localhost:5173`
 - `https://foundercontent.ai`
 - `https://www.foundercontent.ai`
+- `https://founder-content-ai.vercel.app`
+
+Preview note:
+
+- Vercel preview URLs that match the `founder-content-ai*.vercel.app` pattern are also accepted by the backend CORS logic
 
 ## Security Notes
 
