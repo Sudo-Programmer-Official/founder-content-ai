@@ -76,15 +76,26 @@ const doNotChangeInstructions = computed(() => domainSetupAnalysis.value?.doNotC
 const providerSignals = computed(() => domainSetupAnalysis.value?.providerSignals ?? []);
 const existingMxRecords = computed(() => domainSetupAnalysis.value?.existingMxRecords ?? []);
 const brandedSendingReady = computed(() => domainSetupAnalysis.value?.brandedSendingReady ?? false);
+const deliverability = computed(() => domainSettings.value?.deliverability);
+const deliverabilityBlockers = computed(() => deliverability.value?.blockers ?? []);
+const deliverabilityTopBlockers = computed(() => deliverabilityBlockers.value.slice(0, 3));
 const dkimReady = computed(() => domainSetupAnalysis.value?.dkimReady ?? false);
 const spfReady = computed(() => domainSetupAnalysis.value?.spfReady ?? false);
+const spfValidationState = computed(() => domainSetupAnalysis.value?.spfValidationState ?? "missing");
 const dmarcConfigured = computed(() => domainSetupAnalysis.value?.dmarcConfigured ?? false);
+const usesBrandedSender = computed(() => {
+  const fromEmail = domainSettings.value?.fromEmail?.trim().toLowerCase();
+  const domainName = domainSettings.value?.domainName?.trim().toLowerCase();
+
+  return Boolean(fromEmail && domainName && fromEmail.endsWith(`@${domainName}`));
+});
 const hasBlockingDnsConflict = computed(() =>
   domainConflictFlags.value.some((flag) => flag.severity === "error"),
 );
 const spfConflictFlag = computed(() =>
   domainConflictFlags.value.find((flag) =>
     flag.code === "multiple_spf_records" ||
+    flag.code === "spf_malformed" ||
     flag.code === "spf_record_missing" ||
     flag.code === "spf_include_missing",
   ),
@@ -114,7 +125,9 @@ const domainStatusLabel = computed(() => {
   }
 
   if (dkimReady.value && !spfReady.value) {
-    return "SPF update needed";
+    return spfValidationState.value === "malformed" || spfValidationState.value === "multiple_records"
+      ? "SPF fix needed"
+      : "SPF update needed";
   }
 
   switch (domainSetupAnalysis.value?.state) {
@@ -134,7 +147,11 @@ const domainStatusCopy = computed(() => {
   }
 
   if (dkimReady.value && !spfReady.value) {
-    return "SES verification is complete, but branded sending stays blocked until your SPF record authorizes Amazon SES.";
+    return spfValidationState.value === "malformed"
+      ? "SES verification is complete, but branded sending stays blocked until the malformed SPF record is fixed."
+      : spfValidationState.value === "multiple_records"
+        ? "SES verification is complete, but branded sending stays blocked until multiple SPF records are consolidated into one valid record."
+        : "SES verification is complete, but branded sending stays blocked until your SPF record authorizes Amazon SES.";
   }
 
   switch (domainSetupAnalysis.value?.state) {
@@ -143,6 +160,75 @@ const domainStatusCopy = computed(() => {
     default:
       return "Add the DNS records below, keep MX unchanged, and wait for SES and DNS propagation checks to finish.";
   }
+});
+const deliverabilityTone = computed(() => {
+  switch (deliverability.value?.scoreBand) {
+    case "excellent":
+      return "green";
+    case "at_risk":
+      return "red";
+    default:
+      return "yellow";
+  }
+});
+const deliverabilityLabel = computed(() => {
+  switch (deliverability.value?.scoreBand) {
+    case "excellent":
+      return "Excellent";
+    case "at_risk":
+      return "At Risk";
+    default:
+      return "Needs Attention";
+  }
+});
+const deliverabilitySummary = computed(() => {
+  if (!deliverability.value) {
+    return "";
+  }
+
+  if (deliverability.value.scoreBand === "excellent") {
+    return "This domain is ready to send. The current deliverability checks and recent feedback signals look healthy.";
+  }
+
+  if (deliverability.value.scoreBand === "at_risk") {
+    return usesBrandedSender.value
+      ? "Branded sending is paused until the blocking DNS or reputation issues below are fixed."
+      : "This branded domain has blocking issues. Keep using the platform sender until the domain is healthy again.";
+  }
+
+  return "This domain can send, but delivery quality needs attention before you scale volume.";
+});
+const brandedSendWarning = computed(() => {
+  if (!deliverability.value || !domainSettings.value?.domainName) {
+    return null;
+  }
+
+  const leadingMessage =
+    deliverabilityTopBlockers.value[0]?.message ||
+    "This branded domain needs attention before you rely on it for sending.";
+
+  if (usesBrandedSender.value && deliverability.value.scoreBand === "at_risk") {
+    return {
+      tone: "error",
+      message: leadingMessage,
+    };
+  }
+
+  if (usesBrandedSender.value && deliverability.value.scoreBand === "needs_attention") {
+    return {
+      tone: "warning",
+      message: leadingMessage,
+    };
+  }
+
+  if (!usesBrandedSender.value && deliverability.value.scoreBand === "at_risk") {
+    return {
+      tone: "warning",
+      message: "This branded domain is currently blocked, but campaigns can still use the platform sender until the domain is healthy again.",
+    };
+  }
+
+  return null;
 });
 const shouldPollDomainVerification = computed(() => {
   const settings = domainSettings.value;
@@ -159,6 +245,18 @@ function formatStatus(value?: string): string {
   return (value ?? "pending")
     .replace(/_/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function formatPercent(value?: number): string {
+  return `${((value ?? 0) * 100).toFixed(2)}%`;
+}
+
+function formatTimestamp(value?: string): string {
+  if (!value) {
+    return "Not checked yet";
+  }
+
+  return new Date(value).toLocaleString();
 }
 
 function applyDomainSettings(
@@ -529,6 +627,15 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
+          <article
+            v-if="brandedSendWarning"
+            class="setup-banner"
+            :class="brandedSendWarning.tone"
+          >
+            <strong>{{ brandedSendWarning.tone === "error" ? "Branded send blocked:" : "Branded send warning:" }}</strong>
+            {{ brandedSendWarning.message }}
+          </article>
+
           <table class="data-table compact">
             <thead>
               <tr>
@@ -611,6 +718,38 @@ onBeforeUnmount(() => {
 
             <p class="dashboard-description">{{ domainStatusCopy }}</p>
 
+            <article
+              v-if="deliverability"
+              class="deliverability-card"
+              :class="deliverabilityTone"
+            >
+              <div class="deliverability-header">
+                <div>
+                  <p class="panel-meta">Deliverability Score</p>
+                  <h3>{{ deliverabilityLabel }}</h3>
+                </div>
+                <div class="deliverability-score">
+                  <strong>{{ deliverability.score }}</strong>
+                  <span>/100</span>
+                </div>
+              </div>
+
+              <p class="dashboard-description">{{ deliverabilitySummary }}</p>
+
+              <div class="hero-signal-row">
+                <span class="signal-chip">Bounce 7d: {{ formatPercent(deliverability.bounceRate7d) }}</span>
+                <span class="signal-chip">Complaint 7d: {{ formatPercent(deliverability.complaintRate7d) }}</span>
+                <span class="signal-chip">Delivery 7d: {{ formatPercent(deliverability.deliveryRate7d) }}</span>
+                <span class="signal-chip">Checked: {{ formatTimestamp(deliverability.lastEvaluatedAt) }}</span>
+              </div>
+
+              <ul v-if="deliverabilityTopBlockers.length > 0" class="deliverability-list">
+                <li v-for="blocker in deliverabilityTopBlockers" :key="blocker.code">
+                  {{ blocker.message }}
+                </li>
+              </ul>
+            </article>
+
             <div v-if="providerSignals.length > 0" class="hero-signal-row">
               <span v-for="signal in providerSignals" :key="signal" class="signal-chip">
                 {{ signal }}
@@ -665,7 +804,17 @@ onBeforeUnmount(() => {
               <article class="check-card">
                 <p class="check-label">SPF Auto-Check</p>
                 <span class="check-chip" :class="spfReady ? 'ok' : spfConflictFlag?.severity === 'error' ? 'alert' : 'pending'">
-                  {{ spfReady ? "Ready" : spfConflictFlag?.severity === "error" ? "Conflict" : "Needs update" }}
+                  {{
+                    spfReady
+                      ? "Ready"
+                      : spfValidationState === "malformed"
+                        ? "Malformed"
+                        : spfValidationState === "multiple_records"
+                          ? "Conflict"
+                          : spfValidationState === "missing"
+                            ? "Missing"
+                            : "Needs update"
+                  }}
                 </span>
                 <p class="dashboard-description">
                   {{
@@ -1018,6 +1167,68 @@ onBeforeUnmount(() => {
   background: rgba(176, 55, 41, 0.08);
   border-color: rgba(176, 55, 41, 0.2);
   color: #8a2419;
+}
+
+.deliverability-card {
+  padding: 20px;
+  border-radius: 24px;
+  border: 1px solid rgba(112, 84, 62, 0.14);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.deliverability-card.green {
+  border-color: rgba(31, 127, 87, 0.2);
+  background: rgba(31, 127, 87, 0.08);
+}
+
+.deliverability-card.yellow {
+  border-color: rgba(180, 115, 22, 0.2);
+  background: rgba(180, 115, 22, 0.08);
+}
+
+.deliverability-card.red {
+  border-color: rgba(176, 55, 41, 0.2);
+  background: rgba(176, 55, 41, 0.08);
+}
+
+.deliverability-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.deliverability-header h3 {
+  margin: 4px 0 0;
+  font-size: 1.15rem;
+}
+
+.deliverability-score {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-weight: 800;
+  color: var(--fc-text);
+}
+
+.deliverability-score strong {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.deliverability-score span {
+  color: var(--fc-text-muted);
+  font-size: 0.9rem;
+}
+
+.deliverability-list {
+  margin: 16px 0 0;
+  padding-left: 18px;
+  color: var(--fc-text);
+}
+
+.deliverability-list li + li {
+  margin-top: 8px;
 }
 
 .domain-grid {

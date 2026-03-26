@@ -1,4 +1,9 @@
-export type EmailContactStatus = "active" | "unsubscribed" | "bounced" | "complained";
+export type EmailContactStatus =
+  | "active"
+  | "unsubscribed"
+  | "bounced"
+  | "complained"
+  | "suppressed";
 export type EmailCampaignStatus = "draft" | "queued" | "sending" | "sent" | "failed";
 export type EmailCampaignRecipientStatus =
   | "queued"
@@ -33,6 +38,22 @@ export interface EmailDomainConflictFlag {
   message: string;
 }
 
+export type EmailSpfValidationState =
+  | "valid"
+  | "missing"
+  | "missing_ses_include"
+  | "malformed"
+  | "multiple_records";
+
+export type EmailDeliverabilityBand = "excellent" | "needs_attention" | "at_risk";
+export type EmailDeliverabilityDmarcStatus = "present" | "missing" | "invalid";
+
+export interface EmailDeliverabilityIssue {
+  code: string;
+  severity: "warning" | "error";
+  message: string;
+}
+
 export interface EmailDnsInstruction {
   category: "safe_to_add" | "merge_carefully" | "do_not_change";
   type: "TXT" | "CNAME" | "MX";
@@ -47,6 +68,7 @@ export interface EmailDomainSetupAnalysis {
   brandedSendingReady: boolean;
   dkimReady: boolean;
   spfReady: boolean;
+  spfValidationState: EmailSpfValidationState;
   dmarcConfigured: boolean;
   providerSignals: string[];
   existingMxRecords: EmailMxRecord[];
@@ -57,6 +79,25 @@ export interface EmailDomainSetupAnalysis {
   mergeCarefully: EmailDnsInstruction[];
   doNotChange: EmailDnsInstruction[];
   conflictFlags: EmailDomainConflictFlag[];
+}
+
+export interface EmailDeliverabilitySnapshot {
+  score: number;
+  scoreBand: EmailDeliverabilityBand;
+  blockers: EmailDeliverabilityIssue[];
+  sesVerified: boolean;
+  dkimVerified: boolean;
+  spfStatus: EmailSpfValidationState;
+  dmarcStatus: EmailDeliverabilityDmarcStatus;
+  bounceRate7d: number;
+  complaintRate7d: number;
+  deliveryRate7d: number;
+  recentDeliveries7d: number;
+  recentHardBounces7d: number;
+  recentSoftBounces7d: number;
+  recentComplaints7d: number;
+  sendingBlocked: boolean;
+  lastEvaluatedAt?: string;
 }
 
 export interface BusinessEmailSettings {
@@ -76,6 +117,7 @@ export interface BusinessEmailSettings {
   lastCheckedAt?: string;
   updatedAt?: string;
   domainSetupAnalysis?: EmailDomainSetupAnalysis;
+  deliverability?: EmailDeliverabilitySnapshot;
 }
 
 export interface EmailList {
@@ -97,6 +139,9 @@ export interface EmailContact {
   tags: string[];
   status: EmailContactStatus;
   unsubscribedAt?: string;
+  lastBounceAt?: string;
+  lastComplaintAt?: string;
+  lastProviderEventAt?: string;
   createdAt: string;
   updatedAt?: string;
 }

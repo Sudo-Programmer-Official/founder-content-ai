@@ -1,4 +1,5 @@
 import type { AdminWorkspaceAccessState } from "./admin-control.ts";
+import type { EmailDeliverabilityBand, EmailDeliverabilityIssue } from "./email.ts";
 
 export type AnalyticsEventType =
   | "voice_transcribed"
@@ -213,6 +214,19 @@ export interface AdminOpsOverview {
   emailSendsToday: number;
   failuresToday: number;
   activeUsersToday: number;
+  riskyEmailDomains: AdminRiskyEmailDomain[];
+}
+
+export interface AdminRiskyEmailDomain {
+  businessId: string;
+  businessName: string;
+  domainName: string;
+  score: number;
+  scoreBand: EmailDeliverabilityBand;
+  bounceRate7d: number;
+  complaintRate7d: number;
+  blockers: EmailDeliverabilityIssue[];
+  lastEvaluatedAt?: string;
 }
 
 export interface SystemErrorLogEntry {

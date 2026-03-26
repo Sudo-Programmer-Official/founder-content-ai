@@ -14,6 +14,10 @@ const recentErrors = ref<SystemErrorLogEntry[]>([]);
 const isLoading = ref(true);
 const errorMessage = ref("");
 
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
 async function loadOverview() {
   isLoading.value = true;
   errorMessage.value = "";
@@ -102,6 +106,39 @@ onMounted(() => {
           <p class="dashboard-card-label">Active Users Today</p>
           <strong>{{ opsOverview.activeUsersToday }}</strong>
         </article>
+        <article class="dashboard-card">
+          <p class="dashboard-card-label">Risky Email Domains</p>
+          <strong>{{ opsOverview.riskyEmailDomains.length }}</strong>
+        </article>
+      </section>
+
+      <section v-if="opsOverview" class="dashboard-panel">
+        <h2>Email Deliverability Watchlist</h2>
+        <table class="data-table compact">
+          <thead>
+            <tr>
+              <th>Workspace</th>
+              <th>Domain</th>
+              <th>Score</th>
+              <th>Bounce 7d</th>
+              <th>Complaint 7d</th>
+              <th>Top blocker</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="domain in opsOverview.riskyEmailDomains" :key="`${domain.businessId}-${domain.domainName}`">
+              <td>{{ domain.businessName }}</td>
+              <td>{{ domain.domainName }}</td>
+              <td>{{ domain.score }} / {{ domain.scoreBand }}</td>
+              <td>{{ formatPercent(domain.bounceRate7d) }}</td>
+              <td>{{ formatPercent(domain.complaintRate7d) }}</td>
+              <td>{{ domain.blockers[0]?.message || "No active blocker." }}</td>
+            </tr>
+            <tr v-if="opsOverview.riskyEmailDomains.length === 0">
+              <td colspan="6">No risky email domains right now.</td>
+            </tr>
+          </tbody>
+        </table>
       </section>
 
       <section class="dashboard-grid-two">

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import {
   getEmailCampaignStats,
   getEmailCampaigns,
@@ -10,11 +10,13 @@ import {
   postEmailContactsImport,
   postEmailDomain,
   postEmailDomainVerify,
+  postSesWebhook,
 } from "../controllers/emailController.ts";
 import { requireAuth } from "../middleware/auth.ts";
 
 export const emailRoute = Router();
 
+emailRoute.post("/api/email/webhooks/ses", express.text({ type: "*/*", limit: "1mb" }), postSesWebhook);
 emailRoute.post("/api/businesses/:businessId/email/contacts/import", requireAuth(), postEmailContactsImport);
 emailRoute.get("/api/businesses/:businessId/email/lists", requireAuth(), getEmailLists);
 emailRoute.get("/api/businesses/:businessId/email/settings", requireAuth(), getEmailDomainSettingsController);

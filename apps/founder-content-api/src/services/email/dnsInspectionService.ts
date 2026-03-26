@@ -3,6 +3,7 @@ import type {
   EmailDnsRecord,
   EmailDomainConflictFlag,
   EmailMxRecord,
+  EmailSpfValidationState,
 } from "../../../../../packages/shared-types/index.ts";
 
 export interface DnsInspectionSnapshot {
@@ -10,6 +11,7 @@ export interface DnsInspectionSnapshot {
   existingSpfValue?: string;
   existingDmarcValue?: string;
   recommendedSpfValue?: string;
+  spfValidationState: EmailSpfValidationState;
   conflictFlags: EmailDomainConflictFlag[];
 }
 
@@ -19,8 +21,26 @@ interface DkimLookupResult {
   expectedValue: string;
 }
 
+interface SpfAnalysis {
+  state: EmailSpfValidationState;
+  existingSpfValue?: string;
+  recommendedSpfValue?: string;
+}
+
+interface DnsInspectionCacheEntry {
+  expiresAt: number;
+  snapshot: DnsInspectionSnapshot;
+}
+
+const DNS_INSPECTION_CACHE_TTL_MS = 45_000;
+const dnsInspectionCache = new Map<string, DnsInspectionCacheEntry>();
+
 function normalizeHost(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function normalizeTxtValue(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function isMissingDnsRecordError(error: unknown): boolean {
@@ -53,7 +73,7 @@ async function safeResolveTxt(name: string): Promise<string[]> {
   try {
     const records = await resolveTxt(name);
     return records
-      .map((entry) => entry.join("").trim())
+      .map((entry) => normalizeTxtValue(entry.join("")))
       .filter(Boolean);
   } catch (error) {
     if (isMissingDnsRecordError(error)) {
@@ -78,72 +98,114 @@ async function safeResolveCname(name: string): Promise<string[]> {
 }
 
 function findSpfRecords(values: string[]): string[] {
-  return values.filter((value) => /^v=spf1\b/i.test(value));
+  return values.filter((value) => /^v=spf1(?:\s|$)/i.test(value));
 }
 
 function findDmarcRecords(values: string[]): string[] {
-  return values.filter((value) => /^v=dmarc1\b/i.test(value));
+  return values.filter((value) => /^v=dmarc1(?:\s|;|$)/i.test(value));
 }
 
 function includesAmazonSes(value: string | undefined): boolean {
   return typeof value === "string" && /\binclude:amazonses\.com\b/i.test(value);
 }
 
-function buildRecommendedSpf(existingSpfValue: string | undefined): string {
-  if (!existingSpfValue) {
-    return "v=spf1 include:amazonses.com ~all";
+function analyzeSpfRecords(spfRecords: string[]): SpfAnalysis {
+  if (spfRecords.length === 0) {
+    return {
+      state: "missing",
+      recommendedSpfValue: "v=spf1 include:amazonses.com ~all",
+    };
+  }
+
+  if (spfRecords.length > 1) {
+    return {
+      state: "multiple_records",
+    };
+  }
+
+  const existingSpfValue = normalizeTxtValue(spfRecords[0]);
+  const tokens = existingSpfValue.split(" ").filter(Boolean);
+  const allTokens = tokens.filter((token) => /^(?:~|-|\+|\?)all$/i.test(token));
+  const terminalToken = tokens[tokens.length - 1];
+  const hasValidTerminal = terminalToken === "~all" || terminalToken === "-all";
+
+  if (
+    tokens[0] !== "v=spf1" ||
+    tokens.length < 2 ||
+    allTokens.length !== 1 ||
+    !hasValidTerminal
+  ) {
+    return {
+      state: "malformed",
+      existingSpfValue,
+    };
   }
 
   if (includesAmazonSes(existingSpfValue)) {
-    return existingSpfValue;
+    return {
+      state: "valid",
+      existingSpfValue,
+      recommendedSpfValue: existingSpfValue,
+    };
   }
 
-  const parts = existingSpfValue.trim().split(/\s+/);
-  const allIndex = parts.findIndex((part) => /^[~?-]?all$/i.test(part));
+  const mergedTokens = [...tokens];
+  mergedTokens.splice(mergedTokens.length - 1, 0, "include:amazonses.com");
 
-  if (allIndex >= 0) {
-    parts.splice(allIndex, 0, "include:amazonses.com");
-    return parts.join(" ");
-  }
-
-  return [...parts, "include:amazonses.com", "~all"].join(" ");
+  return {
+    state: "missing_ses_include",
+    existingSpfValue,
+    recommendedSpfValue: mergedTokens.join(" "),
+  };
 }
 
 function buildConflictFlags(input: {
-  spfRecords: string[];
+  spfAnalysis: SpfAnalysis;
   dmarcRecords: string[];
   dkimLookups: DkimLookupResult[];
 }): EmailDomainConflictFlag[] {
   const conflictFlags: EmailDomainConflictFlag[] = [];
 
-  if (input.spfRecords.length > 1) {
-    conflictFlags.push({
-      code: "multiple_spf_records",
-      severity: "error",
-      message:
-        "This domain already has multiple SPF records. Ask your DNS admin to consolidate them before sending from this domain.",
-    });
-  }
-
-  if (input.spfRecords.length === 0) {
-    conflictFlags.push({
-      code: "spf_record_missing",
-      severity: "warning",
-      message:
-        "No SPF record was found yet. Add the recommended SPF record before using this domain for branded sending.",
-    });
-  } else if (!includesAmazonSes(input.spfRecords[0])) {
-    conflictFlags.push({
-      code: "spf_include_missing",
-      severity: "warning",
-      message:
-        "We found an SPF record, but it does not authorize Amazon SES yet. Update the existing SPF record instead of creating a second SPF record.",
-    });
+  switch (input.spfAnalysis.state) {
+    case "multiple_records":
+      conflictFlags.push({
+        code: "multiple_spf_records",
+        severity: "error",
+        message:
+          "This domain already has multiple SPF records. Ask your DNS admin to consolidate them before sending from this domain.",
+      });
+      break;
+    case "malformed":
+      conflictFlags.push({
+        code: "spf_malformed",
+        severity: "error",
+        message:
+          "The current SPF record is malformed. It must start with v=spf1 and end with ~all or -all before branded sending can be enabled.",
+      });
+      break;
+    case "missing":
+      conflictFlags.push({
+        code: "spf_record_missing",
+        severity: "warning",
+        message:
+          "No SPF record was found yet. Add the recommended SPF record before using this domain for branded sending.",
+      });
+      break;
+    case "missing_ses_include":
+      conflictFlags.push({
+        code: "spf_include_missing",
+        severity: "warning",
+        message:
+          "We found an SPF record, but it does not authorize Amazon SES yet. Update the existing SPF record instead of creating a second SPF record.",
+      });
+      break;
+    default:
+      break;
   }
 
   if (
     input.dmarcRecords.length > 1 ||
-    input.dmarcRecords.some((record) => !/^v=DMARC1\b/i.test(record))
+    input.dmarcRecords.some((record) => !/^v=dmarc1(?:\s|;|$)/i.test(record))
   ) {
     conflictFlags.push({
       code: "malformed_dmarc",
@@ -180,6 +242,42 @@ function buildConflictFlags(input: {
   return conflictFlags;
 }
 
+function buildInspectionCacheKey(input: {
+  domainName: string;
+  requiredDnsRecords: EmailDnsRecord[];
+}): string {
+  const normalizedDomain = normalizeHost(input.domainName);
+  const normalizedRecords = input.requiredDnsRecords
+    .filter((record) => record.type === "CNAME")
+    .map((record) => `${normalizeHost(record.name)}=>${normalizeHost(record.value)}`)
+    .sort()
+    .join("|");
+
+  return `${normalizedDomain}::${normalizedRecords}`;
+}
+
+function readInspectionCache(cacheKey: string): DnsInspectionSnapshot | null {
+  const entry = dnsInspectionCache.get(cacheKey);
+
+  if (!entry) {
+    return null;
+  }
+
+  if (entry.expiresAt <= Date.now()) {
+    dnsInspectionCache.delete(cacheKey);
+    return null;
+  }
+
+  return entry.snapshot;
+}
+
+function writeInspectionCache(cacheKey: string, snapshot: DnsInspectionSnapshot): void {
+  dnsInspectionCache.set(cacheKey, {
+    expiresAt: Date.now() + DNS_INSPECTION_CACHE_TTL_MS,
+    snapshot,
+  });
+}
+
 export function deriveProviderSignals(mxRecords: EmailMxRecord[]): string[] {
   const exchanges = mxRecords.map((record) => record.exchange);
   const signals = new Set<string>();
@@ -214,17 +312,26 @@ export function deriveProviderSignals(mxRecords: EmailMxRecord[]): string[] {
 export async function inspectDomainDns(input: {
   domainName: string;
   requiredDnsRecords: EmailDnsRecord[];
+  bypassCache?: boolean;
 }): Promise<DnsInspectionSnapshot> {
+  const cacheKey = buildInspectionCacheKey(input);
+
+  if (!input.bypassCache) {
+    const cachedSnapshot = readInspectionCache(cacheKey);
+
+    if (cachedSnapshot) {
+      return cachedSnapshot;
+    }
+  }
+
   const [mxRecords, rootTxtRecords, dmarcTxtRecords] = await Promise.all([
     safeResolveMx(input.domainName),
     safeResolveTxt(input.domainName),
     safeResolveTxt(`_dmarc.${input.domainName}`),
   ]);
 
-  const spfRecords = findSpfRecords(rootTxtRecords);
+  const spfAnalysis = analyzeSpfRecords(findSpfRecords(rootTxtRecords));
   const dmarcRecords = findDmarcRecords(dmarcTxtRecords);
-  const existingSpfValue = spfRecords.length === 1 ? spfRecords[0] : undefined;
-  const existingDmarcValue = dmarcRecords.length === 1 ? dmarcRecords[0] : undefined;
   const requiredDkimRecords = input.requiredDnsRecords.filter((record) => record.type === "CNAME");
   const dkimLookups = await Promise.all(
     requiredDkimRecords.map(async (record) => ({
@@ -233,18 +340,20 @@ export async function inspectDomainDns(input: {
       expectedValue: normalizeHost(record.value),
     })),
   );
-  const conflictFlags = buildConflictFlags({
-    spfRecords,
-    dmarcRecords,
-    dkimLookups,
-  });
-
-  return {
+  const snapshot: DnsInspectionSnapshot = {
     existingMxRecords: mxRecords,
-    existingSpfValue,
-    existingDmarcValue,
-    recommendedSpfValue:
-      spfRecords.length > 1 ? undefined : buildRecommendedSpf(existingSpfValue),
-    conflictFlags,
+    existingSpfValue: spfAnalysis.existingSpfValue,
+    existingDmarcValue: dmarcRecords.length === 1 ? dmarcRecords[0] : undefined,
+    recommendedSpfValue: spfAnalysis.recommendedSpfValue,
+    spfValidationState: spfAnalysis.state,
+    conflictFlags: buildConflictFlags({
+      spfAnalysis,
+      dmarcRecords,
+      dkimLookups,
+    }),
   };
+
+  writeInspectionCache(cacheKey, snapshot);
+
+  return snapshot;
 }

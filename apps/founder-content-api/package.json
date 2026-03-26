@@ -21,6 +21,7 @@
     "start": "tsx server.ts",
     "typecheck": "tsc --noEmit",
     "worker:scheduled-posts": "tsx src/workers/scheduledPostWorker.ts",
-    "worker:email-campaigns": "tsx src/workers/emailCampaignWorker.ts"
+    "worker:email-campaigns": "tsx src/workers/emailCampaignWorker.ts",
+    "worker:email-deliverability": "tsx src/workers/emailDeliverabilityWorker.ts"
   }
 }

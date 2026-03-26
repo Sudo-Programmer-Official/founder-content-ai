@@ -29,6 +29,7 @@ import {
   unsubscribeEmail,
   verifyEmailDomain,
 } from "../services/email/emailService.ts";
+import { processSesWebhookNotification } from "../services/email/emailProviderEventService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
@@ -452,6 +453,31 @@ export async function postEmailDomainVerify(
       code: "email_domain_verify_failed",
       message: "Unable to verify email domain.",
       logMessage: "Failed to verify email domain.",
+    });
+  }
+}
+
+export async function postSesWebhook(
+  request: Request<unknown, unknown, unknown>,
+  response: Response<{ ok: true; result: Awaited<ReturnType<typeof processSesWebhookNotification>> } | ApiError>,
+): Promise<void> {
+  try {
+    const result = await processSesWebhookNotification(request.body);
+    response.json({
+      ok: true,
+      result,
+    });
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "ses_webhook_failed",
+      message: "Unable to process SES webhook payload.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "ses_webhook_failed",
+      message: "Unable to process SES webhook payload.",
+      logMessage: "Failed to process SES webhook payload.",
     });
   }
 }

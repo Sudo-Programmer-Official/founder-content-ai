@@ -20,6 +20,7 @@ import type {
   EmailList,
   EmailListListResponse,
   EmailMxRecord,
+  EmailSpfValidationState,
   ImportEmailContactsRequest,
   ImportEmailContactsResponse,
   SendEmailCampaignResponse,
@@ -31,6 +32,7 @@ import { incrementBusinessDailyUsage } from "../adminControlService.ts";
 import { safeLogEvent } from "../analytics/eventLoggingService.ts";
 import { queryDb, withDbTransaction } from "../db/client.ts";
 import { deriveProviderSignals, inspectDomainDns } from "./dnsInspectionService.ts";
+import { recalculateEmailDomainReputation } from "./emailDeliverabilityService.ts";
 import { ensureSesDomainIdentity, getSesDomainIdentity } from "./sesIdentityService.ts";
 import { sendPlatformEmail } from "./emailTransportService.ts";
 import { HttpError } from "../../utils/http.ts";
@@ -79,6 +81,9 @@ interface EmailContactRow extends QueryResultRow {
   status: EmailContactStatus;
   unsubscribe_token: string;
   unsubscribed_at: Date | string | null;
+  last_bounce_at: Date | string | null;
+  last_complaint_at: Date | string | null;
+  last_provider_event_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -239,6 +244,29 @@ function isSpfReady(spfValue: string | null | undefined): boolean {
   return Boolean(spfValue && includesAmazonSes(spfValue));
 }
 
+function getSpfValidationState(
+  spfValue: string | null | undefined,
+  conflictFlags: EmailDomainConflictFlag[],
+): EmailSpfValidationState {
+  if (conflictFlags.some((flag) => flag.code === "multiple_spf_records")) {
+    return "multiple_records";
+  }
+
+  if (conflictFlags.some((flag) => flag.code === "spf_malformed")) {
+    return "malformed";
+  }
+
+  if (conflictFlags.some((flag) => flag.code === "spf_include_missing")) {
+    return "missing_ses_include";
+  }
+
+  if (conflictFlags.some((flag) => flag.code === "spf_record_missing")) {
+    return "missing";
+  }
+
+  return isSpfReady(spfValue) ? "valid" : "missing";
+}
+
 function buildSafeToAddInstructions(row: EmailSettingsRow): EmailDnsInstruction[] {
   const domainName = row.domain_name;
   const dnsRecords = parseJsonArray<EmailDnsRecord>(row.dns_records_json);
@@ -320,9 +348,10 @@ function buildDomainSetupAnalysis(row: EmailSettingsRow): EmailDomainSetupAnalys
 
   const existingMxRecords = parseJsonArray<EmailMxRecord>(row.existing_mx_json);
   const conflictFlags = parseJsonArray<EmailDomainConflictFlag>(row.conflict_flags_json);
+  const spfValidationState = getSpfValidationState(row.existing_spf_value, conflictFlags);
   const dkimReady =
     row.domain_status === DOMAIN_STATUS_VERIFIED && row.dkim_status === DOMAIN_STATUS_VERIFIED;
-  const spfReady = isSpfReady(row.existing_spf_value);
+  const spfReady = spfValidationState === "valid";
   const dmarcConfigured = Boolean(row.existing_dmarc_value);
   const brandedSendingReady = dkimReady && spfReady && !hasBlockingConflict(conflictFlags);
   const state: EmailDomainSetupAnalysis["state"] = hasBlockingConflict(conflictFlags)
@@ -336,6 +365,7 @@ function buildDomainSetupAnalysis(row: EmailSettingsRow): EmailDomainSetupAnalys
     brandedSendingReady,
     dkimReady,
     spfReady,
+    spfValidationState,
     dmarcConfigured,
     providerSignals: deriveProviderSignals(existingMxRecords),
     existingMxRecords,
@@ -370,6 +400,25 @@ function mapEmailSettings(row: EmailSettingsRow): BusinessEmailSettings {
   };
 }
 
+async function attachEmailDeliverability(
+  settings: BusinessEmailSettings,
+): Promise<BusinessEmailSettings> {
+  if (!settings.domainName) {
+    return settings;
+  }
+
+  const deliverability = await recalculateEmailDomainReputation({
+    businessId: settings.businessId,
+    domainName: settings.domainName,
+    settings,
+  });
+
+  return {
+    ...settings,
+    deliverability: deliverability ?? undefined,
+  };
+}
+
 function mapEmailList(row: EmailListRow): EmailList {
   return {
     id: row.id,
@@ -392,6 +441,9 @@ function mapEmailContact(row: EmailContactRow): EmailContact {
     tags: parseJsonArray<string>(row.tags_json),
     status: row.status,
     unsubscribedAt: toIsoString(row.unsubscribed_at),
+    lastBounceAt: toIsoString(row.last_bounce_at),
+    lastComplaintAt: toIsoString(row.last_complaint_at),
+    lastProviderEventAt: toIsoString(row.last_provider_event_at),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -456,6 +508,7 @@ async function executeQuery<TRow extends QueryResultRow>(
 async function inspectDomainSafety(input: {
   domainName: string;
   dnsRecords: EmailDnsRecord[];
+  bypassCache?: boolean;
 }): Promise<{
   existingMxJson: string;
   existingSpfValue: string | null;
@@ -466,6 +519,7 @@ async function inspectDomainSafety(input: {
   const inspection = await inspectDomainDns({
     domainName: input.domainName,
     requiredDnsRecords: input.dnsRecords,
+    bypassCache: input.bypassCache,
   });
 
   return {
@@ -748,7 +802,10 @@ async function ensureEmailSettingsRow(
   return row;
 }
 
-async function refreshEmailDomainSettings(row: EmailSettingsRow): Promise<BusinessEmailSettings> {
+async function refreshEmailDomainSettings(
+  row: EmailSettingsRow,
+  options: { bypassDnsCache?: boolean } = {},
+): Promise<BusinessEmailSettings> {
   if (!row.domain_name) {
     throw new HttpError(400, "email_domain_missing", "No business email domain is configured.");
   }
@@ -757,6 +814,7 @@ async function refreshEmailDomainSettings(row: EmailSettingsRow): Promise<Busine
   const safety = await inspectDomainSafety({
     domainName: row.domain_name,
     dnsRecords: snapshot.dnsRecords,
+    bypassCache: options.bypassDnsCache,
   });
   const updatedResult = await executeQuery<EmailSettingsRow>(
     `
@@ -797,7 +855,7 @@ async function refreshEmailDomainSettings(row: EmailSettingsRow): Promise<Busine
     ],
   );
 
-  return mapEmailSettings(updatedResult.rows[0]);
+  return attachEmailDeliverability(mapEmailSettings(updatedResult.rows[0]));
 }
 
 async function ensureBusinessEmailSendingPreconditions(businessId: string): Promise<void> {
@@ -833,13 +891,31 @@ async function ensureBusinessEmailSendingPreconditions(businessId: string): Prom
     );
   }
 
-  if (!isSpfReady(refreshedSettings.domainSetupAnalysis?.existingSpfValue)) {
+  if (!refreshedSettings.domainSetupAnalysis?.spfReady) {
+    const spfValidationState = refreshedSettings.domainSetupAnalysis?.spfValidationState;
     throw new HttpError(
       409,
       "email_domain_spf_unready",
-      refreshedSettings.domainSetupAnalysis?.existingSpfValue
-        ? "This business domain still needs an SPF update. Edit the existing SPF record and add include:amazonses.com before sending branded email."
-        : "This business domain does not have an SPF record yet. Add the recommended SPF record before sending branded email.",
+      spfValidationState === "multiple_records"
+        ? "This business domain has multiple SPF records. Consolidate them into a single valid SPF record before sending branded email."
+        : spfValidationState === "malformed"
+          ? "This business domain has a malformed SPF record. Fix it so it starts with v=spf1 and ends with ~all or -all before sending branded email."
+          : refreshedSettings.domainSetupAnalysis?.existingSpfValue
+            ? "This business domain still needs an SPF update. Edit the existing SPF record and add include:amazonses.com before sending branded email."
+            : "This business domain does not have an SPF record yet. Add the recommended SPF record before sending branded email.",
+    );
+  }
+
+  if (refreshedSettings.deliverability?.sendingBlocked) {
+    const blockingIssue =
+      refreshedSettings.deliverability.blockers.find((issue) => issue.severity === "error") ??
+      refreshedSettings.deliverability.blockers[0];
+
+    throw new HttpError(
+      409,
+      "email_domain_deliverability_blocked",
+      blockingIssue?.message ||
+        "Sending is paused because this domain has deliverability issues that need attention first.",
     );
   }
 }
@@ -868,6 +944,9 @@ async function upsertContact(
         status,
         unsubscribe_token,
         unsubscribed_at,
+        last_bounce_at,
+        last_complaint_at,
+        last_provider_event_at,
         created_at,
         updated_at
       from email_contacts
@@ -912,6 +991,9 @@ async function upsertContact(
           status,
           unsubscribe_token,
           unsubscribed_at,
+          last_bounce_at,
+          last_complaint_at,
+          last_provider_event_at,
           created_at,
           updated_at
       `,
@@ -957,6 +1039,9 @@ async function upsertContact(
         status,
         unsubscribe_token,
         unsubscribed_at,
+        last_bounce_at,
+        last_complaint_at,
+        last_provider_event_at,
         created_at,
         updated_at
     `,
@@ -1077,6 +1162,9 @@ async function loadCampaignContacts(
         c.status,
         c.unsubscribe_token,
         c.unsubscribed_at,
+        c.last_bounce_at,
+        c.last_complaint_at,
+        c.last_provider_event_at,
         c.created_at,
         c.updated_at
       from email_campaigns ec
@@ -1661,6 +1749,7 @@ export async function processQueuedEmailCampaigns(options: {
             tags: {
               campaign_id: campaign.id,
               business_id: campaign.business_id,
+              recipient_id: recipientRow.id,
             },
           });
 
@@ -1861,6 +1950,7 @@ export async function createEmailDomain(
   const safety = await inspectDomainSafety({
     domainName,
     dnsRecords: snapshot.dnsRecords,
+    bypassCache: true,
   });
 
   const result = await executeQuery<EmailSettingsRow>(
@@ -1951,7 +2041,7 @@ export async function createEmailDomain(
   );
 
   return {
-    settings: mapEmailSettings(result.rows[0]),
+    settings: await attachEmailDeliverability(mapEmailSettings(result.rows[0])),
   };
 }
 
@@ -1994,7 +2084,9 @@ export async function verifyEmailDomain(
   }
 
   return {
-    settings: await refreshEmailDomainSettings(row),
+    settings: await refreshEmailDomainSettings(row, {
+      bypassDnsCache: true,
+    }),
   };
 }
 
@@ -2008,13 +2100,16 @@ export async function unsubscribeEmail(token: string): Promise<UnsubscribeEmailR
           email,
           first_name,
           last_name,
-          tags_json,
-          status,
-          unsubscribe_token,
-          unsubscribed_at,
-          created_at,
-          updated_at
-        from email_contacts
+        tags_json,
+        status,
+        unsubscribe_token,
+        unsubscribed_at,
+        last_bounce_at,
+        last_complaint_at,
+        last_provider_event_at,
+        created_at,
+        updated_at
+      from email_contacts
         where unsubscribe_token = $1
         limit 1
       `,

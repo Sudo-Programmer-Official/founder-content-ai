@@ -1,6 +1,7 @@
 import type { AdminOpsOverview } from "../../../../packages/shared-types/index.ts";
 import type { QueryResultRow } from "pg";
 import { queryDb } from "./db/client.ts";
+import { listRiskyEmailDomains } from "./email/emailDeliverabilityService.ts";
 
 interface CountRow extends QueryResultRow {
   total: string | number;
@@ -18,6 +19,7 @@ export async function getAdminOpsOverview(): Promise<AdminOpsOverview> {
     emailSendsResult,
     failuresResult,
     activeUsersResult,
+    riskyEmailDomains,
   ] = await Promise.all([
     queryDb<CountRow>(
       `
@@ -57,6 +59,7 @@ export async function getAdminOpsOverview(): Promise<AdminOpsOverview> {
           and created_at >= current_date
       `,
     ),
+    listRiskyEmailDomains(),
   ]);
 
   return {
@@ -65,5 +68,6 @@ export async function getAdminOpsOverview(): Promise<AdminOpsOverview> {
     emailSendsToday: toNumber(emailSendsResult.rows[0]?.total),
     failuresToday: toNumber(failuresResult.rows[0]?.total),
     activeUsersToday: toNumber(activeUsersResult.rows[0]?.total),
+    riskyEmailDomains,
   };
 }
