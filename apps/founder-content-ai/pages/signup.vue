@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthContext } from "../auth/auth-context";
+import { isEmailAlreadyInUseError } from "../services/firebase-auth-client";
 import { appRoutes } from "../utils/routes";
 
 const router = useRouter();
@@ -12,9 +13,11 @@ const email = ref("");
 const password = ref("");
 const confirmPassword = ref("");
 const pageError = ref("");
+const showLoginInstead = ref(false);
 
 async function handleSignup(): Promise<void> {
   pageError.value = "";
+  showLoginInstead.value = false;
 
   if (!email.value.trim() || !password.value) {
     pageError.value = "Enter your email and password.";
@@ -39,6 +42,7 @@ async function handleSignup(): Promise<void> {
     });
     await router.replace(appRoutes.appGenerate);
   } catch (error) {
+    showLoginInstead.value = isEmailAlreadyInUseError(error);
     pageError.value = error instanceof Error ? error.message : "Unable to create account.";
   }
 }
@@ -97,6 +101,15 @@ async function handleSignup(): Promise<void> {
 
         <p v-if="pageError || auth.errorMessage.value" class="auth-error">
           {{ pageError || auth.errorMessage.value }}
+        </p>
+
+        <p v-if="showLoginInstead" class="auth-helper">
+          Already have an account?
+          <router-link
+            :to="{ path: appRoutes.login, query: email.trim() ? { email: email.trim() } : {} }"
+          >
+            Log in instead
+          </router-link>
         </p>
 
         <button class="auth-primary" type="submit" :disabled="auth.isLoading.value">
@@ -202,6 +215,18 @@ async function handleSignup(): Promise<void> {
   color: var(--fc-danger-text, #a33f2f);
   font-size: 0.92rem;
   font-weight: 600;
+}
+
+.auth-helper {
+  margin: -4px 0 0;
+  color: var(--fc-text-muted);
+  font-size: 0.92rem;
+}
+
+.auth-helper a {
+  color: var(--fc-text);
+  font-weight: 700;
+  text-decoration: none;
 }
 
 .auth-footer {

@@ -9,7 +9,7 @@ const route = useRoute();
 const router = useRouter();
 const auth = useAuthContext();
 
-const email = ref("");
+const email = ref(typeof route.query.email === "string" ? route.query.email.trim() : "");
 const password = ref("");
 const pageError = ref("");
 
