@@ -13,8 +13,13 @@ import type {
   EmailContact,
   EmailContactStatus,
   EmailDnsRecord,
+  EmailDnsInstruction,
+  EmailDomainConflictFlag,
+  EmailDomainSetupAnalysis,
+  EmailDomainSettingsResponse,
   EmailList,
   EmailListListResponse,
+  EmailMxRecord,
   ImportEmailContactsRequest,
   ImportEmailContactsResponse,
   SendEmailCampaignResponse,
@@ -25,6 +30,8 @@ import type { PoolClient, QueryResultRow } from "pg";
 import { incrementBusinessDailyUsage } from "../adminControlService.ts";
 import { safeLogEvent } from "../analytics/eventLoggingService.ts";
 import { queryDb, withDbTransaction } from "../db/client.ts";
+import { deriveProviderSignals, inspectDomainDns } from "./dnsInspectionService.ts";
+import { ensureSesDomainIdentity, getSesDomainIdentity } from "./sesIdentityService.ts";
 import { sendPlatformEmail } from "./emailTransportService.ts";
 import { HttpError } from "../../utils/http.ts";
 import { safeCreateSystemErrorLog } from "../systemErrorLogService.ts";
@@ -42,6 +49,11 @@ interface EmailSettingsRow extends QueryResultRow {
   dkim_status: string;
   spf_status: string;
   dns_records_json: unknown;
+  existing_mx_json: unknown;
+  existing_spf_value: string | null;
+  existing_dmarc_value: string | null;
+  recommended_spf_value: string | null;
+  conflict_flags_json: unknown;
   verified_at: Date | string | null;
   last_checked_at: Date | string | null;
   updated_at: Date | string;
@@ -130,7 +142,34 @@ interface CountRow extends QueryResultRow {
   total: string | number;
 }
 
+interface BusinessIdRow extends QueryResultRow {
+  business_id: string;
+}
+
 const DOMAIN_STATUS_VERIFIED = "verified";
+const EMAIL_ADDRESS_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/i;
+const EMAIL_SETTINGS_SELECT_FIELDS = `
+  id,
+  business_id,
+  from_name,
+  from_email,
+  reply_to_email,
+  provider,
+  ses_identity,
+  domain_name,
+  domain_status,
+  dkim_status,
+  spf_status,
+  dns_records_json,
+  existing_mx_json,
+  existing_spf_value,
+  existing_dmarc_value,
+  recommended_spf_value,
+  conflict_flags_json,
+  verified_at,
+  last_checked_at,
+  updated_at
+`;
 
 function toIsoString(value: Date | string | null | undefined): string | undefined {
   return value ? new Date(value).toISOString() : undefined;
@@ -147,6 +186,157 @@ function parseJsonArray<T>(value: unknown): T[] {
 
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function includesAmazonSes(value: string | undefined | null): boolean {
+  return typeof value === "string" && /\binclude:amazonses\.com\b/i.test(value);
+}
+
+function normalizeOptionalEmail(value: string | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
+function extractEmailDomain(value: string): string | null {
+  const [localPart, domainPart, ...rest] = value.trim().toLowerCase().split("@");
+
+  if (!localPart || !domainPart || rest.length > 0) {
+    return null;
+  }
+
+  return domainPart;
+}
+
+function assertValidOptionalEmail(
+  value: string | null,
+  code: string,
+  message: string,
+): void {
+  if (value && !EMAIL_ADDRESS_PATTERN.test(value)) {
+    throw new HttpError(400, code, message);
+  }
+}
+
+function assertFromEmailMatchesDomain(fromEmail: string | null, domainName: string): void {
+  if (!fromEmail) {
+    return;
+  }
+
+  if (extractEmailDomain(fromEmail) !== domainName) {
+    throw new HttpError(
+      400,
+      "email_from_domain_mismatch",
+      "From email must use the configured business domain.",
+    );
+  }
+}
+
+function hasBlockingConflict(conflictFlags: EmailDomainConflictFlag[]): boolean {
+  return conflictFlags.some((flag) => flag.severity === "error");
+}
+
+function buildSafeToAddInstructions(row: EmailSettingsRow): EmailDnsInstruction[] {
+  const domainName = row.domain_name;
+  const dnsRecords = parseJsonArray<EmailDnsRecord>(row.dns_records_json);
+  const instructions = dnsRecords
+    .filter((record) => record.type === "CNAME")
+    .map<EmailDnsInstruction>((record, index) => ({
+      category: "safe_to_add",
+      type: record.type,
+      name: record.name,
+      value: record.value,
+      label: `DKIM CNAME ${index + 1}`,
+      note: "Safe to add. These records will not interrupt your current inbox provider.",
+    }));
+
+  if (!row.existing_dmarc_value && domainName) {
+    instructions.push({
+      category: "safe_to_add",
+      type: "TXT",
+      name: `_dmarc.${domainName}`,
+      value: "v=DMARC1; p=none;",
+      label: "Optional DMARC",
+      note:
+        "Add this only if you do not already manage DMARC for this domain. If your IT team manages DMARC, leave it unchanged.",
+    });
+  }
+
+  return instructions;
+}
+
+function buildMergeCarefullyInstructions(row: EmailSettingsRow): EmailDnsInstruction[] {
+  if (!row.domain_name || !row.recommended_spf_value) {
+    return [];
+  }
+
+  return [
+    {
+      category: "merge_carefully",
+      type: "TXT",
+      name: row.domain_name,
+      value: row.recommended_spf_value,
+      label: row.existing_spf_value ? "Update existing SPF" : "Add SPF record",
+      note: row.existing_spf_value
+        ? "We detected an existing SPF record. Update that record and append include:amazonses.com instead of creating a second SPF record."
+        : "Add this as the only SPF record if your domain does not already have one.",
+    },
+  ];
+}
+
+function buildDoNotChangeInstructions(row: EmailSettingsRow): EmailDnsInstruction[] {
+  const instructions = parseJsonArray<EmailMxRecord>(row.existing_mx_json).map<EmailDnsInstruction>(
+    (record) => ({
+      category: "do_not_change",
+      type: "MX",
+      name: row.domain_name ?? "current-domain",
+      value: `${record.priority} ${record.exchange}`,
+      label: "Current MX record",
+      note: "Leave unchanged. Your current inbox provider can stay exactly as it is.",
+    }),
+  );
+
+  if (row.existing_dmarc_value && row.domain_name) {
+    instructions.push({
+      category: "do_not_change",
+      type: "TXT",
+      name: `_dmarc.${row.domain_name}`,
+      value: row.existing_dmarc_value,
+      label: "Current DMARC record",
+      note: "Keep your current DMARC policy unless your DNS admin or IT team decides to change it.",
+    });
+  }
+
+  return instructions;
+}
+
+function buildDomainSetupAnalysis(row: EmailSettingsRow): EmailDomainSetupAnalysis | undefined {
+  if (!row.domain_name) {
+    return undefined;
+  }
+
+  const existingMxRecords = parseJsonArray<EmailMxRecord>(row.existing_mx_json);
+  const conflictFlags = parseJsonArray<EmailDomainConflictFlag>(row.conflict_flags_json);
+  const domainVerified =
+    row.domain_status === DOMAIN_STATUS_VERIFIED && row.dkim_status === DOMAIN_STATUS_VERIFIED;
+  const spfReady = Boolean(row.existing_spf_value && includesAmazonSes(row.existing_spf_value));
+  const state: EmailDomainSetupAnalysis["state"] = hasBlockingConflict(conflictFlags)
+    ? "red"
+    : domainVerified && spfReady
+      ? "green"
+      : "yellow";
+
+  return {
+    state,
+    providerSignals: deriveProviderSignals(existingMxRecords),
+    existingMxRecords,
+    existingSpfValue: row.existing_spf_value ?? undefined,
+    existingDmarcValue: row.existing_dmarc_value ?? undefined,
+    recommendedSpfValue: row.recommended_spf_value ?? undefined,
+    safeToAdd: buildSafeToAddInstructions(row),
+    mergeCarefully: buildMergeCarefullyInstructions(row),
+    doNotChange: buildDoNotChangeInstructions(row),
+    conflictFlags,
+  };
 }
 
 function mapEmailSettings(row: EmailSettingsRow): BusinessEmailSettings {
@@ -166,6 +356,7 @@ function mapEmailSettings(row: EmailSettingsRow): BusinessEmailSettings {
     verifiedAt: toIsoString(row.verified_at),
     lastCheckedAt: toIsoString(row.last_checked_at),
     updatedAt: toIsoString(row.updated_at),
+    domainSetupAnalysis: buildDomainSetupAnalysis(row),
   };
 }
 
@@ -250,6 +441,30 @@ async function executeQuery<TRow extends QueryResultRow>(
   }
 
   return queryDb<TRow>(text, values);
+}
+
+async function inspectDomainSafety(input: {
+  domainName: string;
+  dnsRecords: EmailDnsRecord[];
+}): Promise<{
+  existingMxJson: string;
+  existingSpfValue: string | null;
+  existingDmarcValue: string | null;
+  recommendedSpfValue: string | null;
+  conflictFlagsJson: string;
+}> {
+  const inspection = await inspectDomainDns({
+    domainName: input.domainName,
+    requiredDnsRecords: input.dnsRecords,
+  });
+
+  return {
+    existingMxJson: JSON.stringify(inspection.existingMxRecords),
+    existingSpfValue: inspection.existingSpfValue ?? null,
+    existingDmarcValue: inspection.existingDmarcValue ?? null,
+    recommendedSpfValue: inspection.recommendedSpfValue ?? null,
+    conflictFlagsJson: JSON.stringify(inspection.conflictFlags),
+  };
 }
 
 async function findEmailUnsubscribe(
@@ -365,22 +580,6 @@ function appendUnsubscribeFooter(html: string, text: string, unsubscribeUrl: str
     html: `${html}<p style="margin-top:24px;font-size:12px;color:#6b7280;">If you no longer want these emails, <a href="${unsubscribeUrl}">unsubscribe here</a>.</p>`,
     text: `${text}\n\nIf you no longer want these emails, unsubscribe here: ${unsubscribeUrl}`,
   };
-}
-
-function buildDnsRecords(domainName: string): EmailDnsRecord[] {
-  const token = crypto.randomUUID().replace(/-/g, "");
-  return [
-    {
-      type: "TXT",
-      name: domainName,
-      value: `amazonses-verification=${token}`,
-    },
-    {
-      type: "CNAME",
-      name: `${token.slice(0, 12)}._domainkey.${domainName}`,
-      value: `${token.slice(12)}.dkim.amazonses.com`,
-    },
-  ];
 }
 
 function parseCsvRows(csvText: string): string[][] {
@@ -500,36 +699,28 @@ async function ensureEmailSettingsRow(
       insert into business_email_settings (
         business_id,
         provider,
+        from_name,
         from_email
       ) values (
         $1::uuid,
         'ses',
-        $2
+        $2,
+        $3
       )
       on conflict (business_id) do nothing
     `,
-    [businessId, process.env.SYSTEM_FROM_EMAIL?.trim() || null],
+    [
+      businessId,
+      process.env.SYSTEM_FROM_NAME?.trim() || null,
+      process.env.SYSTEM_FROM_EMAIL?.trim() || null,
+    ],
     client,
   );
 
   const result = await executeQuery<EmailSettingsRow>(
     `
       select
-        id,
-        business_id,
-        from_name,
-        from_email,
-        reply_to_email,
-        provider,
-        ses_identity,
-        domain_name,
-        domain_status,
-        dkim_status,
-        spf_status,
-        dns_records_json,
-        verified_at,
-        last_checked_at,
-        updated_at
+        ${EMAIL_SETTINGS_SELECT_FIELDS}
       from business_email_settings
       where business_id = $1::uuid
       limit 1
@@ -545,6 +736,92 @@ async function ensureEmailSettingsRow(
   }
 
   return row;
+}
+
+async function refreshEmailDomainSettings(row: EmailSettingsRow): Promise<BusinessEmailSettings> {
+  if (!row.domain_name) {
+    throw new HttpError(400, "email_domain_missing", "No business email domain is configured.");
+  }
+
+  const snapshot = await getSesDomainIdentity(row.ses_identity ?? row.domain_name);
+  const safety = await inspectDomainSafety({
+    domainName: row.domain_name,
+    dnsRecords: snapshot.dnsRecords,
+  });
+  const updatedResult = await executeQuery<EmailSettingsRow>(
+    `
+      update business_email_settings
+      set
+        domain_status = $2,
+        dkim_status = $3,
+        spf_status = $4,
+        ses_identity = $5,
+        dns_records_json = $6::jsonb,
+        existing_mx_json = $7::jsonb,
+        existing_spf_value = $8,
+        existing_dmarc_value = $9,
+        recommended_spf_value = $10,
+        conflict_flags_json = $11::jsonb,
+        verified_at = case
+          when $2 = '${DOMAIN_STATUS_VERIFIED}' then coalesce(verified_at, now())
+          else null
+        end,
+        last_checked_at = now(),
+        updated_at = now()
+      where id = $1::uuid
+      returning
+        ${EMAIL_SETTINGS_SELECT_FIELDS}
+    `,
+    [
+      row.id,
+      snapshot.domainStatus,
+      snapshot.dkimStatus,
+      snapshot.spfStatus,
+      snapshot.sesIdentity,
+      JSON.stringify(snapshot.dnsRecords),
+      safety.existingMxJson,
+      safety.existingSpfValue,
+      safety.existingDmarcValue,
+      safety.recommendedSpfValue,
+      safety.conflictFlagsJson,
+    ],
+  );
+
+  return mapEmailSettings(updatedResult.rows[0]);
+}
+
+async function ensureBusinessEmailSendingPreconditions(businessId: string): Promise<void> {
+  const settings = mapEmailSettings(await ensureEmailSettingsRow(businessId));
+  const fromEmail = settings.fromEmail || process.env.SYSTEM_FROM_EMAIL?.trim();
+
+  if (!fromEmail || !settings.domainName || extractEmailDomain(fromEmail) !== settings.domainName) {
+    return;
+  }
+
+  if (!settings.id) {
+    throw new HttpError(400, "email_domain_missing", "Business email settings are incomplete.");
+  }
+
+  const refreshedSettings = (await verifyEmailDomain(businessId, settings.id)).settings;
+
+  if (hasBlockingConflict(refreshedSettings.domainSetupAnalysis?.conflictFlags ?? [])) {
+    throw new HttpError(
+      409,
+      "email_domain_dns_conflict",
+      "This business domain still has DNS conflicts. Resolve the flagged SPF or DMARC issues before sending from this domain.",
+    );
+  }
+
+  if (
+    refreshedSettings.domainStatus !== DOMAIN_STATUS_VERIFIED ||
+    refreshedSettings.dkimStatus !== DOMAIN_STATUS_VERIFIED
+  ) {
+    throw new HttpError(
+      409,
+      "email_domain_unverified",
+      "This business domain is not verified yet. Add the SES DNS records and verify the domain before sending.",
+    );
+  }
 }
 
 async function upsertContact(
@@ -1149,9 +1426,67 @@ export async function processQueuedEmailCampaigns(options: {
   );
 
   for (const campaign of campaignResult.rows) {
+    try {
+      await ensureBusinessEmailSendingPreconditions(campaign.business_id);
+    } catch (error) {
+      const failureMessage =
+        error instanceof Error
+          ? error.message
+          : "Business email domain is not ready for sending.";
+
+      await withDbTransaction(async (client) => {
+        await executeQuery(
+          `
+            update email_campaign_recipients
+            set
+              status = 'failed',
+              failed_at = coalesce(failed_at, now()),
+              failure_reason = $2,
+              updated_at = now()
+            where campaign_id = $1::uuid
+              and status = 'queued'
+          `,
+          [
+            campaign.id,
+            JSON.stringify({
+              message: failureMessage,
+            }),
+          ],
+          client,
+        );
+
+        await executeQuery(
+          `
+            update email_campaigns
+            set
+              status = 'failed',
+              send_started_at = coalesce(send_started_at, now()),
+              send_completed_at = now(),
+              updated_at = now()
+            where id = $1::uuid
+          `,
+          [campaign.id],
+          client,
+        );
+      });
+
+      void safeCreateSystemErrorLog({
+        route: "/api/businesses/:id/email/campaigns/:campaignId/send",
+        businessId: campaign.business_id,
+        code: "email_domain_not_ready",
+        message: failureMessage,
+        metadata: {
+          campaignId: campaign.id,
+        },
+      });
+
+      continue;
+    }
+
     await withDbTransaction(async (client) => {
       const settings = mapEmailSettings(await ensureEmailSettingsRow(campaign.business_id, client));
       const fromEmail = settings.fromEmail || process.env.SYSTEM_FROM_EMAIL?.trim();
+      const fromName = settings.fromName || process.env.SYSTEM_FROM_NAME?.trim() || undefined;
 
       if (!fromEmail) {
         throw new HttpError(500, "system_from_email_missing", "SYSTEM_FROM_EMAIL is not configured.");
@@ -1297,7 +1632,7 @@ export async function processQueuedEmailCampaigns(options: {
         try {
           const sent = await sendPlatformEmail({
             fromEmail,
-            fromName: settings.fromName,
+            fromName,
             replyToEmail: campaign.reply_to_email || settings.replyToEmail,
             toEmail: contactEmail,
             subject: recipientRow.personalized_subject,
@@ -1422,6 +1757,8 @@ export async function sendEmailCampaign(
   campaignId: string,
   actorUserId?: string,
 ): Promise<SendEmailCampaignResponse> {
+  await ensureBusinessEmailSendingPreconditions(businessId);
+
   await withDbTransaction(async (client) => {
     const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
     const contacts = await loadCampaignContacts(businessId, campaign.id, client);
@@ -1470,12 +1807,41 @@ export async function createEmailDomain(
   input: CreateEmailDomainRequest,
 ): Promise<CreateEmailDomainResponse> {
   const domainName = input.domainName.trim().toLowerCase();
+  const fromEmail = normalizeOptionalEmail(input.fromEmail);
+  const replyToEmail = normalizeOptionalEmail(input.replyToEmail);
 
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domainName)) {
     throw new HttpError(400, "email_domain_invalid", "A valid domain is required.");
   }
 
-  const dnsRecords = buildDnsRecords(domainName);
+  assertValidOptionalEmail(fromEmail, "email_from_invalid", "A valid from email is required.");
+  assertValidOptionalEmail(replyToEmail, "email_reply_to_invalid", "A valid reply-to email is required.");
+  assertFromEmailMatchesDomain(fromEmail, domainName);
+
+  const domainConflict = await executeQuery<BusinessIdRow>(
+    `
+      select business_id
+      from business_email_settings
+      where lower(domain_name) = $1
+        and business_id <> $2::uuid
+      limit 1
+    `,
+    [domainName, businessId],
+  );
+
+  if (domainConflict.rows[0]) {
+    throw new HttpError(
+      409,
+      "email_domain_in_use",
+      "This domain is already connected to another workspace.",
+    );
+  }
+
+  const snapshot = await ensureSesDomainIdentity(domainName);
+  const safety = await inspectDomainSafety({
+    domainName,
+    dnsRecords: snapshot.dnsRecords,
+  });
 
   const result = await executeQuery<EmailSettingsRow>(
     `
@@ -1490,7 +1856,14 @@ export async function createEmailDomain(
         dkim_status,
         spf_status,
         ses_identity,
-        dns_records_json
+        dns_records_json,
+        existing_mx_json,
+        existing_spf_value,
+        existing_dmarc_value,
+        recommended_spf_value,
+        conflict_flags_json,
+        verified_at,
+        last_checked_at
       ) values (
         $1::uuid,
         $2,
@@ -1498,11 +1871,18 @@ export async function createEmailDomain(
         $4,
         'ses',
         $5,
-        'pending',
-        'pending',
-        'pending',
         $6,
-        $7::jsonb
+        $7,
+        $8,
+        $9,
+        $10::jsonb,
+        $11::jsonb,
+        $12,
+        $13,
+        $14,
+        $15::jsonb,
+        case when $16 then now() else null end,
+        now()
       )
       on conflict (business_id)
       do update set
@@ -1510,39 +1890,43 @@ export async function createEmailDomain(
         from_email = excluded.from_email,
         reply_to_email = excluded.reply_to_email,
         domain_name = excluded.domain_name,
-        domain_status = 'pending',
-        dkim_status = 'pending',
-        spf_status = 'pending',
+        domain_status = excluded.domain_status,
+        dkim_status = excluded.dkim_status,
+        spf_status = excluded.spf_status,
         ses_identity = excluded.ses_identity,
         dns_records_json = excluded.dns_records_json,
-        last_checked_at = null,
-        verified_at = null,
+        existing_mx_json = excluded.existing_mx_json,
+        existing_spf_value = excluded.existing_spf_value,
+        existing_dmarc_value = excluded.existing_dmarc_value,
+        recommended_spf_value = excluded.recommended_spf_value,
+        conflict_flags_json = excluded.conflict_flags_json,
+        verified_at = case
+          when excluded.domain_status = '${DOMAIN_STATUS_VERIFIED}'
+            then coalesce(business_email_settings.verified_at, now())
+          else null
+        end,
+        last_checked_at = now(),
         updated_at = now()
       returning
-        id,
-        business_id,
-        from_name,
-        from_email,
-        reply_to_email,
-        provider,
-        ses_identity,
-        domain_name,
-        domain_status,
-        dkim_status,
-        spf_status,
-        dns_records_json,
-        verified_at,
-        last_checked_at,
-        updated_at
+        ${EMAIL_SETTINGS_SELECT_FIELDS}
     `,
     [
       businessId,
-      input.fromName?.trim() || null,
-      input.fromEmail?.trim() || null,
-      input.replyToEmail?.trim() || null,
+      input.fromName?.trim() || process.env.SYSTEM_FROM_NAME?.trim() || null,
+      fromEmail,
+      replyToEmail,
       domainName,
-      domainName,
-      JSON.stringify(dnsRecords),
+      snapshot.domainStatus,
+      snapshot.dkimStatus,
+      snapshot.spfStatus,
+      snapshot.sesIdentity,
+      JSON.stringify(snapshot.dnsRecords),
+      safety.existingMxJson,
+      safety.existingSpfValue,
+      safety.existingDmarcValue,
+      safety.recommendedSpfValue,
+      safety.conflictFlagsJson,
+      snapshot.verifiedForSending,
     ],
   );
 
@@ -1551,76 +1935,46 @@ export async function createEmailDomain(
   };
 }
 
+export async function getEmailDomainSettings(
+  businessId: string,
+): Promise<EmailDomainSettingsResponse> {
+  const row = await ensureEmailSettingsRow(businessId);
+
+  if (!row.domain_name) {
+    return {
+      settings: mapEmailSettings(row),
+    };
+  }
+
+  return {
+    settings: await refreshEmailDomainSettings(row),
+  };
+}
+
 export async function verifyEmailDomain(
   businessId: string,
   domainId: string,
 ): Promise<VerifyEmailDomainResponse> {
-  const settings = await ensureEmailSettingsRow(businessId);
   const settingsRow = await executeQuery<EmailSettingsRow>(
     `
       select
-        id,
-        business_id,
-        from_name,
-        from_email,
-        reply_to_email,
-        provider,
-        ses_identity,
-        domain_name,
-        domain_status,
-        dkim_status,
-        spf_status,
-        dns_records_json,
-        verified_at,
-        last_checked_at,
-        updated_at
+        ${EMAIL_SETTINGS_SELECT_FIELDS}
       from business_email_settings
       where business_id = $1::uuid
+        and id = $2::uuid
       limit 1
     `,
-    [businessId],
+    [businessId, domainId],
   );
 
   const row = settingsRow.rows[0];
 
-  if (!row || row.id !== domainId) {
+  if (!row) {
     throw new HttpError(404, "email_domain_not_found", "Email domain configuration not found.");
   }
 
-  const autoVerify = /^(1|true|yes)$/i.test(process.env.EMAIL_DOMAIN_AUTO_VERIFY ?? "");
-  const updatedResult = await executeQuery<EmailSettingsRow>(
-    `
-      update business_email_settings
-      set
-        domain_status = case when $2 then '${DOMAIN_STATUS_VERIFIED}' else domain_status end,
-        dkim_status = case when $2 then '${DOMAIN_STATUS_VERIFIED}' else dkim_status end,
-        spf_status = case when $2 then '${DOMAIN_STATUS_VERIFIED}' else spf_status end,
-        verified_at = case when $2 then now() else verified_at end,
-        last_checked_at = now(),
-        updated_at = now()
-      where business_id = $1::uuid
-      returning
-        id,
-        business_id,
-        from_name,
-        from_email,
-        reply_to_email,
-        provider,
-        ses_identity,
-        domain_name,
-        domain_status,
-        dkim_status,
-        spf_status,
-        dns_records_json,
-        verified_at,
-        last_checked_at,
-        updated_at
-    `,
-    [settings.businessId, autoVerify],
-  );
-
   return {
-    settings: mapEmailSettings(updatedResult.rows[0]),
+    settings: await refreshEmailDomainSettings(row),
   };
 }
 

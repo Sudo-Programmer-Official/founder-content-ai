@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   getEmailCampaignStats,
   getEmailCampaigns,
+  getEmailDomainSettingsController,
   getEmailLists,
   getEmailUnsubscribe,
   postEmailCampaign,
@@ -16,6 +17,7 @@ export const emailRoute = Router();
 
 emailRoute.post("/api/businesses/:businessId/email/contacts/import", requireAuth(), postEmailContactsImport);
 emailRoute.get("/api/businesses/:businessId/email/lists", requireAuth(), getEmailLists);
+emailRoute.get("/api/businesses/:businessId/email/settings", requireAuth(), getEmailDomainSettingsController);
 emailRoute.post("/api/businesses/:businessId/email/campaigns", requireAuth(), postEmailCampaign);
 emailRoute.post("/api/businesses/:businessId/email/campaigns/:campaignId/send", requireAuth(), postEmailCampaignSend);
 emailRoute.get("/api/businesses/:businessId/email/campaigns", requireAuth(), getEmailCampaigns);

@@ -17,8 +17,9 @@ System email only:
 Business-branded sending:
 
 - business adds domain
-- DNS verification is completed
-- SES identity is attached
+- backend creates or reuses an SES domain identity
+- frontend shows SES DKIM records plus SPF guidance
+- backend refreshes verification state from SES before branded sends
 - business sends from its own brand email
 
 ## Data Model
@@ -37,6 +38,17 @@ Important fields:
 - `domain_status`
 - `dkim_status`
 - `spf_status`
+
+## Verification Flow
+
+- `POST /api/businesses/:businessId/email/domains` provisions the SES identity and stores the DNS records
+- `POST /api/businesses/:businessId/email/domains/:domainId/verify` refreshes verification state from SES
+- branded sends are blocked until the business domain is verified for sending
+
+## SPF Note
+
+- the app stores an SPF record suggestion for DNS setup
+- if a customer already has SPF, they must merge `include:amazonses.com` into the existing record instead of overwriting it
 
 ## Implementation Rule
 

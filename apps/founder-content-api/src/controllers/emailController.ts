@@ -6,6 +6,7 @@ import type {
   CreateEmailDomainResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
+  EmailDomainSettingsResponse,
   EmailListListResponse,
   ImportEmailContactsRequest,
   ImportEmailContactsResponse,
@@ -19,6 +20,7 @@ import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "../serv
 import {
   createEmailCampaign,
   createEmailDomain,
+  getEmailDomainSettings,
   getEmailCampaignStatsResponse,
   listEmailLists,
   importEmailContacts,
@@ -331,6 +333,43 @@ export async function getEmailCampaignStats(
       code: "email_campaign_stats_failed",
       message: "Unable to load email campaign stats.",
       logMessage: "Failed to load email campaign stats.",
+    });
+  }
+}
+
+export async function getEmailDomainSettingsController(
+  request: Request<{ businessId: string }>,
+  response: Response<EmailDomainSettingsResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceReadAccess(request.auth, businessId, "email_campaigns");
+    const result = await getEmailDomainSettings(businessId);
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_domain_settings_load_failed",
+      message: "Unable to load email domain settings.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_domain_settings_load_failed",
+      message: "Unable to load email domain settings.",
+      logMessage: "Failed to load email domain settings.",
     });
   }
 }

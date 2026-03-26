@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import type {
+  BusinessEmailSettings,
   BusinessMembership,
   EmailCampaign,
   EmailList,
   ImportEmailContactsRequest,
 } from "../../../packages/shared-types";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useProductAccessContext } from "../access/product-access-context";
 import {
   requestEmailCampaignCreate,
@@ -13,6 +14,7 @@ import {
   requestEmailCampaigns,
   requestEmailContactsImport,
   requestEmailDomainCreate,
+  requestEmailDomainSettings,
   requestEmailDomainVerify,
   requestEmailLists,
 } from "../services/email-service";
@@ -25,6 +27,7 @@ const businesses = ref<BusinessMembership[]>([]);
 const selectedBusinessId = ref("");
 const emailLists = ref<EmailList[]>([]);
 const campaigns = ref<EmailCampaign[]>([]);
+const domainSettings = ref<BusinessEmailSettings | null>(null);
 const isLoading = ref(true);
 const isImporting = ref(false);
 const isCreatingCampaign = ref(false);
@@ -33,6 +36,7 @@ const isSavingDomain = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const lastDomainId = ref("");
+let domainVerificationPollHandle: number | null = null;
 
 const contactImport = ref<ImportEmailContactsRequest>({
   listName: "Launch List",
@@ -64,6 +68,100 @@ const emailLimitText = computed(() => {
   const limits = productAccess.value?.limits;
   return limits ? `Emails left today: ${limits.emailsRemaining}` : "";
 });
+const domainSetupAnalysis = computed(() => domainSettings.value?.domainSetupAnalysis);
+const domainConflictFlags = computed(() => domainSetupAnalysis.value?.conflictFlags ?? []);
+const safeToAddInstructions = computed(() => domainSetupAnalysis.value?.safeToAdd ?? []);
+const mergeCarefullyInstructions = computed(() => domainSetupAnalysis.value?.mergeCarefully ?? []);
+const doNotChangeInstructions = computed(() => domainSetupAnalysis.value?.doNotChange ?? []);
+const providerSignals = computed(() => domainSetupAnalysis.value?.providerSignals ?? []);
+const existingMxRecords = computed(() => domainSetupAnalysis.value?.existingMxRecords ?? []);
+const hasDetectedEmailInfrastructure = computed(
+  () =>
+    existingMxRecords.value.length > 0 ||
+    Boolean(domainSetupAnalysis.value?.existingSpfValue) ||
+    Boolean(domainSetupAnalysis.value?.existingDmarcValue),
+);
+const domainStatusTone = computed(() => domainSetupAnalysis.value?.state ?? "yellow");
+const domainStatusLabel = computed(() => {
+  switch (domainSetupAnalysis.value?.state) {
+    case "green":
+      return "Ready to send";
+    case "red":
+      return "Needs DNS fixes";
+    default:
+      return "Waiting on DNS";
+  }
+});
+const domainStatusCopy = computed(() => {
+  switch (domainSetupAnalysis.value?.state) {
+    case "green":
+      return "SES verification is complete and the domain no longer has blocking DNS conflicts.";
+    case "red":
+      return "We found a risky DNS conflict. Keep the existing inbox provider untouched and resolve the flagged issue before sending from this domain.";
+    default:
+      return "Add the DNS records below, keep MX unchanged, and wait for SES to verify the domain.";
+  }
+});
+const shouldPollDomainVerification = computed(() => {
+  const settings = domainSettings.value;
+
+  return Boolean(
+    selectedBusinessId.value &&
+      settings?.id &&
+      settings.domainName &&
+      (settings.domainStatus !== "verified" || settings.dkimStatus !== "verified"),
+  );
+});
+
+function formatStatus(value?: string): string {
+  return (value ?? "pending")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function applyDomainSettings(
+  settings: BusinessEmailSettings | null,
+  options: { syncForm?: boolean } = {},
+): void {
+  domainSettings.value = settings;
+  lastDomainId.value = settings?.id || "";
+
+  if (!options.syncForm) {
+    return;
+  }
+
+  domainForm.value = {
+    domainName: settings?.domainName ?? "",
+    fromName: settings?.fromName ?? "",
+    fromEmail: settings?.fromEmail ?? "",
+    replyToEmail: settings?.replyToEmail ?? "",
+  };
+}
+
+function stopDomainVerificationPolling(): void {
+  if (domainVerificationPollHandle === null || typeof window === "undefined") {
+    return;
+  }
+
+  window.clearInterval(domainVerificationPollHandle);
+  domainVerificationPollHandle = null;
+}
+
+function startDomainVerificationPolling(): void {
+  stopDomainVerificationPolling();
+
+  if (!shouldPollDomainVerification.value || typeof window === "undefined") {
+    return;
+  }
+
+  domainVerificationPollHandle = window.setInterval(() => {
+    if (!selectedBusinessId.value || isSavingDomain.value) {
+      return;
+    }
+
+    void loadDomainSettings({ silent: true });
+  }, 10000);
+}
 
 async function loadBusinesses(): Promise<void> {
   const response = await requestMyBusinesses();
@@ -75,19 +173,41 @@ async function loadBusinesses(): Promise<void> {
   }
 }
 
-async function loadEmailState(): Promise<void> {
+async function loadDomainSettings(options: { syncForm?: boolean; silent?: boolean } = {}): Promise<void> {
   if (!selectedBusinessId.value || !emailFeatureEnabled.value) {
-    emailLists.value = [];
-    campaigns.value = [];
+    applyDomainSettings(null, { syncForm: options.syncForm });
     return;
   }
 
-  const [listsResponse, campaignsResponse] = await Promise.all([
+  try {
+    const response = await requestEmailDomainSettings(selectedBusinessId.value);
+    applyDomainSettings(response.settings, { syncForm: options.syncForm });
+  } catch (error) {
+    if (options.silent) {
+      return;
+    }
+
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to load email domain settings.";
+  }
+}
+
+async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promise<void> {
+  if (!selectedBusinessId.value || !emailFeatureEnabled.value) {
+    emailLists.value = [];
+    campaigns.value = [];
+    applyDomainSettings(null, { syncForm: options.syncDomainForm });
+    return;
+  }
+
+  const [listsResponse, campaignsResponse, domainResponse] = await Promise.all([
     requestEmailLists(selectedBusinessId.value),
     requestEmailCampaigns(selectedBusinessId.value),
+    requestEmailDomainSettings(selectedBusinessId.value),
   ]);
   emailLists.value = listsResponse.lists;
   campaigns.value = campaignsResponse.campaigns;
+  applyDomainSettings(domainResponse.settings, { syncForm: options.syncDomainForm });
 
   if (!campaignForm.value.listId && emailLists.value[0]) {
     campaignForm.value.listId = emailLists.value[0].id;
@@ -100,7 +220,7 @@ async function initializePage(): Promise<void> {
 
   try {
     await loadBusinesses();
-    await loadEmailState();
+    await loadEmailState({ syncDomainForm: true });
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to load email campaigns.";
   } finally {
@@ -184,7 +304,7 @@ async function saveDomainUpgrade(): Promise<void> {
 
   try {
     const response = await requestEmailDomainCreate(selectedBusinessId.value, domainForm.value);
-    lastDomainId.value = response.settings.id || "";
+    applyDomainSettings(response.settings, { syncForm: true });
     feedbackMessage.value = `Saved domain setup for ${response.settings.domainName}.`;
   } catch (error) {
     errorMessage.value =
@@ -204,7 +324,8 @@ async function verifyDomain(): Promise<void> {
 
   try {
     const response = await requestEmailDomainVerify(selectedBusinessId.value, lastDomainId.value);
-    feedbackMessage.value = `Domain status: ${response.settings.domainStatus}.`;
+    applyDomainSettings(response.settings);
+    feedbackMessage.value = `Domain status: ${formatStatus(response.settings.domainStatus)}.`;
   } catch (error) {
     errorMessage.value =
       error instanceof Error ? error.message : "Unable to verify domain.";
@@ -214,16 +335,38 @@ async function verifyDomain(): Promise<void> {
 }
 
 watch(selectedBusinessId, (nextBusinessId) => {
+  stopDomainVerificationPolling();
+  feedbackMessage.value = "";
+
   if (!nextBusinessId) {
+    applyDomainSettings(null, { syncForm: true });
     return;
   }
 
   setActiveBusinessId(nextBusinessId);
-  void Promise.all([loadEmailState(), refreshProductAccess(nextBusinessId)]);
+
+  if (isLoading.value) {
+    return;
+  }
+
+  void Promise.all([loadEmailState({ syncDomainForm: true }), refreshProductAccess(nextBusinessId)]);
 });
+
+watch(shouldPollDomainVerification, (shouldPoll) => {
+  if (shouldPoll) {
+    startDomainVerificationPolling();
+    return;
+  }
+
+  stopDomainVerificationPolling();
+}, { immediate: true });
 
 onMounted(() => {
   void initializePage();
+});
+
+onBeforeUnmount(() => {
+  stopDomainVerificationPolling();
 });
 </script>
 
@@ -412,9 +555,195 @@ onMounted(() => {
               {{ isSavingDomain ? "Saving..." : "Save domain setup" }}
             </button>
             <button class="dashboard-button secondary" :disabled="isSavingDomain || !lastDomainId" @click="verifyDomain">
-              Verify
+              {{ isSavingDomain ? "Checking..." : "Verify" }}
             </button>
           </div>
+
+          <div v-if="domainSettings?.domainName" class="domain-setup-shell">
+            <div class="status-row">
+              <span class="status-chip" :class="domainStatusTone">{{ domainStatusLabel }}</span>
+              <span class="signal-chip">Domain: {{ formatStatus(domainSettings.domainStatus) }}</span>
+              <span class="signal-chip">DKIM: {{ formatStatus(domainSettings.dkimStatus) }}</span>
+              <span class="signal-chip">SPF: {{ formatStatus(domainSettings.spfStatus) }}</span>
+            </div>
+
+            <p class="dashboard-description">{{ domainStatusCopy }}</p>
+
+            <div v-if="providerSignals.length > 0" class="hero-signal-row">
+              <span v-for="signal in providerSignals" :key="signal" class="signal-chip">
+                {{ signal }}
+              </span>
+            </div>
+
+            <div v-if="domainConflictFlags.length > 0" class="banner-stack">
+              <article
+                v-for="flag in domainConflictFlags"
+                :key="flag.code"
+                class="setup-banner"
+                :class="flag.severity"
+              >
+                <strong>{{ flag.severity === "error" ? "Action required:" : "Heads up:" }}</strong>
+                {{ flag.message }}
+              </article>
+            </div>
+
+            <div class="domain-grid">
+              <article class="analysis-card">
+                <p class="panel-meta">Detected Infrastructure</p>
+                <h3>Current email setup</h3>
+                <p class="dashboard-description">
+                  <span v-if="hasDetectedEmailInfrastructure">
+                    We detected existing email infrastructure on this domain. FounderContent will not ask you to replace it.
+                  </span>
+                  <span v-else>
+                    We did not detect existing MX, SPF, or DMARC records yet.
+                  </span>
+                </p>
+
+                <div class="record-stack">
+                  <div v-for="record in existingMxRecords" :key="`${record.priority}-${record.exchange}`" class="current-record-card">
+                    <div class="record-header">
+                      <span class="record-label">MX</span>
+                    </div>
+                    <div class="record-line">
+                      <span class="record-key">Priority</span>
+                      <code>{{ record.priority }}</code>
+                    </div>
+                    <div class="record-line">
+                      <span class="record-key">Exchange</span>
+                      <code>{{ record.exchange }}</code>
+                    </div>
+                  </div>
+
+                  <div v-if="domainSetupAnalysis?.existingSpfValue" class="current-record-card">
+                    <div class="record-header">
+                      <span class="record-label">Current SPF</span>
+                    </div>
+                    <div class="record-line full">
+                      <code>{{ domainSetupAnalysis.existingSpfValue }}</code>
+                    </div>
+                  </div>
+
+                  <div v-if="domainSetupAnalysis?.existingDmarcValue" class="current-record-card">
+                    <div class="record-header">
+                      <span class="record-label">Current DMARC</span>
+                    </div>
+                    <div class="record-line full">
+                      <code>{{ domainSetupAnalysis.existingDmarcValue }}</code>
+                    </div>
+                  </div>
+                </div>
+              </article>
+
+              <article class="analysis-card">
+                <p class="panel-meta">Do Not Change</p>
+                <h3>Keep inbox routing intact</h3>
+                <p class="dashboard-description">
+                  Do not change your MX records for app sending. Your current inbox provider can stay exactly as-is.
+                </p>
+
+                <div class="record-stack">
+                  <article
+                    v-for="instruction in doNotChangeInstructions"
+                    :key="`${instruction.category}-${instruction.type}-${instruction.name}-${instruction.value}`"
+                    class="dns-record-card"
+                  >
+                    <div class="record-header">
+                      <span class="record-label">{{ instruction.label }}</span>
+                      <span class="record-type">{{ instruction.type }}</span>
+                    </div>
+                    <p class="record-note">{{ instruction.note }}</p>
+                    <div class="record-line">
+                      <span class="record-key">Name</span>
+                      <code>{{ instruction.name }}</code>
+                    </div>
+                    <div class="record-line full">
+                      <span class="record-key">Value</span>
+                      <code>{{ instruction.value }}</code>
+                    </div>
+                  </article>
+                </div>
+              </article>
+            </div>
+
+            <div class="domain-grid">
+              <article class="analysis-card">
+                <p class="panel-meta">Safe To Add</p>
+                <h3>Add these records</h3>
+                <p class="dashboard-description">
+                  These records are additive and should not interrupt the current inbox provider when added correctly.
+                </p>
+
+                <div class="record-stack">
+                  <article
+                    v-for="instruction in safeToAddInstructions"
+                    :key="`${instruction.category}-${instruction.type}-${instruction.name}-${instruction.value}`"
+                    class="dns-record-card"
+                  >
+                    <div class="record-header">
+                      <span class="record-label">{{ instruction.label }}</span>
+                      <span class="record-type">{{ instruction.type }}</span>
+                    </div>
+                    <p class="record-note">{{ instruction.note }}</p>
+                    <div class="record-line">
+                      <span class="record-key">Name</span>
+                      <code>{{ instruction.name }}</code>
+                    </div>
+                    <div class="record-line full">
+                      <span class="record-key">Value</span>
+                      <code>{{ instruction.value }}</code>
+                    </div>
+                  </article>
+
+                  <p v-if="safeToAddInstructions.length === 0" class="dashboard-description">
+                    No additive DNS records are pending right now.
+                  </p>
+                </div>
+              </article>
+
+              <article class="analysis-card">
+                <p class="panel-meta">Merge Carefully</p>
+                <h3>Update SPF without replacing it</h3>
+                <p class="dashboard-description">
+                  If SPF already exists, edit that record instead of creating a second SPF entry.
+                </p>
+
+                <div class="record-stack">
+                  <article
+                    v-for="instruction in mergeCarefullyInstructions"
+                    :key="`${instruction.category}-${instruction.type}-${instruction.name}-${instruction.value}`"
+                    class="dns-record-card"
+                  >
+                    <div class="record-header">
+                      <span class="record-label">{{ instruction.label }}</span>
+                      <span class="record-type">{{ instruction.type }}</span>
+                    </div>
+                    <p class="record-note">{{ instruction.note }}</p>
+                    <div v-if="domainSetupAnalysis?.existingSpfValue" class="record-line full">
+                      <span class="record-key">Current SPF</span>
+                      <code>{{ domainSetupAnalysis.existingSpfValue }}</code>
+                    </div>
+                    <div class="record-line">
+                      <span class="record-key">Name</span>
+                      <code>{{ instruction.name }}</code>
+                    </div>
+                    <div class="record-line full">
+                      <span class="record-key">Recommended SPF</span>
+                      <code>{{ instruction.value }}</code>
+                    </div>
+                  </article>
+
+                  <p v-if="mergeCarefullyInstructions.length === 0" class="dashboard-description">
+                    No SPF merge is required right now.
+                  </p>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <p v-else class="dashboard-description domain-empty-state">
+            Add a domain to generate SES DNS records, inspect the current email provider, and show safe setup guidance.
+          </p>
         </section>
       </template>
     </template>
@@ -469,5 +798,173 @@ onMounted(() => {
   display: flex;
   gap: 12px;
   margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.domain-setup-shell {
+  display: grid;
+  gap: 18px;
+  margin-top: 28px;
+}
+
+.status-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.status-chip.green {
+  background: rgba(31, 127, 87, 0.12);
+  color: #14543a;
+}
+
+.status-chip.yellow {
+  background: rgba(180, 115, 22, 0.14);
+  color: #7a4a07;
+}
+
+.status-chip.red {
+  background: rgba(176, 55, 41, 0.12);
+  color: #8a2419;
+}
+
+.banner-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.setup-banner {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid transparent;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.setup-banner.warning {
+  background: rgba(180, 115, 22, 0.08);
+  border-color: rgba(180, 115, 22, 0.2);
+  color: #7a4a07;
+}
+
+.setup-banner.error {
+  background: rgba(176, 55, 41, 0.08);
+  border-color: rgba(176, 55, 41, 0.2);
+  color: #8a2419;
+}
+
+.domain-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.analysis-card {
+  padding: 20px;
+  border: 1px solid var(--fc-border);
+  border-radius: 24px;
+  background: rgba(255, 250, 245, 0.68);
+}
+
+.analysis-card h3 {
+  margin: 4px 0 10px;
+  font-size: 1.1rem;
+}
+
+.record-stack {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.dns-record-card,
+.current-record-card {
+  padding: 14px;
+  border: 1px solid rgba(112, 84, 62, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.record-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.record-label {
+  font-size: 0.84rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fc-text-muted);
+}
+
+.record-type {
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #70543e;
+}
+
+.record-note {
+  margin: 0 0 12px;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
+}
+
+.record-line {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-top: 10px;
+}
+
+.record-line.full {
+  grid-template-columns: 1fr;
+}
+
+.record-key {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fc-text-muted);
+}
+
+.record-line code {
+  display: block;
+  width: 100%;
+  overflow-wrap: anywhere;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(36, 24, 19, 0.06);
+  color: var(--fc-text);
+}
+
+.domain-empty-state {
+  margin-top: 18px;
+}
+
+@media (max-width: 920px) {
+  .domain-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

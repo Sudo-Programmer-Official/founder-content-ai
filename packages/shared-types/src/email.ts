@@ -22,6 +22,39 @@ export interface EmailDnsRecord {
   value: string;
 }
 
+export interface EmailMxRecord {
+  priority: number;
+  exchange: string;
+}
+
+export interface EmailDomainConflictFlag {
+  code: string;
+  severity: "warning" | "error";
+  message: string;
+}
+
+export interface EmailDnsInstruction {
+  category: "safe_to_add" | "merge_carefully" | "do_not_change";
+  type: "TXT" | "CNAME" | "MX";
+  name: string;
+  value: string;
+  label: string;
+  note: string;
+}
+
+export interface EmailDomainSetupAnalysis {
+  state: "green" | "yellow" | "red";
+  providerSignals: string[];
+  existingMxRecords: EmailMxRecord[];
+  existingSpfValue?: string;
+  existingDmarcValue?: string;
+  recommendedSpfValue?: string;
+  safeToAdd: EmailDnsInstruction[];
+  mergeCarefully: EmailDnsInstruction[];
+  doNotChange: EmailDnsInstruction[];
+  conflictFlags: EmailDomainConflictFlag[];
+}
+
 export interface BusinessEmailSettings {
   id?: string;
   businessId: string;
@@ -38,6 +71,7 @@ export interface BusinessEmailSettings {
   verifiedAt?: string;
   lastCheckedAt?: string;
   updatedAt?: string;
+  domainSetupAnalysis?: EmailDomainSetupAnalysis;
 }
 
 export interface EmailList {
@@ -165,6 +199,10 @@ export interface CreateEmailDomainRequest {
 }
 
 export interface CreateEmailDomainResponse {
+  settings: BusinessEmailSettings;
+}
+
+export interface EmailDomainSettingsResponse {
   settings: BusinessEmailSettings;
 }
 

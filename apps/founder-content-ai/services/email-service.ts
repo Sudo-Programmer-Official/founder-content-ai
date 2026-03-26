@@ -5,6 +5,7 @@ import type {
   CreateEmailDomainResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
+  EmailDomainSettingsResponse,
   EmailListListResponse,
   ImportEmailContactsRequest,
   ImportEmailContactsResponse,
@@ -79,6 +80,13 @@ export async function requestEmailDomainCreate(
     `/businesses/${encodedBusinessId}/email/domains`,
     payload,
   );
+}
+
+export async function requestEmailDomainSettings(
+  businessId: string,
+): Promise<EmailDomainSettingsResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiGet<EmailDomainSettingsResponse>(`/businesses/${encodedBusinessId}/email/settings`);
 }
 
 export async function requestEmailDomainVerify(
