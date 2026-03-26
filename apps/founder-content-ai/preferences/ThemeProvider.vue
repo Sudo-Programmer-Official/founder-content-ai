@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, provide, ref, watch } from "vue";
 import type { UpdateUserPreferencesRequest, UserPreferences } from "../../../packages/shared-types";
+import { useAuthContext } from "../auth/auth-context";
 import { DEFAULT_USER_PREFERENCES, mergePreferences } from "./defaults";
 import { PreferenceContextKey } from "./preference-context";
 import {
@@ -10,6 +11,7 @@ import {
   storePreferences,
 } from "../services/preferences-service";
 
+const auth = useAuthContext();
 const preferences = ref<UserPreferences>(DEFAULT_USER_PREFERENCES);
 const isReady = ref(false);
 const isSaving = ref(false);
@@ -28,6 +30,11 @@ function applyPreferencesToDocument(nextPreferences: UserPreferences): void {
 }
 
 async function refreshPreferences(): Promise<void> {
+  if (!auth.isAuthenticated.value) {
+    errorMessage.value = "";
+    return;
+  }
+
   try {
     const response = await requestUserPreferences();
     preferences.value = response.preferences;
@@ -84,8 +91,20 @@ onMounted(async () => {
   preferences.value = storedPreferences;
   applyPreferencesToDocument(storedPreferences);
   isReady.value = true;
-  await refreshPreferences();
 });
+
+watch(
+  () => auth.sessionVersion.value,
+  () => {
+    if (auth.isAuthenticated.value) {
+      void refreshPreferences();
+      return;
+    }
+
+    errorMessage.value = "";
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
