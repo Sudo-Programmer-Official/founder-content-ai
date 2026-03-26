@@ -13,6 +13,12 @@ export interface DnsInspectionSnapshot {
   conflictFlags: EmailDomainConflictFlag[];
 }
 
+interface DkimLookupResult {
+  name: string;
+  values: string[];
+  expectedValue: string;
+}
+
 function normalizeHost(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/, "");
 }
@@ -106,8 +112,7 @@ function buildRecommendedSpf(existingSpfValue: string | undefined): string {
 function buildConflictFlags(input: {
   spfRecords: string[];
   dmarcRecords: string[];
-  requiredDkimRecords: EmailDnsRecord[];
-  detectedDkimRecordNames: Set<string>;
+  dkimLookups: DkimLookupResult[];
 }): EmailDomainConflictFlag[] {
   const conflictFlags: EmailDomainConflictFlag[] = [];
 
@@ -117,6 +122,22 @@ function buildConflictFlags(input: {
       severity: "error",
       message:
         "This domain already has multiple SPF records. Ask your DNS admin to consolidate them before sending from this domain.",
+    });
+  }
+
+  if (input.spfRecords.length === 0) {
+    conflictFlags.push({
+      code: "spf_record_missing",
+      severity: "warning",
+      message:
+        "No SPF record was found yet. Add the recommended SPF record before using this domain for branded sending.",
+    });
+  } else if (!includesAmazonSes(input.spfRecords[0])) {
+    conflictFlags.push({
+      code: "spf_include_missing",
+      severity: "warning",
+      message:
+        "We found an SPF record, but it does not authorize Amazon SES yet. Update the existing SPF record instead of creating a second SPF record.",
     });
   }
 
@@ -132,14 +153,22 @@ function buildConflictFlags(input: {
     });
   }
 
-  const requiredDkimNames = input.requiredDkimRecords
-    .filter((record) => record.type === "CNAME")
-    .map((record) => normalizeHost(record.name));
-  const detectedCount = requiredDkimNames.filter((name) =>
-    input.detectedDkimRecordNames.has(name),
+  for (const lookup of input.dkimLookups) {
+    if (lookup.values.length > 0 && !lookup.values.includes(lookup.expectedValue)) {
+      conflictFlags.push({
+        code: "dkim_record_conflict",
+        severity: "error",
+        message:
+          `The DKIM record ${lookup.name} already exists with a different value. Ask your DNS admin to update that record instead of adding a second one.`,
+      });
+    }
+  }
+
+  const detectedCount = input.dkimLookups.filter((lookup) =>
+    lookup.values.includes(lookup.expectedValue),
   ).length;
 
-  if (detectedCount > 0 && detectedCount < requiredDkimNames.length) {
+  if (detectedCount > 0 && detectedCount < input.dkimLookups.length) {
     conflictFlags.push({
       code: "dkim_records_incomplete",
       severity: "warning",
@@ -197,23 +226,17 @@ export async function inspectDomainDns(input: {
   const existingSpfValue = spfRecords.length === 1 ? spfRecords[0] : undefined;
   const existingDmarcValue = dmarcRecords.length === 1 ? dmarcRecords[0] : undefined;
   const requiredDkimRecords = input.requiredDnsRecords.filter((record) => record.type === "CNAME");
-  const detectedDkimLookups = await Promise.all(
+  const dkimLookups = await Promise.all(
     requiredDkimRecords.map(async (record) => ({
       name: normalizeHost(record.name),
       values: await safeResolveCname(record.name),
       expectedValue: normalizeHost(record.value),
     })),
   );
-  const detectedDkimRecordNames = new Set(
-    detectedDkimLookups
-      .filter((lookup) => lookup.values.some((value) => value === lookup.expectedValue))
-      .map((lookup) => lookup.name),
-  );
   const conflictFlags = buildConflictFlags({
     spfRecords,
     dmarcRecords,
-    requiredDkimRecords: input.requiredDnsRecords,
-    detectedDkimRecordNames,
+    dkimLookups,
   });
 
   return {

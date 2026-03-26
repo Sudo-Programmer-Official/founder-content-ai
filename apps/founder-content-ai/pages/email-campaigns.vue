@@ -75,6 +75,28 @@ const mergeCarefullyInstructions = computed(() => domainSetupAnalysis.value?.mer
 const doNotChangeInstructions = computed(() => domainSetupAnalysis.value?.doNotChange ?? []);
 const providerSignals = computed(() => domainSetupAnalysis.value?.providerSignals ?? []);
 const existingMxRecords = computed(() => domainSetupAnalysis.value?.existingMxRecords ?? []);
+const brandedSendingReady = computed(() => domainSetupAnalysis.value?.brandedSendingReady ?? false);
+const dkimReady = computed(() => domainSetupAnalysis.value?.dkimReady ?? false);
+const spfReady = computed(() => domainSetupAnalysis.value?.spfReady ?? false);
+const dmarcConfigured = computed(() => domainSetupAnalysis.value?.dmarcConfigured ?? false);
+const hasBlockingDnsConflict = computed(() =>
+  domainConflictFlags.value.some((flag) => flag.severity === "error"),
+);
+const spfConflictFlag = computed(() =>
+  domainConflictFlags.value.find((flag) =>
+    flag.code === "multiple_spf_records" ||
+    flag.code === "spf_record_missing" ||
+    flag.code === "spf_include_missing",
+  ),
+);
+const dkimConflictFlag = computed(() =>
+  domainConflictFlags.value.find((flag) =>
+    flag.code === "dkim_record_conflict" || flag.code === "dkim_records_incomplete",
+  ),
+);
+const dmarcConflictFlag = computed(() =>
+  domainConflictFlags.value.find((flag) => flag.code === "malformed_dmarc"),
+);
 const hasDetectedEmailInfrastructure = computed(
   () =>
     existingMxRecords.value.length > 0 ||
@@ -83,9 +105,19 @@ const hasDetectedEmailInfrastructure = computed(
 );
 const domainStatusTone = computed(() => domainSetupAnalysis.value?.state ?? "yellow");
 const domainStatusLabel = computed(() => {
+  if (brandedSendingReady.value) {
+    return "Ready to send";
+  }
+
+  if (hasBlockingDnsConflict.value) {
+    return "Needs DNS fixes";
+  }
+
+  if (dkimReady.value && !spfReady.value) {
+    return "SPF update needed";
+  }
+
   switch (domainSetupAnalysis.value?.state) {
-    case "green":
-      return "Ready to send";
     case "red":
       return "Needs DNS fixes";
     default:
@@ -93,13 +125,23 @@ const domainStatusLabel = computed(() => {
   }
 });
 const domainStatusCopy = computed(() => {
+  if (brandedSendingReady.value) {
+    return "SES verification is complete, DKIM is passing, and the SPF record is ready for branded sending.";
+  }
+
+  if (hasBlockingDnsConflict.value) {
+    return "We found a risky DNS conflict. Keep the existing inbox provider untouched and resolve the flagged issue before sending from this domain.";
+  }
+
+  if (dkimReady.value && !spfReady.value) {
+    return "SES verification is complete, but branded sending stays blocked until your SPF record authorizes Amazon SES.";
+  }
+
   switch (domainSetupAnalysis.value?.state) {
-    case "green":
-      return "SES verification is complete and the domain no longer has blocking DNS conflicts.";
     case "red":
       return "We found a risky DNS conflict. Keep the existing inbox provider untouched and resolve the flagged issue before sending from this domain.";
     default:
-      return "Add the DNS records below, keep MX unchanged, and wait for SES to verify the domain.";
+      return "Add the DNS records below, keep MX unchanged, and wait for SES and DNS propagation checks to finish.";
   }
 });
 const shouldPollDomainVerification = computed(() => {
@@ -109,7 +151,7 @@ const shouldPollDomainVerification = computed(() => {
     selectedBusinessId.value &&
       settings?.id &&
       settings.domainName &&
-      (settings.domainStatus !== "verified" || settings.dkimStatus !== "verified"),
+      !brandedSendingReady.value,
   );
 });
 
@@ -587,6 +629,69 @@ onBeforeUnmount(() => {
               </article>
             </div>
 
+            <div class="auto-check-grid">
+              <article class="check-card">
+                <p class="check-label">Branded Sending</p>
+                <span class="check-chip" :class="brandedSendingReady ? 'ok' : hasBlockingDnsConflict ? 'alert' : 'pending'">
+                  {{ brandedSendingReady ? "Ready" : hasBlockingDnsConflict ? "Blocked" : "Waiting" }}
+                </span>
+                <p class="dashboard-description">
+                  <span v-if="brandedSendingReady">
+                    All required DNS checks are passing.
+                  </span>
+                  <span v-else-if="hasBlockingDnsConflict">
+                    A blocking DNS conflict must be fixed before campaigns can send from this domain.
+                  </span>
+                  <span v-else>
+                    We are still waiting on SES verification or the SPF update.
+                  </span>
+                </p>
+              </article>
+
+              <article class="check-card">
+                <p class="check-label">DKIM Auto-Check</p>
+                <span class="check-chip" :class="dkimReady ? 'ok' : dkimConflictFlag?.severity === 'error' ? 'alert' : 'pending'">
+                  {{ dkimReady ? "Verified" : dkimConflictFlag?.severity === "error" ? "Conflict" : "Pending" }}
+                </span>
+                <p class="dashboard-description">
+                  {{
+                    dkimReady
+                      ? "SES can confirm the DKIM records."
+                      : dkimConflictFlag?.message || "Add the SES DKIM CNAME records and wait for propagation."
+                  }}
+                </p>
+              </article>
+
+              <article class="check-card">
+                <p class="check-label">SPF Auto-Check</p>
+                <span class="check-chip" :class="spfReady ? 'ok' : spfConflictFlag?.severity === 'error' ? 'alert' : 'pending'">
+                  {{ spfReady ? "Ready" : spfConflictFlag?.severity === "error" ? "Conflict" : "Needs update" }}
+                </span>
+                <p class="dashboard-description">
+                  {{
+                    spfReady
+                      ? "The current SPF record authorizes Amazon SES."
+                      : spfConflictFlag?.message || "Update the existing SPF record and add include:amazonses.com."
+                  }}
+                </p>
+              </article>
+
+              <article class="check-card">
+                <p class="check-label">DMARC</p>
+                <span class="check-chip" :class="dmarcConflictFlag?.severity === 'error' ? 'alert' : dmarcConfigured ? 'ok' : 'pending'">
+                  {{ dmarcConflictFlag?.severity === "error" ? "Conflict" : dmarcConfigured ? "Present" : "Optional" }}
+                </span>
+                <p class="dashboard-description">
+                  {{
+                    dmarcConflictFlag?.message ||
+                    (dmarcConfigured
+                      ? "A DMARC policy is already present. Keep it unless your IT team changes it."
+                      : "DMARC is optional here. Add it only if your domain does not already manage one.")
+                  }}
+                </p>
+              </article>
+            </div>
+
             <div class="domain-grid">
               <article class="analysis-card">
                 <p class="panel-meta">Detected Infrastructure</p>
@@ -846,6 +951,55 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.auto-check-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.check-card {
+  padding: 18px;
+  border: 1px solid rgba(112, 84, 62, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.check-label {
+  margin: 0 0 10px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fc-text-muted);
+}
+
+.check-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.check-chip.ok {
+  background: rgba(31, 127, 87, 0.12);
+  color: #14543a;
+}
+
+.check-chip.pending {
+  background: rgba(180, 115, 22, 0.14);
+  color: #7a4a07;
+}
+
+.check-chip.alert {
+  background: rgba(176, 55, 41, 0.12);
+  color: #8a2419;
+}
+
 .setup-banner {
   padding: 14px 16px;
   border-radius: 18px;
@@ -963,6 +1117,7 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 920px) {
+  .auto-check-grid,
   .domain-grid {
     grid-template-columns: 1fr;
   }

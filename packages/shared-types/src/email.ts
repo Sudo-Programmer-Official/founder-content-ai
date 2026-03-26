@@ -44,6 +44,10 @@ export interface EmailDnsInstruction {
 
 export interface EmailDomainSetupAnalysis {
   state: "green" | "yellow" | "red";
+  brandedSendingReady: boolean;
+  dkimReady: boolean;
+  spfReady: boolean;
+  dmarcConfigured: boolean;
   providerSignals: string[];
   existingMxRecords: EmailMxRecord[];
   existingSpfValue?: string;

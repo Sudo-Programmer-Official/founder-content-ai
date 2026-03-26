@@ -235,6 +235,10 @@ function hasBlockingConflict(conflictFlags: EmailDomainConflictFlag[]): boolean 
   return conflictFlags.some((flag) => flag.severity === "error");
 }
 
+function isSpfReady(spfValue: string | null | undefined): boolean {
+  return Boolean(spfValue && includesAmazonSes(spfValue));
+}
+
 function buildSafeToAddInstructions(row: EmailSettingsRow): EmailDnsInstruction[] {
   const domainName = row.domain_name;
   const dnsRecords = parseJsonArray<EmailDnsRecord>(row.dns_records_json);
@@ -316,17 +320,23 @@ function buildDomainSetupAnalysis(row: EmailSettingsRow): EmailDomainSetupAnalys
 
   const existingMxRecords = parseJsonArray<EmailMxRecord>(row.existing_mx_json);
   const conflictFlags = parseJsonArray<EmailDomainConflictFlag>(row.conflict_flags_json);
-  const domainVerified =
+  const dkimReady =
     row.domain_status === DOMAIN_STATUS_VERIFIED && row.dkim_status === DOMAIN_STATUS_VERIFIED;
-  const spfReady = Boolean(row.existing_spf_value && includesAmazonSes(row.existing_spf_value));
+  const spfReady = isSpfReady(row.existing_spf_value);
+  const dmarcConfigured = Boolean(row.existing_dmarc_value);
+  const brandedSendingReady = dkimReady && spfReady && !hasBlockingConflict(conflictFlags);
   const state: EmailDomainSetupAnalysis["state"] = hasBlockingConflict(conflictFlags)
     ? "red"
-    : domainVerified && spfReady
+    : brandedSendingReady
       ? "green"
       : "yellow";
 
   return {
     state,
+    brandedSendingReady,
+    dkimReady,
+    spfReady,
+    dmarcConfigured,
     providerSignals: deriveProviderSignals(existingMxRecords),
     existingMxRecords,
     existingSpfValue: row.existing_spf_value ?? undefined,
@@ -820,6 +830,16 @@ async function ensureBusinessEmailSendingPreconditions(businessId: string): Prom
       409,
       "email_domain_unverified",
       "This business domain is not verified yet. Add the SES DNS records and verify the domain before sending.",
+    );
+  }
+
+  if (!isSpfReady(refreshedSettings.domainSetupAnalysis?.existingSpfValue)) {
+    throw new HttpError(
+      409,
+      "email_domain_spf_unready",
+      refreshedSettings.domainSetupAnalysis?.existingSpfValue
+        ? "This business domain still needs an SPF update. Edit the existing SPF record and add include:amazonses.com before sending branded email."
+        : "This business domain does not have an SPF record yet. Add the recommended SPF record before sending branded email.",
     );
   }
 }
