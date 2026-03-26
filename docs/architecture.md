@@ -34,6 +34,7 @@ This keeps UI, API, and shared AI logic separated while still allowing one repos
 ### Shared Packages
 
 - `packages/ai-core`
+- `packages/content-engine`
 - `packages/prompts`
 - `packages/shared-types`
 
@@ -48,6 +49,8 @@ apps/
     styles/
     utils/
   founder-content-api/
+    db/
+      migrations/
     src/
       routes/
       controllers/
@@ -58,6 +61,7 @@ apps/
 
 packages/
   ai-core/
+  content-engine/
   prompts/
   shared-types/
 
@@ -124,8 +128,7 @@ Responsibilities:
 
 - expose generation endpoints
 - validate requests
-- load prompt templates
-- call shared AI execution utilities
+- delegate content generation to shared packages
 - shape responses into predictable payloads
 - hold middleware and backend utilities
 
@@ -139,10 +142,11 @@ High-level request flow:
 2. The frontend calls the backend API using `VITE_API_URL`.
 3. If the primary API domain is unavailable, the frontend falls back to the Render URL.
 4. The API validates the request using shared contracts from `packages/shared-types`.
-5. The API loads the correct prompt from `packages/prompts`.
-6. The API calls `packages/ai-core` to execute the OpenAI request.
-7. The API returns a structured response.
-8. The frontend renders the response in a copy-ready format.
+5. The API delegates generation to `packages/content-engine`.
+6. The content engine loads the correct prompt from `packages/prompts`.
+7. The content engine calls `packages/ai-core` to execute the OpenAI request.
+8. The API returns a structured response.
+9. The frontend renders the response in a copy-ready format.
 
 ## Backend Structure
 
@@ -159,7 +163,6 @@ apps/founder-content-api/
       postController.ts
     services/
       aiService.ts
-      promptLoader.ts
     middleware/
       auth.ts
       rateLimit.ts
@@ -183,6 +186,26 @@ These endpoints map directly to the MVP workflow:
 - hooks
 - posts
 - health monitoring
+
+## Auth and Tenancy Scaffold Endpoints
+
+The initial multi-tenant foundation now plans for:
+
+- `GET /api/me`
+- `GET /api/me/businesses`
+- `POST /api/businesses`
+
+These routes establish the app-level session and first-business creation flow on the Firebase Auth plus Postgres runtime.
+
+## Competitive Intelligence Scaffold Endpoints
+
+The public-source intelligence foundation now plans for:
+
+- `POST /api/competitor-sources`
+- `GET /api/competitor-feed`
+- `GET /api/trends`
+
+These routes are designed for business-scoped, scraping-safe competitor monitoring using public or manually imported content.
 
 ## Shared Packages
 
@@ -216,6 +239,19 @@ Responsibilities:
 - execute completions
 - standardize retries and error handling over time
 - capture usage metadata when needed later
+
+### `packages/content-engine`
+
+Purpose:
+
+- channel-agnostic content generation orchestration
+
+Responsibilities:
+
+- define the shared `generateContent({ input, channel, tone, format })` interface
+- map channel and format combinations to prompts
+- normalize AI responses into stable typed payloads
+- keep channel adapters reusable as new channels are added later
 
 ### `packages/prompts`
 

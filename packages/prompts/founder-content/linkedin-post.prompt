@@ -6,6 +6,7 @@ INPUT VARIABLES
 - tone
 - length
 - selected_hook (optional)
+- brand_context (optional)
 
 OUTPUT FORMAT
 Return JSON with this shape:
@@ -32,3 +33,4 @@ CONSTRAINTS
 - Each variation must be appropriate for startup founders posting on LinkedIn.
 - Respect the requested tone and length.
 - If a selected hook is provided, use it naturally without making the post feel forced.
+- If brand_context is provided, align wording, topics, and structural patterns to it.

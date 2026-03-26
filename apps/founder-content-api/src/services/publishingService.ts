@@ -1,0 +1,197 @@
+import { Buffer } from "node:buffer";
+import type { ScheduledPostSlide } from "../../../../packages/shared-types/index.ts";
+import { HttpError } from "../utils/http.ts";
+import { getLinkedInPublishingCredentialsForBusiness } from "./socialAuthService.ts";
+
+const LINKEDIN_IMAGES_API_URL = "https://api.linkedin.com/rest/images";
+const LINKEDIN_POSTS_API_URL = "https://api.linkedin.com/rest/posts";
+
+interface LinkedInImageInitializationResponse {
+  value?: {
+    uploadUrl?: string;
+    image?: string;
+  };
+  message?: string;
+}
+
+interface LinkedInErrorPayload {
+  message?: string;
+  error_description?: string;
+}
+
+function resolveLinkedInApiVersion(): string {
+  return process.env.LINKEDIN_API_VERSION?.trim() || "202602";
+}
+
+function buildLinkedInHeaders(
+  accessToken: string,
+  hasJsonBody = true,
+): Record<string, string> {
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    "Linkedin-Version": resolveLinkedInApiVersion(),
+    "X-Restli-Protocol-Version": "2.0.0",
+    ...(hasJsonBody ? { "Content-Type": "application/json" } : {}),
+  };
+}
+
+function parseDataUrl(dataUrl: string): { mimeType: string; bytes: Buffer } {
+  const match = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl.trim());
+
+  if (!match) {
+    throw new HttpError(400, "invalid_slide", "Scheduled slide must be a base64 data URL.");
+  }
+
+  return {
+    mimeType: match[1].toLowerCase(),
+    bytes: Buffer.from(match[2], "base64"),
+  };
+}
+
+function ensureSupportedLinkedInImageType(mimeType: string): void {
+  if (!["image/png", "image/jpeg", "image/gif"].includes(mimeType)) {
+    throw new HttpError(
+      400,
+      "unsupported_slide_format",
+      "LinkedIn multi-image posts support PNG, JPG, and GIF uploads only.",
+    );
+  }
+}
+
+async function initializeLinkedInImageUpload(
+  accessToken: string,
+  ownerUrn: string,
+): Promise<{ uploadUrl: string; imageUrn: string }> {
+  const response = await fetch(`${LINKEDIN_IMAGES_API_URL}?action=initializeUpload`, {
+    method: "POST",
+    headers: buildLinkedInHeaders(accessToken),
+    body: JSON.stringify({
+      initializeUploadRequest: {
+        owner: ownerUrn,
+      },
+    }),
+  });
+
+  const payload = (await response.json()) as LinkedInImageInitializationResponse;
+
+  if (!response.ok || !payload.value?.uploadUrl || !payload.value.image) {
+    throw new HttpError(
+      502,
+      "linkedin_upload_init_failed",
+      payload.message ?? "LinkedIn image upload initialization failed.",
+    );
+  }
+
+  return {
+    uploadUrl: payload.value.uploadUrl,
+    imageUrn: payload.value.image,
+  };
+}
+
+async function uploadSlideToLinkedIn(
+  accessToken: string,
+  ownerUrn: string,
+  slide: ScheduledPostSlide,
+): Promise<{ imageUrn: string; altText?: string }> {
+  const parsed = parseDataUrl(slide.imageDataUrl);
+  ensureSupportedLinkedInImageType(parsed.mimeType);
+  const initialization = await initializeLinkedInImageUpload(accessToken, ownerUrn);
+  const uploadResponse = await fetch(initialization.uploadUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": slide.mimeType?.trim() || parsed.mimeType,
+    },
+    body: parsed.bytes,
+  });
+
+  if (!uploadResponse.ok) {
+    const payload =
+      (await uploadResponse.text().catch(() => "")) || "LinkedIn image upload failed.";
+    throw new HttpError(502, "linkedin_upload_failed", payload);
+  }
+
+  return {
+    imageUrn: initialization.imageUrn,
+    altText: slide.altText?.trim() || undefined,
+  };
+}
+
+export async function publishLinkedInMultiImagePost(input: {
+  businessId: string;
+  contentText: string;
+  slides: ScheduledPostSlide[];
+}): Promise<{ externalPostId: string; response: Record<string, unknown> }> {
+  if (input.slides.length < 2 || input.slides.length > 20) {
+    throw new HttpError(
+      400,
+      "invalid_slide_count",
+      "LinkedIn multi-image posts require between 2 and 20 images.",
+    );
+  }
+
+  const credentials = await getLinkedInPublishingCredentialsForBusiness(input.businessId);
+  const uploadedSlides = [];
+
+  for (const slide of input.slides) {
+    uploadedSlides.push(
+      await uploadSlideToLinkedIn(credentials.accessToken, credentials.platformUserUrn, slide),
+    );
+  }
+
+  const postResponse = await fetch(LINKEDIN_POSTS_API_URL, {
+    method: "POST",
+    headers: buildLinkedInHeaders(credentials.accessToken),
+    body: JSON.stringify({
+      author: credentials.platformUserUrn,
+      commentary: input.contentText,
+      visibility: "PUBLIC",
+      distribution: {
+        feedDistribution: "MAIN_FEED",
+        targetEntities: [],
+        thirdPartyDistributionChannels: [],
+      },
+      lifecycleState: "PUBLISHED",
+      isReshareDisabledByAuthor: false,
+      content: {
+        multiImage: {
+          images: uploadedSlides.map((slide) => ({
+            id: slide.imageUrn,
+            ...(slide.altText ? { altText: slide.altText.slice(0, 4086) } : {}),
+            taggedEntities: [],
+          })),
+        },
+      },
+    }),
+  });
+
+  if (!postResponse.ok) {
+    const payload = (await postResponse.json().catch(() => ({}))) as LinkedInErrorPayload;
+    throw new HttpError(
+      502,
+      "linkedin_post_failed",
+      payload.message ?? payload.error_description ?? "LinkedIn post creation failed.",
+    );
+  }
+
+  const externalPostId =
+    postResponse.headers.get("x-restli-id") ||
+    postResponse.headers.get("x-linkedin-id") ||
+    "";
+
+  if (!externalPostId) {
+    throw new HttpError(
+      502,
+      "linkedin_post_failed",
+      "LinkedIn post creation succeeded without returning a post identifier.",
+    );
+  }
+
+  return {
+    externalPostId,
+    response: {
+      externalPostId,
+      uploadedImageCount: uploadedSlides.length,
+    },
+  };
+}

@@ -1,130 +1,72 @@
 import type {
-  ApiError,
+  CaptureContentRequest,
+  CaptureContentResponse,
+  GenerateVisualRequest,
+  GenerateVisualResponse,
   HookGenerationRequest,
   HookGenerationResponse,
   IdeaGenerationRequest,
   IdeaGenerationResponse,
   LinkedInPostGenerationRequest,
   LinkedInPostGenerationResponse,
+  RepurposeContentRequest,
+  RepurposeContentResponse,
+  RemixContentRequest,
+  RemixContentResponse,
 } from "../../../packages/shared-types";
+import { apiPost } from "./api-client";
 
 const API_ENDPOINTS = {
+  capture: "/capture",
   ideas: "/generate-ideas",
   hook: "/generate-hook",
   post: "/generate-post",
+  repurpose: "/repurpose",
+  visual: "/generate-visual",
+  remix: "/remix",
 } as const;
-
-declare global {
-  interface Window {
-    __FOUNDER_CONTENT_API_BASE_URL__?: string;
-  }
-}
-
-function normalizeApiBaseUrl(value: string): string {
-  return value.trim().replace(/\/$/, "").replace(/\/health$/i, "");
-}
-
-function resolveApiBaseUrl(): string {
-  const envBaseUrl = import.meta.env.VITE_API_URL;
-
-  if (typeof envBaseUrl === "string" && envBaseUrl.trim() !== "") {
-    return normalizeApiBaseUrl(envBaseUrl);
-  }
-
-  if (typeof window === "undefined") {
-    return "";
-  }
-
-  if (typeof window.__FOUNDER_CONTENT_API_BASE_URL__ === "string") {
-    return normalizeApiBaseUrl(window.__FOUNDER_CONTENT_API_BASE_URL__);
-  }
-
-  if (window.location.hostname === "localhost") {
-    return "http://localhost:3001/api";
-  }
-
-  return "https://api.foundercontent.ai/api";
-}
-
-function resolveFallbackApiBaseUrl(primaryApiBaseUrl: string): string | null {
-  const fallbackApiUrl = "https://founder-content-api.onrender.com/api";
-
-  return primaryApiBaseUrl === fallbackApiUrl ? null : fallbackApiUrl;
-}
-
-function parseJsonSafely<T>(value: string): T | null {
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return null;
-  }
-}
-
-async function postJson<TRequest, TResponse>(
-  endpoint: string,
-  payload: TRequest,
-): Promise<TResponse> {
-  const apiBaseUrl = resolveApiBaseUrl();
-  const fallbackApiBaseUrl = resolveFallbackApiBaseUrl(apiBaseUrl);
-
-  async function send(requestBaseUrl: string): Promise<TResponse> {
-    const requestUrl = `${requestBaseUrl}${endpoint}`;
-    let response: Response;
-
-    try {
-      response = await fetch(requestUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-    } catch (error) {
-      if (fallbackApiBaseUrl && requestBaseUrl !== fallbackApiBaseUrl) {
-        return send(fallbackApiBaseUrl);
-      }
-
-      throw error;
-    }
-
-    const responseText = await response.text();
-    const responseBody = parseJsonSafely<TResponse | ApiError>(responseText);
-
-    if (!response.ok) {
-      const message =
-        responseBody && "error" in responseBody
-          ? responseBody.error.message
-          : `Request failed with status ${response.status}.`;
-      throw new Error(message);
-    }
-
-    if (!responseBody) {
-      throw new Error("API returned a non-JSON response.");
-    }
-
-    return responseBody as TResponse;
-  }
-
-  return send(apiBaseUrl);
-}
 
 export async function requestIdeaGeneration(
   input: IdeaGenerationRequest,
 ): Promise<IdeaGenerationResponse> {
-  return postJson<IdeaGenerationRequest, IdeaGenerationResponse>(API_ENDPOINTS.ideas, input);
+  return apiPost<IdeaGenerationRequest, IdeaGenerationResponse>(API_ENDPOINTS.ideas, input);
 }
 
 export async function requestHookGeneration(
   input: HookGenerationRequest,
 ): Promise<HookGenerationResponse> {
-  return postJson<HookGenerationRequest, HookGenerationResponse>(API_ENDPOINTS.hook, input);
+  return apiPost<HookGenerationRequest, HookGenerationResponse>(API_ENDPOINTS.hook, input);
 }
 
 export async function requestLinkedInPostGeneration(
   input: LinkedInPostGenerationRequest,
 ): Promise<LinkedInPostGenerationResponse> {
-  return postJson<LinkedInPostGenerationRequest, LinkedInPostGenerationResponse>(
+  return apiPost<LinkedInPostGenerationRequest, LinkedInPostGenerationResponse>(
     API_ENDPOINTS.post,
     input,
   );
+}
+
+export async function requestCaptureContent(
+  input: CaptureContentRequest,
+): Promise<CaptureContentResponse> {
+  return apiPost<CaptureContentRequest, CaptureContentResponse>(API_ENDPOINTS.capture, input);
+}
+
+export async function requestVisualGeneration(
+  input: GenerateVisualRequest,
+): Promise<GenerateVisualResponse> {
+  return apiPost<GenerateVisualRequest, GenerateVisualResponse>(API_ENDPOINTS.visual, input);
+}
+
+export async function requestRepurposeContent(
+  input: RepurposeContentRequest,
+): Promise<RepurposeContentResponse> {
+  return apiPost<RepurposeContentRequest, RepurposeContentResponse>(API_ENDPOINTS.repurpose, input);
+}
+
+export async function requestRemixContent(
+  input: RemixContentRequest,
+): Promise<RemixContentResponse> {
+  return apiPost<RemixContentRequest, RemixContentResponse>(API_ENDPOINTS.remix, input);
 }

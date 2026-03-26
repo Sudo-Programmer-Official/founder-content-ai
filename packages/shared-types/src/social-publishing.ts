@@ -1,0 +1,126 @@
+export type SocialPlatform = "linkedin";
+export type SocialAccountStatus = "connected" | "expired" | "revoked" | "error";
+export type ScheduledPostStatus = "scheduled" | "processing" | "published" | "failed";
+
+export interface SocialAccount {
+  id: string;
+  businessId: string;
+  userId: string;
+  platform: SocialPlatform;
+  platformUserId: string;
+  platformUserUrn: string;
+  accountEmail?: string;
+  tokenExpiresAt?: string;
+  refreshTokenExpiresAt?: string;
+  scopes: string[];
+  status: SocialAccountStatus;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PublicationEvent {
+  id: string;
+  scheduledPostId: string;
+  status: ScheduledPostStatus;
+  response: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface ScheduledPostSlide {
+  imageDataUrl: string;
+  altText?: string;
+  mimeType?: string;
+}
+
+export interface ScheduledPost {
+  id: string;
+  businessId: string;
+  userId: string;
+  platform: SocialPlatform;
+  contentText: string;
+  assetGroupId?: string;
+  slides: ScheduledPostSlide[];
+  scheduledAt: string;
+  status: ScheduledPostStatus;
+  externalPostId?: string;
+  externalPostUrl?: string;
+  errorMessage?: string;
+  retryCount: number;
+  lastAttemptAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt?: string;
+}
+
+export type RecommendPostTimeContentType = "carousel" | "image" | "text";
+
+export interface RecommendedPostTimeSlot {
+  scheduledAt: string;
+  localLabel: string;
+  reason: string;
+  source: "global" | "history" | "hybrid";
+}
+
+export interface RecommendPostTimeQuery {
+  businessId: string;
+  contentType?: RecommendPostTimeContentType;
+}
+
+export interface RecommendPostTimeResponse {
+  timezone: string;
+  slots: RecommendedPostTimeSlot[];
+  usedHistory: boolean;
+}
+
+export interface GenerateHashtagsRequest {
+  businessId?: string;
+  contentText: string;
+  contentType?: RecommendPostTimeContentType;
+  targetCount?: number;
+}
+
+export interface GenerateHashtagsResponse {
+  hashtags: string[];
+  captionWithHashtags: string;
+}
+
+export interface StartSocialAuthRequest {
+  businessId: string;
+  platform: SocialPlatform;
+  returnPath?: string;
+}
+
+export interface StartSocialAuthResponse {
+  authorizationUrl: string;
+}
+
+export interface SocialAccountsQuery {
+  businessId: string;
+}
+
+export interface SocialAccountsResponse {
+  accounts: SocialAccount[];
+}
+
+export interface SchedulePostRequest {
+  businessId: string;
+  platform: SocialPlatform;
+  contentText: string;
+  assetGroupId?: string;
+  slides: ScheduledPostSlide[];
+  scheduledAt: string;
+}
+
+export interface SchedulePostResponse {
+  scheduledPost: ScheduledPost;
+}
+
+export interface ScheduledPostsQuery {
+  businessId: string;
+  platform?: SocialPlatform;
+}
+
+export interface ScheduledPostsResponse {
+  scheduledPosts: ScheduledPost[];
+}

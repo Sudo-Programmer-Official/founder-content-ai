@@ -45,6 +45,15 @@ The backend lives separately in:
 
 - `../founder-content-api`
 
+## Local Setup
+
+Create `apps/founder-content-ai/.env` with:
+
+- `VITE_API_URL=http://localhost:3001/api`
+- `VITE_FIREBASE_API_KEY=<firebase web api key>`
+
+Firebase is used for authentication only. App data stays in Postgres through the backend API.
+
 Current phase status:
 
 - page scaffolding only

@@ -25,6 +25,24 @@ Behavior:
 - the frontend uses this as the primary API base URL
 - if the primary production API is unavailable, the app falls back to the Render backend URL
 
+### `VITE_FIREBASE_API_KEY`
+
+Purpose:
+
+- public Firebase Web API key used by the frontend auth flow for email/password sign-in and token refresh
+
+How it is used:
+
+- the frontend calls Firebase Auth directly
+- Firebase is used for authentication only
+- Postgres remains the system of record for app data
+
+Setup note:
+
+- create a Firebase project
+- enable Email / Password sign-in
+- copy the Web API Key from Firebase project settings into `apps/founder-content-ai/.env`
+
 ## Backend
 
 Backend app:
@@ -64,6 +82,142 @@ Local example:
 Production note:
 
 - deployment platforms may inject this automatically
+
+### `AUTH_MODE`
+
+Purpose:
+
+- selects temporary local auth behavior before Firebase verification is used
+
+Supported values:
+
+- `stub`
+
+Runtime note:
+
+- `stub` mode requires `x-dev-user-id` and `x-dev-user-email` headers on protected auth/business routes
+- `stub` is ignored when `NODE_ENV=production`
+
+### `DATABASE_URL`
+
+Purpose:
+
+- Postgres connection string for repository-backed auth and business storage
+
+### `DATABASE_SSL_MODE`
+
+Purpose:
+
+- controls whether the backend creates the Postgres pool with SSL
+
+Supported values:
+
+- `disable`
+- any other value enables SSL with `rejectUnauthorized: false`
+
+Recommended target:
+
+- AWS Postgres or compatible managed Postgres
+
+### `FIREBASE_PROJECT_ID`
+
+Purpose:
+
+- Firebase project id used by the Admin SDK
+
+### `FIREBASE_CLIENT_EMAIL`
+
+Purpose:
+
+- Firebase service account client email
+
+### `FIREBASE_PRIVATE_KEY`
+
+Purpose:
+
+- Firebase service account private key
+
+Format note:
+
+- keep embedded newlines escaped as `\n` when stored in environment settings
+
+### `FIREBASE_SERVICE_ACCOUNT_JSON`
+
+Purpose:
+
+- optional full Firebase service account JSON
+
+Runtime note:
+
+- if this is provided, it takes precedence over the individual Firebase credential variables
+
+### `SUPER_ADMIN_EMAILS`
+
+Purpose:
+
+- comma-separated list of platform admin emails allowed to access admin APIs in Firebase-authenticated runtime
+
+Development note:
+
+- local stub mode can also elevate a request with `X-Dev-Super-Admin: true`
+
+### `AI_ESTIMATED_COST_PER_1K_TOKENS_USD`
+
+Purpose:
+
+- optional placeholder rate used to estimate AI spend from logged token usage
+
+Default behavior:
+
+- when unset or `0`, the admin usage dashboard reports `0` estimated cost even if tokens exist
+
+### `AWS_REGION`
+
+Purpose:
+
+- default AWS region for SES and future AWS-connected services
+
+### `SES_CONFIGURATION_SET`
+
+Purpose:
+
+- optional SES configuration set for system email and event tracking later
+
+### `SYSTEM_FROM_EMAIL`
+
+Purpose:
+
+- default verified sender for platform-level system emails
+
+### `COMPETITOR_DEFAULT_FETCH_FREQUENCY_MINUTES`
+
+Purpose:
+
+- default low-frequency fetch interval for public competitor sources
+
+### `COMPETITOR_MIN_FETCH_FREQUENCY_MINUTES`
+
+Purpose:
+
+- hard minimum interval for scheduled source fetches
+
+### `COMPETITOR_FETCH_LOCK_TIMEOUT_MINUTES`
+
+Purpose:
+
+- worker lease timeout used to avoid duplicate source processing
+
+### `COMPETITOR_FETCH_BATCH_SIZE`
+
+Purpose:
+
+- maximum number of due sources a worker cycle should claim at once
+
+### `COMPETITOR_FETCH_USER_AGENT`
+
+Purpose:
+
+- explicit user agent sent for public content fetches
 
 ### `FRONTEND_ORIGIN`
 

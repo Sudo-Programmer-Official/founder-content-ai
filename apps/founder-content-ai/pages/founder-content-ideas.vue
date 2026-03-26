@@ -68,11 +68,9 @@ async function handleSubmit() {
 
 <style scoped>
 .page-shell {
-  margin: 0 auto;
-  max-width: 960px;
-  padding: 48px 24px 72px;
-  color: #1c1917;
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  max-width: var(--fc-page-max-width);
+  color: var(--fc-text);
+  font-family: var(--fc-font-family-body);
 }
 
 .hero {
@@ -81,7 +79,7 @@ async function handleSubmit() {
 
 .eyebrow {
   margin: 0 0 12px;
-  color: #78716c;
+  color: var(--fc-text-muted);
   font-size: 0.875rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -89,15 +87,16 @@ async function handleSubmit() {
 
 .description {
   max-width: 680px;
-  color: #57534e;
+  color: var(--fc-text-muted);
   line-height: 1.6;
 }
 
 .card {
   padding: 24px;
-  border: 1px solid #e7e5e4;
-  border-radius: 20px;
-  background: #fafaf9;
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-panel);
+  background: var(--fc-panel-bg);
+  box-shadow: var(--fc-panel-shadow);
 }
 
 .form-grid {
@@ -112,9 +111,6 @@ label {
 
 input {
   padding: 12px 14px;
-  border: 1px solid #d6d3d1;
-  border-radius: 12px;
-  font: inherit;
 }
 
 button {
@@ -122,8 +118,8 @@ button {
   padding: 12px 18px;
   border: 0;
   border-radius: 999px;
-  background: #1c1917;
-  color: #fafaf9;
+  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+  color: var(--fc-accent-contrast);
   font: inherit;
   cursor: pointer;
 }
@@ -138,7 +134,7 @@ button:disabled {
 }
 
 .feedback.error {
-  color: #b91c1c;
+  color: var(--fc-error-text);
 }
 
 .results-grid {

@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { trackAnalyticsEvent } from "../services/admin-analytics-service";
 import { requestHookGeneration } from "../services/generation-service";
 
 const topic = ref("startup failure");
 const hooks = ref<string[]>([]);
 const isLoading = ref(false);
 const errorMessage = ref("");
+const copyFeedback = ref("");
 
 async function handleSubmit() {
   isLoading.value = true;
@@ -22,6 +24,31 @@ async function handleSubmit() {
       error instanceof Error ? error.message : "Unable to generate LinkedIn hooks.";
   } finally {
     isLoading.value = false;
+  }
+}
+
+async function copyHook(hook: string) {
+  copyFeedback.value = "";
+
+  try {
+    await navigator.clipboard.writeText(hook);
+    copyFeedback.value = "Hook copied.";
+  } catch (error) {
+    copyFeedback.value = error instanceof Error ? error.message : "Unable to copy hook.";
+    return;
+  }
+
+  try {
+    await trackAnalyticsEvent({
+      eventType: "output_copied",
+      metadata: {
+        source: "linkedin-hook-generator",
+        contentType: "hook",
+        preview: hook.slice(0, 120),
+      },
+    });
+  } catch {
+    // Copy succeeded; analytics failure should not block the UX.
   }
 }
 </script>
@@ -48,10 +75,12 @@ async function handleSubmit() {
     </form>
 
     <p v-if="errorMessage" class="feedback error">{{ errorMessage }}</p>
+    <p v-if="copyFeedback" class="feedback">{{ copyFeedback }}</p>
 
     <section v-if="hooks.length > 0" class="results-grid">
       <article v-for="hook in hooks" :key="hook" class="card">
         <h2>{{ hook }}</h2>
+        <button type="button" class="secondary-button" @click="copyHook(hook)">Copy hook</button>
       </article>
     </section>
   </main>
@@ -59,11 +88,9 @@ async function handleSubmit() {
 
 <style scoped>
 .page-shell {
-  margin: 0 auto;
-  max-width: 960px;
-  padding: 48px 24px 72px;
-  color: #1c1917;
-  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  max-width: var(--fc-page-max-width);
+  color: var(--fc-text);
+  font-family: var(--fc-font-family-body);
 }
 
 .hero {
@@ -72,7 +99,7 @@ async function handleSubmit() {
 
 .eyebrow {
   margin: 0 0 12px;
-  color: #78716c;
+  color: var(--fc-text-muted);
   font-size: 0.875rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -80,15 +107,16 @@ async function handleSubmit() {
 
 .description {
   max-width: 680px;
-  color: #57534e;
+  color: var(--fc-text-muted);
   line-height: 1.6;
 }
 
 .card {
   padding: 24px;
-  border: 1px solid #e7e5e4;
-  border-radius: 20px;
-  background: #fafaf9;
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-panel);
+  background: var(--fc-panel-bg);
+  box-shadow: var(--fc-panel-shadow);
 }
 
 .form-grid {
@@ -103,9 +131,6 @@ label {
 
 input {
   padding: 12px 14px;
-  border: 1px solid #d6d3d1;
-  border-radius: 12px;
-  font: inherit;
 }
 
 button {
@@ -113,8 +138,8 @@ button {
   padding: 12px 18px;
   border: 0;
   border-radius: 999px;
-  background: #1c1917;
-  color: #fafaf9;
+  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+  color: var(--fc-accent-contrast);
   font: inherit;
   cursor: pointer;
 }
@@ -129,7 +154,13 @@ button:disabled {
 }
 
 .feedback.error {
-  color: #b91c1c;
+  color: var(--fc-error-text);
+}
+
+.secondary-button {
+  margin-top: 16px;
+  background: var(--fc-surface-muted);
+  color: var(--fc-text);
 }
 
 .results-grid {

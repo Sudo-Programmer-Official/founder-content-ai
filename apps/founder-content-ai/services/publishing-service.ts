@@ -1,0 +1,66 @@
+import type {
+  GenerateHashtagsRequest,
+  GenerateHashtagsResponse,
+  RecommendPostTimeContentType,
+  RecommendPostTimeResponse,
+  SchedulePostRequest,
+  SchedulePostResponse,
+  ScheduledPostsResponse,
+  SocialAccountsResponse,
+  StartSocialAuthResponse,
+} from "../../../packages/shared-types";
+import { apiGet, apiPost } from "./api-client";
+
+export async function requestSocialAccounts(businessId: string): Promise<SocialAccountsResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiGet<SocialAccountsResponse>(`/social-accounts?businessId=${encodedBusinessId}`);
+}
+
+export async function requestLinkedInSocialAuthStart(input: {
+  businessId: string;
+  returnPath?: string;
+}): Promise<StartSocialAuthResponse> {
+  return apiPost<
+    {
+      businessId: string;
+      platform: "linkedin";
+      returnPath?: string;
+    },
+    StartSocialAuthResponse
+  >("/social-auth/linkedin/start", {
+    businessId: input.businessId,
+    platform: "linkedin",
+    returnPath: input.returnPath,
+  });
+}
+
+export async function requestSchedulePost(
+  input: SchedulePostRequest,
+): Promise<SchedulePostResponse> {
+  return apiPost<SchedulePostRequest, SchedulePostResponse>("/schedule-post", input);
+}
+
+export async function requestScheduledPosts(
+  businessId: string,
+): Promise<ScheduledPostsResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiGet<ScheduledPostsResponse>(`/scheduled-posts?businessId=${encodedBusinessId}`);
+}
+
+export async function requestRecommendedPostTimes(
+  businessId: string,
+  contentType: RecommendPostTimeContentType = "carousel",
+): Promise<RecommendPostTimeResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedContentType = encodeURIComponent(contentType);
+
+  return apiGet<RecommendPostTimeResponse>(
+    `/recommend-post-time?businessId=${encodedBusinessId}&contentType=${encodedContentType}`,
+  );
+}
+
+export async function requestGeneratedHashtags(
+  input: GenerateHashtagsRequest,
+): Promise<GenerateHashtagsResponse> {
+  return apiPost<GenerateHashtagsRequest, GenerateHashtagsResponse>("/generate-hashtags", input);
+}
