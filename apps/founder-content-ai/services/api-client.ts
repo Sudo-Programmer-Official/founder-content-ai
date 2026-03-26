@@ -35,11 +35,6 @@ function resolveApiBaseUrl(): string {
   return "https://api.foundercontent.ai/api";
 }
 
-function resolveFallbackApiBaseUrl(primaryApiBaseUrl: string): string | null {
-  const fallbackApiUrl = "https://founder-content-api.onrender.com/api";
-  return primaryApiBaseUrl === fallbackApiUrl ? null : fallbackApiUrl;
-}
-
 function parseJsonSafely<T>(value: string): T | null {
   try {
     return JSON.parse(value) as T;
@@ -82,7 +77,6 @@ async function requestJson<TResponse>(
   payload?: unknown,
 ): Promise<TResponse> {
   const apiBaseUrl = resolveApiBaseUrl();
-  const fallbackApiBaseUrl = resolveFallbackApiBaseUrl(apiBaseUrl);
 
   async function send(requestBaseUrl: string): Promise<TResponse> {
     const requestUrl = `${requestBaseUrl}${endpoint}`;
@@ -96,10 +90,6 @@ async function requestJson<TResponse>(
         body: method === "GET" ? undefined : JSON.stringify(payload ?? {}),
       });
     } catch (error) {
-      if (fallbackApiBaseUrl && requestBaseUrl !== fallbackApiBaseUrl) {
-        return send(fallbackApiBaseUrl);
-      }
-
       throw error;
     }
 

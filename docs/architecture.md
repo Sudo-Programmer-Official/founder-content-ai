@@ -78,10 +78,6 @@ User
 -> Render backend (`https://api.foundercontent.ai`)  
 -> OpenAI API
 
-Fallback backend:
-
-- `https://founder-content-api.onrender.com`
-
 ## Production Diagram
 
 ```text

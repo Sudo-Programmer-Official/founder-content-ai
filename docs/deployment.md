@@ -13,7 +13,6 @@ Backend:
 
 - Platform: Render
 - Domain: `https://api.foundercontent.ai`
-- Fallback domain: `https://founder-content-api.onrender.com`
 
 ## Frontend Deployment
 
@@ -34,10 +33,6 @@ Build settings:
 Environment variables:
 
 - `VITE_API_URL=https://api.foundercontent.ai/api`
-
-Fallback behavior:
-
-- if the primary API domain is unavailable, the frontend falls back to `https://founder-content-api.onrender.com/api`
 
 ## Backend Deployment
 
