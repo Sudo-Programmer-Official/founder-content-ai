@@ -8,6 +8,7 @@ import type {
 } from "../../../../../packages/shared-types/index.ts";
 import { fetchPublicUrlContent, normalizePublicUrl } from "../competitiveIntelligence/fetchUtils.ts";
 import { HttpError } from "../../utils/http.ts";
+import { listSavedContentSources, upsertSavedContentSources } from "./brandSourceMemoryService.ts";
 
 const MAX_SOURCE_TEXT_LENGTH = 3200;
 const MAX_CONTEXT_TEXT_LENGTH = 500;
@@ -109,28 +110,51 @@ function resolveSourceLabel(source: RepurposeSourceUrlInput, safeUrl: string, in
   }
 }
 
-function normalizeSourceUrls(sourceUrls: RepurposeSourceUrlInput[]): Array<{
-  url: string;
-  safeUrl: string;
-  label: string;
-}> {
-  return sourceUrls
-    .map((source, index) => {
-      const url = normalizeOptional(source.url);
+function normalizeSourceUrlsWithErrors(sourceUrls: RepurposeSourceUrlInput[]): {
+  sources: Array<{
+    url: string;
+    safeUrl: string;
+    label: string;
+  }>;
+  errors: ContentIngestionError[];
+} {
+  const sources: Array<{
+    url: string;
+    safeUrl: string;
+    label: string;
+  }> = [];
+  const errors: ContentIngestionError[] = [];
 
-      if (!url) {
-        return null;
-      }
+  sourceUrls.forEach((source, index) => {
+    const url = normalizeOptional(source.url);
 
+    if (!url) {
+      return;
+    }
+
+    try {
       const safeUrl = normalizePublicUrl(url);
-
-      return {
+      sources.push({
         url,
         safeUrl,
         label: resolveSourceLabel(source, safeUrl, index),
-      };
-    })
-    .filter((source): source is { url: string; safeUrl: string; label: string } => source !== null);
+      });
+    } catch (error) {
+      errors.push({
+        label: resolveSourceLabel(source, url, index),
+        url,
+        message:
+          error instanceof Error
+            ? error.message
+            : "Enter a valid public URL like https://example.com or example.com.",
+      });
+    }
+  });
+
+  return {
+    sources,
+    errors,
+  };
 }
 
 export function buildCombinedIngestionText(input: {
@@ -183,10 +207,16 @@ async function ingestSourceUrl(input: {
 export async function previewContentIngestion(
   input: PreviewContentIngestionRequest,
 ): Promise<PreviewContentIngestionResponse> {
-  const sources = normalizeSourceUrls(input.sourceUrls);
+  const { sources, errors: normalizationErrors } = normalizeSourceUrlsWithErrors(input.sourceUrls);
 
   if (sources.length === 0) {
-    throw new HttpError(400, "bad_request", "At least one public source URL is required.");
+    throw new HttpError(
+      400,
+      "bad_request",
+      normalizationErrors.length > 0
+        ? "Add at least one valid public page, post, or article URL."
+        : "At least one public source URL is required.",
+    );
   }
 
   const results = await Promise.allSettled(
@@ -194,7 +224,7 @@ export async function previewContentIngestion(
   );
 
   const items: ContentIngestionItem[] = [];
-  const errors: ContentIngestionError[] = [];
+  const errors: ContentIngestionError[] = [...normalizationErrors];
 
   results.forEach((result, index) => {
     if (result.status === "fulfilled") {
@@ -220,6 +250,11 @@ export async function previewContentIngestion(
     );
   }
 
+  const normalizedBusinessId = normalizeOptional(input.businessId);
+  const savedSources = normalizedBusinessId
+    ? await upsertSavedContentSources(normalizedBusinessId, items)
+    : [];
+
   return {
     items,
     errors,
@@ -230,5 +265,9 @@ export async function previewContentIngestion(
       }),
       MAX_SOURCE_TEXT_LENGTH,
     ),
+    savedSources:
+      normalizedBusinessId && savedSources.length === 0
+        ? await listSavedContentSources(normalizedBusinessId)
+        : savedSources,
   };
 }

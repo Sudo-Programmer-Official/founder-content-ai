@@ -160,6 +160,11 @@ function serializeBrandContext(brandContext: BrandPromptContext | undefined): st
   return lines.length > 0 ? lines.join("\n") : undefined;
 }
 
+function serializePlatformContext(platformContext: string | undefined): string | undefined {
+  const normalized = platformContext?.trim();
+  return normalized ? normalized : undefined;
+}
+
 function resolveRawInputText(variables: ContentVariables): string | undefined {
   return (
     variables.rawInputText ??
@@ -190,6 +195,7 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           industry: requireField(variables, "industry", "industry is required."),
           stage: requireField(variables, "stage", "stage is required."),
           brand_context: serializeBrandContext(request.brandContext),
+          platform_context: serializePlatformContext(request.platformContext),
         };
       },
       normalize: (parsed) => ({
@@ -204,6 +210,7 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
         return {
           topic: requireField(variables, "topic", "topic is required."),
           brand_context: serializeBrandContext(request.brandContext),
+          platform_context: serializePlatformContext(request.platformContext),
         };
       },
       normalize: (parsed) => ({
@@ -222,6 +229,7 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           length: variables.length || "medium",
           selected_hook: selectedHook,
           brand_context: serializeBrandContext(request.brandContext),
+          platform_context: serializePlatformContext(request.platformContext),
         };
       },
       normalize: (parsed) => ({
@@ -245,6 +253,7 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           tone: request.tone?.trim() || variables.tone || "storytelling",
           intent: resolveIntent(request.intent),
           brand_context: serializeBrandContext(request.brandContext),
+          platform_context: serializePlatformContext(request.platformContext),
         };
       },
       normalize: (parsed) => normalizeStructuredContent(parsed),

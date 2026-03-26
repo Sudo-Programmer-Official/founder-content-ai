@@ -1,4 +1,6 @@
 import type {
+  DisconnectSocialAccountRequest,
+  DisconnectSocialAccountResponse,
   GenerateHashtagsRequest,
   GenerateHashtagsResponse,
   RecommendPostTimeContentType,
@@ -32,6 +34,18 @@ export async function requestLinkedInSocialAuthStart(input: {
     platform: "linkedin",
     returnPath: input.returnPath,
   });
+}
+
+export async function requestDisconnectSocialAccount(input: {
+  accountId: string;
+  businessId: string;
+}): Promise<DisconnectSocialAccountResponse> {
+  return apiPost<DisconnectSocialAccountRequest, DisconnectSocialAccountResponse>(
+    `/social-accounts/${encodeURIComponent(input.accountId)}/disconnect`,
+    {
+      businessId: input.businessId,
+    },
+  );
 }
 
 export async function requestSchedulePost(

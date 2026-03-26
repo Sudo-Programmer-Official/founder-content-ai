@@ -27,6 +27,7 @@ import {
   requestUpdatePipelineItem,
 } from "../services/control-dashboard-service";
 import { requestIdeaGeneration } from "../services/generation-service";
+import { requestOnboardingWorkspace } from "../services/onboarding-service";
 import { appRoutes } from "../utils/routes";
 import type {
   MissionState,
@@ -60,6 +61,12 @@ const savingAssetId = ref("");
 const assetDrafts = ref<Record<string, PipelineDraftState>>({});
 const dailyIdea = ref<IdeaOption | null>(null);
 const isGeneratingDailyIdea = ref(false);
+const isCreateWorkspaceOpen = ref(false);
+const isCreatingWorkspace = ref(false);
+const newWorkspaceName = ref("");
+const newWorkspaceWebsiteUrl = ref("");
+const workspaceCreateFeedback = ref("");
+const workspaceCreateFeedbackTone = ref<"default" | "error">("default");
 const nowMs = ref(Date.now());
 let urgencyTimer: number | null = null;
 let feedbackTimer: number | null = null;
@@ -74,18 +81,6 @@ const currentBusiness = computed(() =>
 const pipelineColumns = computed(() => dashboard.value?.pipeline ?? []);
 const bestTimeSlots = computed(() => dashboard.value?.today.bestTimeSlots ?? []);
 const isPipelineEmpty = computed(() => pipelineColumns.value.every((column) => column.items.length === 0));
-const sidebarItems = [
-  { label: "Dashboard", to: appRoutes.dashboard, shortLabel: "D" },
-  { label: "Create", to: appRoutes.appGenerate, shortLabel: "C" },
-  { label: "Analytics", to: appRoutes.dashboardAnalytics, shortLabel: "A" },
-  {
-    label: "Repurpose",
-    to: `${appRoutes.linkedinPostGenerator}#repurpose-panel`,
-    shortLabel: "R",
-  },
-  { label: "Settings", to: appRoutes.settingsPreferences, shortLabel: "P" },
-] as const;
-
 const accessMatchesSelectedBusiness = computed(
   () => productAccess.value?.businessId === selectedBusinessId.value,
 );
@@ -112,16 +107,6 @@ const canUseRepurpose = computed(
     repurposeEnabled.value &&
     (postsRemaining.value === null || postsRemaining.value > 0),
 );
-const topbarLimitPills = computed(() => {
-  if (!accessLimits.value) {
-    return [];
-  }
-
-  return [
-    `Posts left ${accessLimits.value.postsRemaining}`,
-    `Emails left ${accessLimits.value.emailsRemaining}`,
-  ];
-});
 const workspaceAccessMessage = computed(() => {
   if (!selectedBusinessId.value || !accessMatchesSelectedBusiness.value) {
     return "";
@@ -141,24 +126,6 @@ const workspaceAccessMessage = computed(() => {
 
   return "";
 });
-const filteredSidebarItems = computed(() =>
-  sidebarItems.filter((item) => {
-    if (item.to === appRoutes.appGenerate) {
-      return contentGenerationEnabled.value || repurposeEnabled.value;
-    }
-
-    if (item.to === appRoutes.dashboardAnalytics) {
-      return dashboardFeatureEnabled.value;
-    }
-
-    if (item.to === `${appRoutes.linkedinPostGenerator}#repurpose-panel`) {
-      return canUseRepurpose.value;
-    }
-
-    return true;
-  }),
-);
-
 const profileInitial = computed(
   () => currentBusiness.value?.business.name.trim().charAt(0).toUpperCase() || "F",
 );
@@ -451,6 +418,69 @@ async function initializeDashboard() {
     errorMessage.value =
       error instanceof Error ? error.message : "Unable to initialize the dashboard.";
     isLoading.value = false;
+  }
+}
+
+function resetWorkspaceCreationState() {
+  isCreateWorkspaceOpen.value = false;
+  isCreatingWorkspace.value = false;
+  newWorkspaceName.value = "";
+  newWorkspaceWebsiteUrl.value = "";
+  workspaceCreateFeedback.value = "";
+  workspaceCreateFeedbackTone.value = "default";
+}
+
+function toggleWorkspaceCreation() {
+  isCreateWorkspaceOpen.value = !isCreateWorkspaceOpen.value;
+  workspaceCreateFeedback.value = "";
+  workspaceCreateFeedbackTone.value = "default";
+
+  if (!isCreateWorkspaceOpen.value) {
+    newWorkspaceName.value = "";
+    newWorkspaceWebsiteUrl.value = "";
+  }
+}
+
+async function createWorkspace() {
+  if (!newWorkspaceName.value.trim()) {
+    workspaceCreateFeedback.value = "Workspace name is required.";
+    workspaceCreateFeedbackTone.value = "error";
+    return;
+  }
+
+  isCreatingWorkspace.value = true;
+  workspaceCreateFeedback.value = "";
+  workspaceCreateFeedbackTone.value = "default";
+
+  try {
+    const response = await requestOnboardingWorkspace({
+      name: newWorkspaceName.value.trim(),
+      websiteUrl: newWorkspaceWebsiteUrl.value.trim() || undefined,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    });
+
+    const businessesResponse = await requestMyBusinesses();
+    memberships.value = businessesResponse.businesses;
+    selectedBusinessId.value = response.business.id;
+
+    const accessState = await setActiveBusinessId(selectedBusinessId.value);
+
+    if (accessState?.activeBusinessId && accessState.activeBusinessId !== selectedBusinessId.value) {
+      selectedBusinessId.value = accessState.activeBusinessId;
+    }
+
+    if (selectedBusinessId.value) {
+      await loadDashboard(selectedBusinessId.value);
+    }
+
+    resetWorkspaceCreationState();
+    ideaFeedback.value = `${response.business.name} created and ready to use.`;
+  } catch (error) {
+    workspaceCreateFeedback.value =
+      error instanceof Error ? error.message : "Unable to create the workspace.";
+    workspaceCreateFeedbackTone.value = "error";
+  } finally {
+    isCreatingWorkspace.value = false;
   }
 }
 
@@ -970,33 +1000,19 @@ onBeforeUnmount(() => {
       </section>
 
       <div v-else-if="dashboard" class="workspace-frame">
-        <aside class="dashboard-sidebar">
-          <div class="sidebar-brand">
-            <span class="sidebar-brand-mark">{{ profileInitial }}</span>
-          </div>
-
-          <ConsistencyRing
-            :percent="weeklyConsistencyPercent"
-            :streak-days="dashboard.today.streakDays"
-          />
-
-          <nav class="sidebar-nav" aria-label="Workspace navigation">
-            <router-link
-              v-for="item in filteredSidebarItems"
-              :key="item.to"
-              :to="item.to"
-              class="sidebar-item"
-            >
-              <span class="sidebar-item-icon">{{ item.shortLabel }}</span>
-              <span class="sidebar-item-label">{{ item.label }}</span>
-            </router-link>
-          </nav>
-        </aside>
-
         <div class="workspace-content">
           <header class="dashboard-topbar">
-            <label class="dashboard-field workspace-switcher">
-              <span>Workspace</span>
+            <div class="dashboard-field workspace-switcher">
+              <div class="workspace-switcher-header">
+                <span>Workspace</span>
+                <button
+                  type="button"
+                  class="dashboard-button secondary small-button"
+                  @click="toggleWorkspaceCreation"
+                >
+                  {{ isCreateWorkspaceOpen ? "Close" : "New workspace" }}
+                </button>
+              </div>
               <select v-model="selectedBusinessId">
                 <option
                   v-for="membership in memberships"
@@ -1006,7 +1022,59 @@ onBeforeUnmount(() => {
                   {{ membership.business.name }}
                 </option>
               </select>
-            </label>
+
+              <form
+                v-if="isCreateWorkspaceOpen"
+                class="workspace-creation-form"
+                @submit.prevent="createWorkspace"
+              >
+                <div class="workspace-creation-grid">
+                  <label class="dashboard-field">
+                    <span>Workspace name</span>
+                    <input
+                      v-model="newWorkspaceName"
+                      type="text"
+                      placeholder="PlanCraft AI"
+                    />
+                  </label>
+
+                  <label class="dashboard-field">
+                    <span>Website URL</span>
+                    <input
+                      v-model="newWorkspaceWebsiteUrl"
+                      type="url"
+                      placeholder="https://example.com"
+                    />
+                  </label>
+                </div>
+
+                <div class="action-row workspace-creation-actions">
+                  <button
+                    type="submit"
+                    class="dashboard-button"
+                    :disabled="isCreatingWorkspace"
+                  >
+                    {{ isCreatingWorkspace ? "Creating..." : "Create workspace" }}
+                  </button>
+                  <button
+                    type="button"
+                    class="dashboard-button secondary"
+                    :disabled="isCreatingWorkspace"
+                    @click="toggleWorkspaceCreation"
+                  >
+                    Cancel
+                  </button>
+                </div>
+
+                <p
+                  v-if="workspaceCreateFeedback"
+                  class="workspace-create-feedback"
+                  :class="{ error: workspaceCreateFeedbackTone === 'error' }"
+                >
+                  {{ workspaceCreateFeedback }}
+                </p>
+              </form>
+            </div>
 
             <QuickCreateBar
               :best-time-label="bestTimeCountdownLabel"
@@ -1023,7 +1091,13 @@ onBeforeUnmount(() => {
             />
 
             <div class="topbar-status">
-              <span v-for="pill in topbarLimitPills" :key="pill" class="topbar-pill muted">{{ pill }}</span>
+              <div class="topbar-status-card consistency-status">
+                <ConsistencyRing
+                  :percent="weeklyConsistencyPercent"
+                  :streak-days="dashboard.today.streakDays"
+                  label="weekly consistency"
+                />
+              </div>
               <span v-if="productAccess?.access?.readOnly" class="topbar-pill warning">Read-only</span>
               <span class="topbar-pill">{{ totalSuggestionCount }} strategist moves</span>
               <span class="profile-chip">{{ profileInitial }}</span>
@@ -1277,30 +1351,9 @@ onBeforeUnmount(() => {
 }
 
 .workspace-frame {
-  display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
-  gap: 24px;
-  align-items: start;
+  display: block;
 }
 
-.dashboard-sidebar {
-  position: sticky;
-  top: calc(var(--fc-header-padding-y) + 84px);
-  display: grid;
-  gap: 18px;
-  padding: 18px 8px;
-  border: 1px solid var(--fc-border);
-  border-radius: var(--fc-radius-panel);
-  background: var(--fc-panel-bg);
-  box-shadow: var(--fc-panel-shadow);
-}
-
-.sidebar-brand {
-  display: flex;
-  justify-content: center;
-}
-
-.sidebar-brand-mark,
 .profile-chip {
   display: inline-flex;
   align-items: center;
@@ -1311,79 +1364,6 @@ onBeforeUnmount(() => {
   background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
   color: var(--fc-accent-contrast);
   font-weight: 800;
-}
-
-.sidebar-nav {
-  display: grid;
-  gap: 10px;
-}
-
-.sidebar-item {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 52px;
-  border-radius: 16px;
-  color: var(--fc-text-muted);
-  text-decoration: none;
-}
-
-.sidebar-item::before {
-  content: "";
-  position: absolute;
-  left: -10px;
-  top: 10px;
-  bottom: 10px;
-  width: 3px;
-  border-radius: 999px;
-  background: transparent;
-}
-
-.sidebar-item.router-link-active {
-  color: var(--fc-text);
-  background: color-mix(in srgb, var(--fc-panel-bg) 76%, var(--fc-surface-muted));
-}
-
-.sidebar-item.router-link-active::before {
-  background: var(--fc-accent);
-}
-
-.sidebar-item-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
-  background: var(--fc-surface-muted);
-  font-weight: 700;
-}
-
-.sidebar-item-label {
-  position: absolute;
-  left: calc(100% + 10px);
-  top: 50%;
-  transform: translateY(-50%) translateX(-6px);
-  padding: 8px 10px;
-  border: 1px solid var(--fc-border);
-  border-radius: 12px;
-  background: var(--fc-panel-bg);
-  box-shadow: var(--fc-panel-shadow);
-  color: var(--fc-text);
-  font-size: 0.86rem;
-  white-space: nowrap;
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 120ms ease,
-    transform 120ms ease;
-}
-
-.sidebar-item:hover .sidebar-item-label,
-.sidebar-item.router-link-active .sidebar-item-label {
-  opacity: 1;
-  transform: translateY(-50%) translateX(0);
 }
 
 .workspace-content {
@@ -1423,9 +1403,43 @@ onBeforeUnmount(() => {
   align-self: start;
 }
 
+.workspace-switcher-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .workspace-switcher select {
   width: 100%;
   max-width: none;
+}
+
+.workspace-creation-form {
+  display: grid;
+  gap: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--fc-border);
+}
+
+.workspace-creation-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.workspace-creation-actions {
+  margin-top: 0;
+}
+
+.workspace-create-feedback {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+}
+
+.workspace-create-feedback.error {
+  color: var(--fc-error-text);
 }
 
 .dashboard-topbar :deep(.quick-create-bar) {
@@ -1458,6 +1472,35 @@ onBeforeUnmount(() => {
   grid-area: status;
   justify-content: flex-start;
   align-content: start;
+}
+
+.topbar-status-card {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 82%, var(--fc-surface-muted));
+}
+
+.consistency-status :deep(.consistency-ring) {
+  grid-template-columns: 62px minmax(0, 1fr);
+  justify-items: start;
+  align-items: center;
+  gap: 12px;
+}
+
+.consistency-status :deep(.ring-graphic) {
+  width: 62px;
+  height: 62px;
+}
+
+.consistency-status :deep(.ring-copy) {
+  text-align: left;
+}
+
+.consistency-status :deep(.ring-copy strong) {
+  font-size: 1rem;
 }
 
 .dashboard-feedback-banner {
@@ -1945,13 +1988,22 @@ onBeforeUnmount(() => {
     font-size: 0.74rem;
   }
 
-  .sidebar-item:hover .sidebar-item-label,
-  .sidebar-item.router-link-active .sidebar-item-label {
+  .sidebar-item:hover .sidebar-item-label {
     transform: none;
   }
 }
 
 @media (max-width: 760px) {
+  .workspace-switcher-header,
+  .workspace-creation-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-switcher-header {
+    display: grid;
+    justify-content: stretch;
+  }
+
   .dashboard-topbar {
     grid-template-columns: 1fr;
   }

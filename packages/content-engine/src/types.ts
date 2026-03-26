@@ -36,6 +36,7 @@ export interface GenerateContentRequest<TFormat extends ContentFormat = ContentF
   channel: ContentChannel;
   tone?: string;
   brandContext?: BrandPromptContext;
+  platformContext?: string;
   intent?: ContentIntent;
   format: TFormat;
 }

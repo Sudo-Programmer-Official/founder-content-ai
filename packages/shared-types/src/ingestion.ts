@@ -26,6 +26,23 @@ export interface ContentIngestionError {
   message: string;
 }
 
+export interface SavedContentSource {
+  id: string;
+  businessId: string;
+  label: string;
+  sourceType: ContentIngestionSourceType;
+  sourceUrl: string;
+  title?: string;
+  extractedText: string;
+  lastFetchedAt: string;
+  updatedAt: string;
+  metadata?: {
+    url?: string;
+    finalUrl?: string;
+    hostname?: string;
+  };
+}
+
 export interface PreviewContentIngestionRequest {
   businessId?: string;
   contextText?: string;
@@ -36,4 +53,9 @@ export interface PreviewContentIngestionResponse {
   items: ContentIngestionItem[];
   errors: ContentIngestionError[];
   combinedText: string;
+  savedSources: SavedContentSource[];
+}
+
+export interface ListSavedContentSourcesResponse {
+  sources: SavedContentSource[];
 }

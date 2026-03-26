@@ -95,6 +95,14 @@ export interface StartSocialAuthResponse {
   authorizationUrl: string;
 }
 
+export interface DisconnectSocialAccountRequest {
+  businessId: string;
+}
+
+export interface DisconnectSocialAccountResponse {
+  disconnectedAccountId: string;
+}
+
 export interface SocialAccountsQuery {
   businessId: string;
 }

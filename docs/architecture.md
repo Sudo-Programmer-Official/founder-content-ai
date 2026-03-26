@@ -95,6 +95,26 @@ api.foundercontent.ai
 OpenAI API
 ```
 
+## Workspace And Brand Model
+
+FounderContent AI uses workspace isolation as a core product rule.
+
+- `1 workspace = 1 brand`
+- `1 user = many workspaces`
+- `workspace owns channels, brand memory, content, analytics, and billing context`
+
+In the current schema, the tenant key is stored as `businesses` / `business_id`, but product-wise that entity is the workspace. That workspace is the brand container.
+
+This means:
+
+- do not mix multiple brands inside one workspace
+- do not attach channels to the user instead of the workspace
+- do not treat auth email as brand identity
+
+Canonical reference:
+
+- `docs/workspace-brand-model.md`
+
 ## App Responsibilities
 
 ### `apps/founder-content-ai`
@@ -192,6 +212,11 @@ The initial multi-tenant foundation now plans for:
 - `POST /api/businesses`
 
 These routes establish the app-level session and first-business creation flow on the Firebase Auth plus Postgres runtime.
+
+Terminology rule:
+
+- database `business` = product `workspace`
+- product `workspace` = one brand
 
 ## Competitive Intelligence Scaffold Endpoints
 

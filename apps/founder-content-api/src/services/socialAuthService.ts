@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { QueryResultRow } from "pg";
 import type {
+  DisconnectSocialAccountResponse,
   SocialAccount,
   SocialAccountsResponse,
   SocialPlatform,
@@ -181,6 +182,20 @@ function mapSocialAccount(row: SocialAccountRow): SocialAccount {
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
+}
+
+function resolveLinkedInAccountLabel(account: SocialAccountRow): string | undefined {
+  const linkedInName = account.metadata_json?.linkedInName;
+
+  if (typeof linkedInName === "string" && linkedInName.trim() !== "") {
+    return linkedInName.trim();
+  }
+
+  if (account.account_email && account.account_email.trim() !== "") {
+    return account.account_email.trim();
+  }
+
+  return undefined;
 }
 
 function resolveStateSecret(): string {
@@ -512,6 +527,36 @@ async function loadSocialAccountsByBusiness(
   return result.rows;
 }
 
+async function loadSocialAccountById(accountId: string): Promise<SocialAccountRow | null> {
+  const result = await queryDb<SocialAccountRow>(
+    `
+      select
+        id,
+        business_id,
+        user_id,
+        platform,
+        platform_user_id,
+        platform_user_urn,
+        account_email,
+        access_token,
+        refresh_token,
+        token_expires_at,
+        refresh_token_expires_at,
+        scope,
+        status,
+        metadata_json,
+        created_at,
+        updated_at
+      from social_accounts
+      where id = $1
+      limit 1
+    `,
+    [accountId],
+  );
+
+  return result.rows[0] ?? null;
+}
+
 async function loadLinkedInAccountByBusiness(businessId: string): Promise<SocialAccountRow | null> {
   const rows = await loadSocialAccountsByBusiness(businessId, "linkedin");
   return rows[0] ?? null;
@@ -559,15 +604,25 @@ export async function handleLinkedInOAuthCallback(input: {
   error?: string;
   errorDescription?: string;
 }): Promise<string> {
+  let state: SocialAuthStatePayload | undefined;
+
+  if (input.state) {
+    try {
+      state = decodeState(input.state);
+    } catch {
+      state = undefined;
+    }
+  }
+
   const fallbackRedirectUrl = buildRedirectUrl(
-    "/linkedin-post-generator",
+    state?.returnPath ?? "/linkedin-post-generator",
     "error",
     "connect_failed",
   );
 
   if (input.error) {
     return buildRedirectUrl(
-      "/linkedin-post-generator",
+      state?.returnPath ?? "/linkedin-post-generator",
       "error",
       input.errorDescription ?? input.error,
     );
@@ -578,7 +633,7 @@ export async function handleLinkedInOAuthCallback(input: {
   }
 
   try {
-    const state = decodeState(input.state);
+    state = state ?? decodeState(input.state);
     const tokenPayload = await exchangeAuthorizationCode(input.code);
     const accessToken = tokenPayload.access_token;
 
@@ -642,7 +697,7 @@ export async function handleLinkedInOAuthCallback(input: {
     logWarn("LinkedIn OAuth callback failed.", {
       message: error instanceof Error ? error.message : "Unknown error",
     });
-    return buildRedirectUrl("/linkedin-post-generator", "error", "connect_failed");
+    return buildRedirectUrl(state?.returnPath ?? "/linkedin-post-generator", "error", "connect_failed");
   }
 }
 
@@ -656,6 +711,80 @@ export async function listSocialAccounts(
 
   return {
     accounts: accounts.map(mapSocialAccount),
+  };
+}
+
+export async function getLinkedInGenerationContextForBusiness(
+  businessId: string | undefined,
+): Promise<string | undefined> {
+  const normalizedBusinessId = businessId?.trim();
+
+  if (!normalizedBusinessId) {
+    return undefined;
+  }
+
+  const linkedInAccounts = await loadSocialAccountsByBusiness(normalizedBusinessId, "linkedin");
+  const connectedAccount =
+    linkedInAccounts.find((account) => account.status === "connected") ?? null;
+
+  if (!connectedAccount) {
+    return undefined;
+  }
+
+  const accountLabel = resolveLinkedInAccountLabel(connectedAccount);
+  const hasPublishingScope = (connectedAccount.scope ?? []).includes("w_member_social");
+
+  return [
+    accountLabel
+      ? `LinkedIn channel is connected for this workspace via ${accountLabel}.`
+      : "LinkedIn channel is connected for this workspace.",
+    "Optimize for direct LinkedIn publishing, not a generic cross-platform post.",
+    "Lead with a strong first line, use short paragraphs, leave breathing room between ideas, and close with one clear founder-relevant takeaway or CTA.",
+    "Avoid markdown-style headings, hashtag stuffing, or formatting that looks copied from another platform.",
+    hasPublishingScope ? "Keep the final post clean enough to publish as-is." : undefined,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+export async function disconnectSocialAccount(
+  principal: AuthenticatedPrincipal,
+  input: {
+    businessId: string;
+    accountId: string;
+  },
+): Promise<DisconnectSocialAccountResponse> {
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId: input.businessId,
+    featureKey: "scheduler",
+  });
+  await requireBusinessMembership(principal, input.businessId);
+
+  const account = await loadSocialAccountById(input.accountId);
+
+  if (!account || account.business_id !== input.businessId) {
+    throw new HttpError(404, "social_account_not_found", "Social account was not found.");
+  }
+
+  await queryDb(
+    `
+      delete from social_accounts
+      where id = $1
+        and business_id = $2
+    `,
+    [input.accountId, input.businessId],
+  );
+
+  logInfo("Disconnected social account.", {
+    businessId: input.businessId,
+    userId: principal.userId,
+    accountId: input.accountId,
+    platform: account.platform,
+  });
+
+  return {
+    disconnectedAccountId: input.accountId,
   };
 }
 

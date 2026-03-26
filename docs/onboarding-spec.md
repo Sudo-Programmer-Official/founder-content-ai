@@ -62,6 +62,15 @@ Fields:
 
 This creates product ownership early and gives the platform a tenant context.
 
+Important rule:
+
+- the workspace being created is one brand container
+- it is not a multi-brand organization shell
+
+For founders, this usually maps to one product or company.
+
+For agencies, each client should get a separate workspace.
+
 ### 3. First content generation
 
 This is the activation moment.
@@ -118,6 +127,8 @@ Tables introduced in this phase:
 - preferred tone
 - target channels
 - goals
+
+This means brand context is isolated per workspace from the first onboarding session onward.
 
 ## Event Tracking
 

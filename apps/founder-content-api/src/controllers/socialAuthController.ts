@@ -1,5 +1,7 @@
 import type {
   ApiError,
+  DisconnectSocialAccountRequest,
+  DisconnectSocialAccountResponse,
   SocialAccountsQuery,
   SocialAccountsResponse,
   StartSocialAuthRequest,
@@ -8,6 +10,7 @@ import type {
 import type { Request, Response } from "express";
 import {
   createLinkedInAuthorizationUrl,
+  disconnectSocialAccount,
   handleLinkedInOAuthCallback,
   listSocialAccounts,
 } from "../services/socialAuthService.ts";
@@ -97,6 +100,44 @@ export async function getSocialAccounts(
       code: "social_accounts_lookup_failed",
       message: "Unable to load social account status.",
       logMessage: "Failed to load social account status.",
+    });
+  }
+}
+
+export async function disconnectSocialAccountController(
+  request: Request<
+    { accountId: string },
+    DisconnectSocialAccountResponse | ApiError,
+    Partial<DisconnectSocialAccountRequest>
+  >,
+  response: Response<DisconnectSocialAccountResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const accountId = request.params.accountId?.trim();
+
+  if (!businessId || !accountId) {
+    sendApiError(response, 400, "bad_request", "businessId and accountId are required.");
+    return;
+  }
+
+  try {
+    response.json(
+      await disconnectSocialAccount(request.auth, {
+        businessId,
+        accountId,
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "social_account_disconnect_failed",
+      message: "Unable to disconnect the social account.",
+      logMessage: "Failed to disconnect social account.",
     });
   }
 }

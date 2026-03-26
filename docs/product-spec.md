@@ -71,6 +71,32 @@ These users usually:
 
 These audiences are supported by the product capability, but they should not displace founders as the primary positioning.
 
+## Workspace Model
+
+FounderContent AI is multi-workspace, not multi-brand-per-workspace.
+
+Product rule:
+
+- one workspace represents one brand or product identity
+- one user can belong to multiple workspaces
+- each workspace owns its own channels, content memory, analytics, and usage context
+
+This is especially important for:
+
+- founders with multiple products
+- operators managing multiple brands
+- agencies managing multiple clients
+
+Agencies should use:
+
+- one workspace per client
+
+Not:
+
+- one workspace containing many client brands
+
+This keeps brand voice, source memory, and publishing context isolated.
+
 ## Problem Statement
 
 Founders and business content creators often know they should publish content, but they struggle with three specific problems:
@@ -172,6 +198,10 @@ The following are out of scope for the MVP:
 - team collaboration
 - multi-channel publishing
 - workflow automation
+
+Additional scope guardrail:
+
+- do not support multiple brands inside one workspace
 
 These ideas belong to the future Founder Personal Branding OS roadmap, not the first release.
 

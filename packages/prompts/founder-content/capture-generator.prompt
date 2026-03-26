@@ -6,6 +6,7 @@ INPUT VARIABLES
 - tone
 - intent
 - brand_context (optional)
+- platform_context (optional)
 
 OUTPUT FORMAT
 Return JSON with this shape:
@@ -31,3 +32,4 @@ CONSTRAINTS
 - Respect the requested tone if present.
 - If the input is incomplete, make reasonable framing assumptions without inventing precise facts.
 - If brand_context is provided, align the output to that brand tone, topic focus, and recurring patterns.
+- If platform_context is provided, optimize the final post for direct LinkedIn publishing with strong first-line readability, short paragraphs, and clean founder-style structure.

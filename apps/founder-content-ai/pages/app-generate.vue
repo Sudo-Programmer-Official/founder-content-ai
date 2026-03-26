@@ -1,14 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { ContentIngestionItem, RepurposeSourceUrlInput } from "../../../packages/shared-types";
+import type {
+  ContentIngestionItem,
+  RepurposeSourceUrlInput,
+  SavedContentSource,
+  SocialAccount,
+} from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import VoiceRecorder from "../components/VoiceRecorder.vue";
-import { requestContentIngestionPreview, requestRepurposeContent } from "../services/generation-service";
+import {
+  requestContentIngestionPreview,
+  requestRepurposeContent,
+  requestSavedContentSources,
+} from "../services/generation-service";
 import {
   getActivationDraft,
   saveActivationDraft,
 } from "../services/activation-flow-service";
+import { requestSocialAccounts } from "../services/publishing-service";
 import { appRoutes } from "../utils/routes";
 
 const exampleIdeas = [
@@ -45,6 +55,10 @@ const ingestionErrors = ref<string[]>([]);
 const feedPreviewText = ref("");
 const isPreviewingFeed = ref(false);
 const isFeedPreviewDirty = ref(true);
+const savedSources = ref<SavedContentSource[]>([]);
+const isLoadingSavedSources = ref(false);
+const socialAccounts = ref<SocialAccount[]>([]);
+const isLoadingSocialAccounts = ref(false);
 
 const pageTitle = computed(() =>
   improvementSourceId.value ? "Improve the post you already have" : "Turn your idea into a post",
@@ -65,6 +79,64 @@ const sourceInputPlaceholder = computed(() =>
 );
 const hasFeedSources = computed(() => buildFeedSourceUrls().length > 0);
 const isFeedPreviewReady = computed(() => feedPreviewText.value.trim() !== "" && !isFeedPreviewDirty.value);
+const hasSavedSources = computed(() => savedSources.value.length > 0);
+const connectedLinkedInAccount = computed(() =>
+  socialAccounts.value.find((account) => account.platform === "linkedin" && account.status === "connected"),
+);
+const linkedInOptimizationLabel = computed(() => {
+  const connectedAccount = connectedLinkedInAccount.value;
+  const linkedInName = connectedAccount?.metadata?.linkedInName;
+
+  if (typeof linkedInName === "string" && linkedInName.trim() !== "") {
+    return linkedInName.trim();
+  }
+
+  if (connectedAccount?.accountEmail) {
+    return connectedAccount.accountEmail;
+  }
+
+  return "this workspace";
+});
+
+async function loadSavedSources(): Promise<void> {
+  const businessId = bootstrap.value?.activeBusinessId;
+
+  if (!businessId) {
+    savedSources.value = [];
+    return;
+  }
+
+  isLoadingSavedSources.value = true;
+
+  try {
+    const response = await requestSavedContentSources(businessId);
+    savedSources.value = response.sources;
+  } catch {
+    savedSources.value = [];
+  } finally {
+    isLoadingSavedSources.value = false;
+  }
+}
+
+async function loadSocialAccounts(): Promise<void> {
+  const businessId = bootstrap.value?.activeBusinessId;
+
+  if (!businessId) {
+    socialAccounts.value = [];
+    return;
+  }
+
+  isLoadingSocialAccounts.value = true;
+
+  try {
+    const response = await requestSocialAccounts(businessId);
+    socialAccounts.value = response.accounts;
+  } catch {
+    socialAccounts.value = [];
+  } finally {
+    isLoadingSocialAccounts.value = false;
+  }
+}
 
 async function hydrateImprovementState(): Promise<void> {
   const improveId = typeof route.query.improve === "string" ? route.query.improve : "";
@@ -125,6 +197,7 @@ async function previewFeedSources(): Promise<void> {
     ingestedSourceItems.value = response.items;
     ingestionErrors.value = response.errors.map((error) => `${error.label}: ${error.message}`);
     feedPreviewText.value = response.combinedText;
+    savedSources.value = response.savedSources;
     isFeedPreviewDirty.value = false;
   } catch (error) {
     errorMessage.value =
@@ -230,6 +303,15 @@ watch([sourceMode, input, linkedinSourceUrl, instagramSourceUrl, facebookSourceU
   }
 });
 
+watch(
+  () => bootstrap.value?.activeBusinessId,
+  () => {
+    void loadSavedSources();
+    void loadSocialAccounts();
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   window.addEventListener("keydown", handleKeydown);
 });
@@ -249,6 +331,42 @@ onBeforeUnmount(() => {
         <span class="activation-chip">Value in one step</span>
         <span class="activation-chip">Hooks + post + next actions</span>
         <span class="activation-chip">Cmd/Ctrl + Enter to generate</span>
+      </div>
+      <div class="channel-context-panel" :class="{ connected: Boolean(connectedLinkedInAccount) }">
+        <div class="channel-context-copy">
+          <p class="panel-meta">Distribution context</p>
+          <h2>
+            {{
+              connectedLinkedInAccount
+                ? "Posting optimized for LinkedIn"
+                : "Connect LinkedIn to optimize for publishing"
+            }}
+          </h2>
+          <p class="activation-helper">
+            {{
+              connectedLinkedInAccount
+                ? `This workspace will shape output for direct LinkedIn publishing through ${linkedInOptimizationLabel}.`
+                : "Generation still works without a channel, but connected workspaces get formatting tuned for direct LinkedIn publishing."
+            }}
+          </p>
+        </div>
+        <div class="channel-context-actions">
+          <span
+            v-if="connectedLinkedInAccount"
+            class="activation-chip channel-context-chip"
+          >
+            Connected: LinkedIn
+          </span>
+          <span
+            v-else-if="isLoadingSocialAccounts"
+            class="activation-chip channel-context-chip"
+          >
+            Checking channels...
+          </span>
+          <router-link class="secondary-action inline-link" :to="appRoutes.settingsPreferences">
+            {{ connectedLinkedInAccount ? "Manage channels" : "Connect in settings" }}
+          </router-link>
+        </div>
       </div>
     </section>
 
@@ -289,6 +407,37 @@ onBeforeUnmount(() => {
         >
           Use existing content
         </button>
+      </div>
+
+      <div
+        v-if="!improvementSourceId && (hasSavedSources || isLoadingSavedSources)"
+        class="saved-sources-panel"
+      >
+        <div class="saved-sources-header">
+          <div>
+            <p class="panel-meta">Saved sources</p>
+            <h3>Brand memory follows this workspace</h3>
+          </div>
+          <span v-if="isLoadingSavedSources" class="activation-chip">Loading sources...</span>
+        </div>
+
+        <div v-if="hasSavedSources" class="saved-source-list">
+          <span
+            v-for="source in savedSources"
+            :key="source.id"
+            class="saved-source-chip"
+          >
+            {{ source.title || source.label }}
+          </span>
+        </div>
+
+        <p class="activation-helper">
+          {{
+            sourceMode === "fresh"
+              ? "Fresh generation automatically blends these saved sources with your idea."
+              : "Feed mode uses the previewed source text. Saved sources stay attached to the workspace."
+          }}
+        </p>
       </div>
 
       <textarea
@@ -474,6 +623,50 @@ onBeforeUnmount(() => {
   margin-top: 22px;
 }
 
+.channel-context-panel {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--fc-border);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--fc-surface-subtle) 84%, var(--fc-surface));
+}
+
+.channel-context-panel.connected {
+  border-color: color-mix(in srgb, var(--fc-accent) 32%, var(--fc-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--fc-surface) 92%, var(--fc-accent) 8%) 0%,
+    color-mix(in srgb, var(--fc-surface-subtle) 88%, var(--fc-accent) 12%) 100%
+  );
+}
+
+.channel-context-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.channel-context-copy h2 {
+  margin: 0;
+  font-size: clamp(1.1rem, 2.2vw, 1.45rem);
+  line-height: 1.1;
+}
+
+.channel-context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.channel-context-chip {
+  background: var(--fc-surface);
+}
+
 .activation-chip,
 .example-chip,
 .tone-chip {
@@ -541,6 +734,47 @@ onBeforeUnmount(() => {
 
 .source-mode-row {
   margin-top: 18px;
+}
+
+.saved-sources-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--fc-surface-subtle) 82%, var(--fc-surface));
+}
+
+.saved-sources-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.saved-sources-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.saved-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.saved-source-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: var(--fc-surface);
+  color: var(--fc-text);
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .feed-ingest-panel {
@@ -676,9 +910,24 @@ onBeforeUnmount(() => {
   color: var(--fc-text);
 }
 
+.inline-link {
+  text-decoration: none;
+}
+
 @media (max-width: 720px) {
+  .channel-context-panel,
   .activation-helper-row {
     flex-direction: column;
+  }
+
+  .channel-context-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .saved-sources-header {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .source-grid {

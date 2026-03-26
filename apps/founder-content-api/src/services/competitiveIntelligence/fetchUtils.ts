@@ -90,14 +90,38 @@ function isPrivateIpv4(hostname: string): boolean {
     || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname);
 }
 
-export function normalizePublicUrl(value: string): string {
+function coercePublicUrlCandidate(value: string): string {
   const normalized = value.trim();
+
+  if (!normalized) {
+    return normalized;
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized) || /^[a-z][a-z0-9+.-]*:/i.test(normalized)) {
+    return normalized;
+  }
+
+  if (normalized.startsWith("//")) {
+    return `https:${normalized}`;
+  }
+
+  return `https://${normalized}`;
+}
+
+export function normalizePublicUrl(value: string): string {
+  const normalized = coercePublicUrlCandidate(value);
 
   if (!normalized) {
     throw new Error("A public URL is required.");
   }
 
-  const url = new URL(normalized);
+  let url: URL;
+
+  try {
+    url = new URL(normalized);
+  } catch {
+    throw new Error("Enter a valid public URL like https://example.com or example.com.");
+  }
 
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("Only public http(s) URLs are allowed.");

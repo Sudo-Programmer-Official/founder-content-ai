@@ -68,6 +68,7 @@ Use the canonical docs in `../../docs/` as the source of truth:
 
 - `../../docs/product-spec.md`
 - `../../docs/architecture.md`
+- `../../docs/workspace-brand-model.md`
 - `../../docs/seo-strategy.md`
 - `../../docs/feature-spec.md`
 - `../../docs/roadmap.md`

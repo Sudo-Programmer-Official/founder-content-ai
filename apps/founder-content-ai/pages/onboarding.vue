@@ -11,6 +11,7 @@ import type {
   OnboardingStatusResponse,
   OnboardingUseCase,
   RepurposeSourceUrlInput,
+  SavedContentSource,
   StructuredContentResponse,
 } from "../../../packages/shared-types";
 import { trackAnalyticsEvent } from "../services/admin-analytics-service";
@@ -18,6 +19,7 @@ import {
   requestCaptureContent,
   requestContentIngestionPreview,
   requestRemixContent,
+  requestSavedContentSources,
 } from "../services/generation-service";
 import {
   requestOnboardingComplete,
@@ -121,6 +123,8 @@ const ingestionErrors = ref<string[]>([]);
 const feedPreviewText = ref("");
 const isPreviewingFeed = ref(false);
 const isFeedPreviewDirty = ref(true);
+const savedSources = ref<SavedContentSource[]>([]);
+const isLoadingSavedSources = ref(false);
 
 const selectedConnectedChannel = ref<OnboardingChannel | "skip">("skip");
 const selectedScheduleMode = ref<"skip" | "today" | "tomorrow" | "custom">("skip");
@@ -171,6 +175,7 @@ const freshInputPlaceholder = computed(() =>
     : "Nobody talks about how lonely building a startup can feel.",
 );
 const isFeedPreviewReady = computed(() => feedPreviewText.value.trim() !== "" && !isFeedPreviewDirty.value);
+const hasSavedSources = computed(() => savedSources.value.length > 0);
 
 function uniqueChannels(values: OnboardingChannel[]): OnboardingChannel[] {
   return [...new Set(values)];
@@ -240,6 +245,24 @@ function resetFeedPreview(): void {
   isFeedPreviewDirty.value = generationInputMode.value === "feed";
 }
 
+async function loadSavedSources(): Promise<void> {
+  if (!businessId.value) {
+    savedSources.value = [];
+    return;
+  }
+
+  isLoadingSavedSources.value = true;
+
+  try {
+    const response = await requestSavedContentSources(businessId.value);
+    savedSources.value = response.sources;
+  } catch {
+    savedSources.value = [];
+  } finally {
+    isLoadingSavedSources.value = false;
+  }
+}
+
 async function previewFeedSources() {
   if (!businessId.value) {
     errorMessage.value = "Create a workspace before previewing sources.";
@@ -265,6 +288,7 @@ async function previewFeedSources() {
     ingestedSourceItems.value = response.items;
     ingestionErrors.value = response.errors.map((error) => `${error.label}: ${error.message}`);
     feedPreviewText.value = response.combinedText;
+    savedSources.value = response.savedSources;
     isFeedPreviewDirty.value = false;
     actionMessage.value = "Source preview ready. Review it before generating.";
   } catch (error) {
@@ -456,6 +480,14 @@ watch(
       actionMessage.value = "";
     }
   },
+);
+
+watch(
+  businessId,
+  () => {
+    void loadSavedSources();
+  },
+  { immediate: true },
 );
 
 async function remixContent() {
@@ -757,6 +789,37 @@ onBeforeUnmount(() => {
                 </button>
               </div>
             </fieldset>
+
+            <div
+              v-if="hasSavedSources || isLoadingSavedSources"
+              class="saved-sources-panel"
+            >
+              <div class="saved-sources-header">
+                <div>
+                  <p class="panel-label">Saved sources</p>
+                  <h3>Brand memory for this workspace</h3>
+                </div>
+                <span v-if="isLoadingSavedSources" class="helper-copy">Loading sources...</span>
+              </div>
+
+              <div v-if="hasSavedSources" class="saved-source-list">
+                <span
+                  v-for="source in savedSources"
+                  :key="source.id"
+                  class="saved-source-chip"
+                >
+                  {{ source.title || source.label }}
+                </span>
+              </div>
+
+              <p class="helper-copy">
+                {{
+                  generationInputMode === "fresh"
+                    ? "Fresh generation automatically blends these saved sources with your first idea."
+                    : "Feed previews will save reusable brand sources to this workspace."
+                }}
+              </p>
+            </div>
 
             <label>
               <span>{{ freshInputLabel }}</span>
@@ -1296,6 +1359,46 @@ textarea {
   line-height: 1.6;
 }
 
+.saved-sources-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(112, 84, 62, 0.14);
+  background: #f9f2eb;
+}
+
+.saved-sources-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.saved-sources-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.saved-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.saved-source-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(112, 84, 62, 0.14);
+  border-radius: 999px;
+  background: #fff9f4;
+  color: #1f1814;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
 .source-grid {
   display: grid;
   gap: 14px;
@@ -1401,6 +1504,11 @@ button:disabled {
 
   .workspace-grid {
     grid-template-columns: 1fr;
+  }
+
+  .saved-sources-header {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .source-grid {

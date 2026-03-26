@@ -25,6 +25,16 @@ function updateDraft(patch: Partial<PipelineDraftState>) {
 
 const activeScore = computed(() => (props.model.isEditing ? props.model.draftScore : props.model.score));
 const previewImpactDelta = computed(() => Math.max(0, props.model.draftScore.viralScore - props.model.score.viralScore));
+const titlePreview = computed(() => props.model.asset.title?.trim() || "Untitled draft");
+const excerptPreview = computed(() => {
+  const rawText = props.model.asset.textContent?.replace(/\s+/g, " ").trim();
+
+  if (!rawText) {
+    return "No editable content preview available yet.";
+  }
+
+  return rawText.length > 220 ? `${rawText.slice(0, 217).trimEnd()}...` : rawText;
+});
 </script>
 
 <template>
@@ -38,7 +48,7 @@ const previewImpactDelta = computed(() => Math.max(0, props.model.draftScore.vir
             High viral potential
           </span>
         </div>
-        <strong>{{ model.asset.title || "Untitled draft" }}</strong>
+        <strong class="pipeline-title">{{ titlePreview }}</strong>
         <p class="pipeline-meta">
           {{ model.asset.sourceKind ?? "generated" }} ·
           {{ new Date(model.asset.updatedAt ?? model.asset.createdAt).toLocaleString() }}
@@ -55,7 +65,7 @@ const previewImpactDelta = computed(() => Math.max(0, props.model.draftScore.vir
     </div>
 
     <p class="pipeline-excerpt">
-      {{ model.asset.textContent || "No editable content preview available yet." }}
+      {{ excerptPreview }}
     </p>
 
     <div
@@ -219,6 +229,13 @@ const previewImpactDelta = computed(() => Math.max(0, props.model.draftScore.vir
   line-height: 1.5;
 }
 
+.pipeline-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 .pipeline-verdict,
 .impact-preview {
   display: grid;
@@ -255,7 +272,12 @@ const previewImpactDelta = computed(() => Math.max(0, props.model.draftScore.vir
   margin: 0;
   color: var(--fc-text);
   line-height: 1.6;
-  white-space: pre-wrap;
+  white-space: normal;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
 }
 
 .pipeline-score-row {

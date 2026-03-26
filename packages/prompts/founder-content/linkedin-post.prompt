@@ -7,6 +7,7 @@ INPUT VARIABLES
 - length
 - selected_hook (optional)
 - brand_context (optional)
+- platform_context (optional)
 
 OUTPUT FORMAT
 Return JSON with this shape:
@@ -34,3 +35,4 @@ CONSTRAINTS
 - Respect the requested tone and length.
 - If a selected hook is provided, use it naturally without making the post feel forced.
 - If brand_context is provided, align wording, topics, and structural patterns to it.
+- If platform_context is provided, treat it as live publishing guidance for this workspace and optimize formatting, whitespace, and CTA discipline accordingly.

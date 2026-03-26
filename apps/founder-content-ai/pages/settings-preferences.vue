@@ -1,19 +1,68 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import type {
   AiAssistLevel,
+  ProductAccessLimits,
+  SocialAccount,
   UiDensity,
   UiFontSize,
   UiLayoutMode,
   UiTheme,
   UpdateUserPreferencesRequest,
 } from "../../../packages/shared-types";
+import { useProductAccessContext } from "../access/product-access-context";
 import AiAssistPanel from "../components/AiAssistPanel.vue";
 import { useAiAssistSuggestions } from "../composables/use-ai-assist";
 import { usePreferenceContext } from "../preferences/preference-context";
+import {
+  requestDisconnectSocialAccount,
+  requestLinkedInSocialAuthStart,
+  requestSocialAccounts,
+} from "../services/publishing-service";
 import { appRoutes } from "../utils/routes";
 
+type WorkspaceChannelKey = "linkedin" | "instagram" | "reddit";
+
+interface WorkspaceChannelDefinition {
+  key: WorkspaceChannelKey;
+  label: string;
+  description: string;
+  availability: "live" | "coming_soon";
+}
+
 const { preferences, isSaving, errorMessage, updatePreferences } = usePreferenceContext();
+const { bootstrap } = useProductAccessContext();
+const route = useRoute();
+const router = useRouter();
+
+const socialAccounts = ref<SocialAccount[]>([]);
+const isLoadingChannels = ref(false);
+const isStartingChannelConnect = ref<WorkspaceChannelKey | "">("");
+const disconnectingAccountId = ref("");
+const channelFeedback = ref("");
+const channelError = ref("");
+
+const workspaceChannelDefinitions: WorkspaceChannelDefinition[] = [
+  {
+    key: "linkedin",
+    label: "LinkedIn",
+    description: "Connect the publishing account for this workspace so drafts and scheduled posts stay tied to the right brand.",
+    availability: "live",
+  },
+  {
+    key: "instagram",
+    label: "Instagram",
+    description: "Reserve a slot for the visual publishing workflow. This will land after LinkedIn stabilizes.",
+    availability: "coming_soon",
+  },
+  {
+    key: "reddit",
+    label: "Reddit",
+    description: "Prepare for community-first publishing per workspace without mixing accounts across products.",
+    availability: "coming_soon",
+  },
+];
 
 const themeModel = computed<UiTheme>({
   get: () => preferences.value.theme,
@@ -82,6 +131,161 @@ const assistSuggestions = useAiAssistSuggestions([
     ctaTo: appRoutes.dashboardAnalytics,
   },
 ]);
+
+const usageLimits = computed<ProductAccessLimits | null>(() => bootstrap.value?.limits ?? null);
+const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? null);
+const usageCards = computed(() => {
+  if (!usageLimits.value) {
+    return [];
+  }
+
+  return [
+    {
+      label: "Posts",
+      remaining: usageLimits.value.postsRemaining,
+      used: usageLimits.value.postsUsed,
+      limit: usageLimits.value.postsLimit,
+    },
+    {
+      label: "Emails",
+      remaining: usageLimits.value.emailsRemaining,
+      used: usageLimits.value.emailsUsed,
+      limit: usageLimits.value.emailsLimit,
+    },
+    {
+      label: "Outreach",
+      remaining: usageLimits.value.outreachRemaining,
+      used: usageLimits.value.outreachUsed,
+      limit: usageLimits.value.outreachLimit,
+    },
+  ];
+});
+const isReadOnly = computed(() => bootstrap.value?.access?.readOnly ?? false);
+const workspaceChannels = computed(() =>
+  workspaceChannelDefinitions.map((definition) => {
+    const linkedInAccount =
+      definition.key === "linkedin"
+        ? socialAccounts.value.find((account) => account.platform === "linkedin")
+        : undefined;
+    const linkedInName =
+      linkedInAccount &&
+      typeof linkedInAccount.metadata?.linkedInName === "string" &&
+      linkedInAccount.metadata.linkedInName.trim() !== ""
+        ? linkedInAccount.metadata.linkedInName.trim()
+        : undefined;
+
+    return {
+      ...definition,
+      account: linkedInAccount,
+      connectedLabel: linkedInName || linkedInAccount?.accountEmail || linkedInAccount?.platformUserId,
+      status:
+        definition.availability === "coming_soon"
+          ? "coming_soon"
+          : linkedInAccount?.status ?? "not_connected",
+    };
+  }),
+);
+
+async function loadWorkspaceChannels(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    socialAccounts.value = [];
+    return;
+  }
+
+  isLoadingChannels.value = true;
+  channelError.value = "";
+
+  try {
+    const response = await requestSocialAccounts(businessId);
+    socialAccounts.value = response.accounts;
+  } catch (error) {
+    channelError.value = error instanceof Error ? error.message : "Unable to load workspace channels.";
+  } finally {
+    isLoadingChannels.value = false;
+  }
+}
+
+async function handleChannelConnect(platform: WorkspaceChannelKey): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId || platform !== "linkedin") {
+    return;
+  }
+
+  isStartingChannelConnect.value = platform;
+  channelError.value = "";
+
+  try {
+    const response = await requestLinkedInSocialAuthStart({
+      businessId,
+      returnPath: appRoutes.settingsPreferences,
+    });
+    window.location.href = response.authorizationUrl;
+  } catch (error) {
+    isStartingChannelConnect.value = "";
+    channelError.value = error instanceof Error ? error.message : "Unable to start channel connection.";
+  }
+}
+
+async function handleChannelDisconnect(accountId: string): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    return;
+  }
+
+  disconnectingAccountId.value = accountId;
+  channelError.value = "";
+
+  try {
+    await requestDisconnectSocialAccount({
+      accountId,
+      businessId,
+    });
+    channelFeedback.value = "Channel disconnected from this workspace.";
+    await loadWorkspaceChannels();
+  } catch (error) {
+    channelError.value = error instanceof Error ? error.message : "Unable to disconnect the channel.";
+  } finally {
+    disconnectingAccountId.value = "";
+  }
+}
+
+watch(
+  activeBusinessId,
+  () => {
+    void loadWorkspaceChannels();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [route.query.linkedin, route.query.message],
+  async ([status, message]) => {
+    if (typeof status !== "string" && typeof message !== "string") {
+      return;
+    }
+
+    if (status === "connected") {
+      channelFeedback.value = "LinkedIn connected for this workspace.";
+      channelError.value = "";
+      await loadWorkspaceChannels();
+    } else if (status === "error") {
+      channelError.value = typeof message === "string" && message.trim() !== ""
+        ? message
+        : "LinkedIn connection failed.";
+    }
+
+    const nextQuery = { ...route.query };
+    delete nextQuery.linkedin;
+    delete nextQuery.message;
+    void router.replace({ query: nextQuery });
+    isStartingChannelConnect.value = "";
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -155,6 +359,139 @@ const assistSuggestions = useAiAssistSuggestions([
       </article>
     </section>
 
+    <section class="dashboard-panel channels-panel">
+      <div class="channels-panel-header">
+        <div>
+          <p class="panel-meta">Workspace Channels</p>
+          <h2>Connect the right distribution account for each workspace.</h2>
+        </div>
+        <span class="usage-badge">
+          {{ activeBusinessId ? "Workspace scoped" : "Select a workspace first" }}
+        </span>
+      </div>
+
+      <p class="dashboard-description">
+        Every workspace should keep its own publishing channels. Connect LinkedIn now, then layer Instagram and Reddit later without mixing brand accounts across products.
+      </p>
+
+      <p v-if="channelFeedback" class="dashboard-feedback">{{ channelFeedback }}</p>
+      <p v-if="channelError" class="dashboard-feedback error">{{ channelError }}</p>
+
+      <div class="channel-grid">
+        <article
+          v-for="channel in workspaceChannels"
+          :key="channel.key"
+          class="channel-card"
+          :data-tone="channel.availability"
+        >
+          <div class="channel-card-header">
+            <div>
+              <p class="dashboard-card-label">{{ channel.label }}</p>
+              <strong>{{ channel.availability === "live" ? "Workspace connection" : "Coming soon" }}</strong>
+            </div>
+            <span
+              class="channel-status-badge"
+              :class="{
+                connected: channel.status === 'connected',
+                warning: channel.status === 'expired' || channel.status === 'error',
+              }"
+            >
+              {{
+                channel.status === "connected"
+                  ? "Connected"
+                  : channel.status === "expired"
+                    ? "Reconnect required"
+                    : channel.status === "error"
+                      ? "Needs attention"
+                      : channel.status === "coming_soon"
+                        ? "Soon"
+                        : "Not connected"
+              }}
+            </span>
+          </div>
+
+          <p>{{ channel.description }}</p>
+
+          <div v-if="channel.account" class="channel-account-meta">
+            <span>{{ channel.connectedLabel }}</span>
+            <small>
+              {{
+                channel.account.accountEmail
+                  ? channel.account.accountEmail
+                  : `Connected ${new Date(channel.account.updatedAt).toLocaleDateString()}`
+              }}
+            </small>
+          </div>
+
+          <div class="channel-actions">
+            <button
+              v-if="channel.availability === 'live'"
+              type="button"
+              class="dashboard-button"
+              :disabled="!activeBusinessId || isStartingChannelConnect === channel.key"
+              @click="void handleChannelConnect(channel.key)"
+            >
+              {{
+                channel.status === "connected"
+                  ? isStartingChannelConnect === channel.key
+                    ? "Refreshing..."
+                    : "Reconnect"
+                  : isStartingChannelConnect === channel.key
+                    ? "Connecting..."
+                    : "Connect"
+              }}
+            </button>
+
+            <button
+              v-if="channel.account"
+              type="button"
+              class="dashboard-button secondary"
+              :disabled="disconnectingAccountId === channel.account.id"
+              @click="void handleChannelDisconnect(channel.account.id)"
+            >
+              {{ disconnectingAccountId === channel.account.id ? "Disconnecting..." : "Disconnect" }}
+            </button>
+
+            <button
+              v-if="channel.availability === 'coming_soon'"
+              type="button"
+              class="dashboard-button secondary"
+              disabled
+            >
+              Planned
+            </button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="dashboard-panel usage-panel">
+      <div class="usage-panel-header">
+        <div>
+          <p class="panel-meta">Usage & Billing</p>
+          <h2>Keep workspace limits visible without cluttering navigation.</h2>
+        </div>
+        <span v-if="isReadOnly" class="usage-badge warning">Read-only</span>
+        <span v-else class="usage-badge">Billing page next</span>
+      </div>
+
+      <p class="dashboard-description">
+        This is the clearest place to review daily credits for the active workspace. Pricing and billing controls can slot in here later without crowding the rest of the product.
+      </p>
+
+      <div v-if="usageCards.length > 0" class="usage-grid">
+        <article v-for="card in usageCards" :key="card.label" class="usage-card">
+          <p class="dashboard-card-label">{{ card.label }}</p>
+          <strong>{{ card.remaining }} left</strong>
+          <p>{{ card.used }} used of {{ card.limit }} total today</p>
+        </article>
+      </div>
+
+      <p v-else class="dashboard-feedback">
+        Usage appears once you have an active workspace with product access loaded.
+      </p>
+    </section>
+
     <section class="dashboard-panel preference-preview-panel">
       <p class="panel-meta">Live Preview</p>
       <div class="dashboard-card-grid">
@@ -187,7 +524,180 @@ const assistSuggestions = useAiAssistSuggestions([
   gap: 16px;
 }
 
+.usage-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.channels-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.channels-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.channels-panel-header h2 {
+  margin: 0;
+}
+
+.channel-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.channel-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 84%, var(--fc-surface-muted));
+}
+
+.channel-card[data-tone="coming_soon"] {
+  background: color-mix(in srgb, var(--fc-surface-subtle) 92%, var(--fc-panel-bg));
+}
+
+.channel-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.channel-card-header strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.1rem;
+}
+
+.channel-card p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
+}
+
+.channel-status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: var(--fc-surface-subtle);
+  color: var(--fc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.channel-status-badge.connected {
+  border-color: color-mix(in srgb, var(--fc-success-text) 16%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg) 82%, var(--fc-panel-bg));
+  color: var(--fc-success-text);
+}
+
+.channel-status-badge.warning {
+  border-color: var(--fc-warning-bg);
+  background: var(--fc-warning-bg);
+  color: var(--fc-warning-text);
+}
+
+.channel-account-meta {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 88%, white 12%);
+}
+
+.channel-account-meta span {
+  font-weight: 700;
+}
+
+.channel-account-meta small {
+  color: var(--fc-text-muted);
+}
+
+.channel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.usage-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.usage-panel-header h2 {
+  margin: 0;
+}
+
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.usage-card {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 84%, var(--fc-surface-muted));
+}
+
+.usage-card strong {
+  font-size: 1.9rem;
+}
+
+.usage-card p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+}
+
+.usage-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: var(--fc-surface-subtle);
+  color: var(--fc-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.usage-badge.warning {
+  border-color: var(--fc-warning-bg);
+  background: var(--fc-warning-bg);
+  color: var(--fc-warning-text);
+}
+
 .preference-preview-panel {
   margin-top: 18px;
+}
+
+@media (max-width: 920px) {
+  .channel-grid,
+  .usage-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -5,6 +5,7 @@ INPUT VARIABLES
 - industry
 - stage
 - brand_context (optional)
+- platform_context (optional)
 
 OUTPUT FORMAT
 Return JSON with this shape:
@@ -24,3 +25,4 @@ CONSTRAINTS
 - Favor practical, story-driven, and insight-driven angles.
 - Keep the ideas aligned to startup founders rather than generic business content.
 - If brand_context is provided, align the ideas to that tone, topic set, and recurring content patterns.
+- If platform_context is provided, use it to bias the ideas toward content that will perform as a direct LinkedIn publishable post, not just a generic social topic.

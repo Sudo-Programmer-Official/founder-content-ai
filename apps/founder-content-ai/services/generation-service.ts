@@ -11,18 +11,20 @@ import type {
   LinkedInPostGenerationResponse,
   PreviewContentIngestionRequest,
   PreviewContentIngestionResponse,
+  ListSavedContentSourcesResponse,
   RepurposeContentRequest,
   RepurposeContentResponse,
   RemixContentRequest,
   RemixContentResponse,
 } from "../../../packages/shared-types";
-import { apiPost } from "./api-client";
+import { apiGet, apiPost } from "./api-client";
 
 const API_ENDPOINTS = {
   capture: "/capture",
   ideas: "/generate-ideas",
   hook: "/generate-hook",
   ingestPreview: "/content/ingest-preview",
+  ingestSources: "/content/sources",
   post: "/generate-post",
   repurpose: "/repurpose",
   visual: "/generate-visual",
@@ -75,6 +77,13 @@ export async function requestContentIngestionPreview(
     API_ENDPOINTS.ingestPreview,
     input,
   );
+}
+
+export async function requestSavedContentSources(
+  businessId: string,
+): Promise<ListSavedContentSourcesResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiGet<ListSavedContentSourcesResponse>(`${API_ENDPOINTS.ingestSources}?businessId=${encodedBusinessId}`);
 }
 
 export async function requestRemixContent(
