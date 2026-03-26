@@ -7,6 +7,8 @@ import {
 } from "./auth-session-store";
 import {
   ensureFreshStoredAuthSession,
+  getFirebaseAuthErrorCode,
+  sendPasswordResetEmail,
   signInWithEmailPassword,
   signUpWithEmailPassword,
 } from "./firebase-auth-client";
@@ -89,6 +91,18 @@ export async function signupWithEmailPassword(
     appSession: await loadAppSession(),
     mode: "firebase",
   };
+}
+
+export async function requestPasswordResetEmail(email: string): Promise<void> {
+  try {
+    await sendPasswordResetEmail(email);
+  } catch (error) {
+    if (getFirebaseAuthErrorCode(error) === "EMAIL_NOT_FOUND") {
+      return;
+    }
+
+    throw error;
+  }
 }
 
 export async function ensureProtectedRouteAccess(): Promise<boolean> {

@@ -75,6 +75,9 @@ function normalizeFirebaseErrorCode(errorCode: string | undefined): string | und
     case "TOO_MANY_ATTEMPTS_TRY_LATER":
     case "too-many-requests":
       return "TOO_MANY_ATTEMPTS_TRY_LATER";
+    case "USER_DISABLED":
+    case "user-disabled":
+      return "USER_DISABLED";
     default:
       return trimmedCode;
   }
@@ -122,6 +125,8 @@ function mapFirebaseError(errorCode: string | undefined): string {
       return "Password must be at least 6 characters.";
     case "TOO_MANY_ATTEMPTS_TRY_LATER":
       return "Too many attempts. Try again later.";
+    case "USER_DISABLED":
+      return "This account has been disabled.";
     default:
       return "Authentication failed. Try again.";
   }
@@ -274,6 +279,16 @@ export async function signUpWithEmailPassword(
 
   persistAuthSession(session);
   return session;
+}
+
+export async function sendPasswordResetEmail(email: string): Promise<void> {
+  await postJson<Record<string, never>>(
+    `https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=${resolveFirebaseApiKey()}`,
+    {
+      requestType: "PASSWORD_RESET",
+      email,
+    },
+  );
 }
 
 export async function refreshStoredAuthSession(): Promise<StoredAuthSession | null> {

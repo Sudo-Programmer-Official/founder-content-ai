@@ -5,6 +5,7 @@ import { AuthContextKey } from "./auth-context";
 import {
   loginWithEmailPassword,
   logoutFrontendSession,
+  requestPasswordResetEmail,
   restoreFrontendAuthSession,
   signupWithEmailPassword,
 } from "../services/auth-service";
@@ -103,6 +104,21 @@ async function signup(input: {
   }
 }
 
+async function requestPasswordReset(email: string): Promise<void> {
+  isLoading.value = true;
+
+  try {
+    await requestPasswordResetEmail(email);
+    errorMessage.value = "";
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to send password reset email.";
+    throw error;
+  } finally {
+    isLoading.value = false;
+    isReady.value = true;
+  }
+}
+
 async function logout(): Promise<void> {
   await logoutFrontendSession();
   setAnonymousState();
@@ -121,6 +137,7 @@ provide(AuthContextKey, {
   refreshSession,
   login,
   signup,
+  requestPasswordReset,
   logout,
 });
 

@@ -21,6 +21,7 @@ export interface AuthContextValue {
     password: string;
     displayName?: string;
   }) => Promise<MeResponse | null>;
+  requestPasswordReset: (email: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 

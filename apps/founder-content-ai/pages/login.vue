@@ -12,6 +12,7 @@ const auth = useAuthContext();
 const email = ref(typeof route.query.email === "string" ? route.query.email.trim() : "");
 const password = ref("");
 const pageError = ref("");
+const resetNotice = ref("");
 
 const redirectTarget = computed(() => {
   const redirect = route.query.redirect;
@@ -22,6 +23,7 @@ const canUseStub = canUseDevelopmentStubAuth();
 
 async function handleLogin(): Promise<void> {
   pageError.value = "";
+  resetNotice.value = "";
 
   if (!email.value.trim() || !password.value) {
     pageError.value = "Enter your email and password.";
@@ -42,6 +44,25 @@ async function handleLogin(): Promise<void> {
 async function continueWithStub(): Promise<void> {
   await auth.refreshSession();
   await router.replace(redirectTarget.value);
+}
+
+async function handlePasswordReset(): Promise<void> {
+  pageError.value = "";
+  resetNotice.value = "";
+
+  if (!email.value.trim()) {
+    pageError.value = "Enter your email first and then request a reset link.";
+    return;
+  }
+
+  try {
+    await auth.requestPasswordReset(email.value.trim());
+    resetNotice.value =
+      "If an account exists for this email, we sent a password reset link.";
+  } catch (error) {
+    pageError.value =
+      error instanceof Error ? error.message : "Unable to send password reset email.";
+  }
 }
 </script>
 
@@ -75,8 +96,23 @@ async function continueWithStub(): Promise<void> {
           />
         </label>
 
+        <div class="auth-helper-row">
+          <button
+            class="auth-link-button"
+            type="button"
+            :disabled="auth.isLoading.value"
+            @click="handlePasswordReset"
+          >
+            Forgot password?
+          </button>
+        </div>
+
         <p v-if="pageError || auth.errorMessage.value" class="auth-error">
           {{ pageError || auth.errorMessage.value }}
+        </p>
+
+        <p v-if="resetNotice" class="auth-notice">
+          {{ resetNotice }}
         </p>
 
         <button class="auth-primary" type="submit" :disabled="auth.isLoading.value">
@@ -203,6 +239,34 @@ async function continueWithStub(): Promise<void> {
   color: var(--fc-danger-text, #a33f2f);
   font-size: 0.92rem;
   font-weight: 600;
+}
+
+.auth-notice {
+  margin: 0;
+  color: #2f6d52;
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.auth-helper-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.auth-link-button {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: var(--fc-text);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-link-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .auth-footer {
