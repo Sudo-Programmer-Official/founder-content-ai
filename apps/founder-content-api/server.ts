@@ -11,6 +11,7 @@ import { generateIdeasRoute } from "./src/routes/generateIdeas.ts";
 import { generatePostRoute } from "./src/routes/generatePost.ts";
 import { generateVisualRoute } from "./src/routes/generateVisual.ts";
 import { growthIntelligenceRoute } from "./src/routes/growthIntelligence.ts";
+import { ingestionRoute } from "./src/routes/ingestion.ts";
 import { meRoute } from "./src/routes/me.ts";
 import { onboardingRoute } from "./src/routes/onboarding.ts";
 import { outreachAdminRoute, outreachRoute } from "./src/routes/outreach.ts";
@@ -116,6 +117,7 @@ export function createServerApp(): Express {
   app.use(transcribeRoute);
   app.use(generateVisualRoute);
   app.use(growthIntelligenceRoute);
+  app.use(ingestionRoute);
   app.use(captureRoute);
   app.use(remixRoute);
   app.use(repurposeRoute);

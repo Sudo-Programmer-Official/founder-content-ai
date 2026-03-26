@@ -15,31 +15,14 @@ import {
   safeLogEvent,
 } from "./analytics/eventLoggingService.ts";
 import { appendCaptionFooterCredit, resolveBrandingPolicy } from "./brandingService.ts";
+import { previewContentIngestion } from "./content/ingestionService.ts";
 import { isDatabaseConfigured } from "./db/client.ts";
 import { HttpError } from "../utils/http.ts";
 import { logError } from "../utils/logger.ts";
 import { recordStyleSignal } from "./styleProfileService.ts";
 
-const USER_AGENT = "FounderContentAIRepurpose/0.1";
-
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
-}
-
-function stripHtml(input: string): string {
-  return input
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<\/(p|div|section|article|li|h1|h2|h3|h4|h5|h6)>/gi, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/&amp;/gi, "&")
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">")
-    .replace(/\n{3,}/g, "\n\n");
 }
 
 function truncateText(value: string, maxLength: number): string {
@@ -52,85 +35,27 @@ function truncateText(value: string, maxLength: number): string {
   return (lastSpaceIndex > 120 ? truncated.slice(0, lastSpaceIndex) : truncated).trim();
 }
 
-function extractTitle(html: string): string {
-  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  return normalizeWhitespace(stripHtml(titleMatch?.[1] ?? ""));
-}
-
-function extractMetaDescription(html: string): string {
-  const metaMatch = html.match(
-    /<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]+content=["']([\s\S]*?)["'][^>]*>/i,
-  );
-  return normalizeWhitespace(stripHtml(metaMatch?.[1] ?? ""));
-}
-
-function extractParagraphs(html: string): string[] {
-  const matches = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)];
-  return matches
-    .map((match) => normalizeWhitespace(stripHtml(match[1] ?? "")))
-    .filter((paragraph) => paragraph.length > 40)
-    .slice(0, 8);
-}
-
-async function extractUrlSourceText(inputUrl: string): Promise<string> {
-  let url: URL;
-
-  try {
-    url = new URL(inputUrl.trim());
-  } catch {
-    throw new HttpError(400, "bad_request", "url must be a valid http or https URL.");
-  }
-
-  if (!/^https?:$/i.test(url.protocol)) {
-    throw new HttpError(400, "bad_request", "Only public http and https URLs are supported.");
-  }
-
-  let response: Response;
-
-  try {
-    response = await fetch(url.toString(), {
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml",
-      },
-    });
-  } catch {
-    throw new HttpError(400, "source_unavailable", "Unable to fetch the source URL.");
-  }
-
-  if (!response.ok) {
-    throw new HttpError(400, "source_unavailable", `Unable to fetch the source URL (${response.status}).`);
-  }
-
-  const html = await response.text();
-  const title = extractTitle(html);
-  const description = extractMetaDescription(html);
-  const paragraphs = extractParagraphs(html);
-  const sourceText = [title, description, paragraphs.join("\n\n")]
-    .filter((segment) => segment && segment.trim() !== "")
-    .join("\n\n");
-
-  if (!sourceText.trim()) {
-    throw new HttpError(400, "source_unavailable", "Unable to extract readable text from the URL.");
-  }
-
-  return truncateText(sourceText, 3200);
-}
-
 async function resolveSourceText(input: RepurposeContentRequest): Promise<{
   sourceText: string;
   inputType: RepurposeInputType;
+  sourceCount: number;
 }> {
   if (input.inputType === "url") {
-    const url = input.url?.trim();
-
-    if (!url) {
-      throw new HttpError(400, "bad_request", "url is required when inputType is url.");
-    }
+    const ingestion = await previewContentIngestion({
+      businessId: input.businessId,
+      contextText: input.text,
+      sourceUrls:
+        input.sourceUrls && input.sourceUrls.length > 0
+          ? input.sourceUrls
+          : input.url?.trim()
+            ? [{ url: input.url.trim() }]
+            : [],
+    });
 
     return {
-      sourceText: await extractUrlSourceText(url),
+      sourceText: ingestion.combinedText,
       inputType: "url",
+      sourceCount: ingestion.items.length,
     };
   }
 
@@ -148,6 +73,7 @@ async function resolveSourceText(input: RepurposeContentRequest): Promise<{
     return {
       sourceText: truncateText(voiceTranscript, 3200),
       inputType: "voice",
+      sourceCount: 1,
     };
   }
 
@@ -160,6 +86,7 @@ async function resolveSourceText(input: RepurposeContentRequest): Promise<{
   return {
     sourceText: truncateText(text, 3200),
     inputType: "text",
+    sourceCount: 1,
   };
 }
 
@@ -210,12 +137,13 @@ function buildCarouselDraft(
 function resolveQuickSignals(
   inputType: RepurposeInputType,
   carouselDraft: CarouselDraft,
+  sourceCount = 1,
 ): RepurposeContentResponse["quickSignals"] {
   return {
     readyLabel: "Ready to post",
     formatLabel:
       inputType === "url"
-        ? `High-performing format: reference remix + ${carouselDraft.slides.length}-slide carousel`
+        ? `High-performing format: ${sourceCount > 1 ? "multi-source feed remix" : "reference remix"} + ${carouselDraft.slides.length}-slide carousel`
         : `High-performing format: insight post + ${carouselDraft.slides.length}-slide carousel`,
   };
 }
@@ -228,7 +156,7 @@ export async function repurposeContent(
   const tone = input.tone?.trim() || "storytelling";
   const intent: RepurposeIntent =
     input.intent ?? (input.inputType === "url" ? "reference" : "capture");
-  const { sourceText, inputType } = await resolveSourceText(input);
+  const { sourceText, inputType, sourceCount } = await resolveSourceText(input);
   const brandingPolicy = resolveBrandingPolicy({
     principal,
     businessId,
@@ -257,7 +185,7 @@ export async function repurposeContent(
   });
 
   const carouselDraft = buildCarouselDraft(structuredContent, variations.variations);
-  const quickSignals = resolveQuickSignals(inputType, carouselDraft);
+  const quickSignals = resolveQuickSignals(inputType, carouselDraft, sourceCount);
   const responseBase: Omit<RepurposeContentResponse, "asset"> = {
     inputType,
     intent,
@@ -276,24 +204,27 @@ export async function repurposeContent(
   await Promise.all([
     safeLogEvent(intent === "reference" ? "remix_used" : "capture_used", principal?.userId, businessId, {
       route: "/api/repurpose",
-      inputType,
-      intent,
-    }),
+        inputType,
+        intent,
+        sourceCount,
+      }),
     safeLogEvent("post_generated", principal?.userId, businessId, {
       route: "/api/repurpose",
-      inputType,
-      intent,
-    }),
+        inputType,
+        intent,
+        sourceCount,
+      }),
     safeLogContentGeneration({
       userId: principal?.userId,
       businessId,
       inputType: toGenerationInputType(inputType),
-      inputPayload: {
-        inputType,
-        intent,
-        tone,
-        sourceText,
-      },
+        inputPayload: {
+          inputType,
+          intent,
+          tone,
+          sourceText,
+          sourceCount,
+        },
       outputPayload: responseBase,
       success: true,
       latencyMs,

@@ -51,18 +51,28 @@ const emit = defineEmits<{
 .quick-create-status {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
 }
 
 .quick-create-bar {
-  justify-content: space-between;
+  display: grid;
+  gap: 14px;
+  justify-content: stretch;
+}
+
+.quick-create-actions {
+  align-items: stretch;
+}
+
+.quick-create-status {
+  justify-content: flex-start;
 }
 
 @media (max-width: 760px) {
-  .quick-create-bar {
-    flex-direction: column;
-    align-items: stretch;
+  .quick-create-actions,
+  .quick-create-status {
+    width: 100%;
   }
 }
 </style>

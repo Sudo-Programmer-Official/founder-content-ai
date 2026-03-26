@@ -20,6 +20,7 @@ export interface FrontendAuthSession {
 }
 
 const LOCAL_DEV_HOSTS = new Set(["localhost", "127.0.0.1"]);
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 12_000;
 
 function isLocalDevelopmentHost(): boolean {
   return typeof window !== "undefined" && LOCAL_DEV_HOSTS.has(window.location.hostname);
@@ -36,7 +37,19 @@ export function canUseDevelopmentStubAuth(): boolean {
 }
 
 async function loadAppSession(): Promise<MeResponse> {
-  return apiGet<MeResponse>("/me");
+  try {
+    return await apiGet<MeResponse>("/me", {
+      timeoutMs: AUTH_BOOTSTRAP_TIMEOUT_MS,
+    });
+  } catch (error) {
+    if (error instanceof Error && /timed out/i.test(error.message)) {
+      throw new Error(
+        "Signed in with Firebase, but your app session did not finish loading. Check the API/database deployment and try again.",
+      );
+    }
+
+    throw error;
+  }
 }
 
 export async function restoreFrontendAuthSession(): Promise<FrontendAuthSession | null> {

@@ -1,18 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import VoiceRecorder from "../components/VoiceRecorder.vue";
 import type {
   BrandTone,
-  CaptureContentResponse,
+  ContentIngestionItem,
   OnboardingChannel,
   OnboardingGoal,
   OnboardingProfile,
   OnboardingStatusResponse,
   OnboardingUseCase,
+  RepurposeSourceUrlInput,
+  StructuredContentResponse,
 } from "../../../packages/shared-types";
 import { trackAnalyticsEvent } from "../services/admin-analytics-service";
-import { requestCaptureContent, requestRemixContent } from "../services/generation-service";
+import {
+  requestCaptureContent,
+  requestContentIngestionPreview,
+  requestRemixContent,
+} from "../services/generation-service";
 import {
   requestOnboardingComplete,
   requestOnboardingPreferences,
@@ -25,6 +31,7 @@ import { appRoutes } from "../utils/routes";
 const router = useRouter();
 const totalSteps = 4;
 type ActiveOnboardingStep = "intent" | "workspace" | "generate" | "activate";
+type GenerationInputMode = "fresh" | "feed";
 const generationStatusMessages = [
   "Analyzing your idea...",
   "Crafting viral hooks...",
@@ -85,7 +92,7 @@ const isBooting = ref(true);
 const errorMessage = ref("");
 const actionMessage = ref("");
 const generationMessage = ref(generationStatusMessages[0]);
-const generatedContent = ref<CaptureContentResponse | null>(null);
+const generatedContent = ref<StructuredContentResponse | null>(null);
 const copyFeedback = ref("");
 const hasGeneratedDuringFlow = ref(false);
 const hasCopiedDuringFlow = ref(false);
@@ -104,6 +111,16 @@ const rawInput = ref("");
 const uploadedImageName = ref("");
 const uploadedImageDataUrl = ref("");
 const voiceTranscriptCaptured = ref(false);
+const generationInputMode = ref<GenerationInputMode>("fresh");
+const linkedinSourceUrl = ref("");
+const instagramSourceUrl = ref("");
+const facebookSourceUrl = ref("");
+const blogSourceUrl = ref("");
+const ingestedSourceItems = ref<ContentIngestionItem[]>([]);
+const ingestionErrors = ref<string[]>([]);
+const feedPreviewText = ref("");
+const isPreviewingFeed = ref(false);
+const isFeedPreviewDirty = ref(true);
 
 const selectedConnectedChannel = ref<OnboardingChannel | "skip">("skip");
 const selectedScheduleMode = ref<"skip" | "today" | "tomorrow" | "custom">("skip");
@@ -141,6 +158,19 @@ const activationChannelOptions = computed(() => {
 });
 
 const canContinueToActivate = computed(() => generatedContent.value !== null);
+const hasFeedSources = computed(
+  () =>
+    buildFeedSourceUrls().length > 0,
+);
+const freshInputLabel = computed(() =>
+  generationInputMode.value === "feed" ? "What should this post emphasize?" : "Idea, screenshot text, or topic",
+);
+const freshInputPlaceholder = computed(() =>
+  generationInputMode.value === "feed"
+    ? "Example: focus on customer trust, founder story, and practical lessons."
+    : "Nobody talks about how lonely building a startup can feel.",
+);
+const isFeedPreviewReady = computed(() => feedPreviewText.value.trim() !== "" && !isFeedPreviewDirty.value);
 
 function uniqueChannels(values: OnboardingChannel[]): OnboardingChannel[] {
   return [...new Set(values)];
@@ -183,6 +213,7 @@ function applyStatus(status: OnboardingStatusResponse) {
   workspaceName.value = status.business?.name ?? workspaceName.value;
   workspaceIndustry.value = status.brandProfile?.industry ?? workspaceIndustry.value;
   websiteUrl.value = status.business?.websiteUrl ?? websiteUrl.value;
+  blogSourceUrl.value = blogSourceUrl.value || status.business?.websiteUrl || "";
   timezone.value = status.business?.timezone ?? timezone.value;
 
   if (status.onboarding.status === "completed") {
@@ -191,6 +222,57 @@ function applyStatus(status: OnboardingStatusResponse) {
   }
 
   currentStep.value = toActiveStep(status.onboarding.currentStep);
+}
+
+function buildFeedSourceUrls(): RepurposeSourceUrlInput[] {
+  return [
+    { label: "LinkedIn page or post", url: linkedinSourceUrl.value.trim() },
+    { label: "Instagram page or post", url: instagramSourceUrl.value.trim() },
+    { label: "Facebook page or post", url: facebookSourceUrl.value.trim() },
+    { label: "Blog or website", url: blogSourceUrl.value.trim() },
+  ].filter((source) => source.url !== "");
+}
+
+function resetFeedPreview(): void {
+  feedPreviewText.value = "";
+  ingestedSourceItems.value = [];
+  ingestionErrors.value = [];
+  isFeedPreviewDirty.value = generationInputMode.value === "feed";
+}
+
+async function previewFeedSources() {
+  if (!businessId.value) {
+    errorMessage.value = "Create a workspace before previewing sources.";
+    return;
+  }
+
+  const sourceUrls = buildFeedSourceUrls();
+
+  if (sourceUrls.length === 0) {
+    errorMessage.value = "Add at least one public source URL to preview.";
+    return;
+  }
+
+  isPreviewingFeed.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestContentIngestionPreview({
+      businessId: businessId.value,
+      contextText: rawInput.value.trim() || undefined,
+      sourceUrls,
+    });
+    ingestedSourceItems.value = response.items;
+    ingestionErrors.value = response.errors.map((error) => `${error.label}: ${error.message}`);
+    feedPreviewText.value = response.combinedText;
+    isFeedPreviewDirty.value = false;
+    actionMessage.value = "Source preview ready. Review it before generating.";
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to preview content sources right now.";
+  } finally {
+    isPreviewingFeed.value = false;
+  }
 }
 
 async function initializeOnboarding() {
@@ -255,6 +337,7 @@ async function createWorkspace() {
     });
 
     onboarding.value = response.onboarding;
+    blogSourceUrl.value = blogSourceUrl.value || response.business.websiteUrl || "";
     currentStep.value = toActiveStep(response.onboarding.currentStep);
   } catch (error) {
     errorMessage.value =
@@ -304,6 +387,7 @@ async function handleImageUpload(event: Event) {
 }
 
 function handleVoiceTranscript(text: string) {
+  generationInputMode.value = "fresh";
   rawInput.value = text;
   uploadedImageName.value = "";
   uploadedImageDataUrl.value = "";
@@ -325,15 +409,35 @@ async function generateFirstContent() {
   startGenerationSequence();
 
   try {
-    generatedContent.value = await requestCaptureContent({
-      text: rawInput.value || undefined,
-      image: uploadedImageDataUrl.value || undefined,
-      source: voiceTranscriptCaptured.value ? "voice" : uploadedImageDataUrl.value ? "image" : "text",
-      tone: preferredTone.value,
-      businessId: businessId.value,
-    });
+    if (generationInputMode.value === "feed") {
+      if (!feedPreviewText.value.trim()) {
+        errorMessage.value = "Preview your content sources before generating.";
+        return;
+      }
+
+      if (isFeedPreviewDirty.value) {
+        errorMessage.value = "Your source inputs changed. Refresh the preview before generating.";
+        return;
+      }
+
+      generatedContent.value = await requestRemixContent({
+        referenceText: feedPreviewText.value.trim(),
+        tone: preferredTone.value,
+        businessId: businessId.value,
+      });
+      actionMessage.value = "Pulled your existing content into a first draft.";
+    } else {
+      generatedContent.value = await requestCaptureContent({
+        text: rawInput.value || undefined,
+        image: uploadedImageDataUrl.value || undefined,
+        source: voiceTranscriptCaptured.value ? "voice" : uploadedImageDataUrl.value ? "image" : "text",
+        tone: preferredTone.value,
+        businessId: businessId.value,
+      });
+      actionMessage.value = "Your first content set is ready.";
+    }
+
     hasGeneratedDuringFlow.value = true;
-    actionMessage.value = "Your first content set is ready.";
   } catch (error) {
     errorMessage.value =
       error instanceof Error ? error.message : "Unable to generate content right now.";
@@ -342,6 +446,17 @@ async function generateFirstContent() {
     isGenerating.value = false;
   }
 }
+
+watch(
+  [generationInputMode, rawInput, linkedinSourceUrl, instagramSourceUrl, facebookSourceUrl, blogSourceUrl],
+  () => {
+    if (generationInputMode.value === "feed") {
+      isFeedPreviewDirty.value = true;
+      generatedContent.value = null;
+      actionMessage.value = "";
+    }
+  },
+);
 
 async function remixContent() {
   if (!generatedContent.value || !businessId.value) {
@@ -621,32 +736,130 @@ onBeforeUnmount(() => {
           </div>
 
           <form class="onboarding-form" @submit.prevent="generateFirstContent">
+            <fieldset>
+              <legend>How do you want to start?</legend>
+              <div class="choice-grid">
+                <button
+                  :class="['choice-card', { selected: generationInputMode === 'fresh' }]"
+                  type="button"
+                  @click="generationInputMode = 'fresh'"
+                >
+                  <strong>Start fresh</strong>
+                  <span>Type a new idea, record a thought, or upload a screenshot.</span>
+                </button>
+                <button
+                  :class="['choice-card', { selected: generationInputMode === 'feed' }]"
+                  type="button"
+                  @click="generationInputMode = 'feed'"
+                >
+                  <strong>Use existing content</strong>
+                  <span>Pull context from your public LinkedIn, Instagram, Facebook, or blog content.</span>
+                </button>
+              </div>
+            </fieldset>
+
             <label>
-              <span>Idea, screenshot text, or topic</span>
+              <span>{{ freshInputLabel }}</span>
               <textarea
                 v-model="rawInput"
                 rows="7"
-                placeholder="Nobody talks about how lonely building a startup can feel."
+                :placeholder="freshInputPlaceholder"
               ></textarea>
             </label>
 
-            <VoiceRecorder
-              title="Or speak the idea"
-              hint="Use voice if typing slows you down. We will transcribe it and drop it into the input above."
-              @transcribed="handleVoiceTranscript"
-            />
+            <template v-if="generationInputMode === 'fresh'">
+              <VoiceRecorder
+                title="Or speak the idea"
+                hint="Use voice if typing slows you down. We will transcribe it and drop it into the input above."
+                @transcribed="handleVoiceTranscript"
+              />
 
-            <label class="upload-field">
-              <span>Optional screenshot upload</span>
-              <input type="file" accept="image/*" @change="handleImageUpload" />
-              <small v-if="uploadedImageName">{{ uploadedImageName }}</small>
-            </label>
+              <label class="upload-field">
+                <span>Optional screenshot upload</span>
+                <input type="file" accept="image/*" @change="handleImageUpload" />
+                <small v-if="uploadedImageName">{{ uploadedImageName }}</small>
+              </label>
+            </template>
+
+            <template v-else>
+              <div class="source-note">
+                Use public page, post, or article URLs. Private feeds and login-only pages will not ingest.
+              </div>
+              <div class="source-grid">
+                <label>
+                  <span>LinkedIn URL</span>
+                  <input
+                    v-model="linkedinSourceUrl"
+                    type="url"
+                    placeholder="https://www.linkedin.com/company/your-company/"
+                  />
+                </label>
+                <label>
+                  <span>Instagram URL</span>
+                  <input
+                    v-model="instagramSourceUrl"
+                    type="url"
+                    placeholder="https://www.instagram.com/yourbrand/"
+                  />
+                </label>
+                <label>
+                  <span>Facebook URL</span>
+                  <input
+                    v-model="facebookSourceUrl"
+                    type="url"
+                    placeholder="https://www.facebook.com/yourbrand/"
+                  />
+                </label>
+                <label>
+                  <span>Blog or website URL</span>
+                  <input
+                    v-model="blogSourceUrl"
+                    type="url"
+                    placeholder="https://example.com/blog/or-homepage"
+                  />
+                </label>
+              </div>
+
+              <div class="cta-inline">
+                <button
+                  class="secondary-button"
+                  type="button"
+                  :disabled="isPreviewingFeed || !hasFeedSources"
+                  @click="previewFeedSources"
+                >
+                  {{ isPreviewingFeed ? "Previewing..." : "Preview sources" }}
+                </button>
+                <span class="helper-copy">
+                  {{
+                    isFeedPreviewReady
+                      ? "Preview ready. You can edit the merged source text before generating."
+                      : "Preview first so you can inspect what we pulled from your public content."
+                  }}
+                </span>
+              </div>
+            </template>
 
             <div class="cta-inline">
-              <button class="primary-button" type="submit" :disabled="isGenerating || isRemixing">
+              <button
+                class="primary-button"
+                type="submit"
+                :disabled="
+                  isGenerating
+                  || isRemixing
+                  || (generationInputMode === 'feed' && (!isFeedPreviewReady || isPreviewingFeed))
+                "
+              >
                 {{ isGenerating ? generationMessage : "Generate content" }}
               </button>
-              <span class="helper-copy">No blank dashboard. First value comes here.</span>
+              <span class="helper-copy">
+                {{
+                  generationInputMode === "feed"
+                    ? isFeedPreviewReady
+                      ? "Generation will use the previewed source text, not refetch the URLs again."
+                      : "Add at least one source URL and preview it before generating."
+                    : "No blank dashboard. First value comes here."
+                }}
+              </span>
             </div>
           </form>
         </div>
@@ -697,6 +910,35 @@ onBeforeUnmount(() => {
             <button class="primary-button" type="button" :disabled="!canContinueToActivate" @click="continueToActivation">
               Continue to activation
             </button>
+          </template>
+
+          <template v-else-if="generationInputMode === 'feed' && (isFeedPreviewReady || ingestionErrors.length > 0)">
+            <article v-if="ingestedSourceItems.length > 0" class="output-panel">
+              <p class="panel-label">Source preview</p>
+              <h3>We found content from these sources</h3>
+              <ul class="output-list">
+                <li v-for="item in ingestedSourceItems" :key="`${item.label}-${item.metadata?.finalUrl ?? item.metadata?.url ?? item.label}`">
+                  <span>
+                    <strong>{{ item.label }}</strong>
+                    <small v-if="item.title"> · {{ item.title }}</small>
+                  </span>
+                </li>
+              </ul>
+            </article>
+
+            <article v-if="ingestedSourceItems.length > 0" class="output-panel">
+              <p class="panel-label">Editable ingest text</p>
+              <h3>Review before generation</h3>
+              <textarea v-model="feedPreviewText" rows="10"></textarea>
+            </article>
+
+            <article v-if="ingestionErrors.length > 0" class="output-panel">
+              <p class="panel-label">Skipped sources</p>
+              <h3>These URLs could not be read</h3>
+              <ul class="placeholder-panel">
+                <li v-for="message in ingestionErrors" :key="message">{{ message }}</li>
+              </ul>
+            </article>
           </template>
 
           <article v-else class="placeholder-panel">
@@ -1046,6 +1288,20 @@ textarea {
   align-items: center;
 }
 
+.source-note {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #f7efe7;
+  color: #5b4f47;
+  line-height: 1.6;
+}
+
+.source-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .generate-output {
   display: grid;
   gap: 14px;
@@ -1144,6 +1400,10 @@ button:disabled {
   }
 
   .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .source-grid {
     grid-template-columns: 1fr;
   }
 }

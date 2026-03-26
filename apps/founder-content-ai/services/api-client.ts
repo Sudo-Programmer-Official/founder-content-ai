@@ -9,6 +9,11 @@ declare global {
 }
 
 const LOCAL_DEV_HOSTS = new Set(["localhost", "127.0.0.1"]);
+
+export interface ApiRequestOptions {
+  timeoutMs?: number;
+}
+
 function normalizeApiBaseUrl(value: string): string {
   return value.trim().replace(/\/$/, "").replace(/\/health$/i, "");
 }
@@ -71,16 +76,42 @@ async function buildHeaders(hasBody: boolean): Promise<HeadersInit> {
   };
 }
 
+function createRequestTimeout(timeoutMs: number | undefined): {
+  signal?: AbortSignal;
+  cleanup: () => void;
+} {
+  if (!timeoutMs || timeoutMs <= 0 || typeof AbortController === "undefined") {
+    return {
+      signal: undefined,
+      cleanup: () => undefined,
+    };
+  }
+
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutHandle);
+    },
+  };
+}
+
 async function requestJson<TResponse>(
   method: "GET" | "POST" | "PATCH",
   endpoint: string,
   payload?: unknown,
+  options?: ApiRequestOptions,
 ): Promise<TResponse> {
   const apiBaseUrl = resolveApiBaseUrl();
 
   async function send(requestBaseUrl: string): Promise<TResponse> {
     const requestUrl = `${requestBaseUrl}${endpoint}`;
     let response: Response;
+    const timeout = createRequestTimeout(options?.timeoutMs);
 
     try {
       const headers = await buildHeaders(method !== "GET");
@@ -88,9 +119,16 @@ async function requestJson<TResponse>(
         method,
         headers,
         body: method === "GET" ? undefined : JSON.stringify(payload ?? {}),
+        signal: timeout.signal,
       });
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error("Request timed out. Check your connection and try again.");
+      }
+
       throw error;
+    } finally {
+      timeout.cleanup();
     }
 
     const responseText = await response.text();
@@ -118,20 +156,25 @@ async function requestJson<TResponse>(
   return send(apiBaseUrl);
 }
 
-export async function apiGet<TResponse>(endpoint: string): Promise<TResponse> {
-  return requestJson<TResponse>("GET", endpoint);
+export async function apiGet<TResponse>(
+  endpoint: string,
+  options?: ApiRequestOptions,
+): Promise<TResponse> {
+  return requestJson<TResponse>("GET", endpoint, undefined, options);
 }
 
 export async function apiPost<TRequest, TResponse>(
   endpoint: string,
   payload: TRequest,
+  options?: ApiRequestOptions,
 ): Promise<TResponse> {
-  return requestJson<TResponse>("POST", endpoint, payload);
+  return requestJson<TResponse>("POST", endpoint, payload, options);
 }
 
 export async function apiPatch<TRequest, TResponse>(
   endpoint: string,
   payload: TRequest,
+  options?: ApiRequestOptions,
 ): Promise<TResponse> {
-  return requestJson<TResponse>("PATCH", endpoint, payload);
+  return requestJson<TResponse>("PATCH", endpoint, payload, options);
 }

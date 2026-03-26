@@ -1272,13 +1272,14 @@ onBeforeUnmount(() => {
 <style scoped>
 .workspace-dashboard {
   display: grid;
-  gap: 18px;
+  gap: 24px;
+  max-width: 1380px;
 }
 
 .workspace-frame {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 24px;
   align-items: start;
 }
 
@@ -1286,8 +1287,8 @@ onBeforeUnmount(() => {
   position: sticky;
   top: calc(var(--fc-header-padding-y) + 84px);
   display: grid;
-  gap: 16px;
-  padding: 16px 10px;
+  gap: 18px;
+  padding: 18px 8px;
   border: 1px solid var(--fc-border);
   border-radius: var(--fc-radius-panel);
   background: var(--fc-panel-bg);
@@ -1387,13 +1388,20 @@ onBeforeUnmount(() => {
 
 .workspace-content {
   display: grid;
-  gap: 18px;
+  gap: 24px;
+}
+
+.dashboard-panel,
+.dashboard-card,
+.dashboard-topbar,
+.dashboard-intro,
+.refined-today-panel {
+  padding: 24px;
 }
 
 .dashboard-topbar,
 .dashboard-intro,
 .refined-today-panel {
-  padding: 20px;
   border: 1px solid var(--fc-border);
   border-radius: var(--fc-radius-panel);
   background: var(--fc-panel-bg);
@@ -1402,13 +1410,39 @@ onBeforeUnmount(() => {
 
 .dashboard-topbar {
   display: grid;
-  grid-template-columns: minmax(0, 280px) auto auto;
-  gap: 16px;
-  align-items: end;
+  grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.95fr);
+  grid-template-areas:
+    "create workspace"
+    "create status";
+  gap: 20px 24px;
+  align-items: start;
+}
+
+.workspace-switcher {
+  grid-area: workspace;
+  align-self: start;
 }
 
 .workspace-switcher select {
+  width: 100%;
   max-width: none;
+}
+
+.dashboard-topbar :deep(.quick-create-bar) {
+  grid-area: create;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  justify-content: stretch;
+}
+
+.dashboard-topbar :deep(.quick-create-actions),
+.dashboard-topbar :deep(.quick-create-status) {
+  gap: 12px;
+}
+
+.dashboard-topbar :deep(.quick-create-status) {
+  justify-content: flex-start;
 }
 
 .topbar-actions,
@@ -1421,7 +1455,9 @@ onBeforeUnmount(() => {
 }
 
 .topbar-status {
-  justify-content: flex-end;
+  grid-area: status;
+  justify-content: flex-start;
+  align-content: start;
 }
 
 .dashboard-feedback-banner {
@@ -1473,9 +1509,9 @@ onBeforeUnmount(() => {
 .dashboard-intro {
   display: flex;
   flex-wrap: wrap;
-  align-items: end;
+  align-items: start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 20px 24px;
 }
 
 .dashboard-intro h1 {
@@ -1487,15 +1523,45 @@ onBeforeUnmount(() => {
 
 .dashboard-main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
+  gap: 24px;
   align-items: start;
 }
 
 .dashboard-primary,
 .dashboard-rail {
   display: grid;
+  gap: 24px;
+}
+
+.today-section {
+  display: grid;
+  gap: 24px;
+}
+
+.dashboard-card-grid {
   gap: 18px;
+  margin: 0;
+}
+
+.dashboard-card {
+  display: grid;
+  gap: 8px;
+  min-height: 120px;
+  align-content: start;
+}
+
+.dashboard-card strong {
+  font-size: 1.9rem;
+}
+
+.dashboard-grid-two {
+  gap: 24px;
+  margin-bottom: 0;
+}
+
+.panel-header {
+  margin-bottom: 18px;
 }
 
 .today-panel {
@@ -1754,20 +1820,24 @@ onBeforeUnmount(() => {
 
 .rail-panel {
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
 .distribution-stack,
 .rail-list {
   display: grid;
-  gap: 12px;
+  gap: 14px;
+}
+
+.idea-list {
+  gap: 14px;
 }
 
 .distribution-option,
 .rail-feed-item {
   display: grid;
   gap: 6px;
-  padding: 14px 16px;
+  padding: 16px 18px;
   border: 1px solid var(--fc-border);
   border-radius: 16px;
   background: var(--fc-input-bg);
@@ -1800,13 +1870,19 @@ onBeforeUnmount(() => {
   padding: 0 14px;
 }
 
+@media (max-width: 1240px) {
+  .dashboard-topbar {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "workspace"
+      "create"
+      "status";
+  }
+}
+
 @media (max-width: 1280px) {
   .today-signal-grid {
     grid-template-columns: 1fr;
-  }
-
-  .pipeline-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

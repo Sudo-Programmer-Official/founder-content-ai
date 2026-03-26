@@ -4,6 +4,11 @@ import type { IdeaOption, LinkedInPostVariation } from "./founder-content.ts";
 export type RepurposeInputType = "text" | "voice" | "url";
 export type RepurposeIntent = "capture" | "reference";
 
+export interface RepurposeSourceUrlInput {
+  url: string;
+  label?: string;
+}
+
 export interface CarouselDraftSlide {
   headline: string;
   supportingText: string;
@@ -27,6 +32,7 @@ export interface RepurposeContentRequest {
   text?: string;
   voiceTranscript?: string;
   url?: string;
+  sourceUrls?: RepurposeSourceUrlInput[];
   tone?: string;
   businessId?: string;
 }

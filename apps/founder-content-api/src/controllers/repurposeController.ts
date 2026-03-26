@@ -28,6 +28,7 @@ export async function repurposeContentController(
         text: request.body?.text,
         voiceTranscript: request.body?.voiceTranscript,
         url: request.body?.url,
+        sourceUrls: request.body?.sourceUrls,
         tone: request.body?.tone,
         businessId: request.body?.businessId,
       },

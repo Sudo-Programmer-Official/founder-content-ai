@@ -9,6 +9,8 @@ import type {
   IdeaGenerationResponse,
   LinkedInPostGenerationRequest,
   LinkedInPostGenerationResponse,
+  PreviewContentIngestionRequest,
+  PreviewContentIngestionResponse,
   RepurposeContentRequest,
   RepurposeContentResponse,
   RemixContentRequest,
@@ -20,6 +22,7 @@ const API_ENDPOINTS = {
   capture: "/capture",
   ideas: "/generate-ideas",
   hook: "/generate-hook",
+  ingestPreview: "/content/ingest-preview",
   post: "/generate-post",
   repurpose: "/repurpose",
   visual: "/generate-visual",
@@ -63,6 +66,15 @@ export async function requestRepurposeContent(
   input: RepurposeContentRequest,
 ): Promise<RepurposeContentResponse> {
   return apiPost<RepurposeContentRequest, RepurposeContentResponse>(API_ENDPOINTS.repurpose, input);
+}
+
+export async function requestContentIngestionPreview(
+  input: PreviewContentIngestionRequest,
+): Promise<PreviewContentIngestionResponse> {
+  return apiPost<PreviewContentIngestionRequest, PreviewContentIngestionResponse>(
+    API_ENDPOINTS.ingestPreview,
+    input,
+  );
 }
 
 export async function requestRemixContent(

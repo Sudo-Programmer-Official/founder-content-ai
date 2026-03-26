@@ -6,6 +6,7 @@ export * from "./src/competitive-intelligence.ts";
 export * from "./src/analytics.ts";
 export * from "./src/onboarding.ts";
 export * from "./src/brand-intelligence.ts";
+export * from "./src/ingestion.ts";
 export * from "./src/visual-generation.ts";
 export * from "./src/social-publishing.ts";
 export * from "./src/ui-preferences.ts";

@@ -18,12 +18,33 @@ function resolveSslConfig(): false | { rejectUnauthorized: false } {
   return process.env.DATABASE_SSL_MODE === "disable" ? false : { rejectUnauthorized: false };
 }
 
+function resolveTimeoutMs(envName: string, fallbackMs: number): number {
+  const rawValue = process.env[envName]?.trim();
+
+  if (!rawValue) {
+    return fallbackMs;
+  }
+
+  const parsedValue = Number.parseInt(rawValue, 10);
+
+  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+    return fallbackMs;
+  }
+
+  return parsedValue;
+}
+
 function createPool(): Pool {
   const connectionString = resolveDatabaseUrl();
   const ssl = resolveSslConfig();
+  const connectionTimeoutMillis = resolveTimeoutMs("DATABASE_CONNECTION_TIMEOUT_MS", 10_000);
+  const queryTimeoutMillis = resolveTimeoutMs("DATABASE_QUERY_TIMEOUT_MS", 15_000);
   const nextPool = new Pool({
     connectionString,
     ssl,
+    connectionTimeoutMillis,
+    query_timeout: queryTimeoutMillis,
+    statement_timeout: queryTimeoutMillis,
   });
 
   nextPool.on("error", (error: Error) => {
@@ -32,6 +53,8 @@ function createPool(): Pool {
 
   logInfo("Initialized Postgres pool.", {
     sslEnabled: Boolean(ssl),
+    connectionTimeoutMillis,
+    queryTimeoutMillis,
   });
 
   return nextPool;

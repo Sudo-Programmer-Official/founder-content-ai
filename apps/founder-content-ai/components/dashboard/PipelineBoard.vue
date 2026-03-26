@@ -78,14 +78,15 @@ const emit = defineEmits<{
 <style scoped>
 .pipeline-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 18px;
+  align-items: start;
 }
 
 .pipeline-column {
   display: grid;
   gap: 12px;
-  padding: 18px;
+  padding: 20px;
   border: 1px solid var(--fc-border);
   border-radius: calc(var(--fc-radius-panel) - 2px);
   background: color-mix(in srgb, var(--fc-panel-bg) 90%, var(--fc-surface-muted));
@@ -116,12 +117,6 @@ const emit = defineEmits<{
   margin: 0;
   color: var(--fc-text-muted);
   line-height: 1.6;
-}
-
-@media (max-width: 1280px) {
-  .pipeline-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 760px) {
