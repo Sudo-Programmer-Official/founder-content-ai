@@ -25,6 +25,7 @@ const visibleAppLinks = computed(() => {
 
   return [
     { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
+    { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
     { to: appRoutes.appOutreach, label: "Outreach", shortLabel: "O", visible: canUseOutreach },
     { to: appRoutes.appEmail, label: "Email", shortLabel: "E", visible: canUseEmail },
     { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", visible: canUseDashboard },
@@ -43,6 +44,7 @@ const pageTitleMap: Record<string, string> = {
   "app-dashboard": "Dashboard",
   "app-email": "Email",
   "app-generate": "Create new post",
+  "app-growth": "Growth",
   "app-outreach": "Outreach",
   "app-result": "Generated content",
   "dashboard-analytics": "Analytics",
@@ -58,6 +60,10 @@ const currentPageTitle = computed(() => {
 const currentPageSubtitle = computed(() => {
   if (route.path.startsWith("/admin")) {
     return "Operate the workspace system without crowding the content surface.";
+  }
+
+  if (route.name === "app-growth") {
+    return "Capture leads, run the nurture flow, and see what the engine is doing.";
   }
 
   return "Keep navigation persistent, content focused, and actions obvious.";

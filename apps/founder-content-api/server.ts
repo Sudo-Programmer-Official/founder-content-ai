@@ -10,6 +10,7 @@ import { generateHookRoute } from "./src/routes/generateHook.ts";
 import { generateIdeasRoute } from "./src/routes/generateIdeas.ts";
 import { generatePostRoute } from "./src/routes/generatePost.ts";
 import { generateVisualRoute } from "./src/routes/generateVisual.ts";
+import { growthRoute } from "./src/routes/growth.ts";
 import { growthIntelligenceRoute } from "./src/routes/growthIntelligence.ts";
 import { ingestionRoute } from "./src/routes/ingestion.ts";
 import { meRoute } from "./src/routes/me.ts";
@@ -116,6 +117,7 @@ export function createServerApp(): Express {
   app.use(generatePostRoute);
   app.use(transcribeRoute);
   app.use(generateVisualRoute);
+  app.use(growthRoute);
   app.use(growthIntelligenceRoute);
   app.use(ingestionRoute);
   app.use(captureRoute);

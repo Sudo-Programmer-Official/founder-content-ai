@@ -1,6 +1,7 @@
 export const appRoutes = {
   appEmail: "/app/email",
   appGenerate: "/app/generate",
+  appGrowth: "/app/growth",
   appResult: "/app/result",
   appRoot: "/app",
   appOutreach: "/app/outreach",

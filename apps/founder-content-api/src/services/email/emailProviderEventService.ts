@@ -1,6 +1,7 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import { withDbTransaction } from "../db/client.ts";
 import { recalculateEmailDomainReputation } from "./emailDeliverabilityService.ts";
+import { recordGrowthProviderFeedbackEvent } from "../growth/growthAutomationService.ts";
 
 type ProviderEventType = "delivered" | "bounce_soft" | "bounce_hard" | "complaint" | "reject";
 
@@ -605,6 +606,8 @@ export async function processSesWebhookNotification(body: unknown): Promise<SesW
   const mailTags = notification.mail?.tags;
   const fallbackBusinessId = normalizeTagValue(mailTags, "business_id");
   const recipientIdTag = normalizeTagValue(mailTags, "recipient_id");
+  const growthLeadIdTag = normalizeTagValue(mailTags, "lead_id");
+  const growthRunIdTag = normalizeTagValue(mailTags, "run_id");
   const fallbackDomainName = extractDomainFromEmail(getString(notification.mail?.source));
 
   return withDbTransaction(async (client) => {
@@ -653,6 +656,20 @@ export async function processSesWebhookNotification(body: unknown): Promise<SesW
           payloadJson: event.rawPayloadJson,
           occurredAt: event.occurredAt,
         });
+
+        await recordGrowthProviderFeedbackEvent(
+          {
+            providerMessageId: event.providerMessageId,
+            eventType: "email_delivered",
+            occurredAt: event.occurredAt,
+            leadIdTag: growthLeadIdTag,
+            runIdTag: growthRunIdTag,
+            metadata: {
+              source: "ses_webhook",
+            },
+          },
+          client,
+        );
         continue;
       }
 
@@ -688,6 +705,23 @@ export async function processSesWebhookNotification(body: unknown): Promise<SesW
           });
         }
 
+        await recordGrowthProviderFeedbackEvent(
+          {
+            providerMessageId: event.providerMessageId,
+            eventType: "email_bounced",
+            occurredAt: event.occurredAt,
+            leadIdTag: growthLeadIdTag,
+            runIdTag: growthRunIdTag,
+            metadata: {
+              source: "ses_webhook",
+              bounceType: event.eventType,
+              subtype: event.subtype ?? null,
+              failureReason: buildFailureReason(event),
+            },
+          },
+          client,
+        );
+
         continue;
       }
 
@@ -720,6 +754,22 @@ export async function processSesWebhookNotification(body: unknown): Promise<SesW
           source: "complaint",
           reason: buildFailureReason(event),
         });
+
+        await recordGrowthProviderFeedbackEvent(
+          {
+            providerMessageId: event.providerMessageId,
+            eventType: "email_complained",
+            occurredAt: event.occurredAt,
+            leadIdTag: growthLeadIdTag,
+            runIdTag: growthRunIdTag,
+            metadata: {
+              source: "ses_webhook",
+              subtype: event.subtype ?? null,
+              failureReason: buildFailureReason(event),
+            },
+          },
+          client,
+        );
         continue;
       }
 
