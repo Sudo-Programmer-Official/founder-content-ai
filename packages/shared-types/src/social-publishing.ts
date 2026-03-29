@@ -1,6 +1,20 @@
 export type SocialPlatform = "linkedin";
 export type SocialAccountStatus = "connected" | "expired" | "revoked" | "error";
 export type ScheduledPostStatus = "scheduled" | "processing" | "published" | "failed";
+export type SocialAccountIdentityType = "person" | "organization";
+
+export interface SocialAccountIdentity {
+  id: string;
+  platform: SocialPlatform;
+  type: SocialAccountIdentityType;
+  platformIdentityId: string;
+  platformIdentityUrn: string;
+  displayName: string;
+  avatarUrl?: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface SocialAccount {
   id: string;
@@ -15,6 +29,8 @@ export interface SocialAccount {
   scopes: string[];
   status: SocialAccountStatus;
   metadata: Record<string, unknown>;
+  availableIdentities: SocialAccountIdentity[];
+  selectedIdentity?: SocialAccountIdentity;
   createdAt: string;
   updatedAt: string;
 }
@@ -101,6 +117,15 @@ export interface DisconnectSocialAccountRequest {
 
 export interface DisconnectSocialAccountResponse {
   disconnectedAccountId: string;
+}
+
+export interface SelectSocialAccountIdentityRequest {
+  businessId: string;
+  identityId: string;
+}
+
+export interface SelectSocialAccountIdentityResponse {
+  account: SocialAccount;
 }
 
 export interface SocialAccountsQuery {

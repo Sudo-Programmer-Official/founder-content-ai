@@ -61,20 +61,20 @@ const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingSocialAccounts = ref(false);
 
 const pageTitle = computed(() =>
-  improvementSourceId.value ? "Improve the post you already have" : "Turn your idea into a post",
+  improvementSourceId.value ? "Improve the post you already have" : "Create your next post",
 );
 const pageDescription = computed(() =>
   improvementSourceId.value
     ? "We will use your previous draft as input and tighten the hook, structure, and clarity."
-    : "Start fresh or ingest your existing public content. Get a usable post, hooks, and next actions in one step.",
+    : "Write from scratch or repurpose existing content in one place. Generate, refine, and move toward publishing without switching tools.",
 );
 const submitLabel = computed(() => (isLoading.value ? "Generating..." : "Generate post"));
 const sourceInputLabel = computed(() =>
-  sourceMode.value === "feed" ? "What should this post emphasize?" : "Bring one idea",
+  sourceMode.value === "feed" ? "Repurpose with context" : "Bring one idea",
 );
 const sourceInputPlaceholder = computed(() =>
   sourceMode.value === "feed"
-    ? "Example: emphasize founder voice, customer pain points, and practical lessons."
+    ? "Example: turn these sources into a founder post about customer trust, product lessons, and practical proof."
     : "Paste your idea, tweet, thought, or rough note here...",
 );
 const hasFeedSources = computed(() => buildFeedSourceUrls().length > 0);
@@ -85,6 +85,12 @@ const connectedLinkedInAccount = computed(() =>
 );
 const linkedInOptimizationLabel = computed(() => {
   const connectedAccount = connectedLinkedInAccount.value;
+  const selectedIdentityLabel = connectedAccount?.selectedIdentity?.displayName;
+
+  if (selectedIdentityLabel) {
+    return selectedIdentityLabel;
+  }
+
   const linkedInName = connectedAccount?.metadata?.linkedInName;
 
   if (typeof linkedInName === "string" && linkedInName.trim() !== "") {
@@ -97,6 +103,10 @@ const linkedInOptimizationLabel = computed(() => {
 
   return "this workspace";
 });
+
+function resolveSourceModeFromRoute(): GenerationSourceMode {
+  return route.query.mode === "repurpose" ? "feed" : "fresh";
+}
 
 async function loadSavedSources(): Promise<void> {
   const businessId = bootstrap.value?.activeBusinessId;
@@ -143,6 +153,7 @@ async function hydrateImprovementState(): Promise<void> {
 
   if (!improveId) {
     improvementSourceId.value = "";
+    sourceMode.value = resolveSourceModeFromRoute();
     if (!route.query.prefill && helperMessage.value.includes("improving")) {
       helperMessage.value = "Paste a thought, saved post, or rough idea. Voice works too.";
     }
@@ -161,6 +172,29 @@ async function hydrateImprovementState(): Promise<void> {
   input.value = storedDraft.result.post;
   sourceMode.value = "fresh";
   helperMessage.value = "You are improving a previous draft. Adjust the input before regenerating if needed.";
+}
+
+function setSourceMode(nextMode: GenerationSourceMode): void {
+  sourceMode.value = nextMode;
+  errorMessage.value = "";
+
+  if (improvementSourceId.value) {
+    return;
+  }
+
+  const nextQuery = { ...route.query };
+
+  if (nextMode === "feed") {
+    nextQuery.mode = "repurpose";
+  } else {
+    delete nextQuery.mode;
+  }
+
+  void router.replace({
+    path: appRoutes.appCreate,
+    query: nextQuery,
+    hash: nextMode === "feed" ? "#repurpose-panel" : "",
+  });
 }
 
 function buildFeedSourceUrls(): RepurposeSourceUrlInput[] {
@@ -290,7 +324,7 @@ function handleKeydown(event: KeyboardEvent): void {
 }
 
 watch(
-  () => route.query.improve,
+  () => [route.query.improve, route.query.mode],
   () => {
     void hydrateImprovementState();
   },
@@ -324,7 +358,7 @@ onBeforeUnmount(() => {
 <template>
   <main class="activation-shell">
     <section class="activation-hero">
-      <p class="activation-eyebrow">/app/generate</p>
+      <p class="activation-eyebrow">/app/create</p>
       <h1>{{ pageTitle }}</h1>
       <p class="activation-description">{{ pageDescription }}</p>
       <div class="activation-chip-row">
@@ -338,14 +372,14 @@ onBeforeUnmount(() => {
           <h2>
             {{
               connectedLinkedInAccount
-                ? "Posting optimized for LinkedIn"
+                ? `Publishing to LinkedIn${linkedInOptimizationLabel ? ` (${linkedInOptimizationLabel})` : ""}`
                 : "Connect LinkedIn to optimize for publishing"
             }}
           </h2>
           <p class="activation-helper">
             {{
               connectedLinkedInAccount
-                ? `This workspace will shape output for direct LinkedIn publishing through ${linkedInOptimizationLabel}.`
+                ? "This workspace will shape output for direct LinkedIn publishing and handoff to the post view."
                 : "Generation still works without a channel, but connected workspaces get formatting tuned for direct LinkedIn publishing."
             }}
           </p>
@@ -371,6 +405,25 @@ onBeforeUnmount(() => {
     </section>
 
     <section class="activation-panel">
+      <div v-if="!improvementSourceId" class="source-mode-row create-mode-row">
+        <button
+          type="button"
+          class="tone-chip"
+          :class="{ active: sourceMode === 'fresh' }"
+          @click="setSourceMode('fresh')"
+        >
+          Write
+        </button>
+        <button
+          type="button"
+          class="tone-chip"
+          :class="{ active: sourceMode === 'feed' }"
+          @click="setSourceMode('feed')"
+        >
+          Repurpose
+        </button>
+      </div>
+
       <div class="activation-panel-header">
         <div>
           <p class="panel-meta">Input</p>
@@ -388,25 +441,6 @@ onBeforeUnmount(() => {
             {{ option.label }}
           </button>
         </div>
-      </div>
-
-      <div v-if="!improvementSourceId" class="source-mode-row">
-        <button
-          type="button"
-          class="tone-chip"
-          :class="{ active: sourceMode === 'fresh' }"
-          @click="sourceMode = 'fresh'"
-        >
-          Start fresh
-        </button>
-        <button
-          type="button"
-          class="tone-chip"
-          :class="{ active: sourceMode === 'feed' }"
-          @click="sourceMode = 'feed'"
-        >
-          Use existing content
-        </button>
       </div>
 
       <div
@@ -446,7 +480,11 @@ onBeforeUnmount(() => {
         :placeholder="sourceInputPlaceholder"
       />
 
-      <div v-if="!improvementSourceId && sourceMode === 'feed'" class="feed-ingest-panel">
+      <div
+        v-if="!improvementSourceId && sourceMode === 'feed'"
+        id="repurpose-panel"
+        class="feed-ingest-panel"
+      >
         <p class="activation-helper">
           Use public page, post, or article URLs. Private feeds and login-only pages will not ingest.
         </p>

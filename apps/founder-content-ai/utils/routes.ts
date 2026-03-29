@@ -1,6 +1,7 @@
 export const appRoutes = {
+  appCreate: "/app/create",
   appEmail: "/app/email",
-  appGenerate: "/app/generate",
+  appGenerate: "/app/create",
   appGrowth: "/app/growth",
   appResult: "/app/result",
   appRoot: "/app",
@@ -16,7 +17,7 @@ export const appRoutes = {
   emailCampaigns: "/app/email",
   founderContentIdeas: "/founder-content-ideas",
   linkedinHookGenerator: "/linkedin-hook-generator",
-  linkedinPostGenerator: "/linkedin-post-generator",
+  linkedinPostGenerator: "/app/create",
   linkedinPostIdeasForFounders: "/linkedin-post-ideas-for-founders",
   login: "/login",
   onboarding: "/onboarding",

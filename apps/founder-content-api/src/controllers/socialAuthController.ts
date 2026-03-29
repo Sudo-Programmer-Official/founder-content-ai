@@ -2,6 +2,8 @@ import type {
   ApiError,
   DisconnectSocialAccountRequest,
   DisconnectSocialAccountResponse,
+  SelectSocialAccountIdentityRequest,
+  SelectSocialAccountIdentityResponse,
   SocialAccountsQuery,
   SocialAccountsResponse,
   StartSocialAuthRequest,
@@ -13,6 +15,7 @@ import {
   disconnectSocialAccount,
   handleLinkedInOAuthCallback,
   listSocialAccounts,
+  selectSocialAccountIdentity,
 } from "../services/socialAuthService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
@@ -138,6 +141,46 @@ export async function disconnectSocialAccountController(
       code: "social_account_disconnect_failed",
       message: "Unable to disconnect the social account.",
       logMessage: "Failed to disconnect social account.",
+    });
+  }
+}
+
+export async function selectSocialAccountIdentityController(
+  request: Request<
+    { accountId: string },
+    SelectSocialAccountIdentityResponse | ApiError,
+    Partial<SelectSocialAccountIdentityRequest>
+  >,
+  response: Response<SelectSocialAccountIdentityResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const identityId = request.body?.identityId?.trim();
+  const accountId = request.params.accountId?.trim();
+
+  if (!businessId || !identityId || !accountId) {
+    sendApiError(response, 400, "bad_request", "businessId, accountId, and identityId are required.");
+    return;
+  }
+
+  try {
+    response.json(
+      await selectSocialAccountIdentity(request.auth, {
+        businessId,
+        accountId,
+        identityId,
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "social_account_identity_select_failed",
+      message: "Unable to update the LinkedIn publishing identity.",
+      logMessage: "Failed to update LinkedIn publishing identity.",
     });
   }
 }

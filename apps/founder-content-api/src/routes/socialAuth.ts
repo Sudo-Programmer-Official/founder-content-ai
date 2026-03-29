@@ -3,6 +3,7 @@ import {
   disconnectSocialAccountController,
   getSocialAccounts,
   linkedInOAuthCallback,
+  selectSocialAccountIdentityController,
   startLinkedInSocialAuth,
 } from "../controllers/socialAuthController.ts";
 import { requireAuth } from "../middleware/auth.ts";
@@ -16,4 +17,9 @@ socialAuthRoute.post(
   "/api/social-accounts/:accountId/disconnect",
   requireAuth(),
   disconnectSocialAccountController,
+);
+socialAuthRoute.post(
+  "/api/social-accounts/:accountId/select-identity",
+  requireAuth(),
+  selectSocialAccountIdentityController,
 );

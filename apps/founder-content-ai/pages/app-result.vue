@@ -54,6 +54,10 @@ const connectedLinkedInLabel = computed(() => {
     return "";
   }
 
+  if (account.selectedIdentity?.displayName) {
+    return account.selectedIdentity.displayName;
+  }
+
   const linkedInName =
     typeof account.metadata?.linkedInName === "string" ? account.metadata.linkedInName.trim() : "";
 
@@ -72,6 +76,19 @@ const linkedInPublishingStatus = computed(() => {
 
   return "Connect LinkedIn to publish directly.";
 });
+
+function getPublishFailureMessage(error: unknown): string {
+  const rawMessage =
+    error instanceof Error && error.message.trim() !== ""
+      ? error.message.trim()
+      : "Unable to publish to LinkedIn right now.";
+
+  if (rawMessage.includes("status 404")) {
+    return "Direct LinkedIn publishing is not live on the backend yet. Redeploy the API and try again.";
+  }
+
+  return rawMessage;
+}
 
 function loadDraft(): void {
   const draftId = typeof route.query.id === "string" ? route.query.id : "";
@@ -209,10 +226,7 @@ async function publishToLinkedIn(): Promise<void> {
     feedbackMessage.value = `Posted to LinkedIn. ${response.externalPostUrl}`;
   } catch (error) {
     const copied = await copyPost({ silent: true });
-    const baseMessage =
-      error instanceof Error && error.message.trim() !== ""
-        ? error.message
-        : "Unable to publish to LinkedIn right now.";
+    const baseMessage = getPublishFailureMessage(error);
 
     feedbackMessage.value = copied
       ? `${baseMessage} Optimized caption copied instead.`
@@ -339,7 +353,9 @@ onBeforeUnmount(() => {
 
           <div class="result-actions">
             <button type="button" class="primary-action" @click="goToImprove">Improve</button>
-            <button type="button" class="secondary-action" @click="copyPost">Copy for LinkedIn</button>
+            <button type="button" class="secondary-action" @click="void copyPost()">
+              Copy for LinkedIn
+            </button>
             <button
               type="button"
               class="secondary-action"

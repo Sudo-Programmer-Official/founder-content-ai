@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useProductAccessContext } from "../access/product-access-context";
 import type { BusinessMembership, WorkspaceOverview } from "../../../packages/shared-types";
 import {
@@ -12,12 +12,20 @@ const businessId = ref("");
 const overview = ref<WorkspaceOverview | null>(null);
 const isLoading = ref(true);
 const errorMessage = ref("");
-const { bootstrap: productAccess, setActiveBusinessId } = useProductAccessContext();
+const { bootstrap: productAccess, activeBusinessId, setActiveBusinessId } = useProductAccessContext();
+
+const currentWorkspace = computed(
+  () => memberships.value.find((membership) => membership.businessId === businessId.value) ?? null,
+);
 
 async function loadMemberships() {
   const response = await requestMyBusinesses();
   memberships.value = response.businesses;
-  businessId.value = productAccess.value?.activeBusinessId || response.businesses[0]?.businessId || "";
+  businessId.value =
+    productAccess.value?.activeBusinessId ||
+    activeBusinessId.value ||
+    response.businesses[0]?.businessId ||
+    "";
 }
 
 async function loadOverview() {
@@ -48,7 +56,7 @@ onMounted(async () => {
   try {
     await loadMemberships();
 
-    if (businessId.value) {
+    if (!productAccess.value?.activeBusinessId && businessId.value) {
       const accessState = await setActiveBusinessId(businessId.value);
 
       if (accessState?.activeBusinessId && accessState.activeBusinessId !== businessId.value) {
@@ -64,18 +72,13 @@ onMounted(async () => {
   }
 });
 
-watch(businessId, async (nextBusinessId, previousBusinessId) => {
+watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, async (nextBusinessId, previousBusinessId) => {
   if (!nextBusinessId || nextBusinessId === previousBusinessId) {
     return;
   }
 
-  const accessState = await setActiveBusinessId(nextBusinessId);
-
-  if (accessState?.activeBusinessId && accessState.activeBusinessId !== nextBusinessId) {
-    businessId.value = accessState.activeBusinessId;
-    return;
-  }
-
+  businessId.value = nextBusinessId;
+  await loadMemberships();
   await loadOverview();
 });
 </script>
@@ -92,18 +95,11 @@ watch(businessId, async (nextBusinessId, previousBusinessId) => {
 
     <section class="dashboard-panel">
       <div class="panel-header">
-        <h2>Workspace</h2>
+        <h2>{{ currentWorkspace?.business.brandName || currentWorkspace?.business.name || "No workspace selected" }}</h2>
       </div>
-
-      <label class="dashboard-field">
-        <span>Select workspace</span>
-        <select v-model="businessId">
-          <option value="" disabled>Select a workspace</option>
-          <option v-for="membership in memberships" :key="membership.id" :value="membership.businessId">
-            {{ membership.business.name }}
-          </option>
-        </select>
-      </label>
+      <p class="dashboard-description">
+        The active workspace in the header controls which brand analytics you are viewing.
+      </p>
     </section>
 
     <p v-if="isLoading" class="dashboard-feedback">Loading workspace analytics...</p>

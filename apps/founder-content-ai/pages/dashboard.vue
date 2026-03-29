@@ -27,7 +27,6 @@ import {
   requestUpdatePipelineItem,
 } from "../services/control-dashboard-service";
 import { requestIdeaGeneration } from "../services/generation-service";
-import { requestOnboardingWorkspace } from "../services/onboarding-service";
 import { appRoutes } from "../utils/routes";
 import type {
   MissionState,
@@ -35,14 +34,13 @@ import type {
   PipelineDraftState,
   QuickCreateAction,
 } from "../components/dashboard/dashboard-types";
-import type { GrowthDistributionFormat } from "../utils/repurpose-loop";
-import { saveRepurposeSeed } from "../utils/repurpose-loop";
 
 type EditablePipelineStage = ContentPipelineStage;
 
 const router = useRouter();
 const {
   bootstrap: productAccess,
+  activeBusinessId,
   setActiveBusinessId,
   isFeatureEnabled,
 } = useProductAccessContext();
@@ -61,12 +59,6 @@ const savingAssetId = ref("");
 const assetDrafts = ref<Record<string, PipelineDraftState>>({});
 const dailyIdea = ref<IdeaOption | null>(null);
 const isGeneratingDailyIdea = ref(false);
-const isCreateWorkspaceOpen = ref(false);
-const isCreatingWorkspace = ref(false);
-const newWorkspaceName = ref("");
-const newWorkspaceWebsiteUrl = ref("");
-const workspaceCreateFeedback = ref("");
-const workspaceCreateFeedbackTone = ref<"default" | "error">("default");
 const nowMs = ref(Date.now());
 let urgencyTimer: number | null = null;
 let feedbackTimer: number | null = null;
@@ -222,7 +214,7 @@ function buildDraftPreviewAsset(asset: ContentAsset, draft: PipelineDraftState):
 const pipelineColumnModels = computed<PipelineColumnModel[]>(() =>
   pipelineColumns.value.map((column) => ({
     stage: column.stage,
-    label: column.label,
+    label: column.stage === "review" ? "Ready" : column.label,
     items: column.items.map((asset) => {
       const draft = getPipelineDraft(asset);
       const previewAsset = buildDraftPreviewAsset(asset, draft);
@@ -259,10 +251,6 @@ const aiSuggestions = computed(() =>
   ),
 );
 
-const totalSuggestionCount = computed(() => aiSuggestions.value.length);
-const distributionSourceAsset = computed(
-  () => mission.value?.missionAsset ?? flatPipelineItems.value[0] ?? null,
-);
 const averagePipelineScore = computed(() => {
   if (flatPipelineItems.value.length === 0) {
     return 0;
@@ -281,21 +269,6 @@ const strongestPipelineAsset = computed(
       (left, right) => calculateContentScore(right).score - calculateContentScore(left).score,
     )[0] ?? null,
 );
-const liveMomentumFeed = computed(() => {
-  const strongestScore = strongestPipelineAsset.value
-    ? calculateContentScore(strongestPipelineAsset.value).score
-    : 86;
-  const baselineScore = Math.max(52, strongestScore - 28);
-  const scheduledCount = dashboard.value?.today.scheduledCount ?? 0;
-
-  return [
-    `A founder just lifted a post score from ${baselineScore} -> ${strongestScore}.`,
-    scheduledCount > 0
-      ? "Someone just locked content into the next best posting window."
-      : "Someone just turned one idea into three publishable content assets.",
-    "A founder just remixed one post into a carousel, a thread, and a follow-up angle.",
-  ];
-});
 const weeklyReportHeading = computed(() =>
   averagePipelineScore.value >= 84
     ? "Your content system is compounding."
@@ -316,29 +289,6 @@ const weeklyReportLines = computed(() => {
       : "Capture one more idea to create your first top-performing asset.",
   ];
 });
-const showReferralPrompt = computed(
-  () =>
-    (dashboard.value?.today.postedCount ?? 0) > 0
-    || (dashboard.value?.today.streakDays ?? 0) >= 2
-    || flatPipelineItems.value.length >= 3,
-);
-const growthDistributionActions = [
-  {
-    format: "thread" as GrowthDistributionFormat,
-    label: "Twitter thread",
-    description: "Split one strong post into a serial founder idea.",
-  },
-  {
-    format: "carousel" as GrowthDistributionFormat,
-    label: "LinkedIn carousel",
-    description: "Turn the current draft into slide-ready content.",
-  },
-  {
-    format: "video" as GrowthDistributionFormat,
-    label: "Short video script",
-    description: "Pull out a hook, body, and CTA for a quick talking video.",
-  },
-] as const;
 
 function getPipelineDraft(asset: ContentAsset): PipelineDraftState {
   const existing = assetDrafts.value[asset.id];
@@ -388,18 +338,24 @@ async function initializeDashboard() {
     const response = await requestMyBusinesses();
     memberships.value = response.businesses;
 
-    if (!selectedBusinessId.value) {
-      selectedBusinessId.value =
-        productAccess.value?.activeBusinessId || response.businesses[0]?.businessId || "";
-    }
+    const resolvedBusinessId =
+      productAccess.value?.activeBusinessId ||
+      activeBusinessId.value ||
+      response.businesses[0]?.businessId ||
+      "";
 
-    if (selectedBusinessId.value) {
-      const accessState = await setActiveBusinessId(selectedBusinessId.value);
+    selectedBusinessId.value = resolvedBusinessId;
+    let accessState = productAccess.value;
+
+    if (!productAccess.value?.activeBusinessId && selectedBusinessId.value) {
+      accessState = await setActiveBusinessId(selectedBusinessId.value);
 
       if (accessState?.activeBusinessId && accessState.activeBusinessId !== selectedBusinessId.value) {
         selectedBusinessId.value = accessState.activeBusinessId;
       }
+    }
 
+    if (selectedBusinessId.value) {
       if (accessState?.features.control_dashboard === false) {
         dashboard.value = null;
         errorMessage.value = "";
@@ -418,69 +374,6 @@ async function initializeDashboard() {
     errorMessage.value =
       error instanceof Error ? error.message : "Unable to initialize the dashboard.";
     isLoading.value = false;
-  }
-}
-
-function resetWorkspaceCreationState() {
-  isCreateWorkspaceOpen.value = false;
-  isCreatingWorkspace.value = false;
-  newWorkspaceName.value = "";
-  newWorkspaceWebsiteUrl.value = "";
-  workspaceCreateFeedback.value = "";
-  workspaceCreateFeedbackTone.value = "default";
-}
-
-function toggleWorkspaceCreation() {
-  isCreateWorkspaceOpen.value = !isCreateWorkspaceOpen.value;
-  workspaceCreateFeedback.value = "";
-  workspaceCreateFeedbackTone.value = "default";
-
-  if (!isCreateWorkspaceOpen.value) {
-    newWorkspaceName.value = "";
-    newWorkspaceWebsiteUrl.value = "";
-  }
-}
-
-async function createWorkspace() {
-  if (!newWorkspaceName.value.trim()) {
-    workspaceCreateFeedback.value = "Workspace name is required.";
-    workspaceCreateFeedbackTone.value = "error";
-    return;
-  }
-
-  isCreatingWorkspace.value = true;
-  workspaceCreateFeedback.value = "";
-  workspaceCreateFeedbackTone.value = "default";
-
-  try {
-    const response = await requestOnboardingWorkspace({
-      name: newWorkspaceName.value.trim(),
-      websiteUrl: newWorkspaceWebsiteUrl.value.trim() || undefined,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-    });
-
-    const businessesResponse = await requestMyBusinesses();
-    memberships.value = businessesResponse.businesses;
-    selectedBusinessId.value = response.business.id;
-
-    const accessState = await setActiveBusinessId(selectedBusinessId.value);
-
-    if (accessState?.activeBusinessId && accessState.activeBusinessId !== selectedBusinessId.value) {
-      selectedBusinessId.value = accessState.activeBusinessId;
-    }
-
-    if (selectedBusinessId.value) {
-      await loadDashboard(selectedBusinessId.value);
-    }
-
-    resetWorkspaceCreationState();
-    ideaFeedback.value = `${response.business.name} created and ready to use.`;
-  } catch (error) {
-    workspaceCreateFeedback.value =
-      error instanceof Error ? error.message : "Unable to create the workspace.";
-    workspaceCreateFeedbackTone.value = "error";
-  } finally {
-    isCreatingWorkspace.value = false;
   }
 }
 
@@ -662,8 +555,10 @@ function focusAsset(assetId: string | undefined) {
 }
 
 function openCreator(hash?: string) {
+  const repurposeMode = hash === "#repurpose-panel";
   void router.push({
-    path: hash ? appRoutes.linkedinPostGenerator : appRoutes.appGenerate,
+    path: appRoutes.appCreate,
+    query: repurposeMode ? { mode: "repurpose" } : {},
     hash,
   });
 }
@@ -677,8 +572,8 @@ function handleQuickCreateAction(action: QuickCreateAction) {
     return;
   }
 
-  if (action === "speak") {
-    scrollToSection("idea-inbox");
+  if (action === "daily-idea") {
+    void generateDailyIdea();
     return;
   }
 
@@ -692,11 +587,6 @@ function handleQuickCreateAction(action: QuickCreateAction) {
     }
 
     openCreator("#repurpose-panel");
-    return;
-  }
-
-  if (action === "daily-idea") {
-    void generateDailyIdea();
     return;
   }
 
@@ -858,76 +748,24 @@ function handleAISuggestionAction(suggestion: { action: QuickCreateAction | "foc
   handleQuickCreateAction(suggestion.action);
 }
 
-async function openDistributionLoop(format: GrowthDistributionFormat) {
-  if (!canUseRepurpose.value) {
-    ideaFeedback.value =
-      postsRemaining.value === 0
-        ? "You've reached your daily post limit. Upgrade or try tomorrow."
-        : "Repurpose is not enabled for this workspace.";
-    return;
-  }
-
-  const sourceAsset = distributionSourceAsset.value;
-
-  if (!sourceAsset?.textContent?.trim()) {
-    ideaFeedback.value = "Create or select a post before turning it into more formats.";
-    return;
-  }
-
-  saveRepurposeSeed({
-    text: sourceAsset.textContent,
-    title: sourceAsset.title,
-    format,
-    source: "dashboard",
-  });
-
-  ideaFeedback.value = `${growthDistributionActions.find((action) => action.format === format)?.label ?? "Distribution"} seed loaded into the repurpose engine.`;
-
-  try {
-    await trackAnalyticsEvent({
-      eventType: "content_type_selected",
-      businessId: selectedBusinessId.value || undefined,
-      metadata: {
-        source: "dashboard_distribution_loop",
-        format,
-        assetId: sourceAsset.id,
-      },
-    });
-  } catch {
-    // Distribution handoff should remain fast even if analytics tracking fails.
-  }
-
-  openCreator("#repurpose-panel");
-}
-
-async function copyReferralInvite() {
-  try {
-    await navigator.clipboard.writeText(
-      "I am using FounderContent AI to turn one idea into posts, visuals, and a consistent weekly content loop. Want the link?",
-    );
-    ideaFeedback.value = "Invite text copied.";
-  } catch (error) {
-    ideaFeedback.value =
-      error instanceof Error ? error.message : "Unable to copy the invite message.";
-  }
-}
-
 watch(
-  selectedBusinessId,
+  () => productAccess.value?.activeBusinessId || activeBusinessId.value,
   async (businessId, previousBusinessId) => {
     if (!businessId || businessId === previousBusinessId) {
       return;
     }
 
+    selectedBusinessId.value = businessId;
     resetEditingState();
-    const accessState = await setActiveBusinessId(businessId);
 
-    if (accessState?.activeBusinessId && accessState.activeBusinessId !== businessId) {
-      selectedBusinessId.value = accessState.activeBusinessId;
-      return;
+    try {
+      const response = await requestMyBusinesses();
+      memberships.value = response.businesses;
+    } catch {
+      // Keep dashboard switching responsive even if the workspace list refresh fails.
     }
 
-    if (accessState?.features.control_dashboard === false) {
+    if (productAccess.value?.features.control_dashboard === false) {
       dashboard.value = null;
       errorMessage.value = "";
       isLoading.value = false;
@@ -1002,91 +840,14 @@ onBeforeUnmount(() => {
       <div v-else-if="dashboard" class="workspace-frame">
         <div class="workspace-content">
           <header class="dashboard-topbar">
-            <div class="dashboard-field workspace-switcher">
-              <div class="workspace-switcher-header">
-                <span>Workspace</span>
-                <button
-                  type="button"
-                  class="dashboard-button secondary small-button"
-                  @click="toggleWorkspaceCreation"
-                >
-                  {{ isCreateWorkspaceOpen ? "Close" : "New workspace" }}
-                </button>
-              </div>
-              <select v-model="selectedBusinessId">
-                <option
-                  v-for="membership in memberships"
-                  :key="membership.id"
-                  :value="membership.businessId"
-                >
-                  {{ membership.business.name }}
-                </option>
-              </select>
-
-              <form
-                v-if="isCreateWorkspaceOpen"
-                class="workspace-creation-form"
-                @submit.prevent="createWorkspace"
-              >
-                <div class="workspace-creation-grid">
-                  <label class="dashboard-field">
-                    <span>Workspace name</span>
-                    <input
-                      v-model="newWorkspaceName"
-                      type="text"
-                      placeholder="PlanCraft AI"
-                    />
-                  </label>
-
-                  <label class="dashboard-field">
-                    <span>Website URL</span>
-                    <input
-                      v-model="newWorkspaceWebsiteUrl"
-                      type="url"
-                      placeholder="https://example.com"
-                    />
-                  </label>
-                </div>
-
-                <div class="action-row workspace-creation-actions">
-                  <button
-                    type="submit"
-                    class="dashboard-button"
-                    :disabled="isCreatingWorkspace"
-                  >
-                    {{ isCreatingWorkspace ? "Creating..." : "Create workspace" }}
-                  </button>
-                  <button
-                    type="button"
-                    class="dashboard-button secondary"
-                    :disabled="isCreatingWorkspace"
-                    @click="toggleWorkspaceCreation"
-                  >
-                    Cancel
-                  </button>
-                </div>
-
-                <p
-                  v-if="workspaceCreateFeedback"
-                  class="workspace-create-feedback"
-                  :class="{ error: workspaceCreateFeedbackTone === 'error' }"
-                >
-                  {{ workspaceCreateFeedback }}
-                </p>
-              </form>
-            </div>
-
             <QuickCreateBar
               :best-time-label="bestTimeCountdownLabel"
               :inactivity-message="inactivityAlert"
               :inactivity-active="inactivityActive"
               :daily-idea-loading="isGeneratingDailyIdea"
               :write-disabled="!canCreateContent"
-              :repurpose-disabled="!canUseRepurpose"
               :daily-idea-disabled="!canCreateContent"
-              @speak="handleQuickCreateAction('speak')"
               @write="handleQuickCreateAction('write')"
-              @repurpose="handleQuickCreateAction('repurpose')"
               @daily-idea="handleQuickCreateAction('daily-idea')"
             />
 
@@ -1099,7 +860,6 @@ onBeforeUnmount(() => {
                 />
               </div>
               <span v-if="productAccess?.access?.readOnly" class="topbar-pill warning">Read-only</span>
-              <span class="topbar-pill">{{ totalSuggestionCount }} strategist moves</span>
               <span class="profile-chip">{{ profileInitial }}</span>
             </div>
           </header>
@@ -1132,6 +892,8 @@ onBeforeUnmount(() => {
 
           <div class="dashboard-main-grid">
             <div class="dashboard-primary">
+              <AIRail :suggestions="aiSuggestions" @action="handleAISuggestionAction" />
+
               <section id="today" class="today-section">
                 <MissionCard
                   :mission="mission"
@@ -1144,7 +906,7 @@ onBeforeUnmount(() => {
                     <strong>{{ dashboard.today.draftCount }}</strong>
                   </article>
                   <article class="dashboard-card">
-                    <p class="dashboard-card-label">Review</p>
+                    <p class="dashboard-card-label">Ready</p>
                     <strong>{{ dashboard.today.reviewCount }}</strong>
                   </article>
                   <article class="dashboard-card">
@@ -1247,53 +1009,6 @@ onBeforeUnmount(() => {
             </div>
 
             <aside class="dashboard-rail">
-              <AIRail :suggestions="aiSuggestions" @action="handleAISuggestionAction" />
-
-              <section class="dashboard-panel rail-panel">
-                <div class="panel-header">
-                  <div>
-                    <p class="panel-meta">Distribution Engine</p>
-                    <h2>Turn this into more formats</h2>
-                  </div>
-                </div>
-
-                <p class="dashboard-description">
-                  Use the current best draft as the seed for more reach without starting from zero.
-                </p>
-
-                <div class="distribution-stack">
-                  <button
-                    v-for="action in growthDistributionActions"
-                    :key="action.format"
-                    type="button"
-                    class="distribution-option"
-                    @click="openDistributionLoop(action.format)"
-                  >
-                    <strong>{{ action.label }}</strong>
-                    <span>{{ action.description }}</span>
-                  </button>
-                </div>
-              </section>
-
-              <section class="dashboard-panel rail-panel">
-                <div class="panel-header">
-                  <div>
-                    <p class="panel-meta">Live Momentum</p>
-                    <h2>Proof the loop is working</h2>
-                  </div>
-                </div>
-
-                <div class="rail-list">
-                  <article
-                    v-for="item in liveMomentumFeed"
-                    :key="item"
-                    class="rail-feed-item"
-                  >
-                    {{ item }}
-                  </article>
-                </div>
-              </section>
-
               <section class="dashboard-panel rail-panel">
                 <div class="panel-header">
                   <div>
@@ -1318,21 +1033,6 @@ onBeforeUnmount(() => {
                   @click="handleQuickCreateAction('daily-idea')"
                 >
                   Plan next week
-                </button>
-              </section>
-
-              <section v-if="showReferralPrompt" class="dashboard-panel rail-panel referral-rail">
-                <p class="panel-meta">Referral Loop</p>
-                <h2>Let users bring users</h2>
-                <p class="dashboard-description">
-                  Invite 2 founder friends and unlock deeper scoring, stronger suggestions, and more room to create.
-                </p>
-                <button
-                  type="button"
-                  class="dashboard-button secondary small-button"
-                  @click="copyReferralInvite"
-                >
-                  Copy invite text
                 </button>
               </section>
             </aside>
@@ -1392,54 +1092,9 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.95fr);
   grid-template-areas:
-    "create workspace"
     "create status";
   gap: 20px 24px;
   align-items: start;
-}
-
-.workspace-switcher {
-  grid-area: workspace;
-  align-self: start;
-}
-
-.workspace-switcher-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.workspace-switcher select {
-  width: 100%;
-  max-width: none;
-}
-
-.workspace-creation-form {
-  display: grid;
-  gap: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--fc-border);
-}
-
-.workspace-creation-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.workspace-creation-actions {
-  margin-top: 0;
-}
-
-.workspace-create-feedback {
-  margin: 0;
-  color: var(--fc-text-muted);
-  line-height: 1.55;
-}
-
-.workspace-create-feedback.error {
-  color: var(--fc-error-text);
 }
 
 .dashboard-topbar :deep(.quick-create-bar) {
@@ -1566,7 +1221,7 @@ onBeforeUnmount(() => {
 
 .dashboard-main-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
+  grid-template-columns: minmax(0, 1fr) 320px;
   gap: 24px;
   align-items: start;
 }
@@ -1575,6 +1230,12 @@ onBeforeUnmount(() => {
 .dashboard-rail {
   display: grid;
   gap: 24px;
+}
+
+.dashboard-rail {
+  position: sticky;
+  top: calc(var(--fc-header-padding-y) + 84px);
+  height: fit-content;
 }
 
 .today-section {
@@ -1838,11 +1499,6 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
-.suggestion-panel {
-  position: sticky;
-  top: calc(var(--fc-header-padding-y) + 84px);
-}
-
 .suggestion-type {
   color: var(--fc-text-muted);
   font-size: 0.76rem;
@@ -1866,7 +1522,6 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
-.distribution-stack,
 .rail-list {
   display: grid;
   gap: 14px;
@@ -1876,7 +1531,6 @@ onBeforeUnmount(() => {
   gap: 14px;
 }
 
-.distribution-option,
 .rail-feed-item {
   display: grid;
   gap: 6px;
@@ -1885,27 +1539,9 @@ onBeforeUnmount(() => {
   border-radius: 16px;
   background: var(--fc-input-bg);
 }
-
-.distribution-option {
-  width: 100%;
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
-}
-
-.distribution-option strong {
-  color: var(--fc-text);
-}
-
-.distribution-option span,
 .rail-feed-item {
   color: var(--fc-text-muted);
   line-height: 1.55;
-}
-
-.referral-rail {
-  border-color: color-mix(in srgb, var(--fc-success-text) 16%, var(--fc-border));
-  background: color-mix(in srgb, var(--fc-success-bg) 26%, var(--fc-panel-bg));
 }
 
 .small-button {
@@ -1917,7 +1553,6 @@ onBeforeUnmount(() => {
   .dashboard-topbar {
     grid-template-columns: 1fr;
     grid-template-areas:
-      "workspace"
       "create"
       "status";
   }
@@ -1934,7 +1569,7 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
-  .suggestion-panel {
+  .dashboard-rail {
     position: static;
   }
 }
@@ -1994,18 +1629,11 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 760px) {
-  .workspace-switcher-header,
-  .workspace-creation-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .workspace-switcher-header {
-    display: grid;
-    justify-content: stretch;
-  }
-
   .dashboard-topbar {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "create"
+      "status";
   }
 
   .topbar-status {

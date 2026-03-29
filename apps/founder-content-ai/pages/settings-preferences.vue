@@ -5,6 +5,7 @@ import type {
   AiAssistLevel,
   ProductAccessLimits,
   SocialAccount,
+  SocialAccountIdentity,
   UiDensity,
   UiFontSize,
   UiLayoutMode,
@@ -18,6 +19,7 @@ import { usePreferenceContext } from "../preferences/preference-context";
 import {
   requestDisconnectSocialAccount,
   requestLinkedInSocialAuthStart,
+  requestSelectSocialAccountIdentity,
   requestSocialAccounts,
 } from "../services/publishing-service";
 import { appRoutes } from "../utils/routes";
@@ -40,6 +42,7 @@ const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingChannels = ref(false);
 const isStartingChannelConnect = ref<WorkspaceChannelKey | "">("");
 const disconnectingAccountId = ref("");
+const selectingIdentityAccountId = ref("");
 const channelFeedback = ref("");
 const channelError = ref("");
 
@@ -167,6 +170,7 @@ const workspaceChannels = computed(() =>
       definition.key === "linkedin"
         ? socialAccounts.value.find((account) => account.platform === "linkedin")
         : undefined;
+    const selectedIdentity = linkedInAccount?.selectedIdentity;
     const linkedInName =
       linkedInAccount &&
       typeof linkedInAccount.metadata?.linkedInName === "string" &&
@@ -177,7 +181,13 @@ const workspaceChannels = computed(() =>
     return {
       ...definition,
       account: linkedInAccount,
-      connectedLabel: linkedInName || linkedInAccount?.accountEmail || linkedInAccount?.platformUserId,
+      selectedIdentity,
+      identityOptions: linkedInAccount?.availableIdentities ?? [],
+      connectedLabel:
+        selectedIdentity?.displayName ||
+        linkedInName ||
+        linkedInAccount?.accountEmail ||
+        linkedInAccount?.platformUserId,
       status:
         definition.availability === "coming_soon"
           ? "coming_soon"
@@ -185,6 +195,12 @@ const workspaceChannels = computed(() =>
     };
   }),
 );
+
+function formatIdentityOption(identity: SocialAccountIdentity): string {
+  return identity.type === "organization"
+    ? `${identity.displayName} · Page`
+    : `${identity.displayName} · Personal`;
+}
 
 async function loadWorkspaceChannels(): Promise<void> {
   const businessId = activeBusinessId.value;
@@ -250,6 +266,35 @@ async function handleChannelDisconnect(accountId: string): Promise<void> {
     channelError.value = error instanceof Error ? error.message : "Unable to disconnect the channel.";
   } finally {
     disconnectingAccountId.value = "";
+  }
+}
+
+async function handleChannelIdentitySelect(
+  accountId: string,
+  identityId: string,
+): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId || !identityId) {
+    return;
+  }
+
+  selectingIdentityAccountId.value = accountId;
+  channelError.value = "";
+
+  try {
+    await requestSelectSocialAccountIdentity({
+      accountId,
+      businessId,
+      identityId,
+    });
+    channelFeedback.value = "LinkedIn publishing target updated for this workspace.";
+    await loadWorkspaceChannels();
+  } catch (error) {
+    channelError.value =
+      error instanceof Error ? error.message : "Unable to update the LinkedIn publishing target.";
+  } finally {
+    selectingIdentityAccountId.value = "";
   }
 }
 
@@ -423,6 +468,31 @@ watch(
             </small>
           </div>
 
+          <label
+            v-if="channel.account && channel.identityOptions.length > 0"
+            class="dashboard-field channel-identity-field"
+          >
+            <span>Publish this workspace as</span>
+            <select
+              :value="channel.selectedIdentity?.id ?? ''"
+              :disabled="selectingIdentityAccountId === channel.account.id"
+              @change="
+                void handleChannelIdentitySelect(
+                  channel.account.id,
+                  ($event.target as HTMLSelectElement).value,
+                )
+              "
+            >
+              <option
+                v-for="identity in channel.identityOptions"
+                :key="identity.id"
+                :value="identity.id"
+              >
+                {{ formatIdentityOption(identity) }}
+              </option>
+            </select>
+          </label>
+
           <div class="channel-actions">
             <button
               v-if="channel.availability === 'live'"
@@ -446,7 +516,10 @@ watch(
               v-if="channel.account"
               type="button"
               class="dashboard-button secondary"
-              :disabled="disconnectingAccountId === channel.account.id"
+              :disabled="
+                disconnectingAccountId === channel.account.id ||
+                selectingIdentityAccountId === channel.account.id
+              "
               @click="void handleChannelDisconnect(channel.account.id)"
             >
               {{ disconnectingAccountId === channel.account.id ? "Disconnecting..." : "Disconnect" }}
@@ -632,6 +705,14 @@ watch(
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.channel-identity-field {
+  gap: 8px;
+}
+
+.channel-identity-field select {
+  width: 100%;
 }
 
 .usage-panel-header {

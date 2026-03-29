@@ -6,35 +6,37 @@ defineProps<{
   inactivityMessage: string;
   inactivityActive: boolean;
   dailyIdeaLoading?: boolean;
+  writeDisabled?: boolean;
+  dailyIdeaDisabled?: boolean;
 }>();
 
 const emit = defineEmits<{
-  (event: "speak"): void;
   (event: "write"): void;
-  (event: "repurpose"): void;
   (event: "daily-idea"): void;
 }>();
 </script>
 
 <template>
   <div class="quick-create-bar">
+    <div class="quick-create-copy">
+      <p class="panel-meta">New Post</p>
+      <h2>Start one clear move.</h2>
+      <p class="quick-create-description">
+        Use the creator for writing, voice capture, or repurposing. Keep the dashboard focused on the next decision.
+      </p>
+    </div>
+
     <div class="quick-create-actions">
-      <button type="button" class="dashboard-button secondary" @click="emit('speak')">
-        Speak
-      </button>
-      <button type="button" class="dashboard-button" @click="emit('write')">
-        Write
-      </button>
-      <button type="button" class="dashboard-button secondary" @click="emit('repurpose')">
-        Repurpose
+      <button type="button" class="dashboard-button" :disabled="writeDisabled" @click="emit('write')">
+        New post
       </button>
       <button
         type="button"
         class="dashboard-button secondary"
-        :disabled="dailyIdeaLoading"
+        :disabled="dailyIdeaLoading || dailyIdeaDisabled"
         @click="emit('daily-idea')"
       >
-        {{ dailyIdeaLoading ? "Thinking..." : "What should I post today?" }}
+        {{ dailyIdeaLoading ? "Thinking..." : "Get today's idea" }}
       </button>
     </div>
 
@@ -46,7 +48,12 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.quick-create-bar,
+.quick-create-bar {
+  display: grid;
+  gap: 16px;
+}
+
+.quick-create-copy,
 .quick-create-actions,
 .quick-create-status {
   display: flex;
@@ -55,10 +62,19 @@ const emit = defineEmits<{
   align-items: center;
 }
 
-.quick-create-bar {
+.quick-create-copy {
   display: grid;
-  gap: 14px;
-  justify-content: stretch;
+  gap: 8px;
+}
+
+.quick-create-copy h2 {
+  margin: 0;
+}
+
+.quick-create-description {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
 }
 
 .quick-create-actions {
@@ -70,6 +86,7 @@ const emit = defineEmits<{
 }
 
 @media (max-width: 760px) {
+  .quick-create-copy,
   .quick-create-actions,
   .quick-create-status {
     width: 100%;

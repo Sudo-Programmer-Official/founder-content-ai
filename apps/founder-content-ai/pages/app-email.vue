@@ -49,6 +49,7 @@ function buildSuggestedSubject(value: string): string {
 const route = useRoute();
 const {
   bootstrap: productAccess,
+  activeBusinessId,
   setActiveBusinessId,
   refreshProductAccess,
   isFeatureEnabled,
@@ -122,9 +123,12 @@ async function loadBusinesses(): Promise<void> {
   const response = await requestMyBusinesses();
   businesses.value = response.businesses;
   selectedBusinessId.value =
-    productAccess.value?.activeBusinessId || response.businesses[0]?.businessId || "";
+    productAccess.value?.activeBusinessId ||
+    activeBusinessId.value ||
+    response.businesses[0]?.businessId ||
+    "";
 
-  if (selectedBusinessId.value) {
+  if (!productAccess.value?.activeBusinessId && selectedBusinessId.value) {
     await setActiveBusinessId(selectedBusinessId.value);
   }
 }
@@ -259,13 +263,15 @@ async function saveDomainUpgrade(): Promise<void> {
   }
 }
 
-watch(selectedBusinessId, (nextBusinessId) => {
-  if (!nextBusinessId) {
+watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (nextBusinessId, previousBusinessId) => {
+  if (!nextBusinessId || nextBusinessId === previousBusinessId) {
     return;
   }
 
+  selectedBusinessId.value = nextBusinessId;
+
   void (async () => {
-    await Promise.all([setActiveBusinessId(nextBusinessId), refreshProductAccess(nextBusinessId)]);
+    await loadBusinesses();
     await loadEmailState();
   })();
 });
@@ -323,17 +329,10 @@ onMounted(() => {
             <div>
               <p class="panel-meta">Contacts</p>
               <h2>Import a small list</h2>
+              <p class="panel-note">
+                {{ businesses.find((membership) => membership.businessId === selectedBusinessId)?.business.name || "No workspace selected" }}
+              </p>
             </div>
-            <select v-model="selectedBusinessId" class="workspace-select">
-              <option value="" disabled>Select workspace</option>
-              <option
-                v-for="membership in businesses"
-                :key="membership.businessId"
-                :value="membership.businessId"
-              >
-                {{ membership.business.name }}
-              </option>
-            </select>
           </div>
 
           <input v-model="contactImport.listName" class="workspace-input" placeholder="List name" />
@@ -530,6 +529,11 @@ onMounted(() => {
 
 .panel-header h2 {
   margin: 0;
+}
+
+.panel-note {
+  margin: 6px 0 0;
+  color: rgba(59, 46, 40, 0.72);
 }
 
 .workspace-select,

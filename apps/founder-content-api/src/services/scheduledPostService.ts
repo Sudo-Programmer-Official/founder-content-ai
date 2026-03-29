@@ -26,6 +26,7 @@ interface ScheduledPostRow extends QueryResultRow {
   business_id: string;
   user_id: string;
   social_account_id: string | null;
+  social_account_identity_id: string | null;
   platform: "linkedin";
   content_text: string;
   asset_group_id: string | null;
@@ -42,8 +43,9 @@ interface ScheduledPostRow extends QueryResultRow {
   updated_at: Date | string;
 }
 
-interface SocialAccountLookupRow extends QueryResultRow {
+interface SocialPublishingTargetRow extends QueryResultRow {
   id: string;
+  selected_identity_id: string;
 }
 
 function toIsoString(value: Date | string | null | undefined): string | undefined {
@@ -236,14 +238,21 @@ async function enforceMinimumGap(userId: string, scheduledAt: Date): Promise<voi
   }
 }
 
-async function resolveLinkedInSocialAccountId(businessId: string): Promise<string> {
-  const result = await queryDb<SocialAccountLookupRow>(
+async function resolveLinkedInPublishingTarget(businessId: string): Promise<{
+  socialAccountId: string;
+  socialAccountIdentityId: string;
+}> {
+  const result = await queryDb<SocialPublishingTargetRow>(
     `
-      select id
-      from social_accounts
-      where business_id = $1
-        and platform = 'linkedin'
-        and status = 'connected'
+      select
+        bsc.social_account_id as id,
+        bsc.selected_identity_id
+      from business_social_channels bsc
+      join social_accounts sa on sa.id = bsc.social_account_id
+      where bsc.business_id = $1
+        and bsc.platform = 'linkedin'
+        and bsc.status = 'connected'
+        and sa.status = 'connected'
       limit 1
     `,
     [businessId],
@@ -251,7 +260,9 @@ async function resolveLinkedInSocialAccountId(businessId: string): Promise<strin
 
   const socialAccountId = result.rows[0]?.id;
 
-  if (!socialAccountId) {
+  const selectedIdentityId = result.rows[0]?.selected_identity_id;
+
+  if (!socialAccountId || !selectedIdentityId) {
     throw new HttpError(
       409,
       "linkedin_not_connected",
@@ -259,7 +270,10 @@ async function resolveLinkedInSocialAccountId(businessId: string): Promise<strin
     );
   }
 
-  return socialAccountId;
+  return {
+    socialAccountId,
+    socialAccountIdentityId: selectedIdentityId,
+  };
 }
 
 async function recordPublicationEvent(
@@ -358,6 +372,7 @@ async function claimDueScheduledPosts(limit: number): Promise<ScheduledPostRow[]
           sp.business_id,
           sp.user_id,
           sp.social_account_id,
+          sp.social_account_identity_id,
           sp.platform,
           sp.content_text,
           sp.asset_group_id,
@@ -428,13 +443,14 @@ export async function createScheduledPost(
   await requireBusinessMembership(principal, businessId);
   await enforceDailyPostLimit(principal.userId, scheduledAt);
   await enforceMinimumGap(principal.userId, scheduledAt);
-  const socialAccountId = await resolveLinkedInSocialAccountId(businessId);
+  const publishingTarget = await resolveLinkedInPublishingTarget(businessId);
   const result = await queryDb<ScheduledPostRow>(
     `
       insert into scheduled_posts (
         business_id,
         user_id,
         social_account_id,
+        social_account_identity_id,
         platform,
         content_text,
         asset_group_id,
@@ -445,11 +461,12 @@ export async function createScheduledPost(
         $1,
         $2,
         $3,
-        'linkedin',
         $4,
+        'linkedin',
         $5,
-        $6::jsonb,
-        $7,
+        $6,
+        $7::jsonb,
+        $8,
         'scheduled'
       )
       returning
@@ -457,6 +474,7 @@ export async function createScheduledPost(
         business_id,
         user_id,
         social_account_id,
+        social_account_identity_id,
         platform,
         content_text,
         asset_group_id,
@@ -475,7 +493,8 @@ export async function createScheduledPost(
     [
       businessId,
       principal.userId,
-      socialAccountId,
+      publishingTarget.socialAccountId,
+      publishingTarget.socialAccountIdentityId,
       contentText,
       input.assetGroupId?.trim() || `carousel-${Date.now()}`,
       JSON.stringify({ slides }),
@@ -561,6 +580,7 @@ export async function listScheduledPosts(
         business_id,
         user_id,
         social_account_id,
+        social_account_identity_id,
         platform,
         content_text,
         asset_group_id,
@@ -603,6 +623,8 @@ export async function processDueScheduledPosts(limit: number): Promise<{
         businessId: duePost.business_id,
         contentText: duePost.content_text,
         slides: parseSlides(duePost.asset_payload),
+        socialAccountId: duePost.social_account_id,
+        socialAccountIdentityId: duePost.social_account_identity_id,
       });
 
       await markScheduledPostPublished(duePost.id, publishResult);

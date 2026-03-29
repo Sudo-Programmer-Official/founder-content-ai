@@ -57,12 +57,8 @@ watch(
     <div class="panel-header">
       <div>
         <p class="panel-meta">Content Pipeline</p>
-        <h2>Draft → Review → Scheduled → Posted</h2>
+        <h2>Draft → Ready → Scheduled → Posted</h2>
       </div>
-
-      <button type="button" class="dashboard-button secondary" @click="emit('open-creator')">
-        Create
-      </button>
     </div>
 
     <div v-if="empty" class="pipeline-empty-state">

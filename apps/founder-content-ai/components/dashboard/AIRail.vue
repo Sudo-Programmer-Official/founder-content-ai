@@ -23,7 +23,7 @@ const secondarySuggestions = computed(() =>
     <div class="panel-header">
       <div>
         <p class="panel-meta">AI Strategist</p>
-        <h2>Decision Engine</h2>
+        <h2>What to do next</h2>
       </div>
       <span class="topbar-pill">{{ suggestions.length }}</span>
     </div>
@@ -33,7 +33,7 @@ const secondarySuggestions = computed(() =>
       class="primary-recommendation"
       :data-severity="primarySuggestion.severity ?? 'important'"
     >
-      <span class="suggestion-type">Recommended next move</span>
+      <span class="suggestion-type">Next action</span>
       <strong>{{ primarySuggestion.title }}</strong>
       <p>{{ primarySuggestion.description }}</p>
       <button
@@ -71,11 +71,6 @@ const secondarySuggestions = computed(() =>
 </template>
 
 <style scoped>
-.suggestion-panel {
-  position: sticky;
-  top: calc(var(--fc-header-padding-y) + 84px);
-}
-
 .suggestion-grid {
   display: grid;
   gap: 12px;
@@ -93,6 +88,7 @@ const secondarySuggestions = computed(() =>
 
 .primary-recommendation {
   margin-bottom: 12px;
+  padding: 20px;
 }
 
 .primary-recommendation[data-severity="critical"] {
@@ -136,11 +132,5 @@ const secondarySuggestions = computed(() =>
   margin: 0;
   color: var(--fc-text-muted);
   line-height: 1.6;
-}
-
-@media (max-width: 1080px) {
-  .suggestion-panel {
-    position: static;
-  }
 }
 </style>

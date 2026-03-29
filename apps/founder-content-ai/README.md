@@ -8,11 +8,12 @@ The MVP workflow is:
 
 **Idea -> Hook -> Post**
 
-Planned MVP routes:
+Primary product routes:
 
-- `/founder-content-ideas`
-- `/linkedin-hook-generator`
-- `/linkedin-post-generator`
+- `/app/create`
+- `/app/dashboard`
+- `/app/outreach`
+- `/app/growth`
 
 Early SEO entry page:
 

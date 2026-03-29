@@ -10,6 +10,8 @@ import type {
   SchedulePostRequest,
   SchedulePostResponse,
   ScheduledPostsResponse,
+  SelectSocialAccountIdentityRequest,
+  SelectSocialAccountIdentityResponse,
   SocialAccountsResponse,
   StartSocialAuthResponse,
 } from "../../../packages/shared-types";
@@ -46,6 +48,20 @@ export async function requestDisconnectSocialAccount(input: {
     `/social-accounts/${encodeURIComponent(input.accountId)}/disconnect`,
     {
       businessId: input.businessId,
+    },
+  );
+}
+
+export async function requestSelectSocialAccountIdentity(input: {
+  accountId: string;
+  businessId: string;
+  identityId: string;
+}): Promise<SelectSocialAccountIdentityResponse> {
+  return apiPost<SelectSocialAccountIdentityRequest, SelectSocialAccountIdentityResponse>(
+    `/social-accounts/${encodeURIComponent(input.accountId)}/select-identity`,
+    {
+      businessId: input.businessId,
+      identityId: input.identityId,
     },
   );
 }

@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "./access/product-access-context";
 import { useAuthContext } from "./auth/auth-context";
+import WorkspaceSwitcher from "./components/WorkspaceSwitcher.vue";
 import { appRoutes } from "./utils/routes";
 
 const route = useRoute();
@@ -269,6 +270,7 @@ async function handleLogout(): Promise<void> {
           </div>
 
           <div class="workspace-header-actions">
+            <WorkspaceSwitcher class="workspace-header-switcher" />
             <span v-if="userLabel" class="header-user-pill desktop-only">{{ userLabel }}</span>
             <button class="header-secondary-button desktop-only" type="button" @click="handleLogout">
               Logout
@@ -380,6 +382,17 @@ async function handleLogout(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.workspace-header-actions {
+  margin-left: auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.workspace-header-switcher {
+  flex: 1 1 320px;
+  max-width: 380px;
 }
 
 .header-controls.public-controls {
@@ -742,6 +755,10 @@ async function handleLogout(): Promise<void> {
   .workspace-header-actions {
     width: 100%;
     justify-content: space-between;
+  }
+
+  .workspace-header-switcher {
+    max-width: none;
   }
 
   .header-cta {

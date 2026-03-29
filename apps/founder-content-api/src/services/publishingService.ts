@@ -183,6 +183,8 @@ export async function publishLinkedInMultiImagePost(input: {
   businessId: string;
   contentText: string;
   slides: ScheduledPostSlide[];
+  socialAccountId?: string | null;
+  socialAccountIdentityId?: string | null;
 }): Promise<{ externalPostId: string; response: Record<string, unknown> }> {
   if (input.slides.length < 2 || input.slides.length > 20) {
     throw new HttpError(
@@ -192,19 +194,23 @@ export async function publishLinkedInMultiImagePost(input: {
     );
   }
 
-  const credentials = await getLinkedInPublishingCredentialsForBusiness(input.businessId);
+  const credentials = await getLinkedInPublishingCredentialsForBusiness({
+    businessId: input.businessId,
+    socialAccountId: input.socialAccountId,
+    socialAccountIdentityId: input.socialAccountIdentityId,
+  });
   const uploadedSlides = [];
 
   for (const slide of input.slides) {
     uploadedSlides.push(
-      await uploadSlideToLinkedIn(credentials.accessToken, credentials.platformUserUrn, slide),
+      await uploadSlideToLinkedIn(credentials.accessToken, credentials.selectedIdentityUrn, slide),
     );
   }
 
   const postCreation = await createLinkedInPost(
     credentials.accessToken,
     {
-      ...buildBaseLinkedInPostPayload(credentials.platformUserUrn, input.contentText),
+      ...buildBaseLinkedInPostPayload(credentials.selectedIdentityUrn, input.contentText),
       content: {
         multiImage: {
           images: uploadedSlides.map((slide) => ({
@@ -229,6 +235,8 @@ export async function publishLinkedInMultiImagePost(input: {
 export async function publishLinkedInTextPost(input: {
   businessId: string;
   contentText: string;
+  socialAccountId?: string | null;
+  socialAccountIdentityId?: string | null;
 }): Promise<{ externalPostId: string; response: Record<string, unknown> }> {
   const contentText = input.contentText.trim();
 
@@ -236,9 +244,13 @@ export async function publishLinkedInTextPost(input: {
     throw new HttpError(400, "bad_request", "contentText is required.");
   }
 
-  const credentials = await getLinkedInPublishingCredentialsForBusiness(input.businessId);
+  const credentials = await getLinkedInPublishingCredentialsForBusiness({
+    businessId: input.businessId,
+    socialAccountId: input.socialAccountId,
+    socialAccountIdentityId: input.socialAccountIdentityId,
+  });
   return createLinkedInPost(
     credentials.accessToken,
-    buildBaseLinkedInPostPayload(credentials.platformUserUrn, contentText),
+    buildBaseLinkedInPostPayload(credentials.selectedIdentityUrn, contentText),
   );
 }

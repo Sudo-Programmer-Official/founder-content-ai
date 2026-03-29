@@ -23,8 +23,8 @@ import { appRoutes } from "../utils/routes";
 
 const {
   bootstrap: productAccess,
+  activeBusinessId,
   setActiveBusinessId,
-  refreshProductAccess,
   isFeatureEnabled,
 } = useProductAccessContext();
 
@@ -222,9 +222,12 @@ async function loadBusinesses(): Promise<void> {
   const response = await requestMyBusinesses();
   businesses.value = response.businesses;
   selectedBusinessId.value =
-    productAccess.value?.activeBusinessId || response.businesses[0]?.businessId || "";
+    productAccess.value?.activeBusinessId ||
+    activeBusinessId.value ||
+    response.businesses[0]?.businessId ||
+    "";
 
-  if (selectedBusinessId.value) {
+  if (!productAccess.value?.activeBusinessId && selectedBusinessId.value) {
     await setActiveBusinessId(selectedBusinessId.value);
   }
 }
@@ -349,13 +352,15 @@ async function handleStatusUpdate(): Promise<void> {
   }
 }
 
-watch(selectedBusinessId, (businessId, previousBusinessId) => {
+watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (businessId, previousBusinessId) => {
   if (!businessId || businessId === previousBusinessId) {
     return;
   }
 
+  selectedBusinessId.value = businessId;
+
   void (async () => {
-    await Promise.all([setActiveBusinessId(businessId), refreshProductAccess(businessId)]);
+    await loadBusinesses();
     await loadWorkspaceGrowth();
   })();
 });
@@ -381,19 +386,6 @@ onMounted(() => {
     </section>
 
     <section class="dashboard-panel growth-toolbar">
-      <label class="dashboard-field">
-        <span>Workspace</span>
-        <select v-model="selectedBusinessId" class="growth-select">
-          <option
-            v-for="business in businesses"
-            :key="business.businessId"
-            :value="business.businessId"
-          >
-            {{ business.business.name }}
-          </option>
-        </select>
-      </label>
-
       <div class="growth-toolbar-copy">
         <strong>{{ currentBusiness?.business.brandName || currentBusiness?.business.name || "No workspace selected" }}</strong>
         <small>

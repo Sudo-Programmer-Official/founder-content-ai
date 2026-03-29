@@ -24,6 +24,6 @@ const templates = [
     :examples="examples"
     :templates="templates"
     primary-cta="/founder-content-ideas"
-    secondary-cta="/linkedin-post-generator"
+    secondary-cta="/app/create?mode=repurpose"
   />
 </template>

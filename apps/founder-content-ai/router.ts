@@ -18,7 +18,6 @@ import DashboardAnalyticsPage from "./pages/dashboard-analytics.vue";
 import EmailCampaignsPage from "./pages/email-campaigns.vue";
 import FounderContentIdeasPage from "./pages/founder-content-ideas.vue";
 import LinkedInHookGeneratorPage from "./pages/linkedin-hook-generator.vue";
-import LinkedInPostGeneratorPage from "./pages/linkedin-post-generator.vue";
 import LinkedInPostIdeasForFoundersPage from "./pages/linkedin-post-ideas-for-founders.vue";
 import LoginPage from "./pages/login.vue";
 import OnboardingPage from "./pages/onboarding.vue";
@@ -54,15 +53,19 @@ const router = createRouter({
     },
     {
       path: "/app",
-      redirect: "/app/generate",
+      redirect: appRoutes.appCreate,
     },
     {
-      path: "/app/generate",
-      name: "app-generate",
+      path: "/app/create",
+      name: "app-create",
       component: AppGeneratePage,
       meta: {
         requiresAuth: true,
       },
+    },
+    {
+      path: "/app/generate",
+      redirect: appRoutes.appCreate,
     },
     {
       path: "/app/growth",
@@ -207,11 +210,14 @@ const router = createRouter({
     },
     {
       path: "/linkedin-post-generator",
-      name: "linkedin-post-generator",
-      component: LinkedInPostGeneratorPage,
-      meta: {
-        requiresAuth: true,
-      },
+      redirect: (to) => ({
+        path: appRoutes.appCreate,
+        query: {
+          ...to.query,
+          mode: "repurpose",
+        },
+        hash: "#repurpose-panel",
+      }),
     },
     {
       path: "/linkedin-post-ideas-for-founders",
@@ -254,7 +260,7 @@ router.beforeEach(async (to) => {
   }
 
   if (isAuthEntryRoute && hasProtectedAccess) {
-    return appRoutes.appGenerate;
+    return appRoutes.appCreate;
   }
 
   return true;
