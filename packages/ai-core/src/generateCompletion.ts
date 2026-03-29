@@ -13,7 +13,14 @@ interface ChatCompletionResponse {
 
 const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 
-export async function generateCompletion(prompt: string): Promise<string> {
+interface GenerateCompletionOptions {
+  jsonMode?: boolean;
+}
+
+export async function generateCompletion(
+  prompt: string,
+  options: GenerateCompletionOptions = {},
+): Promise<string> {
   const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
@@ -30,6 +37,7 @@ export async function generateCompletion(prompt: string): Promise<string> {
     },
     body: JSON.stringify({
       model,
+      ...(options.jsonMode ? { response_format: { type: "json_object" } } : {}),
       messages: [
         {
           role: "user",

@@ -46,8 +46,60 @@ function stripCodeFences(value: string): string {
     .trim();
 }
 
+function extractJsonObject(value: string): string {
+  const firstObjectIndex = value.indexOf("{");
+  const lastObjectIndex = value.lastIndexOf("}");
+
+  if (firstObjectIndex >= 0 && lastObjectIndex > firstObjectIndex) {
+    return value.slice(firstObjectIndex, lastObjectIndex + 1);
+  }
+
+  return value;
+}
+
 function parseCompletionJson<T>(completion: string): T {
-  return JSON.parse(stripCodeFences(completion)) as T;
+  const stripped = stripCodeFences(completion);
+
+  try {
+    return JSON.parse(stripped) as T;
+  } catch (error) {
+    const extracted = extractJsonObject(stripped);
+
+    if (extracted !== stripped) {
+      return JSON.parse(extracted) as T;
+    }
+
+    throw error;
+  }
+}
+
+async function generateStructuredCompletion(prompt: string): Promise<Record<string, unknown>> {
+  const completion = await generateCompletion(prompt, {
+    jsonMode: true,
+  });
+
+  try {
+    return parseCompletionJson<Record<string, unknown>>(completion);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+
+    const retryPrompt = [
+      prompt.trim(),
+      "",
+      "The previous response was invalid JSON.",
+      `Parsing error: ${error.message}`,
+      "Return the same response again as one valid JSON object only.",
+      "Do not include markdown, comments, trailing text, or partial arrays.",
+    ].join("\n");
+
+    const retryCompletion = await generateCompletion(retryPrompt, {
+      jsonMode: true,
+    });
+
+    return parseCompletionJson<Record<string, unknown>>(retryCompletion);
+  }
 }
 
 export async function generateContent<TFormat extends ContentFormat>(
@@ -56,8 +108,7 @@ export async function generateContent<TFormat extends ContentFormat>(
   const definition = resolveContentDefinition(request.channel, request.format);
   const template = await loadPromptFile(resolveContentPromptPath(definition, request));
   const prompt = buildPrompt(template, definition.buildVariables(request));
-  const completion = await generateCompletion(prompt);
-  const parsed = parseCompletionJson<Record<string, unknown>>(completion);
+  const parsed = await generateStructuredCompletion(prompt);
 
   return definition.normalize(parsed);
 }
