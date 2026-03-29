@@ -1,16 +1,27 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { ContentAsset } from "../../../packages/shared-types";
+import type { ContentAsset, SocialAccount } from "../../../packages/shared-types";
+import { useProductAccessContext } from "../access/product-access-context";
 import { calculateContentScore } from "../composables/useContentScore";
 import { getActivationDraft, type ActivationDraftRecord } from "../services/activation-flow-service";
+import {
+  requestLinkedInSocialAuthStart,
+  requestPublishPost,
+  requestSocialAccounts,
+} from "../services/publishing-service";
 import { appRoutes } from "../utils/routes";
 
 const route = useRoute();
 const router = useRouter();
+const { bootstrap } = useProductAccessContext();
 
 const draft = ref<ActivationDraftRecord | null>(null);
 const feedbackMessage = ref("");
+const socialAccounts = ref<SocialAccount[]>([]);
+const isLoadingChannels = ref(false);
+const isConnectingLinkedIn = ref(false);
+const isPublishingToLinkedIn = ref(false);
 
 const postScore = computed(() =>
   draft.value
@@ -30,22 +41,80 @@ const postScore = computed(() =>
 const quickSignals = computed(() => draft.value?.result.quickSignals);
 const postContent = computed(() => draft.value?.result.post ?? "");
 const hooks = computed(() => draft.value?.result.hooks ?? []);
+const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? "");
+const connectedLinkedInAccount = computed(() =>
+  socialAccounts.value.find(
+    (account) => account.platform === "linkedin" && account.status === "connected",
+  ),
+);
+const connectedLinkedInLabel = computed(() => {
+  const account = connectedLinkedInAccount.value;
+
+  if (!account) {
+    return "";
+  }
+
+  const linkedInName =
+    typeof account.metadata?.linkedInName === "string" ? account.metadata.linkedInName.trim() : "";
+
+  return linkedInName || account.accountEmail || account.platformUserId;
+});
+const linkedInPublishingStatus = computed(() => {
+  if (!activeBusinessId.value) {
+    return "Select a workspace to publish.";
+  }
+
+  if (connectedLinkedInAccount.value) {
+    return connectedLinkedInLabel.value
+      ? `Posting as ${connectedLinkedInLabel.value}`
+      : "Posting optimized for LinkedIn";
+  }
+
+  return "Connect LinkedIn to publish directly.";
+});
 
 function loadDraft(): void {
   const draftId = typeof route.query.id === "string" ? route.query.id : "";
   draft.value = draftId ? getActivationDraft(draftId) : null;
 }
 
-async function copyPost(): Promise<void> {
+async function copyPost(options?: { silent?: boolean }): Promise<boolean> {
   if (!postContent.value.trim() || typeof navigator === "undefined" || !navigator.clipboard) {
-    return;
+    return false;
   }
 
   try {
     await navigator.clipboard.writeText(postContent.value);
-    feedbackMessage.value = "Ready to post. Copied to clipboard.";
+
+    if (!options?.silent) {
+      feedbackMessage.value = "Ready to post. Copied to clipboard.";
+    }
+
+    return true;
   } catch {
-    feedbackMessage.value = "The post is ready. Copy it manually if needed.";
+    if (!options?.silent) {
+      feedbackMessage.value = "The post is ready. Copy it manually if needed.";
+    }
+
+    return false;
+  }
+}
+
+async function loadWorkspaceChannels(): Promise<void> {
+  if (!activeBusinessId.value) {
+    socialAccounts.value = [];
+    return;
+  }
+
+  isLoadingChannels.value = true;
+
+  try {
+    const response = await requestSocialAccounts(activeBusinessId.value);
+    socialAccounts.value = response.accounts;
+  } catch {
+    socialAccounts.value = [];
+  } finally {
+    isLoadingChannels.value = false;
   }
 }
 
@@ -88,6 +157,71 @@ async function goToEmail(): Promise<void> {
   });
 }
 
+async function connectLinkedIn(): Promise<void> {
+  if (!activeBusinessId.value) {
+    feedbackMessage.value = "Select a workspace before connecting LinkedIn.";
+    return;
+  }
+
+  isConnectingLinkedIn.value = true;
+  feedbackMessage.value = "";
+
+  try {
+    const response = await requestLinkedInSocialAuthStart({
+      businessId: activeBusinessId.value,
+      returnPath: route.fullPath,
+    });
+    window.location.assign(response.authorizationUrl);
+  } catch (error) {
+    isConnectingLinkedIn.value = false;
+    feedbackMessage.value =
+      error instanceof Error ? error.message : "Unable to start LinkedIn connection.";
+  }
+}
+
+async function publishToLinkedIn(): Promise<void> {
+  if (!draft.value) {
+    return;
+  }
+
+  if (!activeBusinessId.value) {
+    feedbackMessage.value = "Select a workspace before publishing.";
+    return;
+  }
+
+  if (!connectedLinkedInAccount.value) {
+    await connectLinkedIn();
+    return;
+  }
+
+  isPublishingToLinkedIn.value = true;
+  feedbackMessage.value = "";
+
+  try {
+    const response = await requestPublishPost({
+      businessId: activeBusinessId.value,
+      platform: "linkedin",
+      contentText: postContent.value,
+      assetId: draft.value.result.asset?.id,
+      title: draft.value.result.idea.title,
+    });
+
+    feedbackMessage.value = `Posted to LinkedIn. ${response.externalPostUrl}`;
+  } catch (error) {
+    const copied = await copyPost({ silent: true });
+    const baseMessage =
+      error instanceof Error && error.message.trim() !== ""
+        ? error.message
+        : "Unable to publish to LinkedIn right now.";
+
+    feedbackMessage.value = copied
+      ? `${baseMessage} Optimized caption copied instead.`
+      : baseMessage;
+  } finally {
+    isPublishingToLinkedIn.value = false;
+  }
+}
+
 function handleKeydown(event: KeyboardEvent): void {
   if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || !draft.value) {
     return;
@@ -111,6 +245,40 @@ watch(
   () => route.query.id,
   () => {
     loadDraft();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => activeBusinessId.value,
+  () => {
+    void loadWorkspaceChannels();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [route.query.linkedin, route.query.message],
+  async ([status, message]) => {
+    if (typeof status !== "string" && typeof message !== "string") {
+      return;
+    }
+
+    if (status === "connected") {
+      feedbackMessage.value = "LinkedIn connected. Your post is ready to publish.";
+      await loadWorkspaceChannels();
+    } else if (status === "error") {
+      feedbackMessage.value =
+        typeof message === "string" && message.trim() !== ""
+          ? message
+          : "LinkedIn connection failed.";
+    }
+
+    const nextQuery = { ...route.query };
+    delete nextQuery.linkedin;
+    delete nextQuery.message;
+    void router.replace({ query: nextQuery });
+    isConnectingLinkedIn.value = false;
   },
   { immediate: true },
 );
@@ -151,11 +319,43 @@ onBeforeUnmount(() => {
             <span>{{ quickSignals.formatLabel }}</span>
           </p>
 
+          <div class="linkedin-status-card" :data-connected="Boolean(connectedLinkedInAccount)">
+            <div>
+              <p class="panel-meta">LinkedIn publishing</p>
+              <strong>
+                {{
+                  connectedLinkedInAccount
+                    ? "Posting optimized for LinkedIn"
+                    : "Direct publishing not connected"
+                }}
+              </strong>
+              <p class="linkedin-status-copy">
+                {{ isLoadingChannels ? "Checking workspace channel..." : linkedInPublishingStatus }}
+              </p>
+            </div>
+          </div>
+
           <pre class="post-preview">{{ postContent }}</pre>
 
           <div class="result-actions">
             <button type="button" class="primary-action" @click="goToImprove">Improve</button>
-            <button type="button" class="secondary-action" @click="copyPost">Copy</button>
+            <button type="button" class="secondary-action" @click="copyPost">Copy for LinkedIn</button>
+            <button
+              type="button"
+              class="secondary-action"
+              :disabled="isPublishingToLinkedIn || isConnectingLinkedIn || !activeBusinessId"
+              @click="connectedLinkedInAccount ? publishToLinkedIn() : connectLinkedIn()"
+            >
+              {{
+                connectedLinkedInAccount
+                  ? isPublishingToLinkedIn
+                    ? "Posting..."
+                    : "Post to LinkedIn"
+                  : isConnectingLinkedIn
+                    ? "Redirecting..."
+                    : "Connect LinkedIn"
+              }}
+            </button>
             <button type="button" class="secondary-action" @click="goToOutreach">
               Send via Outreach
             </button>
@@ -303,6 +503,34 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
+.linkedin-status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.linkedin-status-card[data-connected="true"] {
+  background: rgba(56, 142, 60, 0.08);
+  border-color: rgba(56, 142, 60, 0.18);
+}
+
+.linkedin-status-card strong {
+  display: block;
+  line-height: 1.25;
+}
+
+.linkedin-status-copy {
+  margin: 6px 0 0;
+  color: var(--fc-text-muted);
+  line-height: 1.5;
+}
+
 .post-preview {
   margin: 20px 0 0;
   padding: 18px;
@@ -346,6 +574,12 @@ onBeforeUnmount(() => {
   background: transparent;
   color: var(--fc-text);
   cursor: pointer;
+}
+
+.primary-action:disabled,
+.secondary-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .result-feedback,

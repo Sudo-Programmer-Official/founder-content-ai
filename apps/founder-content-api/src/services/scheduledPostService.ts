@@ -1,5 +1,7 @@
 import type { QueryResultRow } from "pg";
 import type {
+  PublishPostRequest,
+  PublishPostResponse,
   SchedulePostRequest,
   SchedulePostResponse,
   ScheduledPost,
@@ -9,12 +11,13 @@ import type {
 } from "../../../../packages/shared-types/index.ts";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { requireBusinessMembership } from "./authBusinessService.ts";
+import { updateContentPipelineItem } from "./controlDashboardService.ts";
 import { queryDb, withDbTransaction } from "./db/client.ts";
 import {
   enforceWorkspaceReadAccess,
   enforceWorkspaceWriteAccess,
 } from "./governanceService.ts";
-import { publishLinkedInMultiImagePost } from "./publishingService.ts";
+import { publishLinkedInMultiImagePost, publishLinkedInTextPost } from "./publishingService.ts";
 import { HttpError } from "../utils/http.ts";
 import { logError, logInfo } from "../utils/logger.ts";
 
@@ -487,6 +490,60 @@ export async function createScheduledPost(
 
   return {
     scheduledPost: mapScheduledPost(result.rows[0]),
+  };
+}
+
+export async function publishPostNow(
+  principal: AuthenticatedPrincipal,
+  input: PublishPostRequest,
+): Promise<PublishPostResponse> {
+  const businessId = input.businessId.trim();
+  const contentText = input.contentText.trim();
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "control_dashboard",
+  });
+  await requireBusinessMembership(principal, businessId);
+
+  if (input.platform !== "linkedin") {
+    throw new HttpError(400, "bad_request", "Only LinkedIn publishing is supported.");
+  }
+
+  if (!contentText) {
+    throw new HttpError(400, "bad_request", "contentText is required.");
+  }
+
+  const publishResult = await publishLinkedInTextPost({
+    businessId,
+    contentText,
+  });
+
+  const externalPostUrl = `https://www.linkedin.com/feed/update/${encodeURIComponent(publishResult.externalPostId)}`;
+  let asset: PublishPostResponse["asset"];
+
+  if (input.assetId?.trim()) {
+    const pipelineUpdate = await updateContentPipelineItem(
+      principal,
+      businessId,
+      input.assetId.trim(),
+      {
+        title: input.title?.trim() || undefined,
+        textContent: contentText,
+        status: "posted",
+      },
+    );
+
+    asset = pipelineUpdate.asset;
+  }
+
+  return {
+    platform: "linkedin",
+    externalPostId: publishResult.externalPostId,
+    externalPostUrl,
+    publishedAt: new Date().toISOString(),
+    asset,
   };
 }
 

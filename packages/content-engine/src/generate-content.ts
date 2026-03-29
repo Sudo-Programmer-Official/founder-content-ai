@@ -108,7 +108,7 @@ export async function generateContent<TFormat extends ContentFormat>(
   const definition = resolveContentDefinition(request.channel, request.format);
   const template = await loadPromptFile(resolveContentPromptPath(definition, request));
   const prompt = buildPrompt(template, definition.buildVariables(request));
-  const parsed = await generateStructuredCompletion(prompt);
+  const parsed = definition.validate(await generateStructuredCompletion(prompt));
 
   return definition.normalize(parsed);
 }

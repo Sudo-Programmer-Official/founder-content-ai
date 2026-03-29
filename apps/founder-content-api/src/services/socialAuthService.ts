@@ -139,14 +139,33 @@ function resolveFrontendAppUrl(): string {
   return firstConfiguredOrigin ?? "http://localhost:5173";
 }
 
-function sanitizeReturnPath(value: string | undefined): string {
+function resolveReturnLocation(value: string | undefined): {
+  pathname: string;
+  search: string;
+  hash: string;
+} {
   const normalized = value?.trim();
 
   if (!normalized || !normalized.startsWith("/") || normalized.startsWith("//")) {
-    return "/linkedin-post-generator";
+    return {
+      pathname: "/linkedin-post-generator",
+      search: "",
+      hash: "",
+    };
   }
 
-  return normalized;
+  const parsed = new URL(normalized, "https://foundercontent.ai");
+
+  return {
+    pathname: parsed.pathname,
+    search: parsed.search,
+    hash: parsed.hash,
+  };
+}
+
+function sanitizeReturnPath(value: string | undefined): string {
+  const location = resolveReturnLocation(value);
+  return `${location.pathname}${location.search}${location.hash}`;
 }
 
 function buildRedirectUrl(
@@ -155,7 +174,10 @@ function buildRedirectUrl(
   message?: string,
 ): string {
   const url = new URL(resolveFrontendAppUrl());
-  url.pathname = sanitizeReturnPath(returnPath);
+  const location = resolveReturnLocation(returnPath);
+  url.pathname = location.pathname;
+  url.search = location.search;
+  url.hash = location.hash;
   url.searchParams.set("linkedin", status);
 
   if (message) {

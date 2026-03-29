@@ -17,6 +17,7 @@ import type {
 interface ContentDefinition<TFormat extends ContentFormat> {
   promptPath: string | ((request: GenerateContentRequest<TFormat>) => string);
   buildVariables: (request: GenerateContentRequest<TFormat>) => ContentVariables;
+  validate: (parsed: Record<string, unknown>) => Record<string, unknown>;
   normalize: (parsed: Record<string, unknown>) => ContentResultMap[TFormat];
 }
 
@@ -34,6 +35,10 @@ function normalizeInput(input: GenerateContentRequest["input"]): ContentVariable
   return Object.fromEntries(
     Object.entries(input).map(([key, value]) => [key, typeof value === "string" ? value.trim() : undefined]),
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function requireField(
@@ -74,6 +79,128 @@ function normalizeIdeaEntry(
         ? entry.angle.trim()
         : "Founder-specific content angle.",
   };
+}
+
+function validateIdeaEntry(
+  idea: unknown,
+  context: string,
+): Record<string, unknown> {
+  if (!isRecord(idea)) {
+    throw new Error(`${context} must be an object.`);
+  }
+
+  const hasTitle = typeof idea.title === "string" && idea.title.trim() !== "";
+  const hasAngle = typeof idea.angle === "string" && idea.angle.trim() !== "";
+
+  if (!hasTitle && !hasAngle) {
+    throw new Error(`${context} must include a title or angle.`);
+  }
+
+  return idea;
+}
+
+function requireArrayField(
+  parsed: Record<string, unknown>,
+  key: string,
+  message: string,
+): unknown[] {
+  const value = parsed[key];
+
+  if (!Array.isArray(value)) {
+    throw new Error(message);
+  }
+
+  return value;
+}
+
+function requireRecordField(
+  parsed: Record<string, unknown>,
+  key: string,
+  message: string,
+): Record<string, unknown> {
+  const value = parsed[key];
+
+  if (!isRecord(value)) {
+    throw new Error(message);
+  }
+
+  return value;
+}
+
+function validateIdeasPayload(parsed: Record<string, unknown>): Record<string, unknown> {
+  const ideas = requireArrayField(parsed, "ideas", "Idea generation must return an ideas array.");
+
+  if (ideas.length === 0) {
+    throw new Error("Idea generation returned an empty ideas array.");
+  }
+
+  ideas.forEach((idea, index) => {
+    validateIdeaEntry(idea, `ideas[${index}]`);
+  });
+
+  return parsed;
+}
+
+function validateHooksPayload(parsed: Record<string, unknown>): Record<string, unknown> {
+  const hooks = requireArrayField(parsed, "hooks", "Hook generation must return a hooks array.");
+
+  if (hooks.length === 0) {
+    throw new Error("Hook generation returned an empty hooks array.");
+  }
+
+  hooks.forEach((hook, index) => {
+    if (typeof hook !== "string" || hook.trim() === "") {
+      throw new Error(`hooks[${index}] must be a non-empty string.`);
+    }
+  });
+
+  return parsed;
+}
+
+function validateVariationsPayload(parsed: Record<string, unknown>): Record<string, unknown> {
+  const variations = requireArrayField(
+    parsed,
+    "variations",
+    "Post generation must return a variations array.",
+  );
+
+  if (variations.length === 0) {
+    throw new Error("Post generation returned an empty variations array.");
+  }
+
+  variations.forEach((variation, index) => {
+    if (!isRecord(variation)) {
+      throw new Error(`variations[${index}] must be an object.`);
+    }
+
+    if (typeof variation.content !== "string" || variation.content.trim() === "") {
+      throw new Error(`variations[${index}].content must be a non-empty string.`);
+    }
+  });
+
+  return parsed;
+}
+
+function validateStructuredContentPayload(parsed: Record<string, unknown>): Record<string, unknown> {
+  const idea = requireRecordField(
+    parsed,
+    "idea",
+    "Structured content generation must return an idea object.",
+  );
+  validateIdeaEntry(idea, "idea");
+
+  validateHooksPayload(parsed);
+
+  const post = parsed.post;
+  const hasStringPost = typeof post === "string" && post.trim() !== "";
+  const hasObjectPost =
+    isRecord(post) && typeof post.content === "string" && post.content.trim() !== "";
+
+  if (!hasStringPost && !hasObjectPost) {
+    throw new Error("Structured content generation must return a post string or post.content.");
+  }
+
+  return parsed;
 }
 
 function normalizeIdeas(ideas: unknown): IdeaOption[] {
@@ -198,6 +325,7 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           platform_context: serializePlatformContext(request.platformContext),
         };
       },
+      validate: (parsed) => validateIdeasPayload(parsed),
       normalize: (parsed) => ({
         ideas: normalizeIdeas(parsed.ideas),
       }),
@@ -213,6 +341,7 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           platform_context: serializePlatformContext(request.platformContext),
         };
       },
+      validate: (parsed) => validateHooksPayload(parsed),
       normalize: (parsed) => ({
         hooks: normalizeHooks(parsed.hooks),
       }),
@@ -232,6 +361,7 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           platform_context: serializePlatformContext(request.platformContext),
         };
       },
+      validate: (parsed) => validateVariationsPayload(parsed),
       normalize: (parsed) => ({
         variations: normalizeVariations(parsed.variations),
       }),
@@ -256,6 +386,7 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           platform_context: serializePlatformContext(request.platformContext),
         };
       },
+      validate: (parsed) => validateStructuredContentPayload(parsed),
       normalize: (parsed) => normalizeStructuredContent(parsed),
     },
   },

@@ -1,12 +1,18 @@
 import type {
   ApiError,
+  PublishPostRequest,
+  PublishPostResponse,
   SchedulePostRequest,
   SchedulePostResponse,
   ScheduledPostsQuery,
   ScheduledPostsResponse,
 } from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
-import { createScheduledPost, listScheduledPosts } from "../services/scheduledPostService.ts";
+import {
+  createScheduledPost,
+  listScheduledPosts,
+  publishPostNow,
+} from "../services/scheduledPostService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
 export async function schedulePost(
@@ -80,6 +86,47 @@ export async function getScheduledPosts(
       code: "scheduled_posts_lookup_failed",
       message: "Unable to load scheduled posts.",
       logMessage: "Failed to load scheduled posts.",
+    });
+  }
+}
+
+export async function publishPost(
+  request: Request<unknown, PublishPostResponse | ApiError, Partial<PublishPostRequest>>,
+  response: Response<PublishPostResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  if (request.body?.platform !== "linkedin") {
+    sendApiError(response, 400, "bad_request", "Only LinkedIn publishing is supported.");
+    return;
+  }
+
+  try {
+    response.status(201).json(
+      await publishPostNow(request.auth, {
+        businessId,
+        platform: "linkedin",
+        contentText: request.body?.contentText?.trim() ?? "",
+        assetId: request.body?.assetId?.trim(),
+        title: request.body?.title?.trim(),
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "publish_post_failed",
+      message: "Unable to publish to LinkedIn.",
+      logMessage: "Failed to publish LinkedIn post.",
     });
   }
 }

@@ -3,6 +3,8 @@ import type {
   DisconnectSocialAccountResponse,
   GenerateHashtagsRequest,
   GenerateHashtagsResponse,
+  PublishPostRequest,
+  PublishPostResponse,
   RecommendPostTimeContentType,
   RecommendPostTimeResponse,
   SchedulePostRequest,
@@ -52,6 +54,12 @@ export async function requestSchedulePost(
   input: SchedulePostRequest,
 ): Promise<SchedulePostResponse> {
   return apiPost<SchedulePostRequest, SchedulePostResponse>("/schedule-post", input);
+}
+
+export async function requestPublishPost(
+  input: PublishPostRequest,
+): Promise<PublishPostResponse> {
+  return apiPost<PublishPostRequest, PublishPostResponse>("/publish-post", input);
 }
 
 export async function requestScheduledPosts(

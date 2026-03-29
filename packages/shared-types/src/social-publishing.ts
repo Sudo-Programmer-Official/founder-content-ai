@@ -124,6 +124,22 @@ export interface SchedulePostResponse {
   scheduledPost: ScheduledPost;
 }
 
+export interface PublishPostRequest {
+  businessId: string;
+  platform: SocialPlatform;
+  contentText: string;
+  assetId?: string;
+  title?: string;
+}
+
+export interface PublishPostResponse {
+  platform: SocialPlatform;
+  externalPostId: string;
+  externalPostUrl: string;
+  publishedAt: string;
+  asset?: import("./analytics.ts").ContentAsset;
+}
+
 export interface ScheduledPostsQuery {
   businessId: string;
   platform?: SocialPlatform;

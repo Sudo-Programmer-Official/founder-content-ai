@@ -19,6 +19,11 @@ interface LinkedInErrorPayload {
   error_description?: string;
 }
 
+interface LinkedInPostCreationResult {
+  externalPostId: string;
+  response: Record<string, unknown>;
+}
+
 function resolveLinkedInApiVersion(): string {
   return process.env.LINKEDIN_API_VERSION?.trim() || "202602";
 }
@@ -45,6 +50,63 @@ function parseDataUrl(dataUrl: string): { mimeType: string; bytes: Buffer } {
   return {
     mimeType: match[1].toLowerCase(),
     bytes: Buffer.from(match[2], "base64"),
+  };
+}
+
+function buildBaseLinkedInPostPayload(authorUrn: string, commentary: string): Record<string, unknown> {
+  return {
+    author: authorUrn,
+    commentary,
+    visibility: "PUBLIC",
+    distribution: {
+      feedDistribution: "MAIN_FEED",
+      targetEntities: [],
+      thirdPartyDistributionChannels: [],
+    },
+    lifecycleState: "PUBLISHED",
+    isReshareDisabledByAuthor: false,
+  };
+}
+
+async function createLinkedInPost(
+  accessToken: string,
+  payload: Record<string, unknown>,
+): Promise<LinkedInPostCreationResult> {
+  const postResponse = await fetch(LINKEDIN_POSTS_API_URL, {
+    method: "POST",
+    headers: buildLinkedInHeaders(accessToken),
+    body: JSON.stringify(payload),
+  });
+
+  if (!postResponse.ok) {
+    const responsePayload = (await postResponse.json().catch(() => ({}))) as LinkedInErrorPayload;
+    throw new HttpError(
+      502,
+      "linkedin_post_failed",
+      responsePayload.message ??
+        responsePayload.error_description ??
+        "LinkedIn post creation failed.",
+    );
+  }
+
+  const externalPostId =
+    postResponse.headers.get("x-restli-id") ||
+    postResponse.headers.get("x-linkedin-id") ||
+    "";
+
+  if (!externalPostId) {
+    throw new HttpError(
+      502,
+      "linkedin_post_failed",
+      "LinkedIn post creation succeeded without returning a post identifier.",
+    );
+  }
+
+  return {
+    externalPostId,
+    response: {
+      externalPostId,
+    },
   };
 }
 
@@ -139,20 +201,10 @@ export async function publishLinkedInMultiImagePost(input: {
     );
   }
 
-  const postResponse = await fetch(LINKEDIN_POSTS_API_URL, {
-    method: "POST",
-    headers: buildLinkedInHeaders(credentials.accessToken),
-    body: JSON.stringify({
-      author: credentials.platformUserUrn,
-      commentary: input.contentText,
-      visibility: "PUBLIC",
-      distribution: {
-        feedDistribution: "MAIN_FEED",
-        targetEntities: [],
-        thirdPartyDistributionChannels: [],
-      },
-      lifecycleState: "PUBLISHED",
-      isReshareDisabledByAuthor: false,
+  const postCreation = await createLinkedInPost(
+    credentials.accessToken,
+    {
+      ...buildBaseLinkedInPostPayload(credentials.platformUserUrn, input.contentText),
       content: {
         multiImage: {
           images: uploadedSlides.map((slide) => ({
@@ -162,36 +214,31 @@ export async function publishLinkedInMultiImagePost(input: {
           })),
         },
       },
-    }),
-  });
-
-  if (!postResponse.ok) {
-    const payload = (await postResponse.json().catch(() => ({}))) as LinkedInErrorPayload;
-    throw new HttpError(
-      502,
-      "linkedin_post_failed",
-      payload.message ?? payload.error_description ?? "LinkedIn post creation failed.",
-    );
-  }
-
-  const externalPostId =
-    postResponse.headers.get("x-restli-id") ||
-    postResponse.headers.get("x-linkedin-id") ||
-    "";
-
-  if (!externalPostId) {
-    throw new HttpError(
-      502,
-      "linkedin_post_failed",
-      "LinkedIn post creation succeeded without returning a post identifier.",
-    );
-  }
+    },
+  );
 
   return {
-    externalPostId,
+    externalPostId: postCreation.externalPostId,
     response: {
-      externalPostId,
+      ...postCreation.response,
       uploadedImageCount: uploadedSlides.length,
     },
   };
+}
+
+export async function publishLinkedInTextPost(input: {
+  businessId: string;
+  contentText: string;
+}): Promise<{ externalPostId: string; response: Record<string, unknown> }> {
+  const contentText = input.contentText.trim();
+
+  if (!contentText) {
+    throw new HttpError(400, "bad_request", "contentText is required.");
+  }
+
+  const credentials = await getLinkedInPublishingCredentialsForBusiness(input.businessId);
+  return createLinkedInPost(
+    credentials.accessToken,
+    buildBaseLinkedInPostPayload(credentials.platformUserUrn, contentText),
+  );
 }
