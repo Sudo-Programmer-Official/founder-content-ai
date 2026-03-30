@@ -963,12 +963,12 @@ async function scheduleDraft(): Promise<void> {
         assetGroupId: ensuredPostId,
         ignoreSafetyWarnings: true,
       });
-      feedbackMessage.value = "Scheduled with a manual safety override.";
+      feedbackMessage.value = "Queued for dispatch with a manual safety override.";
     }
 
     isSchedulePanelOpen.value = false;
     if (!feedbackMessage.value) {
-      feedbackMessage.value = `Scheduled for ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
+      feedbackMessage.value = `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
     }
   } catch (error) {
     scheduleFeedback.value =

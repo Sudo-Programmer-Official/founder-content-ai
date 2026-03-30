@@ -2,7 +2,7 @@ import type { EmailCampaignStats } from "../../../../../packages/shared-types/in
 import type { QueryResultRow } from "pg";
 import { queryDb } from "../db/client.ts";
 import { logInfo, logWarn } from "../../utils/logger.ts";
-import { sendPlatformEmail } from "./emailTransportService.ts";
+import { isReservedRecipientEmail, sendPlatformEmail } from "./emailTransportService.ts";
 
 type EmailCampaignNotificationEvent = "started" | "completed" | "failed";
 
@@ -314,6 +314,16 @@ export async function sendEmailCampaignLifecycleNotification(input: {
         campaignId: input.campaignId,
         eventType: input.eventType,
         userId: campaign.owner_user_id,
+      });
+      return;
+    }
+
+    if (isReservedRecipientEmail(campaign.owner_email)) {
+      logWarn("Skipped email campaign notification because the owner email is a placeholder.", {
+        campaignId: input.campaignId,
+        eventType: input.eventType,
+        userId: campaign.owner_user_id,
+        ownerEmail: campaign.owner_email,
       });
       return;
     }

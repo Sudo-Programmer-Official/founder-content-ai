@@ -21,6 +21,11 @@ import {
 import { saveRepurposeSeed } from "../utils/repurpose-loop";
 import { appRoutes } from "../utils/routes";
 import {
+  formatScheduledPostDispatchWindow,
+  resolveScheduledPostStatusLabel,
+  resolveScheduledPostStatusSummary,
+} from "../utils/scheduled-post-status";
+import {
   convertZonedDateTimeToUtcIso,
   detectUserTimezone,
   formatDateInTimezone,
@@ -33,7 +38,7 @@ type HistoryTab = "published" | "scheduled" | "failed" | "all";
 
 const HISTORY_TABS: { id: HistoryTab; label: string }[] = [
   { id: "published", label: "Posted" },
-  { id: "scheduled", label: "Scheduled" },
+  { id: "scheduled", label: "Queued" },
   { id: "failed", label: "Failed" },
   { id: "all", label: "All" },
 ];
@@ -146,23 +151,6 @@ function getMediaCount(post: ScheduledPost): number {
   return post.assets.length > 0 ? post.assets.length : post.slides.length;
 }
 
-function resolveStatusLabel(status: ScheduledPostStatus): string {
-  switch (status) {
-    case "published":
-      return "Posted";
-    case "processing":
-      return "Publishing";
-    case "paused":
-      return "Paused";
-    case "failed":
-      return "Failed";
-    case "canceled":
-      return "Canceled";
-    default:
-      return "Scheduled";
-  }
-}
-
 function resolveStatusTone(status: ScheduledPostStatus): "default" | "success" | "warning" | "danger" {
   switch (status) {
     case "published":
@@ -236,7 +224,7 @@ const filteredPosts = computed(() =>
     return (
       getDisplayTitle(post).toLowerCase().includes(query) ||
       post.contentText.toLowerCase().includes(query) ||
-      resolveStatusLabel(post.status).toLowerCase().includes(query)
+      resolveScheduledPostStatusLabel(post.status).toLowerCase().includes(query)
     );
   }),
 );
@@ -305,7 +293,7 @@ const overviewCards = computed(() => {
 
   return [
     { label: "Posted", value: String(published), tone: published > 0 ? "success" : "default" },
-    { label: "Scheduled", value: String(scheduled), tone: "default" },
+    { label: "Queued", value: String(scheduled), tone: "default" },
     { label: "Failed", value: String(failed), tone: failed > 0 ? "danger" : "default" },
     { label: "With media", value: String(withMedia), tone: withMedia > 0 ? "warning" : "default" },
   ] as const;
@@ -343,13 +331,6 @@ const selectedScheduledPostNeedsReconnect = computed(() => {
   const message = selectedScheduledPost.value?.errorMessage?.toLowerCase() || "";
   return message.includes("reconnect linkedin") || message.includes("connection expired");
 });
-
-function formatDispatchWindow(post: ScheduledPost): string {
-  return `${formatTimeWithZone(post.earliestDispatchAt, post.audienceTimezone)} - ${formatTimeWithZone(
-    post.latestDispatchAt,
-    post.audienceTimezone,
-  )}`;
-}
 
 function resolveIdentityTypeLabel(post: ScheduledPost): string {
   if (post.selectedIdentityType === "organization") {
@@ -829,7 +810,7 @@ onMounted(() => {
           <div>
             <p class="workspace-chip">Execution stream · {{ userTimezone }}</p>
             <p class="workspace-description compact">
-              Posted items confirm output. Failed items are the recovery queue. Scheduled items show what is still ahead.
+              Posted items confirm output. Failed items are the recovery queue. Queued items show what is waiting for dispatch.
             </p>
           </div>
 
@@ -906,7 +887,7 @@ onMounted(() => {
             <div class="history-row-topline">
               <div class="history-chip-row">
                 <span class="workspace-chip">LI</span>
-                <span class="workspace-chip">{{ resolveStatusLabel(post.status) }}</span>
+                <span class="workspace-chip">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
                 <span v-if="post.selectedIdentityDisplayName" class="workspace-chip">
                   {{ resolveSelectedIdentityLabel(post) }}
                 </span>
@@ -940,10 +921,10 @@ onMounted(() => {
 
       <aside class="workspace-card history-sidebar">
         <template v-if="selectedScheduledPost">
-          <p class="workspace-eyebrow">Selected post</p>
+          <p class="workspace-eyebrow">Selected slot</p>
           <h2>{{ getDisplayTitle(selectedScheduledPost) }}</h2>
           <p class="workspace-description compact">
-            {{ resolveStatusLabel(selectedScheduledPost.status) }} ·
+            {{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }} ·
             {{
               formatDateInTimezone(
                 selectedScheduledPost.status === "published"
@@ -974,10 +955,13 @@ onMounted(() => {
           <p class="workspace-description compact">
             Publishing as {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
           </p>
+          <p class="workspace-description compact">
+            {{ resolveScheduledPostStatusSummary(selectedScheduledPost) }}
+          </p>
 
           <article class="history-preview-card">
             <div class="history-preview-chip-row">
-              <p class="workspace-chip">{{ resolveStatusLabel(selectedScheduledPost.status) }}</p>
+              <p class="workspace-chip">{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</p>
               <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
                 {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
               </p>
@@ -1016,7 +1000,7 @@ onMounted(() => {
           </div>
 
           <p class="workspace-description compact">
-            Dispatch window: {{ formatDispatchWindow(selectedScheduledPost) }}
+            Dispatch window: {{ formatScheduledPostDispatchWindow(selectedScheduledPost) }}
           </p>
 
           <div v-if="selectedScheduledPostCanReschedule" class="history-inline-section">

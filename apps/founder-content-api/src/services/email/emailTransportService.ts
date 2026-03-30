@@ -20,6 +20,15 @@ export interface SentPlatformEmailResult {
   sentAt: string;
 }
 
+const RESERVED_RECIPIENT_DOMAINS = new Set([
+  "example.com",
+  "example.net",
+  "example.org",
+  "invalid",
+  "localhost",
+  "test",
+]);
+
 function shouldUseLogTransport(): boolean {
   return !resolveSesCredentials() || !process.env.SYSTEM_FROM_EMAIL?.trim();
 }
@@ -33,10 +42,46 @@ function formatFromAddress(fromEmail: string, fromName?: string): string {
   return sanitizedName === "" ? fromEmail : `"${sanitizedName}" <${fromEmail}>`;
 }
 
+function normalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function extractDomain(value: string): string {
+  const normalized = normalizeEmail(value);
+  const atIndex = normalized.lastIndexOf("@");
+  return atIndex >= 0 ? normalized.slice(atIndex + 1) : "";
+}
+
+export function isReservedRecipientEmail(value: string): boolean {
+  const normalized = normalizeEmail(value);
+  const domain = extractDomain(normalized);
+
+  return (
+    normalized === "" ||
+    domain === "" ||
+    RESERVED_RECIPIENT_DOMAINS.has(domain) ||
+    domain.endsWith(".local")
+  );
+}
+
 export async function sendPlatformEmail(
   input: SendPlatformEmailInput,
 ): Promise<SentPlatformEmailResult> {
   const now = new Date();
+  const normalizedRecipient = normalizeEmail(input.toEmail);
+
+  if (isReservedRecipientEmail(normalizedRecipient)) {
+    logWarn("Blocked email send to reserved or placeholder recipient.", {
+      toEmail: normalizedRecipient,
+      subject: input.subject,
+    });
+
+    throw new HttpError(
+      400,
+      "email_recipient_invalid",
+      "Refusing to send email to a placeholder or reserved recipient address.",
+    );
+  }
 
   if (shouldUseLogTransport()) {
     const messageId = `log-${crypto.randomUUID()}`;

@@ -39,6 +39,11 @@ import {
   toDateKeyInTimezone,
   toTimeValueInTimezone,
 } from "../utils/timezone";
+import {
+  formatScheduledPostDispatchWindow,
+  resolveScheduledPostStatusLabel,
+  resolveScheduledPostStatusSummary,
+} from "../utils/scheduled-post-status";
 
 interface PlannerDayModel {
   key: string;
@@ -266,7 +271,7 @@ const plannerCards = computed(() => {
 
   return [
     { label: "Open days", value: String(gapDays.value.length), tone: gapDays.value.length > 2 ? "warning" : "default" },
-    { label: "Scheduled this week", value: String(scheduledCount), tone: "default" },
+    { label: "Queued this week", value: String(scheduledCount), tone: "default" },
     { label: "Published this week", value: String(postedCount), tone: postedCount > 0 ? "success" : "default" },
     { label: "Current streak", value: streakDays > 0 ? `${streakDays}d` : "0d", tone: streakDays > 0 ? "success" : "default" },
   ] as const;
@@ -386,13 +391,6 @@ const selectedScheduledPostNeedsReconnect = computed(() => {
   return message.includes("reconnect linkedin") || message.includes("connection expired");
 });
 
-function formatDispatchWindow(post: ScheduledPost): string {
-  return `${formatTimeWithZone(post.earliestDispatchAt, post.audienceTimezone)} - ${formatTimeWithZone(
-    post.latestDispatchAt,
-    post.audienceTimezone,
-  )}`;
-}
-
 function resolveIdentityTypeLabel(post: ScheduledPost): string {
   if (post.selectedIdentityType === "organization") {
     return "Page";
@@ -484,23 +482,6 @@ async function reconnectLinkedIn(): Promise<void> {
       error instanceof Error ? error.message : "Unable to start LinkedIn reconnection.";
   } finally {
     isConnectingLinkedIn.value = false;
-  }
-}
-
-function resolveStatusLabel(status: ScheduledPostStatus): string {
-  switch (status) {
-    case "paused":
-      return "Paused";
-    case "canceled":
-      return "Canceled";
-    case "processing":
-      return "Processing";
-    case "published":
-      return "Posted";
-    case "failed":
-      return "Failed";
-    default:
-      return "Scheduled";
   }
 }
 
@@ -1378,19 +1359,19 @@ onMounted(() => {
             <p class="planner-day-label">{{ day.longLabel }}</p>
 
             <div v-if="day.posts.length === 0" class="planner-gap-state">
-              <strong>{{ day.isToday ? "Today is quiet." : "This slot is open." }}</strong>
+              <strong>{{ day.isToday ? "Today is quiet." : "Open slot." }}</strong>
               <span>
                 {{
                   day.isGap
-                    ? "Show up here or the week loses momentum."
-                    : "Use it only if another post clearly earns the space."
+                    ? "Fill it before the week loses momentum."
+                    : "Only use it if another post clearly earns the space."
                 }}
               </span>
             </div>
 
             <ul v-if="day.posts.length > 0" class="planner-day-posts">
               <li
-                v-for="post in day.posts.slice(0, 3)"
+                v-for="post in day.posts.slice(0, 2)"
                 :key="post.id"
                 class="planner-post-pill"
                 :data-tone="resolveStatusTone(post.status)"
@@ -1403,18 +1384,21 @@ onMounted(() => {
                       📎 {{ getMediaCount(post) }}
                     </span>
                   </div>
-                  <span class="planner-status-pill">{{ resolveStatusLabel(post.status) }}</span>
+                  <span class="planner-status-pill">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
                 </div>
-                <strong>{{ buildExcerpt(post.contentText, 60) }}</strong>
+                <strong>{{ buildExcerpt(post.contentText, 44) }}</strong>
                 <span class="planner-post-time">
                   {{ formatTimeWithZone(post.scheduledAt, post.audienceTimezone) }}
                 </span>
-                <span class="planner-post-time secondary">
+                <span
+                  v-if="post.audienceTimezone !== userTimezone"
+                  class="planner-post-time secondary"
+                >
                   Your time: {{ formatTimeWithZone(post.scheduledAt, userTimezone) }}
                 </span>
               </li>
-              <li v-if="day.posts.length > 3" class="planner-post-overflow">
-                +{{ day.posts.length - 3 }} more
+              <li v-if="day.posts.length > 2" class="planner-post-overflow">
+                +{{ day.posts.length - 2 }} more in queue
               </li>
             </ul>
 
@@ -1449,10 +1433,13 @@ onMounted(() => {
             Your time: {{ formatTimeWithZone(selectedScheduledPost.scheduledAt, userTimezone) }}
           </p>
           <p class="workspace-description compact">
-            Dispatch window: {{ formatDispatchWindow(selectedScheduledPost) }}
+            Dispatch window: {{ formatScheduledPostDispatchWindow(selectedScheduledPost) }}
           </p>
           <p class="workspace-description compact">
             Publishing as {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
+          </p>
+          <p class="workspace-description compact">
+            {{ resolveScheduledPostStatusSummary(selectedScheduledPost) }}
           </p>
           <p class="workspace-description compact">
             {{ selectedDayPosts.length }} scheduled item{{ selectedDayPosts.length === 1 ? "" : "s" }} on
@@ -1461,7 +1448,7 @@ onMounted(() => {
 
           <article class="planner-preview-card">
             <div class="planner-preview-chip-row">
-              <p class="workspace-chip">{{ resolveStatusLabel(selectedScheduledPost.status) }}</p>
+              <p class="workspace-chip">{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</p>
               <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
                 {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
               </p>
@@ -1645,7 +1632,7 @@ onMounted(() => {
                 <div class="planner-day-schedule-card-header">
                   <div class="planner-pill-stack">
                     <span class="planner-platform-pill">LinkedIn</span>
-                    <span class="planner-status-pill">{{ resolveStatusLabel(post.status) }}</span>
+                    <span class="planner-status-pill">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
                     <span v-if="post.selectedIdentityDisplayName" class="planner-status-pill subtle">
                       {{ resolveSelectedIdentityLabel(post) }}
                     </span>
@@ -2115,16 +2102,20 @@ onMounted(() => {
   width: 100%;
   border: 1px dashed rgba(204, 102, 45, 0.28);
   border-radius: 0.95rem;
-  background: rgba(255, 247, 239, 0.92);
+  background: linear-gradient(180deg, rgba(255, 247, 239, 0.98), rgba(255, 241, 228, 0.92));
   color: #c76528;
   font: inherit;
   font-weight: 600;
-  padding: 0.75rem 0.9rem;
+  padding: 0.68rem 0.85rem;
   cursor: pointer;
+  box-shadow: 0 8px 18px rgba(145, 84, 39, 0.05);
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
 }
 
 .planner-day-add-button:hover {
   border-color: rgba(204, 102, 45, 0.42);
+  transform: translateY(-1px);
+  box-shadow: 0 12px 22px rgba(145, 84, 39, 0.09);
 }
 
 .workspace-secondary-button.compact,
@@ -2166,39 +2157,78 @@ onMounted(() => {
 }
 
 .planner-week-grid {
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(12.5rem, 1fr));
+  gap: 1rem;
+  overflow-x: auto;
+  padding: 0.25rem 0.1rem 0.7rem;
+  align-items: stretch;
+  scrollbar-width: thin;
 }
 
 .planner-day-card {
+  position: relative;
+  isolation: isolate;
   display: grid;
-  gap: 0.8rem;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 0.72rem;
   align-content: start;
-  min-height: 16.5rem;
+  min-height: 14.25rem;
   border: 1px solid rgba(60, 41, 30, 0.1);
-  border-radius: 1.2rem;
+  border-radius: 1.35rem;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 249, 243, 0.9));
-  padding: 1rem 1rem 1.05rem;
+    linear-gradient(165deg, rgba(255, 255, 255, 0.97), rgba(255, 247, 238, 0.94) 62%, rgba(253, 238, 223, 0.9));
+  padding: 0.95rem 0.95rem 0.9rem;
   text-align: left;
   color: inherit;
-  box-shadow: 0 14px 30px rgba(145, 84, 39, 0.05);
+  box-shadow:
+    0 18px 34px rgba(145, 84, 39, 0.08),
+    0 2px 0 rgba(255, 255, 255, 0.8) inset;
   transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  scroll-snap-align: start;
+  overflow: hidden;
+}
+
+.planner-day-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 42%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0));
+  pointer-events: none;
+  z-index: -1;
+}
+
+.planner-day-card::after {
+  content: "";
+  position: absolute;
+  right: -2.25rem;
+  bottom: -2.5rem;
+  width: 7rem;
+  height: 7rem;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(255, 178, 112, 0.18), rgba(255, 178, 112, 0));
+  pointer-events: none;
+  z-index: -1;
 }
 
 .planner-day-card:hover {
   border-color: rgba(204, 102, 45, 0.34);
-  transform: translateY(-3px);
-  box-shadow: 0 22px 40px rgba(145, 84, 39, 0.11);
+  transform: translateY(-5px) scale(1.01);
+  box-shadow:
+    0 28px 48px rgba(145, 84, 39, 0.14),
+    0 2px 0 rgba(255, 255, 255, 0.82) inset;
 }
 
 .planner-day-card.selected {
   border-color: rgba(204, 102, 45, 0.42);
-  box-shadow: 0 24px 48px rgba(145, 84, 39, 0.14);
+  box-shadow:
+    0 30px 56px rgba(145, 84, 39, 0.16),
+    0 2px 0 rgba(255, 255, 255, 0.85) inset;
 }
 
 .planner-day-card.today {
   background:
-    linear-gradient(180deg, rgba(255, 246, 235, 0.96), rgba(255, 250, 244, 0.92));
+    linear-gradient(165deg, rgba(255, 242, 226, 0.98), rgba(255, 248, 240, 0.94) 58%, rgba(255, 233, 207, 0.9));
 }
 
 .planner-day-card.gap {
@@ -2220,9 +2250,21 @@ onMounted(() => {
 
 .planner-day-weekday {
   display: block;
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.planner-day-header strong {
+  font-size: 1.9rem;
+  line-height: 0.9;
+}
+
+.planner-day-label {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: rgba(64, 42, 28, 0.82);
 }
 
 .planner-day-badge,
@@ -2256,32 +2298,44 @@ onMounted(() => {
   margin-top: auto;
   border: 1px dashed rgba(204, 102, 45, 0.22);
   border-radius: 1rem;
-  padding: 0.95rem;
-  background: rgba(255, 244, 232, 0.78);
+  padding: 0.85rem 0.9rem;
+  background: rgba(255, 244, 232, 0.84);
+  min-height: 5rem;
+  display: grid;
+  align-content: start;
+  gap: 0.28rem;
 }
 
 .planner-gap-state strong {
   display: block;
-  margin-bottom: 0.35rem;
 }
 
 .planner-day-posts {
+  display: grid;
+  gap: 0.7rem;
   align-content: start;
 }
 
 .planner-post-pill {
+  display: grid;
+  gap: 0.45rem;
   border: 1px solid rgba(60, 41, 30, 0.11);
   border-radius: 1rem;
-  background: rgba(255, 255, 255, 0.86);
-  padding: 0.8rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 244, 238, 0.9));
+  padding: 0.72rem;
   cursor: pointer;
-  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+  box-shadow:
+    0 10px 18px rgba(145, 84, 39, 0.06),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
 }
 
 .planner-post-pill:hover {
-  transform: translateY(-2px);
+  transform: translateY(-3px);
   border-color: rgba(60, 41, 30, 0.18);
-  box-shadow: 0 12px 24px rgba(145, 84, 39, 0.08);
+  box-shadow:
+    0 16px 28px rgba(145, 84, 39, 0.11),
+    0 1px 0 rgba(255, 255, 255, 0.94) inset;
 }
 
 .planner-post-pill strong,
@@ -2289,6 +2343,24 @@ onMounted(() => {
 .planner-backlog-card p,
 .planner-preview-card p {
   line-height: 1.45;
+}
+
+.planner-post-pill strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.planner-post-overflow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(60, 41, 30, 0.16);
+  border-radius: 0.95rem;
+  min-height: 2.8rem;
+  background: rgba(255, 252, 248, 0.8);
+  font-weight: 600;
 }
 
 .planner-post-time.secondary {

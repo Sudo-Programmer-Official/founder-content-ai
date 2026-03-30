@@ -1,6 +1,6 @@
 import type { QueryResultRow } from "pg";
 import { queryDb } from "./db/client.ts";
-import { sendPlatformEmail } from "./email/emailTransportService.ts";
+import { isReservedRecipientEmail, sendPlatformEmail } from "./email/emailTransportService.ts";
 import { logInfo, logWarn } from "../utils/logger.ts";
 
 interface PublishedPostNotificationRow extends QueryResultRow {
@@ -191,6 +191,15 @@ export async function sendScheduledPostPublishedNotification(
     logInfo("Skipped post-published notification because the user opted out.", {
       scheduledPostId,
       userId: publishedPost.owner_user_id,
+    });
+    return;
+  }
+
+  if (isReservedRecipientEmail(publishedPost.owner_email)) {
+    logWarn("Skipped post-published notification because the owner email is a placeholder.", {
+      scheduledPostId,
+      userId: publishedPost.owner_user_id,
+      ownerEmail: publishedPost.owner_email,
     });
     return;
   }

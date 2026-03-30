@@ -11,6 +11,12 @@ const router = useRouter();
 const { bootstrap, isFeatureEnabled } = useProductAccessContext();
 const auth = useAuthContext();
 const mobileMenuOpen = ref(false);
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "founder-content:sidebar-collapsed";
+const sidebarCollapsed = ref(false);
+
+if (typeof window !== "undefined") {
+  sidebarCollapsed.value = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+}
 
 const isPublicShell = computed(() => route.meta.shell === "public");
 const usesWorkspaceShell = computed(
@@ -93,14 +99,32 @@ watch(
   },
 );
 
+watch(sidebarCollapsed, (value) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(value));
+});
+
 async function handleLogout(): Promise<void> {
   await auth.logout();
   await router.replace(appRoutes.login);
 }
+
+function toggleSidebar(): void {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+}
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'workspace-shell': usesWorkspaceShell }">
+  <div
+    class="app-shell"
+    :class="{
+      'workspace-shell': usesWorkspaceShell,
+      'sidebar-collapsed': usesWorkspaceShell && sidebarCollapsed,
+    }"
+  >
     <template v-if="!usesWorkspaceShell">
       <header class="site-header" :class="{ 'public-shell': isPublicShell }">
         <router-link class="brand" to="/">
@@ -158,9 +182,19 @@ async function handleLogout(): Promise<void> {
         <router-link class="sidebar-brand" to="/">
           <img
             class="brand-logo"
-            src="/foundercontent-wordmark.svg"
+            :src="sidebarCollapsed ? '/foundercontent-mark.svg' : '/foundercontent-wordmark.svg'"
             alt="FounderContent"
           />
+        </router-link>
+
+        <router-link
+          class="sidebar-primary-cta"
+          :class="{ compact: sidebarCollapsed }"
+          :to="appRoutes.appGenerate"
+          :title="sidebarCollapsed ? 'New Post' : undefined"
+        >
+          <span class="sidebar-primary-cta-icon">{{ sidebarCollapsed ? "+" : "✦" }}</span>
+          <span class="sidebar-primary-cta-copy">New Post</span>
         </router-link>
 
         <nav class="sidebar-nav" aria-label="Workspace navigation">
@@ -169,6 +203,7 @@ async function handleLogout(): Promise<void> {
             :key="link.to"
             :to="link.to"
             class="sidebar-link"
+            :title="sidebarCollapsed ? link.label : undefined"
           >
             <span class="sidebar-link-icon">{{ link.shortLabel }}</span>
             <span class="sidebar-link-copy">{{ link.label }}</span>
@@ -186,9 +221,6 @@ async function handleLogout(): Promise<void> {
               <small>Account</small>
             </div>
           </div>
-          <button class="sidebar-logout-button" type="button" @click="handleLogout">
-            Logout
-          </button>
         </div>
       </aside>
 
@@ -218,6 +250,15 @@ async function handleLogout(): Promise<void> {
                 <span></span>
               </button>
             </div>
+
+            <router-link
+              class="sidebar-primary-cta"
+              :to="appRoutes.appGenerate"
+              @click="mobileMenuOpen = false"
+            >
+              <span class="sidebar-primary-cta-icon">✦</span>
+              <span class="sidebar-primary-cta-copy">New Post</span>
+            </router-link>
 
             <nav class="sidebar-nav" aria-label="Mobile workspace navigation">
               <router-link
@@ -272,13 +313,21 @@ async function handleLogout(): Promise<void> {
               <span></span>
               <span></span>
             </button>
+            <button
+              type="button"
+              class="header-secondary-button desktop-sidebar-toggle desktop-only"
+              :aria-label="sidebarCollapsed ? 'Open navigation panel' : 'Close navigation panel'"
+              @click="toggleSidebar"
+            >
+              {{ sidebarCollapsed ? "Open panel" : "Hide panel" }}
+            </button>
             <div>
               <p class="workspace-header-kicker">{{ currentPageTitle }}</p>
               <strong>{{ currentPageSubtitle }}</strong>
             </div>
           </div>
 
-          <div class="workspace-header-actions">
+            <div class="workspace-header-actions">
             <WorkspaceSwitcher class="workspace-header-switcher" />
             <div class="workspace-header-session desktop-only">
               <span v-if="userLabel" class="header-user-pill">{{ userLabel }}</span>
@@ -286,7 +335,6 @@ async function handleLogout(): Promise<void> {
                 Logout
               </button>
             </div>
-            <router-link class="header-cta" :to="appRoutes.appGenerate">New Post</router-link>
           </div>
         </header>
 
@@ -447,6 +495,48 @@ async function handleLogout(): Promise<void> {
   text-decoration: none;
 }
 
+.sidebar-primary-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 16px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+  box-shadow: var(--fc-accent-shadow);
+  color: var(--fc-accent-contrast);
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+
+.sidebar-primary-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 28px rgba(204, 102, 45, 0.24);
+}
+
+.sidebar-primary-cta-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.sidebar-primary-cta.compact {
+  width: 100%;
+  padding: 0;
+}
+
+.sidebar-primary-cta.compact .sidebar-primary-cta-copy {
+  display: none;
+}
+
 .workspace-sidebar {
   position: fixed;
   inset: 0 auto 0 0;
@@ -460,6 +550,7 @@ async function handleLogout(): Promise<void> {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--fc-surface) 90%, white 10%) 0%, color-mix(in srgb, var(--fc-surface-subtle) 94%, white 6%) 100%);
   box-shadow: 24px 0 48px rgba(64, 44, 28, 0.06);
+  transition: width 180ms ease, padding 180ms ease, box-shadow 180ms ease;
 }
 
 .sidebar-nav {
@@ -560,6 +651,7 @@ async function handleLogout(): Promise<void> {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  transition: margin-left 180ms ease;
 }
 
 .workspace-header {
@@ -577,6 +669,12 @@ async function handleLogout(): Promise<void> {
   align-items: center;
   gap: 14px;
   min-width: 0;
+}
+
+.desktop-sidebar-toggle {
+  min-height: 40px;
+  padding: 0 14px;
+  white-space: nowrap;
 }
 
 .workspace-header-copy > div {
@@ -693,6 +791,48 @@ async function handleLogout(): Promise<void> {
   display: inline-flex;
 }
 
+.sidebar-collapsed .workspace-sidebar {
+  width: 96px;
+  padding: 22px 12px;
+  align-items: center;
+}
+
+.sidebar-collapsed .sidebar-brand {
+  justify-content: center;
+}
+
+.sidebar-collapsed .sidebar-brand .brand-logo {
+  width: 52px;
+}
+
+.sidebar-collapsed .sidebar-nav {
+  width: 100%;
+}
+
+.sidebar-collapsed .sidebar-primary-cta {
+  width: 100%;
+}
+
+.sidebar-collapsed .sidebar-link {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 10px;
+}
+
+.sidebar-collapsed .sidebar-link:hover,
+.sidebar-collapsed .sidebar-link.router-link-active {
+  transform: translateY(-1px);
+}
+
+.sidebar-collapsed .sidebar-link-copy,
+.sidebar-collapsed .sidebar-footer {
+  display: none;
+}
+
+.sidebar-collapsed .workspace-main-pane {
+  margin-left: 96px;
+}
+
 .sidebar-fade-enter-active,
 .sidebar-fade-leave-active {
   transition: opacity 160ms ease;
@@ -736,6 +876,10 @@ async function handleLogout(): Promise<void> {
 
   .workspace-main-pane {
     margin-left: 0;
+  }
+
+  .desktop-sidebar-toggle {
+    display: none;
   }
 
   .workspace-header {

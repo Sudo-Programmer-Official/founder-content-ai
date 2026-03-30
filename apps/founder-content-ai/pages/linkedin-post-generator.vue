@@ -1870,13 +1870,13 @@ onMounted(async () => {
     <section class="card scheduled-list">
       <div class="scheduler-header">
         <div>
-          <p class="result-label">Scheduled Posts</p>
+          <p class="result-label">Queued Posts</p>
           <h2>Latest LinkedIn Queue</h2>
         </div>
       </div>
 
       <p v-if="scheduledPosts.length === 0" class="description small">
-        No scheduled posts yet.
+        No queued posts yet.
       </p>
 
       <article v-for="scheduledPost in scheduledPosts" :key="scheduledPost.id" class="scheduled-post-item">
