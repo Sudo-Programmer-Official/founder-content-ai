@@ -795,7 +795,7 @@ onMounted(() => {
           Fill gaps
         </button>
         <button type="button" class="workspace-primary-button" @click="openCreatePage">
-          Create post
+          New post
         </button>
       </div>
     </section>
@@ -895,7 +895,7 @@ onMounted(() => {
                 <strong>{{ day.dayLabel }}</strong>
               </div>
               <span v-if="day.isGap" class="planner-day-badge gap">
-                {{ day.posts.length === 0 ? "Gap" : "Needs cover" }}
+                {{ day.posts.length === 0 ? "No posts scheduled" : "Needs coverage" }}
               </span>
               <span v-else class="planner-day-badge">{{ day.posts.length }}</span>
             </div>
@@ -903,7 +903,7 @@ onMounted(() => {
             <p class="planner-day-label">{{ day.longLabel }}</p>
 
             <div v-if="day.posts.length === 0" class="planner-gap-state">
-              <strong>No content planned</strong>
+              <strong>No posts scheduled</strong>
               <span>Select this day to create or schedule something.</span>
             </div>
 
@@ -1088,7 +1088,7 @@ onMounted(() => {
 
           <div class="planner-sidebar-actions stacked">
             <button type="button" class="workspace-primary-button" @click="openCreatePage">
-              Create post
+              New post
             </button>
           </div>
 

@@ -1252,10 +1252,10 @@ async function getCampaignStats(
     `
       select
         count(*)::int as total,
-        count(*) filter (where status in ('sent', 'delivered'))::int as sent_total,
-        count(*) filter (where status = 'delivered')::int as delivered_total,
-        count(*) filter (where status = 'failed')::int as failed_total,
-        count(*) filter (where status = 'unsubscribed')::int as unsubscribed_total
+        count(*) filter (where r.status in ('sent', 'delivered'))::int as sent_total,
+        count(*) filter (where r.status = 'delivered')::int as delivered_total,
+        count(*) filter (where r.status = 'failed')::int as failed_total,
+        count(*) filter (where r.status = 'unsubscribed')::int as unsubscribed_total
       from email_campaign_recipients r
       inner join email_campaigns c on c.id = r.campaign_id
       where c.business_id = $1::uuid

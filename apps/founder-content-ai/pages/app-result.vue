@@ -5,6 +5,7 @@ import type {
   ContentAiEditPreview,
   ContentAsset,
   PostAsset,
+  RecommendedPostTimeSlot,
   RepurposeContentResponse,
   SocialAccount,
 } from "../../../packages/shared-types";
@@ -23,6 +24,8 @@ import {
 import {
   requestLinkedInSocialAuthStart,
   requestPublishPost,
+  requestRecommendedPostTimes,
+  requestSchedulePost,
   requestSocialAccounts,
 } from "../services/publishing-service";
 import {
@@ -32,6 +35,14 @@ import {
   requestPostAssets,
 } from "../services/post-assets-service";
 import { appRoutes } from "../utils/routes";
+import {
+  convertZonedDateTimeToUtcIso,
+  detectUserTimezone,
+  formatDateInTimezone,
+  formatTimeWithZone,
+  toDateKeyInTimezone,
+  toTimeValueInTimezone,
+} from "../utils/timezone";
 
 const route = useRoute();
 const router = useRouter();
@@ -53,6 +64,29 @@ const aiEditPreview = ref<ContentAiEditPreview | null>(null);
 const aiEditFeedback = ref("");
 const isPreviewingAiEdit = ref(false);
 const isApplyingAiEdit = ref(false);
+const isSchedulePanelOpen = ref(false);
+const isLoadingRecommendedSlots = ref(false);
+const isSchedulingDraft = ref(false);
+const scheduleFeedback = ref("");
+const scheduleDateKey = ref("");
+const scheduleTime = ref("09:00");
+const audienceTimezone = ref("");
+const recommendedTimezone = ref("UTC");
+const recommendedSlots = ref<RecommendedPostTimeSlot[]>([]);
+
+const userTimezone = detectUserTimezone();
+const COMMON_AUDIENCE_TIMEZONES = [
+  "UTC",
+  "America/Chicago",
+  "America/New_York",
+  "America/Los_Angeles",
+  "Europe/London",
+  "Europe/Berlin",
+  "Asia/Kolkata",
+  "Asia/Dubai",
+  "Asia/Singapore",
+  "Australia/Sydney",
+] as const;
 
 const AI_QUICK_COMMANDS = [
   { label: "Stop the scroll", value: "Rewrite the opening so the first line stops the scroll and creates tension." },
@@ -166,6 +200,23 @@ const schedulerEnabled = computed(
 const canScheduleDraft = computed(
   () => schedulerEnabled.value && hasPersistedAsset.value,
 );
+const audienceTimezoneOptions = computed(() => {
+  const unique = new Set<string>([
+    audienceTimezone.value || recommendedTimezone.value || userTimezone,
+    userTimezone,
+    ...COMMON_AUDIENCE_TIMEZONES,
+  ]);
+
+  return [...unique].map((value) => ({
+    value,
+    label:
+      value === userTimezone
+        ? `${value} · your time`
+        : value === recommendedTimezone.value
+          ? `${value} · recommended`
+          : value,
+  }));
+});
 const connectedLinkedInAccount = computed(() =>
   socialAccounts.value.find(
     (account) => account.platform === "linkedin" && account.status === "connected",
@@ -253,6 +304,45 @@ const structureSignal = computed(() => {
 const actionPriorityLabel = computed(() =>
   canScheduleDraft.value ? "Schedule next" : connectedLinkedInAccount.value ? "Publish now" : "Connect channel",
 );
+const recommendedContentType = computed(() => (postAssets.value.length > 0 ? "image" : "text"));
+const selectedAudienceTimeLabel = computed(() => {
+  if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
+    return "";
+  }
+
+  const scheduledAt = convertZonedDateTimeToUtcIso(
+    scheduleDateKey.value,
+    scheduleTime.value,
+    audienceTimezone.value,
+  );
+
+  return formatTimeWithZone(scheduledAt, audienceTimezone.value);
+});
+const selectedAudienceDateLabel = computed(() => {
+  if (!scheduleDateKey.value) {
+    return "";
+  }
+
+  return formatDateInTimezone(`${scheduleDateKey.value}T12:00:00.000Z`, "UTC", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+});
+const selectedLocalTimeLabel = computed(() => {
+  if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
+    return "";
+  }
+
+  const scheduledAt = convertZonedDateTimeToUtcIso(
+    scheduleDateKey.value,
+    scheduleTime.value,
+    audienceTimezone.value,
+  );
+
+  return formatTimeWithZone(scheduledAt, userTimezone);
+});
+const bestRecommendedSlot = computed(() => recommendedSlots.value[0] ?? null);
 
 const signalPills = computed(() => [
   `${attentionSignal.value.label} attention signal`,
@@ -592,6 +682,132 @@ async function removePostAsset(assetId: string): Promise<void> {
   }
 }
 
+function syncScheduleFormFromSlot(scheduledAt: string, timezone: string): void {
+  scheduleDateKey.value = toDateKeyInTimezone(scheduledAt, timezone);
+  scheduleTime.value = toTimeValueInTimezone(scheduledAt, timezone);
+}
+
+function seedScheduleForm(): void {
+  const timezone = audienceTimezone.value || userTimezone;
+  const next = new Date();
+  next.setMinutes(0, 0, 0);
+  next.setHours(next.getHours() + 1);
+  audienceTimezone.value = timezone;
+  scheduleDateKey.value = toDateKeyInTimezone(next, timezone);
+  scheduleTime.value = toTimeValueInTimezone(next, timezone);
+}
+
+async function loadRecommendedScheduleSlots(preferredTimezone?: string): Promise<void> {
+  if (!activeBusinessId.value) {
+    recommendedSlots.value = [];
+    return;
+  }
+
+  isLoadingRecommendedSlots.value = true;
+  scheduleFeedback.value = "";
+
+  try {
+    const response = await requestRecommendedPostTimes(
+      activeBusinessId.value,
+      recommendedContentType.value,
+      preferredTimezone,
+    );
+
+    recommendedSlots.value = response.slots;
+    recommendedTimezone.value = response.timezone;
+
+    if (!audienceTimezone.value || preferredTimezone) {
+      audienceTimezone.value = preferredTimezone || response.timezone;
+    }
+
+    if (response.slots[0]) {
+      syncScheduleFormFromSlot(response.slots[0].scheduledAt, audienceTimezone.value || response.timezone);
+    }
+  } catch (error) {
+    recommendedSlots.value = [];
+    scheduleFeedback.value =
+      error instanceof Error ? error.message : "Unable to load the best posting window.";
+  } finally {
+    isLoadingRecommendedSlots.value = false;
+  }
+}
+
+async function openSchedulePanel(): Promise<void> {
+  if (!canScheduleDraft.value) {
+    feedbackMessage.value = "Save this draft in the workspace before scheduling it.";
+    return;
+  }
+
+  isSchedulePanelOpen.value = true;
+  scheduleFeedback.value = "";
+
+  if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
+    seedScheduleForm();
+  }
+
+  await loadRecommendedScheduleSlots(audienceTimezone.value || undefined);
+}
+
+function closeSchedulePanel(): void {
+  isSchedulePanelOpen.value = false;
+  scheduleFeedback.value = "";
+}
+
+function applyRecommendedSchedule(): void {
+  if (!bestRecommendedSlot.value) {
+    return;
+  }
+
+  const timezone = audienceTimezone.value || recommendedTimezone.value || userTimezone;
+  syncScheduleFormFromSlot(bestRecommendedSlot.value.scheduledAt, timezone);
+  scheduleFeedback.value = `Best time applied for ${timezone}.`;
+}
+
+async function scheduleDraft(): Promise<void> {
+  if (!draft.value || !persistedPostId.value) {
+    scheduleFeedback.value = "Save this draft first, then schedule it.";
+    return;
+  }
+
+  if (!activeBusinessId.value) {
+    scheduleFeedback.value = "Select a workspace before scheduling.";
+    return;
+  }
+
+  if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
+    scheduleFeedback.value = "Pick a date, time, and audience timezone first.";
+    return;
+  }
+
+  isSchedulingDraft.value = true;
+  scheduleFeedback.value = "";
+  feedbackMessage.value = "";
+
+  try {
+    await requestSchedulePost({
+      businessId: activeBusinessId.value,
+      platform: "linkedin",
+      contentText: postContent.value,
+      assetGroupId: persistedPostId.value,
+      slides: [],
+      scheduledAt: convertZonedDateTimeToUtcIso(
+        scheduleDateKey.value,
+        scheduleTime.value,
+        audienceTimezone.value,
+      ),
+      audienceTimezone: audienceTimezone.value,
+    });
+
+    isSchedulePanelOpen.value = false;
+    feedbackMessage.value = `Scheduled for ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
+  } catch (error) {
+    scheduleFeedback.value =
+      error instanceof Error ? error.message : "Unable to schedule this draft right now.";
+  } finally {
+    isSchedulingDraft.value = false;
+  }
+}
+
 async function goToImprove(): Promise<void> {
   if (!draft.value) {
     return;
@@ -753,6 +969,17 @@ watch(
 );
 
 watch(
+  () => audienceTimezone.value,
+  (nextTimezone, previousTimezone) => {
+    if (!isSchedulePanelOpen.value || !nextTimezone || nextTimezone === previousTimezone) {
+      return;
+    }
+
+    void loadRecommendedScheduleSlots(nextTimezone);
+  },
+);
+
+watch(
   () => [route.query.linkedin, route.query.message],
   async ([status, message]) => {
     if (typeof status !== "string" && typeof message !== "string") {
@@ -892,15 +1119,6 @@ onBeforeUnmount(() => {
 
           <div class="result-primary-actions">
             <button
-              v-if="canScheduleDraft"
-              type="button"
-              class="primary-action"
-              @click="goToPlanner"
-            >
-              Schedule in Planner
-            </button>
-            <button
-              v-else
               type="button"
               class="primary-action"
               :disabled="
@@ -915,19 +1133,39 @@ onBeforeUnmount(() => {
                 connectedLinkedInAccount
                   ? isPublishingToLinkedIn
                     ? "Posting..."
-                    : "Post to LinkedIn"
+                    : "Post now"
                   : isConnectingLinkedIn
                     ? "Redirecting..."
                     : "Connect LinkedIn"
               }}
             </button>
 
-            <button type="button" class="secondary-action" @click="goToImprove">
-              Refine draft
+            <button
+              v-if="canScheduleDraft"
+              type="button"
+              class="secondary-action"
+              :disabled="isSchedulingDraft || isUploadingPostAssets"
+              @click="void openSchedulePanel()"
+            >
+              Schedule
             </button>
 
             <button
               v-if="canScheduleDraft"
+              type="button"
+              class="secondary-action"
+              :disabled="isUploadingPostAssets"
+              @click="goToPlanner"
+            >
+              Save to Planner
+            </button>
+
+            <button type="button" class="secondary-action" @click="goToImprove">
+              Improve
+            </button>
+
+            <button
+              v-if="!canScheduleDraft"
               type="button"
               class="secondary-action"
               :disabled="
@@ -951,6 +1189,84 @@ onBeforeUnmount(() => {
           </div>
 
           <p v-if="feedbackMessage" class="result-feedback">{{ feedbackMessage }}</p>
+
+          <section v-if="isSchedulePanelOpen && canScheduleDraft" class="schedule-panel">
+            <div class="schedule-panel-header">
+              <div>
+                <p class="panel-meta">Schedule this draft</p>
+                <strong>Lock the post into a real publishing slot</strong>
+                <p class="ai-command-copy">
+                  Pick the audience time once, then let planner and the worker handle execution.
+                </p>
+              </div>
+              <button type="button" class="secondary-action schedule-close-button" @click="closeSchedulePanel">
+                Close
+              </button>
+            </div>
+
+            <div v-if="bestRecommendedSlot" class="schedule-best-slot">
+              <div>
+                <p class="panel-meta">Best time</p>
+                <strong>{{ bestRecommendedSlot.localLabel }} in {{ recommendedTimezone }}</strong>
+                <p class="ai-command-copy">{{ bestRecommendedSlot.reason }}</p>
+              </div>
+              <button
+                type="button"
+                class="secondary-action"
+                :disabled="isLoadingRecommendedSlots || isSchedulingDraft"
+                @click="applyRecommendedSchedule"
+              >
+                Use best time
+              </button>
+            </div>
+
+            <div class="schedule-form-grid">
+              <label>
+                <span>Date</span>
+                <input v-model="scheduleDateKey" type="date" />
+              </label>
+              <label>
+                <span>Time</span>
+                <input v-model="scheduleTime" type="time" />
+              </label>
+              <label>
+                <span>Audience timezone</span>
+                <select v-model="audienceTimezone">
+                  <option
+                    v-for="option in audienceTimezoneOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <p class="schedule-helper-copy">
+              Audience time: {{ selectedAudienceDateLabel }} at {{ selectedAudienceTimeLabel }}
+              <span v-if="selectedLocalTimeLabel"> · Your time: {{ selectedLocalTimeLabel }}</span>
+            </p>
+
+            <p v-if="isLoadingRecommendedSlots" class="result-feedback subtle">
+              Loading best posting windows...
+            </p>
+            <p v-if="scheduleFeedback" class="result-feedback">{{ scheduleFeedback }}</p>
+
+            <div class="schedule-panel-actions">
+              <button
+                type="button"
+                class="primary-action"
+                :disabled="isSchedulingDraft"
+                @click="void scheduleDraft()"
+              >
+                {{ isSchedulingDraft ? "Scheduling..." : "Schedule post" }}
+              </button>
+              <button type="button" class="secondary-action" @click="goToPlanner">
+                Save to Planner
+              </button>
+            </div>
+          </section>
 
           <section v-if="hasPersistedAsset" class="media-panel">
             <div class="media-panel-header">
@@ -1424,6 +1740,72 @@ onBeforeUnmount(() => {
   margin-top: 20px;
 }
 
+.schedule-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 20px;
+  border-radius: 22px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.schedule-panel-header,
+.schedule-best-slot,
+.schedule-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.schedule-close-button {
+  min-height: 40px;
+}
+
+.schedule-best-slot {
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 16%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 28%, white 72%);
+}
+
+.schedule-best-slot strong {
+  display: block;
+}
+
+.schedule-form-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.schedule-form-grid label {
+  display: grid;
+  gap: 8px;
+  color: var(--fc-text-muted);
+  font-size: 0.92rem;
+}
+
+.schedule-form-grid input,
+.schedule-form-grid select {
+  min-height: 48px;
+  width: 100%;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+  color: var(--fc-text);
+  font: inherit;
+}
+
+.schedule-helper-copy {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
+}
+
 .ai-command-panel {
   margin-top: 20px;
   padding: 18px;
@@ -1716,6 +2098,7 @@ onBeforeUnmount(() => {
   }
 
   .result-signal-grid,
+  .schedule-form-grid,
   .ai-command-row,
   .ai-edit-diff {
     grid-template-columns: 1fr;

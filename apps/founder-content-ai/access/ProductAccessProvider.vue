@@ -101,9 +101,6 @@ async function refreshProductAccess(nextBusinessId?: string | null): Promise<MyF
     return response;
   } catch (error) {
     if (isAuthFailure(error)) {
-      bootstrap.value = buildAnonymousBootstrap();
-      activeBusinessId.value = "";
-      storeBusinessId("");
       errorMessage.value = "";
       return bootstrap.value;
     }

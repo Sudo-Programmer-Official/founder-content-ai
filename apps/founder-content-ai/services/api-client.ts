@@ -1,5 +1,4 @@
 import type { ApiError } from "../../../packages/shared-types";
-import { clearStoredAuthSession } from "./auth-session-store";
 import { ensureFreshStoredAuthSession, refreshStoredAuthSession } from "./firebase-auth-client";
 
 declare global {
@@ -143,8 +142,6 @@ async function requestJson<TResponse>(
             return send(requestBaseUrl, false);
           }
         }
-
-        clearStoredAuthSession();
       }
 
       const message =

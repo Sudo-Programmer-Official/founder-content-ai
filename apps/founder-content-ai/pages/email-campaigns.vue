@@ -40,7 +40,7 @@ let domainVerificationPollHandle: number | null = null;
 
 const contactImport = ref<ImportEmailContactsRequest>({
   listName: "Launch List",
-  csvText: "email,name\nfounder@example.com,Sample Founder",
+  csvText: "",
 });
 
 const campaignForm = ref({
@@ -378,6 +378,7 @@ async function importContacts(): Promise<void> {
 
   try {
     const response = await requestEmailContactsImport(selectedBusinessId.value, contactImport.value);
+    campaignForm.value.listId = response.list.id;
     feedbackMessage.value = `Imported ${response.importedCount} contacts into ${response.list.name}.`;
     await loadEmailState();
   } catch (error) {
@@ -573,6 +574,7 @@ onBeforeUnmount(() => {
               v-model="contactImport.csvText"
               class="dashboard-textarea"
               rows="10"
+              placeholder="email,name&#10;founder@yourbrand.com, Founder"
             />
 
             <button class="dashboard-button primary" :disabled="isImporting" @click="importContacts">

@@ -70,7 +70,7 @@ const feedbackMessage = ref("");
 
 const contactImport = ref<ImportEmailContactsRequest>({
   listName: "Launch List",
-  csvText: "email,name\nfounder@example.com,Sample Founder",
+  csvText: "",
 });
 
 const campaignForm = ref({
@@ -180,6 +180,7 @@ async function importContacts(): Promise<void> {
 
   try {
     const response = await requestEmailContactsImport(selectedBusinessId.value, contactImport.value);
+    campaignForm.value.listId = response.list.id;
     feedbackMessage.value = `Imported ${response.importedCount} contacts into ${response.list.name}.`;
     await loadEmailState();
   } catch (error) {
@@ -336,7 +337,11 @@ onMounted(() => {
           </div>
 
           <input v-model="contactImport.listName" class="workspace-input" placeholder="List name" />
-          <textarea v-model="contactImport.csvText" class="workspace-textarea compact" />
+          <textarea
+            v-model="contactImport.csvText"
+            class="workspace-textarea compact"
+            placeholder="email,name&#10;founder@yourbrand.com, Founder"
+          />
 
           <div class="workspace-actions">
             <button type="button" class="primary-action" :disabled="isImporting" @click="importContacts">
