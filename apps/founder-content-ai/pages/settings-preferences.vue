@@ -6,6 +6,7 @@ import type {
   BrandProfile,
   BrandSignalSummary,
   ProductAccessLimits,
+  SavedContentSource,
   SocialAccount,
   SocialAccountIdentity,
   UiDensity,
@@ -22,6 +23,10 @@ import {
   requestBrandProfile,
   requestUpdateBrandProfile,
 } from "../services/brand-profile-service";
+import {
+  requestContentIngestionPreview,
+  requestSavedContentSources,
+} from "../services/generation-service";
 import {
   requestDisconnectSocialAccount,
   requestLinkedInSocialAuthStart,
@@ -62,6 +67,16 @@ const isLoadingBrandContext = ref(false);
 const isSavingBrandContext = ref(false);
 const brandContextFeedback = ref("");
 const brandContextError = ref("");
+const savedSources = ref<SavedContentSource[]>([]);
+const linkedinSourceUrl = ref("");
+const instagramSourceUrl = ref("");
+const facebookSourceUrl = ref("");
+const blogSourceUrl = ref("");
+const isLoadingBrandSources = ref(false);
+const isSavingBrandSources = ref(false);
+const brandSourcesFeedback = ref("");
+const brandSourcesError = ref("");
+const brandSourceWarnings = ref<string[]>([]);
 
 const workspaceChannelDefinitions: WorkspaceChannelDefinition[] = [
   {
@@ -266,6 +281,90 @@ function formatIdentityOption(identity: SocialAccountIdentity): string {
     : `${identity.displayName} · Personal`;
 }
 
+function pickSavedSource(...types: SavedContentSource["sourceType"][]): SavedContentSource | null {
+  return savedSources.value.find((source) => types.includes(source.sourceType)) ?? null;
+}
+
+function hydrateBrandSourceForm(): void {
+  linkedinSourceUrl.value = pickSavedSource("linkedin")?.sourceUrl ?? "";
+  instagramSourceUrl.value = pickSavedSource("instagram")?.sourceUrl ?? "";
+  facebookSourceUrl.value = pickSavedSource("facebook")?.sourceUrl ?? "";
+  blogSourceUrl.value = pickSavedSource("blog", "url")?.sourceUrl ?? "";
+}
+
+function buildBrandSourceInputs(): Array<{ label: string; url: string }> {
+  return [
+    { label: "LinkedIn page or post", url: linkedinSourceUrl.value.trim() },
+    { label: "Instagram page or post", url: instagramSourceUrl.value.trim() },
+    { label: "Facebook page or post", url: facebookSourceUrl.value.trim() },
+    { label: "Blog or website", url: blogSourceUrl.value.trim() },
+  ].filter((source) => source.url !== "");
+}
+
+async function loadBrandSources(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    savedSources.value = [];
+    hydrateBrandSourceForm();
+    return;
+  }
+
+  isLoadingBrandSources.value = true;
+  brandSourcesError.value = "";
+
+  try {
+    const response = await requestSavedContentSources(businessId);
+    savedSources.value = response.sources;
+    hydrateBrandSourceForm();
+  } catch (error) {
+    savedSources.value = [];
+    hydrateBrandSourceForm();
+    brandSourcesError.value =
+      error instanceof Error ? error.message : "Unable to load workspace brand sources.";
+  } finally {
+    isLoadingBrandSources.value = false;
+  }
+}
+
+async function handleBrandSourcesSave(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    return;
+  }
+
+  const sourceUrls = buildBrandSourceInputs();
+
+  if (sourceUrls.length === 0) {
+    brandSourcesError.value = "Add at least one public listing URL before saving.";
+    return;
+  }
+
+  isSavingBrandSources.value = true;
+  brandSourcesFeedback.value = "";
+  brandSourcesError.value = "";
+  brandSourceWarnings.value = [];
+
+  try {
+    const response = await requestContentIngestionPreview({
+      businessId,
+      sourceUrls,
+    });
+    brandSourceWarnings.value = response.errors.map((error) => `${error.label}: ${error.message}`);
+    await loadBrandSources();
+    brandSourcesFeedback.value =
+      brandSourceWarnings.value.length > 0
+        ? "Brand sources refreshed. Some URLs were skipped."
+        : "Brand sources saved. Repurpose will prefill these by default.";
+  } catch (error) {
+    brandSourcesError.value =
+      error instanceof Error ? error.message : "Unable to refresh workspace brand sources.";
+  } finally {
+    isSavingBrandSources.value = false;
+  }
+}
+
 async function loadBrandContext(refreshFromSignals = false): Promise<void> {
   const businessId = activeBusinessId.value;
 
@@ -441,8 +540,10 @@ watch(
   () => {
     channelFeedback.value = "";
     brandContextFeedback.value = "";
+    brandSourcesFeedback.value = "";
     void loadWorkspaceChannels();
     void loadBrandContext();
+    void loadBrandSources();
   },
   { immediate: true },
 );
@@ -700,6 +801,134 @@ watch(
       </div>
     </section>
 
+    <section class="dashboard-panel brand-sources-panel">
+      <div class="brand-context-panel-header">
+        <div>
+          <p class="panel-meta">Brand Sources</p>
+          <h2>Keep the workspace public listings attached and reusable.</h2>
+        </div>
+        <span class="usage-badge">
+          {{ activeBusinessId ? "Prefills repurpose by default" : "Select a workspace first" }}
+        </span>
+      </div>
+
+      <p class="dashboard-description">
+        Set the public pages that represent this brand. Repurpose will prefill these every time so users are not rebuilding the same source set on each draft.
+      </p>
+
+      <p v-if="brandSourcesFeedback" class="dashboard-feedback">{{ brandSourcesFeedback }}</p>
+      <p v-if="brandSourcesError" class="dashboard-feedback error">{{ brandSourcesError }}</p>
+
+      <div class="brand-context-layout">
+        <div class="brand-context-form">
+          <div class="settings-grid brand-context-grid">
+            <label class="dashboard-field">
+              <span>LinkedIn page or profile</span>
+              <input
+                v-model="linkedinSourceUrl"
+                type="url"
+                :disabled="isLoadingBrandSources || isSavingBrandSources || !activeBusinessId"
+                placeholder="https://www.linkedin.com/company/your-company/"
+              />
+            </label>
+
+            <label class="dashboard-field">
+              <span>Instagram</span>
+              <input
+                v-model="instagramSourceUrl"
+                type="url"
+                :disabled="isLoadingBrandSources || isSavingBrandSources || !activeBusinessId"
+                placeholder="https://www.instagram.com/yourbrand/"
+              />
+            </label>
+
+            <label class="dashboard-field">
+              <span>Facebook</span>
+              <input
+                v-model="facebookSourceUrl"
+                type="url"
+                :disabled="isLoadingBrandSources || isSavingBrandSources || !activeBusinessId"
+                placeholder="https://www.facebook.com/yourbrand/"
+              />
+            </label>
+
+            <label class="dashboard-field">
+              <span>Blog or website</span>
+              <input
+                v-model="blogSourceUrl"
+                type="url"
+                :disabled="isLoadingBrandSources || isSavingBrandSources || !activeBusinessId"
+                placeholder="https://example.com/blog/or-homepage"
+              />
+            </label>
+          </div>
+
+          <div class="channel-actions">
+            <button
+              type="button"
+              class="dashboard-button"
+              :disabled="isSavingBrandSources || isLoadingBrandSources || !activeBusinessId"
+              @click="void handleBrandSourcesSave()"
+            >
+              {{ isSavingBrandSources ? "Refreshing..." : "Save and refresh sources" }}
+            </button>
+
+            <router-link
+              class="dashboard-button secondary link-button"
+              :to="{ path: appRoutes.appCreate, query: { mode: 'repurpose' }, hash: '#repurpose-panel' }"
+            >
+              Open repurpose
+            </router-link>
+          </div>
+
+          <ul v-if="brandSourceWarnings.length > 0" class="brand-preview-list warning-list">
+            <li v-for="warning in brandSourceWarnings" :key="warning">{{ warning }}</li>
+          </ul>
+        </div>
+
+        <aside class="brand-context-preview">
+          <div>
+            <p class="panel-meta">Repurpose defaults</p>
+            <h3>
+              {{
+                savedSources.length > 0
+                  ? "These sources preload into the create flow"
+                  : "No brand sources saved yet"
+              }}
+            </h3>
+            <p class="dashboard-description">
+              {{
+                savedSources.length > 0
+                  ? "Users can still add temporary URLs, but the workspace public listings become the default starting point every time."
+                  : "Save at least one public URL here so repurpose stops starting from a blank state."
+              }}
+            </p>
+          </div>
+
+          <div v-if="isLoadingBrandSources" class="dashboard-feedback">Loading saved sources...</div>
+
+          <div v-else-if="savedSources.length > 0" class="saved-source-list">
+            <span
+              v-for="source in savedSources"
+              :key="source.id"
+              class="saved-source-chip"
+            >
+              {{ source.title || source.label }}
+            </span>
+          </div>
+
+          <div v-if="savedSources.length > 0" class="brand-preview-block">
+            <p class="panel-meta">Current source memory</p>
+            <ul class="brand-preview-list">
+              <li v-for="source in savedSources.slice(0, 4)" :key="source.id">
+                {{ source.sourceUrl }}
+              </li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </section>
+
     <section class="dashboard-panel brand-context-panel">
       <div class="brand-context-panel-header">
         <div>
@@ -926,6 +1155,12 @@ watch(
 }
 
 .channels-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.brand-sources-panel {
   display: grid;
   gap: 18px;
   margin-top: 18px;
@@ -1170,6 +1405,10 @@ watch(
   padding-left: 18px;
   color: var(--fc-text-muted);
   line-height: 1.55;
+}
+
+.warning-list {
+  color: var(--fc-danger, #b84b3c);
 }
 
 .brand-signal-grid {

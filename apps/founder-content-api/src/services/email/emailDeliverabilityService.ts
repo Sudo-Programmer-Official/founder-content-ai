@@ -10,6 +10,7 @@ import type {
 } from "../../../../../packages/shared-types/index.ts";
 import type { PoolClient, QueryResultRow } from "pg";
 import { queryDb } from "../db/client.ts";
+import { logWarn } from "../../utils/logger.ts";
 
 interface EmailProviderEventMetricsRow extends QueryResultRow {
   total_messages: string | number;
@@ -86,6 +87,11 @@ function toIsoString(value: Date | string | null | undefined): string | undefine
 
 function parseJsonArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function isMissingOptionalDeliverabilityRelation(error: unknown): boolean {
+  const candidate = error as { code?: string };
+  return candidate?.code === "42P01" || candidate?.code === "42703";
 }
 
 function includesAmazonSes(value: string | undefined | null): boolean {
@@ -557,43 +563,56 @@ export async function recalculateEmailDomainReputation(input: {
 }
 
 export async function listRiskyEmailDomains(limit = 6): Promise<AdminRiskyEmailDomain[]> {
-  const result = await queryDb<RiskyEmailDomainRow>(
-    `
-      select
-        r.business_id,
-        b.name as business_name,
-        r.domain_name,
-        r.deliverability_score,
-        r.score_band,
-        r.blockers_json,
-        r.ses_verified,
-        r.dkim_verified,
-        r.spf_status,
-        r.dmarc_status,
-        r.bounce_rate_7d,
-        r.complaint_rate_7d,
-        r.delivery_rate_7d,
-        r.recent_deliveries_7d,
-        r.recent_hard_bounces_7d,
-        r.recent_soft_bounces_7d,
-        r.recent_complaints_7d,
-        r.last_evaluated_at
-      from email_domain_reputation r
-      inner join businesses b on b.id = r.business_id
-      where r.score_band <> 'excellent'
-         or jsonb_array_length(r.blockers_json) > 0
-      order by
-        case r.score_band
-          when 'at_risk' then 0
-          when 'needs_attention' then 1
-          else 2
-        end,
-        r.deliverability_score asc,
-        r.updated_at desc
-      limit $1::int
-    `,
-    [limit],
-  );
+  let result;
+
+  try {
+    result = await queryDb<RiskyEmailDomainRow>(
+      `
+        select
+          r.business_id,
+          b.name as business_name,
+          r.domain_name,
+          r.deliverability_score,
+          r.score_band,
+          r.blockers_json,
+          r.ses_verified,
+          r.dkim_verified,
+          r.spf_status,
+          r.dmarc_status,
+          r.bounce_rate_7d,
+          r.complaint_rate_7d,
+          r.delivery_rate_7d,
+          r.recent_deliveries_7d,
+          r.recent_hard_bounces_7d,
+          r.recent_soft_bounces_7d,
+          r.recent_complaints_7d,
+          r.last_evaluated_at
+        from email_domain_reputation r
+        inner join businesses b on b.id = r.business_id
+        where r.score_band <> 'excellent'
+           or jsonb_array_length(r.blockers_json) > 0
+        order by
+          case r.score_band
+            when 'at_risk' then 0
+            when 'needs_attention' then 1
+            else 2
+          end,
+          r.deliverability_score asc,
+          r.updated_at desc
+        limit $1::int
+      `,
+      [limit],
+    );
+  } catch (error) {
+    if (isMissingOptionalDeliverabilityRelation(error)) {
+      logWarn("Skipping risky email domain lookup because deliverability schema is not available.", {
+        code: (error as { code?: string }).code ?? "unknown",
+      });
+      return [];
+    }
+
+    throw error;
+  }
 
   return result.rows.map((row) => {
     const snapshot = mapReputationRow(row);

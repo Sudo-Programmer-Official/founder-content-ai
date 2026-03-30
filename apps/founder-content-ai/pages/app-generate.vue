@@ -64,6 +64,8 @@ const brandProfile = ref<BrandProfile | null>(null);
 const isLoadingBrandProfile = ref(false);
 const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingSocialAccounts = ref(false);
+const isHydratingFeedDefaults = ref(false);
+const hydratedSourceBusinessId = ref("");
 
 const pageTitle = computed(() =>
   improvementSourceId.value ? "Improve the post you already have" : "Create your next post",
@@ -139,6 +141,21 @@ const linkedInOptimizationLabel = computed(() => {
   return "this workspace";
 });
 
+function pickSavedSource(...types: SavedContentSource["sourceType"][]): SavedContentSource | null {
+  return savedSources.value.find((source) => types.includes(source.sourceType)) ?? null;
+}
+
+const workspaceDefaultSources = computed(() =>
+  [
+    pickSavedSource("linkedin"),
+    pickSavedSource("instagram"),
+    pickSavedSource("facebook"),
+    pickSavedSource("blog", "url"),
+  ].filter((source): source is SavedContentSource => Boolean(source)),
+);
+
+const hasWorkspaceSourceDefaults = computed(() => workspaceDefaultSources.value.length > 0);
+
 function resolveSourceModeFromRoute(): GenerationSourceMode {
   return route.query.mode === "repurpose" ? "feed" : "fresh";
 }
@@ -160,6 +177,7 @@ async function loadSavedSources(): Promise<void> {
 
   if (!businessId) {
     savedSources.value = [];
+    hydratedSourceBusinessId.value = "";
     return;
   }
 
@@ -168,6 +186,9 @@ async function loadSavedSources(): Promise<void> {
   try {
     const response = await requestSavedContentSources(businessId);
     savedSources.value = response.sources;
+    const shouldForceHydrate = hydratedSourceBusinessId.value !== businessId;
+    hydrateFeedDefaultsFromSavedSources(shouldForceHydrate);
+    hydratedSourceBusinessId.value = businessId;
   } catch {
     savedSources.value = [];
   } finally {
@@ -285,6 +306,51 @@ function buildFeedSourceUrls(): RepurposeSourceUrlInput[] {
   ].filter((source) => source.url !== "");
 }
 
+function buildCombinedFeedPreviewText(
+  contextText: string,
+  items: Array<Pick<ContentIngestionItem, "label" | "rawText">>,
+): string {
+  const normalizedContext = contextText.trim();
+
+  return [
+    normalizedContext ? `Priority context:\n${normalizedContext}` : "",
+    ...items.map((item) => `${item.label}\n${item.rawText}`),
+  ]
+    .filter((segment) => segment !== "")
+    .join("\n\n");
+}
+
+function hydrateFeedDefaultsFromSavedSources(force = false): void {
+  if (improvementSourceId.value || sourceMode.value !== "feed") {
+    return;
+  }
+
+  const currentSources = buildFeedSourceUrls();
+
+  if (!force && currentSources.length > 0) {
+    return;
+  }
+
+  const defaults = workspaceDefaultSources.value;
+
+  isHydratingFeedDefaults.value = true;
+  linkedinSourceUrl.value = pickSavedSource("linkedin")?.sourceUrl ?? "";
+  instagramSourceUrl.value = pickSavedSource("instagram")?.sourceUrl ?? "";
+  facebookSourceUrl.value = pickSavedSource("facebook")?.sourceUrl ?? "";
+  blogSourceUrl.value = pickSavedSource("blog", "url")?.sourceUrl ?? "";
+  ingestedSourceItems.value = defaults.map((source) => ({
+    label: source.label,
+    sourceType: source.sourceType,
+    title: source.title,
+    rawText: source.extractedText,
+    metadata: source.metadata,
+  }));
+  ingestionErrors.value = [];
+  feedPreviewText.value = buildCombinedFeedPreviewText(input.value, ingestedSourceItems.value);
+  isFeedPreviewDirty.value = defaults.length === 0;
+  isHydratingFeedDefaults.value = false;
+}
+
 async function previewFeedSources(): Promise<void> {
   if (!bootstrap.value?.activeBusinessId) {
     errorMessage.value = "Select or create a workspace before previewing sources.";
@@ -309,7 +375,7 @@ async function previewFeedSources(): Promise<void> {
     });
     ingestedSourceItems.value = response.items;
     ingestionErrors.value = response.errors.map((error) => `${error.label}: ${error.message}`);
-    feedPreviewText.value = response.combinedText;
+    feedPreviewText.value = buildCombinedFeedPreviewText(input.value, response.items);
     savedSources.value = response.savedSources;
     isFeedPreviewDirty.value = false;
   } catch (error) {
@@ -407,15 +473,31 @@ watch(
   () => [route.query.improve, route.query.postId, route.query.mode, bootstrap.value?.activeBusinessId],
   () => {
     void hydrateImprovementState();
+    if (resolveSourceModeFromRoute() === "feed") {
+      hydrateFeedDefaultsFromSavedSources();
+    }
   },
   { immediate: true },
 );
 
-watch([sourceMode, input, linkedinSourceUrl, instagramSourceUrl, facebookSourceUrl, blogSourceUrl], () => {
+watch([sourceMode, linkedinSourceUrl, instagramSourceUrl, facebookSourceUrl, blogSourceUrl], () => {
+  if (isHydratingFeedDefaults.value) {
+    return;
+  }
+
   if (sourceMode.value === "feed" && !improvementSourceId.value) {
     isFeedPreviewDirty.value = true;
   }
 });
+
+watch(
+  () => input.value,
+  () => {
+    if (sourceMode.value === "feed" && !improvementSourceId.value && ingestedSourceItems.value.length > 0) {
+      feedPreviewText.value = buildCombinedFeedPreviewText(input.value, ingestedSourceItems.value);
+    }
+  },
+);
 
 watch(
   () => bootstrap.value?.activeBusinessId,
@@ -619,7 +701,7 @@ onBeforeUnmount(() => {
           {{
             sourceMode === "fresh"
               ? "Fresh generation automatically blends these saved sources with your idea and brand context."
-              : "Repurpose starts from the reviewed source preview, then layers these saved sources and brand context on top."
+              : "Repurpose starts from the workspace source defaults below, then layers these saved sources and brand context on top."
           }}
         </p>
       </div>
@@ -636,8 +718,36 @@ onBeforeUnmount(() => {
         class="feed-ingest-panel"
       >
         <p class="activation-helper">
-          Use public page, post, or article URLs. Private feeds and login-only pages will not ingest. Your workspace brand memory is applied automatically after preview.
+          Use public page, post, or article URLs. Workspace source defaults are prefilled from settings, and private feeds or login-only pages still will not ingest.
         </p>
+        <div
+          v-if="hasWorkspaceSourceDefaults"
+          class="saved-sources-panel inline-saved-sources-panel"
+        >
+          <div class="saved-sources-header">
+            <div>
+              <p class="panel-meta">Workspace source defaults</p>
+              <h3>These public listings were loaded from settings</h3>
+            </div>
+            <router-link class="secondary-action inline-link" :to="appRoutes.settingsPreferences">
+              Manage defaults
+            </router-link>
+          </div>
+
+          <div class="saved-source-list">
+            <span
+              v-for="source in workspaceDefaultSources"
+              :key="source.id"
+              class="saved-source-chip"
+            >
+              {{ source.title || source.label }}
+            </span>
+          </div>
+
+          <p class="activation-helper">
+            Repurpose can start from these saved listings immediately. Adjust the URLs below only when you want a temporary override.
+          </p>
+        </div>
         <div class="source-grid">
           <label>
             <span>LinkedIn URL</span>
