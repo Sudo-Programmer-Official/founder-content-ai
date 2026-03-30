@@ -1,3 +1,5 @@
+import type { ContentPovProfile, ContentQualityScore } from "./analytics.ts";
+
 export interface IdeaGenerationRequest {
   industry: string;
   stage: string;
@@ -23,6 +25,8 @@ export interface StructuredContentResponse {
   idea: IdeaOption;
   hooks: string[];
   post: string;
+  quality?: ContentQualityScore;
+  pov?: ContentPovProfile;
 }
 
 export interface HookGenerationRequest {
@@ -45,6 +49,8 @@ export interface LinkedInPostGenerationRequest {
 export interface LinkedInPostVariation {
   angle: "story" | "lesson" | "build-in-public";
   content: string;
+  quality?: ContentQualityScore;
+  pov?: ContentPovProfile;
 }
 
 export interface LinkedInPostGenerationResponse {

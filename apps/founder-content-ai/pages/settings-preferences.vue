@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
   AiAssistLevel,
+  BrandCompetitorReference,
   BrandProfile,
   BrandSignalSummary,
   ProductAccessLimits,
@@ -58,15 +59,21 @@ const channelFeedback = ref("");
 const channelError = ref("");
 const brandProfile = ref<BrandProfile | null>(null);
 const brandSignalSummary = ref<BrandSignalSummary | null>(null);
+const suggestedCompetitors = ref<BrandCompetitorReference[]>([]);
+const selectedCompetitorsInput = ref<BrandCompetitorReference[]>([]);
 const toneInput = ref("");
 const writingStyleInput = ref("");
 const visualStyleInput = ref("");
 const topicsInput = ref("");
 const patternsInput = ref("");
+const customCompetitorLabelInput = ref("");
+const customCompetitorUrlInput = ref("");
 const isLoadingBrandContext = ref(false);
 const isSavingBrandContext = ref(false);
 const brandContextFeedback = ref("");
 const brandContextError = ref("");
+const competitorSelectionFeedback = ref("");
+const competitorSelectionError = ref("");
 const savedSources = ref<SavedContentSource[]>([]);
 const linkedinSourceUrl = ref("");
 const instagramSourceUrl = ref("");
@@ -138,6 +145,13 @@ const notifyPostPublishedModel = computed<boolean>({
   get: () => preferences.value.notifyPostPublished,
   set: (value) => {
     void updatePreference("notifyPostPublished", value);
+  },
+});
+
+const notifyEmailCampaignUpdatesModel = computed<boolean>({
+  get: () => preferences.value.notifyEmailCampaignUpdates,
+  set: (value) => {
+    void updatePreference("notifyEmailCampaignUpdates", value);
   },
 });
 
@@ -255,6 +269,11 @@ const brandContextChips = computed(() =>
     visualStyleInput.value ? `Visuals: ${visualStyleInput.value}` : "",
   ].filter((value) => value !== ""),
 );
+const effectiveMarketReferencePreview = computed(() =>
+  selectedCompetitorsInput.value.length > 0
+    ? selectedCompetitorsInput.value
+    : suggestedCompetitors.value.slice(0, 3),
+);
 
 function joinList(values: string[]): string {
   return values.join(", ");
@@ -273,6 +292,113 @@ function hydrateBrandContextForm(profile: BrandProfile | null): void {
   visualStyleInput.value = profile?.visualStyle ?? "";
   topicsInput.value = joinList(profile?.topics ?? []);
   patternsInput.value = joinList(profile?.patterns ?? []);
+}
+
+function competitorKey(reference: Pick<BrandCompetitorReference, "id" | "label" | "url">): string {
+  return reference.url?.trim().toLowerCase() || reference.id || reference.label.trim().toLowerCase();
+}
+
+function normalizeCompetitors(
+  values: BrandCompetitorReference[],
+): BrandCompetitorReference[] {
+  const deduped = new Map<string, BrandCompetitorReference>();
+
+  for (const value of values) {
+    const label = value.label.trim();
+
+    if (!label) {
+      continue;
+    }
+
+    const normalizedUrl = value.url?.trim() || undefined;
+    const normalized: BrandCompetitorReference = {
+      id: value.id?.trim() || label.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      label,
+      url: normalizedUrl,
+      sourceType:
+        value.sourceType === "public_url" || value.sourceType === "website_page"
+          ? value.sourceType
+          : normalizedUrl?.includes("linkedin.com")
+            ? "public_url"
+            : "website_page",
+      rationale: value.rationale?.trim() || undefined,
+      origin: value.origin === "suggested" ? "suggested" : "custom",
+    };
+
+    deduped.set(competitorKey(normalized), normalized);
+  }
+
+  return Array.from(deduped.values()).slice(0, 8);
+}
+
+function hydrateCompetitorState(
+  profile: BrandProfile | null,
+  suggestions: BrandCompetitorReference[],
+): void {
+  suggestedCompetitors.value = normalizeCompetitors(suggestions);
+  selectedCompetitorsInput.value = normalizeCompetitors(profile?.selectedCompetitors ?? []);
+  customCompetitorLabelInput.value = "";
+  customCompetitorUrlInput.value = "";
+  competitorSelectionFeedback.value = "";
+  competitorSelectionError.value = "";
+}
+
+function isCompetitorSelected(reference: BrandCompetitorReference): boolean {
+  const targetKey = competitorKey(reference);
+  return selectedCompetitorsInput.value.some((entry) => competitorKey(entry) === targetKey);
+}
+
+function addSuggestedCompetitor(reference: BrandCompetitorReference): void {
+  competitorSelectionError.value = "";
+  competitorSelectionFeedback.value = "";
+
+  if (isCompetitorSelected(reference)) {
+    competitorSelectionFeedback.value = "That market reference is already pinned.";
+    return;
+  }
+
+  selectedCompetitorsInput.value = normalizeCompetitors([
+    ...selectedCompetitorsInput.value,
+    reference,
+  ]);
+  competitorSelectionFeedback.value = "Market reference added. Save brand context to keep it.";
+}
+
+function removeSelectedCompetitor(reference: BrandCompetitorReference): void {
+  const targetKey = competitorKey(reference);
+  selectedCompetitorsInput.value = selectedCompetitorsInput.value.filter(
+    (entry) => competitorKey(entry) !== targetKey,
+  );
+  competitorSelectionError.value = "";
+  competitorSelectionFeedback.value = "Market reference removed. Save brand context to keep it.";
+}
+
+function handleAddCustomCompetitor(): void {
+  const label = customCompetitorLabelInput.value.trim();
+  const url = customCompetitorUrlInput.value.trim();
+
+  competitorSelectionFeedback.value = "";
+  competitorSelectionError.value = "";
+
+  if (!label) {
+    competitorSelectionError.value = "Add a creator or company name before saving a custom competitor.";
+    return;
+  }
+
+  selectedCompetitorsInput.value = normalizeCompetitors([
+    ...selectedCompetitorsInput.value,
+    {
+      id: `custom-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+      label,
+      url: url || undefined,
+      sourceType: url.includes("linkedin.com") ? "public_url" : "website_page",
+      rationale: "Manually pinned by the workspace owner.",
+      origin: "custom",
+    },
+  ]);
+  customCompetitorLabelInput.value = "";
+  customCompetitorUrlInput.value = "";
+  competitorSelectionFeedback.value = "Custom competitor added. Save brand context to keep it.";
 }
 
 function formatIdentityOption(identity: SocialAccountIdentity): string {
@@ -374,6 +500,7 @@ async function handleBrandSourcesSave(): Promise<void> {
     });
     brandProfile.value = response.brandProfile;
     brandSignalSummary.value = response.signalSummary;
+    suggestedCompetitors.value = normalizeCompetitors(response.suggestedCompetitors);
     hydrateBrandSourceForm();
 
     if (sourceUrls.length > 0) {
@@ -412,6 +539,7 @@ async function loadBrandContext(refreshFromSignals = false): Promise<void> {
     brandProfile.value = null;
     brandSignalSummary.value = null;
     hydrateBrandContextForm(null);
+    hydrateCompetitorState(null, []);
     return;
   }
 
@@ -426,11 +554,13 @@ async function loadBrandContext(refreshFromSignals = false): Promise<void> {
     brandProfile.value = response.brandProfile;
     brandSignalSummary.value = response.signalSummary;
     hydrateBrandContextForm(response.brandProfile);
+    hydrateCompetitorState(response.brandProfile, response.suggestedCompetitors);
     hydrateBrandSourceForm();
   } catch (error) {
     brandProfile.value = null;
     brandSignalSummary.value = null;
     hydrateBrandContextForm(null);
+    hydrateCompetitorState(null, []);
     hydrateBrandSourceForm();
     brandContextError.value =
       error instanceof Error ? error.message : "Unable to load brand context.";
@@ -458,11 +588,13 @@ async function handleBrandContextSave(): Promise<void> {
       visualStyle: visualStyleInput.value.trim(),
       topics: parseList(topicsInput.value),
       patterns: parseList(patternsInput.value),
+      selectedCompetitors: selectedCompetitorsInput.value,
       refreshFromSignals: false,
     });
     brandProfile.value = response.brandProfile;
     brandSignalSummary.value = response.signalSummary;
     hydrateBrandContextForm(response.brandProfile);
+    hydrateCompetitorState(response.brandProfile, response.suggestedCompetitors);
     brandContextFeedback.value = "Brand context saved for this workspace.";
   } catch (error) {
     brandContextError.value =
@@ -690,22 +822,42 @@ watch(
 
     <section class="dashboard-panel notification-panel">
       <p class="panel-meta">Notifications</p>
-      <div class="notification-preference-row">
-        <div>
-          <h2>Momentum emails</h2>
-          <p class="dashboard-description">
-            Get one email when a scheduled LinkedIn post goes live, plus a reminder of the next post already lined up.
-          </p>
+      <div class="notification-preference-stack">
+        <div class="notification-preference-row">
+          <div>
+            <h2>Momentum emails</h2>
+            <p class="dashboard-description">
+              Get one email when a scheduled LinkedIn post goes live, plus a reminder of the next post already lined up.
+            </p>
+          </div>
+
+          <label class="notification-toggle">
+            <input
+              v-model="notifyPostPublishedModel"
+              type="checkbox"
+              :disabled="isSaving"
+            />
+            <span>Notify me when posts are published</span>
+          </label>
         </div>
 
-        <label class="notification-toggle">
-          <input
-            v-model="notifyPostPublishedModel"
-            type="checkbox"
-            :disabled="isSaving"
-          />
-          <span>Notify me when posts are published</span>
-        </label>
+        <div class="notification-preference-row">
+          <div>
+            <h2>Campaign updates</h2>
+            <p class="dashboard-description">
+              Get one email when a campaign starts, finishes, or needs attention, with real sent, delivered, failed, and pending counts.
+            </p>
+          </div>
+
+          <label class="notification-toggle">
+            <input
+              v-model="notifyEmailCampaignUpdatesModel"
+              type="checkbox"
+              :disabled="isSaving"
+            />
+            <span>Notify me about email campaign updates</span>
+          </label>
+        </div>
       </div>
     </section>
 
@@ -1052,6 +1204,101 @@ watch(
             </label>
           </div>
 
+          <section class="brand-competitor-section">
+            <div>
+              <p class="panel-meta">Market references</p>
+              <h3>Let the system borrow signal from a few strong voices in your space.</h3>
+              <p class="dashboard-description">
+                Suggestions are assistive, not prescriptive. They help sharpen hooks and positioning without copying anyone directly.
+              </p>
+            </div>
+
+            <p v-if="competitorSelectionFeedback" class="dashboard-feedback">{{ competitorSelectionFeedback }}</p>
+            <p v-if="competitorSelectionError" class="dashboard-feedback error">{{ competitorSelectionError }}</p>
+
+            <div v-if="suggestedCompetitors.length > 0" class="competitor-suggestion-grid">
+              <article
+                v-for="competitor in suggestedCompetitors"
+                :key="competitor.id"
+                class="competitor-card"
+                :data-selected="isCompetitorSelected(competitor)"
+              >
+                <div class="competitor-card-header">
+                  <strong>{{ competitor.label }}</strong>
+                  <span class="usage-badge">
+                    {{ competitor.sourceType === "public_url" ? "public profile" : "website signal" }}
+                  </span>
+                </div>
+                <p>{{ competitor.rationale }}</p>
+                <div class="channel-actions">
+                  <button
+                    type="button"
+                    class="dashboard-button secondary"
+                    :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId || isCompetitorSelected(competitor)"
+                    @click="addSuggestedCompetitor(competitor)"
+                  >
+                    {{ isCompetitorSelected(competitor) ? "Added" : "Add" }}
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <div v-if="selectedCompetitorsInput.length > 0" class="brand-preview-block">
+              <p class="panel-meta">Pinned references</p>
+              <div class="selected-competitor-list">
+                <span
+                  v-for="competitor in selectedCompetitorsInput"
+                  :key="competitorKey(competitor)"
+                  class="selected-competitor-chip"
+                >
+                  <span>{{ competitor.label }}</span>
+                  <button
+                    type="button"
+                    class="chip-remove-button"
+                    :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                    @click="removeSelectedCompetitor(competitor)"
+                  >
+                    Remove
+                  </button>
+                </span>
+              </div>
+            </div>
+
+            <div class="settings-grid brand-competitor-grid">
+              <label class="dashboard-field">
+                <span>Add custom competitor</span>
+                <input
+                  v-model="customCompetitorLabelInput"
+                  type="text"
+                  :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                  placeholder="Creator or company name"
+                />
+              </label>
+
+              <label class="dashboard-field">
+                <span>Public URL (optional)</span>
+                <input
+                  v-model="customCompetitorUrlInput"
+                  type="url"
+                  :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                  placeholder="https://example.com/"
+                />
+              </label>
+            </div>
+
+            <div class="channel-actions">
+              <button
+                type="button"
+                class="dashboard-button secondary"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                @click="handleAddCustomCompetitor()"
+              >
+                Add custom
+              </button>
+              <span class="market-reference-note">Pinned references save with brand context.</span>
+            </div>
+          </section>
+
           <div class="channel-actions">
             <button
               type="button"
@@ -1120,6 +1367,26 @@ watch(
             <ul class="brand-preview-list">
               <li v-for="pattern in brandProfile.patterns" :key="pattern">{{ pattern }}</li>
             </ul>
+          </div>
+
+          <div v-if="effectiveMarketReferencePreview.length > 0" class="brand-preview-block">
+            <p class="panel-meta">Market references in play</p>
+            <div class="saved-source-list">
+              <span
+                v-for="competitor in effectiveMarketReferencePreview"
+                :key="competitorKey(competitor)"
+                class="saved-source-chip"
+              >
+                {{ competitor.label }}
+              </span>
+            </div>
+            <p class="dashboard-description">
+              {{
+                selectedCompetitorsInput.length > 0
+                  ? "Pinned references now steer brand-aware generation."
+                  : "Generation falls back to the suggested set until you pin your own references."
+              }}
+            </p>
           </div>
 
           <div v-if="brandSignalSummary" class="brand-signal-grid">
@@ -1227,6 +1494,11 @@ watch(
   display: grid;
   gap: 18px;
   margin-top: 18px;
+}
+
+.notification-preference-stack {
+  display: grid;
+  gap: 16px;
 }
 
 .notification-preference-row {
@@ -1354,6 +1626,15 @@ watch(
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  align-items: center;
+}
+
+.channel-actions .dashboard-button,
+.channel-actions .link-button {
+  width: auto;
+  min-height: 44px;
+  padding: 0 18px;
+  flex: 0 0 auto;
 }
 
 .channel-identity-field {
@@ -1380,12 +1661,14 @@ watch(
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.95fr);
   gap: 18px;
+  align-items: start;
 }
 
 .brand-context-form,
 .brand-context-preview {
   display: grid;
   gap: 16px;
+  align-content: start;
 }
 
 .brand-context-preview {
@@ -1405,6 +1688,87 @@ watch(
 
 .brand-context-field-wide {
   grid-column: 1 / -1;
+}
+
+.brand-competitor-section {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 86%, var(--fc-surface-muted));
+}
+
+.brand-competitor-section h3,
+.competitor-card p {
+  margin: 0;
+}
+
+.brand-competitor-grid,
+.competitor-suggestion-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.competitor-suggestion-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.competitor-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 92%, white 8%);
+}
+
+.competitor-card[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 28%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft, var(--fc-panel-bg)) 30%, var(--fc-panel-bg));
+}
+
+.competitor-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.competitor-card p,
+.market-reference-note {
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+}
+
+.selected-competitor-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.selected-competitor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 8px 0 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: var(--fc-surface);
+  color: var(--fc-text);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.chip-remove-button {
+  border: none;
+  background: transparent;
+  color: var(--fc-text-muted);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .dashboard-field input,
@@ -1536,7 +1900,9 @@ watch(
   }
 
   .brand-context-grid,
-  .brand-signal-grid {
+  .brand-signal-grid,
+  .brand-competitor-grid,
+  .competitor-suggestion-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -4,6 +4,10 @@ import type {
   ControlDashboardResponse,
   ConvertIdeaToContentRequest,
   ConvertIdeaToContentResponse,
+  CreateContentPipelineItemRequest,
+  CreateContentPipelineItemResponse,
+  DeleteContentPipelineItemResponse,
+  DuplicateContentPipelineItemResponse,
   CreateIdeaInboxRequest,
   CreateIdeaInboxResponse,
   GetContentPipelineItemQuery,
@@ -16,7 +20,10 @@ import type {
 import type { Request, Response } from "express";
 import {
   convertIdeaInboxItemToContent,
+  createContentPipelineItem,
   createIdeaInboxItem,
+  deleteContentPipelineItem,
+  duplicateContentPipelineItem,
   getContentPipelineItem,
   getControlDashboard,
   previewContentPipelineAiEdit,
@@ -63,9 +70,16 @@ export async function createIdeaInboxEntry(
 
   const businessId = request.body?.businessId?.trim();
   const text = request.body?.text?.trim();
+  const rawInput = request.body?.rawInput?.trim();
+  const processedText = request.body?.processedText?.trim();
 
-  if (!businessId || !text) {
-    sendApiError(response, 400, "bad_request", "businessId and text are required.");
+  if (!businessId || (!text && !rawInput && !processedText)) {
+    sendApiError(
+      response,
+      400,
+      "bad_request",
+      "businessId and at least one capture input are required.",
+    );
     return;
   }
 
@@ -74,6 +88,10 @@ export async function createIdeaInboxEntry(
       await createIdeaInboxItem(request.auth, {
         businessId,
         text,
+        inputType: request.body?.inputType,
+        rawInput,
+        processedText,
+        metadata: request.body?.metadata,
       }),
     );
   } catch (error) {
@@ -82,6 +100,43 @@ export async function createIdeaInboxEntry(
       code: "idea_inbox_create_failed",
       message: "Unable to save the idea.",
       logMessage: "Failed to create idea inbox item.",
+    });
+  }
+}
+
+export async function createPipelineItem(
+  request: Request<unknown, CreateContentPipelineItemResponse | ApiError, Partial<CreateContentPipelineItemRequest>>,
+  response: Response<CreateContentPipelineItemResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const textContent = request.body?.textContent?.trim();
+
+  if (!businessId || !textContent) {
+    sendApiError(response, 400, "bad_request", "businessId and textContent are required.");
+    return;
+  }
+
+  try {
+    response.status(201).json(
+      await createContentPipelineItem(request.auth, {
+        businessId,
+        title: request.body?.title,
+        textContent,
+        contentBody: request.body?.contentBody,
+        sourceKind: request.body?.sourceKind,
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "pipeline_create_failed",
+      message: "Unable to save this draft to the workspace.",
+      logMessage: "Failed to create pipeline item.",
     });
   }
 }
@@ -180,6 +235,64 @@ export async function getPipelineItem(
       code: "pipeline_item_lookup_failed",
       message: "Unable to load the pipeline item.",
       logMessage: "Failed to load pipeline item.",
+    });
+  }
+}
+
+export async function duplicatePipelineItem(
+  request: Request<{ assetId: string }, DuplicateContentPipelineItemResponse | ApiError, Partial<{ businessId: string }>>,
+  response: Response<DuplicateContentPipelineItemResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const assetId = request.params.assetId?.trim();
+
+  if (!businessId || !assetId) {
+    sendApiError(response, 400, "bad_request", "businessId and assetId are required.");
+    return;
+  }
+
+  try {
+    response.status(201).json(await duplicateContentPipelineItem(request.auth, businessId, assetId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "pipeline_duplicate_failed",
+      message: "Unable to duplicate the pipeline item.",
+      logMessage: "Failed to duplicate pipeline item.",
+    });
+  }
+}
+
+export async function deletePipelineItem(
+  request: Request<{ assetId: string }, DeleteContentPipelineItemResponse | ApiError, unknown, Partial<{ businessId: string }>>,
+  response: Response<DeleteContentPipelineItemResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+  const assetId = request.params.assetId?.trim();
+
+  if (!businessId || !assetId) {
+    sendApiError(response, 400, "bad_request", "businessId and assetId are required.");
+    return;
+  }
+
+  try {
+    response.json(await deleteContentPipelineItem(request.auth, businessId, assetId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "pipeline_delete_failed",
+      message: "Unable to delete the pipeline item.",
+      logMessage: "Failed to delete pipeline item.",
     });
   }
 }

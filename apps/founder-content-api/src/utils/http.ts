@@ -5,12 +5,14 @@ import { logError } from "./logger.ts";
 export class HttpError extends Error {
   statusCode: number;
   code: string;
+  details?: Record<string, unknown>;
 
-  constructor(statusCode: number, code: string, message: string) {
+  constructor(statusCode: number, code: string, message: string, details?: Record<string, unknown>) {
     super(message);
     this.name = "HttpError";
     this.statusCode = statusCode;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -37,12 +39,14 @@ export function sendApiError(
   statusCode: number,
   code: string,
   message: string,
+  details?: Record<string, unknown>,
 ): void {
   response.status(statusCode).json({
     ok: false,
     error: {
       code,
       message,
+      details,
     },
   } satisfies ApiError);
 }
@@ -58,7 +62,7 @@ export function handleApiError(
   },
 ): void {
   if (isHttpError(error)) {
-    sendApiError(response, error.statusCode, error.code, error.message);
+    sendApiError(response, error.statusCode, error.code, error.message, error.details);
     return;
   }
 

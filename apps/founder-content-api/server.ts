@@ -4,6 +4,7 @@ import { brandProfileRoute } from "./src/routes/brandProfile.ts";
 import { captureRoute } from "./src/routes/capture.ts";
 import { competitiveIntelligenceRoute } from "./src/routes/competitiveIntelligence.ts";
 import { controlDashboardRoute } from "./src/routes/controlDashboard.ts";
+import { contentOrchestrationRoute } from "./src/routes/contentOrchestration.ts";
 import { adminRoute } from "./src/routes/admin.ts";
 import { emailRoute } from "./src/routes/email.ts";
 import { generateHookRoute } from "./src/routes/generateHook.ts";
@@ -125,6 +126,7 @@ export function createServerApp(): Express {
   app.use(remixRoute);
   app.use(repurposeRoute);
   app.use(controlDashboardRoute);
+  app.use(contentOrchestrationRoute);
   app.use(postAssetsRoute);
   app.use(meRoute);
   app.use(userPreferencesRoute);

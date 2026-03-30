@@ -4,6 +4,8 @@ import type {
   PublishPostResponse,
   SchedulePostRequest,
   SchedulePostResponse,
+  UpdateScheduledPostPerformanceRequest,
+  UpdateScheduledPostPerformanceResponse,
   UpdateScheduledPostRequest,
   UpdateScheduledPostResponse,
   ScheduledPostsQuery,
@@ -15,6 +17,7 @@ import {
   listScheduledPosts,
   publishPostNow,
   updateScheduledPost,
+  updateScheduledPostPerformance,
 } from "../services/scheduledPostService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
@@ -49,6 +52,7 @@ export async function schedulePost(
         slides: request.body?.slides ?? [],
         scheduledAt: request.body?.scheduledAt?.trim() ?? "",
         audienceTimezone: request.body?.audienceTimezone?.trim(),
+        ignoreSafetyWarnings: request.body?.ignoreSafetyWarnings === true,
       }),
     );
   } catch (error) {
@@ -168,6 +172,7 @@ export async function patchScheduledPost(
         action: request.body?.action as UpdateScheduledPostRequest["action"],
         scheduledAt: request.body?.scheduledAt?.trim(),
         audienceTimezone: request.body?.audienceTimezone?.trim(),
+        ignoreSafetyWarnings: request.body?.ignoreSafetyWarnings === true,
       }),
     );
   } catch (error) {
@@ -176,6 +181,50 @@ export async function patchScheduledPost(
       code: "scheduled_post_update_failed",
       message: "Unable to update scheduled post.",
       logMessage: "Failed to update scheduled post.",
+    });
+  }
+}
+
+export async function patchScheduledPostPerformanceController(
+  request: Request<
+    { scheduledPostId: string },
+    UpdateScheduledPostPerformanceResponse | ApiError,
+    Partial<UpdateScheduledPostPerformanceRequest>
+  >,
+  response: Response<UpdateScheduledPostPerformanceResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const scheduledPostId = request.params.scheduledPostId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  if (!scheduledPostId) {
+    sendApiError(response, 400, "bad_request", "scheduledPostId is required.");
+    return;
+  }
+
+  try {
+    response.json(
+      await updateScheduledPostPerformance(request.auth, scheduledPostId, {
+        businessId,
+        performanceLabel:
+          request.body?.performanceLabel as UpdateScheduledPostPerformanceRequest["performanceLabel"],
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "scheduled_post_performance_update_failed",
+      message: "Unable to save post performance.",
+      logMessage: "Failed to save scheduled post performance.",
     });
   }
 }

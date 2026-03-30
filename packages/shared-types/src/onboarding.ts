@@ -1,4 +1,5 @@
 import type { Business, BusinessMembership } from "./auth-business.ts";
+import type { CompetitorSourceType } from "./competitive-intelligence.ts";
 
 export type OnboardingUseCase = "personal_brand" | "business_marketing" | "agency_clients";
 export type OnboardingChannel = "linkedin" | "instagram" | "facebook" | "email";
@@ -10,6 +11,15 @@ export type OnboardingGoal =
 export type BrandTone = "professional" | "friendly" | "bold";
 export type OnboardingStatus = "not_started" | "in_progress" | "completed";
 export type OnboardingStep = "intent" | "workspace" | "generate" | "activate" | "completed";
+
+export interface BrandCompetitorReference {
+  id: string;
+  label: string;
+  url?: string;
+  sourceType: Extract<CompetitorSourceType, "public_url" | "website_page">;
+  rationale?: string;
+  origin: "suggested" | "custom";
+}
 
 export interface OnboardingProfile {
   id: string;
@@ -46,6 +56,7 @@ export interface BrandProfile {
   visualStyle?: string;
   topics: string[];
   patterns: string[];
+  selectedCompetitors: BrandCompetitorReference[];
   createdAt: string;
   updatedAt: string;
 }

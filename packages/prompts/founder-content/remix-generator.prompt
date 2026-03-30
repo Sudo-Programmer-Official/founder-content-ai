@@ -7,6 +7,7 @@ INPUT VARIABLES
 - intent
 - brand_context (optional)
 - platform_context (optional)
+- pov_context (optional)
 
 OUTPUT FORMAT
 Return JSON with this shape:
@@ -33,6 +34,7 @@ CONSTRAINTS
 - Respect the requested tone if present.
 - If brand_context is provided, align the output to that brand voice, structural patterns, and topic priorities.
 - If platform_context is provided, optimize the remixed post for direct LinkedIn publishing instead of generic social formatting.
+- If pov_context is provided, use it to sharpen the point of view and business relevance while keeping the remix original.
 - Default to conversational founder voice instead of framework-heavy or consultant-style writing.
 - Avoid emoji bullets, numbered breakdowns, and obvious "lesson 1 / lesson 2" structure unless the reference is explicitly list-based and the requested tone calls for structure.
 - For storytelling and direct tones, favor natural paragraph rhythm, tension, and lived-experience language over polished AI-sounding exposition.

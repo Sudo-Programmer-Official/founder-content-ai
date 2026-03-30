@@ -276,12 +276,17 @@ function serializeBrandContext(brandContext: BrandPromptContext | undefined): st
 
   const topics = (brandContext.topics ?? []).filter((topic) => topic.trim() !== "");
   const patterns = (brandContext.patterns ?? []).filter((pattern) => pattern.trim() !== "");
+  const marketReferences = (brandContext.marketReferences ?? []).filter((value) => value.trim() !== "");
   const lines = [
     brandContext.tone ? `Tone: ${brandContext.tone}` : undefined,
     brandContext.writingStyle ? `Writing style: ${brandContext.writingStyle}` : undefined,
     brandContext.visualStyle ? `Visual style: ${brandContext.visualStyle}` : undefined,
+    brandContext.goals && brandContext.goals.length > 0
+      ? `Business goals: ${brandContext.goals.join(", ")}`
+      : undefined,
     topics.length > 0 ? `Topics: ${topics.join(", ")}` : undefined,
     patterns.length > 0 ? `Patterns: ${patterns.join(" | ")}` : undefined,
+    marketReferences.length > 0 ? `Market references: ${marketReferences.join(" | ")}` : undefined,
   ].filter((line): line is string => Boolean(line));
 
   return lines.length > 0 ? lines.join("\n") : undefined;
@@ -290,6 +295,33 @@ function serializeBrandContext(brandContext: BrandPromptContext | undefined): st
 function serializePlatformContext(platformContext: string | undefined): string | undefined {
   const normalized = platformContext?.trim();
   return normalized ? normalized : undefined;
+}
+
+function serializePovContext(input: {
+  rawText: string;
+  tone?: string;
+  brandContext?: BrandPromptContext;
+}): string | undefined {
+  const normalizedText = input.rawText.trim();
+
+  if (!normalizedText) {
+    return undefined;
+  }
+
+  const goals = (input.brandContext?.goals ?? []).filter((goal) => goal.trim() !== "");
+  const topics = (input.brandContext?.topics ?? []).filter((topic) => topic.trim() !== "");
+  const tone = input.tone?.trim().toLowerCase() ?? "";
+  const lines = [
+    "Sharpen the point of view instead of summarizing the topic.",
+    "Make the claim specific to a founder's lived reality, tradeoff, or mistake.",
+    goals.length > 0 ? `Align the message to these business goals when natural: ${goals.join(", ")}.` : undefined,
+    topics.length > 0 ? `Stay grounded in these recurring brand themes: ${topics.join(", ")}.` : undefined,
+    tone.includes("bold") || tone.includes("contrarian")
+      ? "Lean into contrast and tension. The stance can be more explicit."
+      : "Keep the stance measured but clear. Do not drift into generic advice.",
+  ].filter((line): line is string => Boolean(line));
+
+  return lines.join("\n");
 }
 
 function resolveRawInputText(variables: ContentVariables): string | undefined {
@@ -351,14 +383,21 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
       buildVariables: (request) => {
         const variables = normalizeInput(request.input);
         const selectedHook = variables.selectedHook ?? variables.selected_hook;
+        const topic = requireField(variables, "topic", "topic is required.");
+        const tone = request.tone?.trim() || variables.tone || "storytelling";
 
         return {
-          topic: requireField(variables, "topic", "topic is required."),
-          tone: request.tone?.trim() || variables.tone || "storytelling",
+          topic,
+          tone,
           length: variables.length || "medium",
           selected_hook: selectedHook,
           brand_context: serializeBrandContext(request.brandContext),
           platform_context: serializePlatformContext(request.platformContext),
+          pov_context: serializePovContext({
+            rawText: topic,
+            tone,
+            brandContext: request.brandContext,
+          }),
         };
       },
       validate: (parsed) => validateVariationsPayload(parsed),
@@ -377,13 +416,19 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           resolveRawInputText(variables),
           "raw input text is required.",
         );
+        const tone = request.tone?.trim() || variables.tone || "storytelling";
 
         return {
           raw_input_text: rawInputText,
-          tone: request.tone?.trim() || variables.tone || "storytelling",
+          tone,
           intent: resolveIntent(request.intent),
           brand_context: serializeBrandContext(request.brandContext),
           platform_context: serializePlatformContext(request.platformContext),
+          pov_context: serializePovContext({
+            rawText: rawInputText,
+            tone,
+            brandContext: request.brandContext,
+          }),
         };
       },
       validate: (parsed) => validateStructuredContentPayload(parsed),

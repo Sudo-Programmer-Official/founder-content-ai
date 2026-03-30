@@ -1,4 +1,4 @@
-import type { ContentAsset } from "./analytics.ts";
+import type { ContentAsset, ContentPovProfile, ContentQualityScore } from "./analytics.ts";
 import type { IdeaOption, LinkedInPostVariation } from "./founder-content.ts";
 
 export type RepurposeInputType = "text" | "voice" | "url";
@@ -45,6 +45,8 @@ export interface RepurposeContentResponse {
   idea: IdeaOption;
   hooks: string[];
   post: string;
+  quality?: ContentQualityScore;
+  pov?: ContentPovProfile;
   variations: LinkedInPostVariation[];
   carouselDraft: CarouselDraft;
   quickSignals: RepurposeQuickSignals;

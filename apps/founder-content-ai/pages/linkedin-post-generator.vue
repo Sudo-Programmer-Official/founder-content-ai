@@ -7,6 +7,7 @@ import VoiceRecorder from "../components/VoiceRecorder.vue";
 import { useAiAssistSuggestions } from "../composables/use-ai-assist";
 import { calculateContentScore } from "../composables/useContentScore";
 import { requestMyBusinesses, trackAnalyticsEvent } from "../services/admin-analytics-service";
+import { ApiRequestError } from "../services/api-client";
 import {
   requestLinkedInPostGeneration,
   requestRepurposeContent,
@@ -31,6 +32,7 @@ import type {
   RepurposeInputType,
   RecommendedPostTimeSlot,
   ScheduledPost,
+  SchedulingSafetyWarning,
   SocialAccount,
   VisualTemplateType,
 } from "../../../packages/shared-types";
@@ -68,6 +70,56 @@ const memberships = ref<BusinessMembership[]>([]);
 const selectedBusinessId = ref("");
 const socialAccounts = ref<SocialAccount[]>([]);
 const scheduledPosts = ref<ScheduledPost[]>([]);
+
+function extractSchedulingWarnings(error: unknown): SchedulingSafetyWarning[] {
+  if (!(error instanceof ApiRequestError) || error.code !== "scheduling_safety_warning") {
+    return [];
+  }
+
+  const warnings = error.details?.warnings;
+
+  if (!Array.isArray(warnings)) {
+    return [];
+  }
+
+  return warnings.flatMap((warning) => {
+    if (!warning || typeof warning !== "object") {
+      return [];
+    }
+
+    const candidate = warning as Record<string, unknown>;
+
+    if (
+      typeof candidate.code !== "string" ||
+      typeof candidate.title !== "string" ||
+      typeof candidate.message !== "string"
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        code: candidate.code as SchedulingSafetyWarning["code"],
+        title: candidate.title,
+        message: candidate.message,
+      },
+    ];
+  });
+}
+
+function buildSchedulingWarningMessage(warnings: SchedulingSafetyWarning[]): string {
+  return warnings.map((warning) => `${warning.title}\n${warning.message}`).join("\n\n");
+}
+
+function confirmSchedulingWarnings(warnings: SchedulingSafetyWarning[]): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.confirm(
+    `${buildSchedulingWarningMessage(warnings)}\n\nChoose OK to schedule anyway, or Cancel to keep the safer spacing.`,
+  );
+}
 const scheduleAt = ref(defaultScheduleValue());
 const selectedCaptionKey = ref("");
 const scheduleFeedback = ref("");
@@ -436,10 +488,26 @@ function getVariationScoreResult(variation: LinkedInPostVariation) {
 }
 
 function getVariationScoreBadge(variation: LinkedInPostVariation): string {
+  if (typeof variation.quality?.overall === "number") {
+    return `POV quality ${variation.quality.overall}/100`;
+  }
+
   return `Scored ${getVariationScoreResult(variation).score}/100 on FounderContent AI`;
 }
 
 function getVariationReadyLabel(variation: LinkedInPostVariation): string {
+  if (typeof variation.quality?.overall === "number") {
+    if (variation.quality.overall >= 84) {
+      return "Strong founder POV";
+    }
+
+    if (variation.quality.overall >= 70) {
+      return "Nearly publish-ready";
+    }
+
+    return "Needs sharper stance";
+  }
+
   const score = getVariationScoreResult(variation);
 
   if (score.score >= 84) {
@@ -454,6 +522,10 @@ function getVariationReadyLabel(variation: LinkedInPostVariation): string {
 }
 
 function getVariationImpactHint(variation: LinkedInPostVariation): string {
+  if (variation.pov?.summary) {
+    return variation.pov.summary;
+  }
+
   const score = getVariationScoreResult(variation);
   return `Expected reach: ${score.expectedReach}. ${score.engagementOutlook}`;
 }
@@ -495,6 +567,10 @@ const scheduledCaptionPreview = computed(() => buildBrandedCaption(selectedCapti
 function distributionFormatLabel(format: GrowthDistributionFormat): string {
   if (format === "thread") {
     return "Twitter thread";
+  }
+
+  if (format === "email") {
+    return "email draft";
   }
 
   if (format === "video") {
@@ -741,8 +817,12 @@ function applyRepurposeSeed() {
   repurposeInputType.value = "text";
   repurposeText.value = seed.text;
   repurposeFeedback.value = seed.format
-    ? `Loaded a ${distributionFormatLabel(seed.format)} seed from the dashboard. Expand it into content now.`
-    : "Loaded a dashboard post seed into the repurpose engine.";
+    ? `Loaded a ${distributionFormatLabel(seed.format)} seed into the repurpose engine.`
+    : seed.source === "history"
+      ? "Loaded a published post from history into the repurpose engine."
+      : seed.source === "result"
+        ? "Loaded your saved draft into the repurpose engine."
+        : "Loaded a workspace post seed into the repurpose engine.";
   repurposeError.value = "";
 
   if (seed.title) {
@@ -915,6 +995,19 @@ function buildVideoScriptDraft(content: string): string {
   ].join("\n");
 }
 
+function buildEmailDraft(content: string): string {
+  const lines = extractLines(content);
+  const subject = truncateLine(lines[0] ?? "A founder lesson worth sharing", 72);
+
+  return [
+    `Subject: ${subject}`,
+    "",
+    lines.join("\n\n"),
+    "",
+    "If this resonated, reply and tell me what you're building right now.",
+  ].join("\n");
+}
+
 async function copyDistributionDraft(
   format: GrowthDistributionFormat,
   variation: LinkedInPostVariation,
@@ -932,6 +1025,8 @@ async function copyDistributionDraft(
   const distributionDraft =
     format === "thread"
       ? buildThreadDraft(variation.content)
+      : format === "email"
+        ? buildEmailDraft(variation.content)
       : buildVideoScriptDraft(variation.content);
 
   try {
@@ -1172,23 +1267,43 @@ async function scheduleCarouselPost() {
   scheduleError.value = "";
   scheduleFeedback.value = "";
 
-  try {
-    const response = await requestSchedulePost({
-      businessId: selectedBusinessId.value,
-      platform: "linkedin",
-      contentText: scheduledCaptionPreview.value,
-      assetGroupId: `linkedin-carousel-${Date.now()}`,
-      slides: publishableVisualEntries.value.map((entry) => ({
-        imageDataUrl: entry.visual.imageDataUrl,
-        mimeType: entry.visual.mimeType,
-        altText: `${entry.variation.angle} slide`,
-      })),
-      scheduledAt: parseLocalDatetimeValue(scheduleAt.value),
-    });
+  const scheduleRequest = {
+    businessId: selectedBusinessId.value,
+    platform: "linkedin" as const,
+    contentText: scheduledCaptionPreview.value,
+    assetGroupId: `linkedin-carousel-${Date.now()}`,
+    slides: publishableVisualEntries.value.map((entry) => ({
+      imageDataUrl: entry.visual.imageDataUrl,
+      mimeType: entry.visual.mimeType,
+      altText: `${entry.variation.angle} slide`,
+    })),
+    scheduledAt: parseLocalDatetimeValue(scheduleAt.value),
+  };
 
-    scheduleFeedback.value = `Carousel scheduled for ${new Date(
-      response.scheduledPost.scheduledAt,
-    ).toLocaleString()}.`;
+  try {
+    let response;
+
+    try {
+      response = await requestSchedulePost(scheduleRequest);
+    } catch (error) {
+      const warnings = extractSchedulingWarnings(error);
+
+      if (warnings.length === 0 || !confirmSchedulingWarnings(warnings)) {
+        throw error;
+      }
+
+      response = await requestSchedulePost({
+        ...scheduleRequest,
+        ignoreSafetyWarnings: true,
+      });
+      scheduleFeedback.value = "Carousel scheduled with a manual safety override.";
+    }
+
+    if (!scheduleFeedback.value) {
+      scheduleFeedback.value = `Carousel scheduled for ${new Date(
+        response.scheduledPost.scheduledAt,
+      ).toLocaleString()}.`;
+    }
     scheduledPosts.value = [response.scheduledPost, ...scheduledPosts.value].slice(0, 10);
     scheduleAt.value = toLocalDatetimeValue(new Date(response.scheduledPost.scheduledAt));
     await setActiveBusinessId(selectedBusinessId.value);
@@ -1475,6 +1590,13 @@ onMounted(async () => {
               @click="copyDistributionDraft('thread', variation)"
             >
               Twitter thread
+            </button>
+            <button
+              type="button"
+              class="secondary-button"
+              @click="copyDistributionDraft('email', variation)"
+            >
+              Email draft
             </button>
             <button
               type="button"

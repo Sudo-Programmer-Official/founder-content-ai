@@ -9,6 +9,7 @@ export * from "./src/brand-intelligence.ts";
 export * from "./src/ingestion.ts";
 export * from "./src/visual-generation.ts";
 export * from "./src/social-publishing.ts";
+export * from "./src/content-orchestration.ts";
 export * from "./src/ui-preferences.ts";
 export * from "./src/core-experience.ts";
 export * from "./src/voice.ts";

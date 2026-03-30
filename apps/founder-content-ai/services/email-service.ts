@@ -5,10 +5,18 @@ import type {
   CreateEmailDomainResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
+  EmailContactImportJobListResponse,
+  EmailContactImportJobResponse,
+  EmailContactListResponse,
+  EmailContactStatus,
   EmailDomainSettingsResponse,
   EmailListListResponse,
   ImportEmailContactsRequest,
+  ImportEmailContactsPreviewRequest,
+  ImportEmailContactsPreviewResponse,
   ImportEmailContactsResponse,
+  QueueEmailContactsImportRequest,
+  QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
   VerifyEmailDomainResponse,
 } from "../../../packages/shared-types";
@@ -26,6 +34,80 @@ export async function requestEmailContactsImport(
   const encodedBusinessId = encodeURIComponent(businessId);
   return apiPost<ImportEmailContactsRequest, ImportEmailContactsResponse>(
     `/businesses/${encodedBusinessId}/email/contacts/import`,
+    payload,
+  );
+}
+
+export async function requestEmailContactsImportJobCreate(
+  businessId: string,
+  payload: QueueEmailContactsImportRequest,
+): Promise<QueueEmailContactsImportResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiPost<QueueEmailContactsImportRequest, QueueEmailContactsImportResponse>(
+    `/businesses/${encodedBusinessId}/email/import-jobs`,
+    payload,
+  );
+}
+
+export async function requestEmailContactImportJobs(
+  businessId: string,
+): Promise<EmailContactImportJobListResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiGet<EmailContactImportJobListResponse>(`/businesses/${encodedBusinessId}/email/import-jobs`);
+}
+
+export async function requestEmailContactImportJob(
+  businessId: string,
+  jobId: string,
+): Promise<EmailContactImportJobResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedJobId = encodeURIComponent(jobId);
+  return apiGet<EmailContactImportJobResponse>(
+    `/businesses/${encodedBusinessId}/email/import-jobs/${encodedJobId}`,
+  );
+}
+
+export async function requestEmailContacts(
+  businessId: string,
+  options: {
+    search?: string;
+    status?: EmailContactStatus;
+    listId?: string;
+    limit?: number;
+  } = {},
+): Promise<EmailContactListResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const params = new URLSearchParams();
+
+  if (options.search?.trim()) {
+    params.set("search", options.search.trim());
+  }
+
+  if (options.status) {
+    params.set("status", options.status);
+  }
+
+  if (options.listId) {
+    params.set("listId", options.listId);
+  }
+
+  if (typeof options.limit === "number") {
+    params.set("limit", String(options.limit));
+  }
+
+  const query = params.toString();
+  return apiGet<EmailContactListResponse>(
+    `/businesses/${encodedBusinessId}/email/contacts${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function requestEmailContactsImportPreview(
+  businessId: string,
+  payload: ImportEmailContactsPreviewRequest,
+): Promise<ImportEmailContactsPreviewResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiPost<ImportEmailContactsPreviewRequest, ImportEmailContactsPreviewResponse>(
+    `/businesses/${encodedBusinessId}/email/contacts/import/preview`,
     payload,
   );
 }

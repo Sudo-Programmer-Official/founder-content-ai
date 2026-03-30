@@ -22,6 +22,7 @@ import {
 } from "../services/activation-flow-service";
 import { requestPipelineItem } from "../services/control-dashboard-service";
 import { requestSocialAccounts } from "../services/publishing-service";
+import { consumeRepurposeSeed } from "../utils/repurpose-loop";
 import { appRoutes } from "../utils/routes";
 
 const exampleIdeas = [
@@ -255,7 +256,29 @@ async function hydrateImprovementState(): Promise<void> {
   const improveId = resolveActivePostIdFromRoute();
 
   if (!improveId) {
+    const repurposeSeed = consumeRepurposeSeed();
+
     improvementSourceId.value = "";
+
+    if (repurposeSeed) {
+      sourceMode.value = "fresh";
+      input.value = repurposeSeed.text;
+      helperMessage.value =
+        repurposeSeed.source === "history"
+          ? "Published post loaded. Sharpen it or turn it into a new draft."
+          : repurposeSeed.source === "result"
+            ? "Saved draft loaded. Repurpose it into a stronger next version."
+            : "Workspace seed loaded. Expand it into a fresh draft.";
+
+      const nextQuery = { ...route.query };
+      delete nextQuery.mode;
+      void router.replace({
+        path: appRoutes.appCreate,
+        query: nextQuery,
+      });
+      return;
+    }
+
     sourceMode.value = resolveSourceModeFromRoute();
     input.value = typeof route.query.prefill === "string" ? route.query.prefill : "";
     if (!route.query.prefill && helperMessage.value.includes("improving")) {

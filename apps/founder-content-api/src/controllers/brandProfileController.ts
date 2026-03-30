@@ -1,5 +1,6 @@
 import type {
   ApiError,
+  BrandCompetitorReference,
   BrandProfileQuery,
   BrandProfileResponse,
   UpdateBrandProfileRequest,
@@ -15,6 +16,39 @@ import {
   enforceWorkspaceWriteAccess,
 } from "../services/governanceService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
+
+function sanitizeCompetitorReferences(value: unknown): BrandCompetitorReference[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const candidate = entry as Partial<BrandCompetitorReference>;
+
+    if (typeof candidate.label !== "string" || candidate.label.trim() === "") {
+      return [];
+    }
+
+    return [{
+      id:
+        typeof candidate.id === "string" && candidate.id.trim() !== ""
+          ? candidate.id.trim()
+          : candidate.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      label: candidate.label.trim(),
+      url: typeof candidate.url === "string" ? candidate.url.trim() : undefined,
+      sourceType:
+        candidate.sourceType === "public_url" || candidate.sourceType === "website_page"
+          ? candidate.sourceType
+          : "website_page",
+      rationale: typeof candidate.rationale === "string" ? candidate.rationale.trim() : undefined,
+      origin: candidate.origin === "suggested" ? "suggested" : "custom",
+    }];
+  });
+}
 
 export async function getBrandProfileController(
   request: Request<unknown, BrandProfileResponse | ApiError, unknown, Partial<BrandProfileQuery>>,
@@ -84,6 +118,7 @@ export async function updateBrandProfileController(
         visualStyle: request.body?.visualStyle?.trim(),
         topics: request.body?.topics,
         patterns: request.body?.patterns,
+        selectedCompetitors: sanitizeCompetitorReferences(request.body?.selectedCompetitors),
         refreshFromSignals: request.body?.refreshFromSignals,
       }),
     );

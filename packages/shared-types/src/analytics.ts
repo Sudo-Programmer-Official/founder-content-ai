@@ -29,6 +29,10 @@ export type AnalyticsInputType = "idea" | "link" | "upload" | "voice";
 export type ContentAssetType = "post" | "hook" | "email";
 export type ContentAssetStatus = "draft" | "review" | "scheduled" | "posted" | "published";
 export type ContentAssetSourceKind = "generated" | "manual" | "idea" | "capture" | "remix";
+export type ContentAssetFormat = "story" | "list" | "insight";
+export type ContentAssetHookType = "question" | "bold_statement" | "curiosity" | "direct";
+export type ContentAssetLengthBucket = "short" | "medium" | "long";
+export type ContentPovBoldness = "measured" | "balanced" | "bold";
 export type AdminAlertType = "api_failure" | "abuse" | "anomaly";
 export type AdminAlertSeverity = "low" | "medium" | "high";
 
@@ -53,6 +57,29 @@ export interface ContentGenerationLog {
   createdAt: string;
 }
 
+export interface ContentAssetIntelligence {
+  format: ContentAssetFormat;
+  hookType: ContentAssetHookType;
+  length: ContentAssetLengthBucket;
+  wordCount: number;
+  characterCount: number;
+  quality?: ContentQualityScore;
+  pov?: ContentPovProfile;
+}
+
+export interface ContentQualityScore {
+  overall: number;
+  hookStrength: number;
+  clarity: number;
+  businessAlignment: number;
+  opinionStrength: number;
+}
+
+export interface ContentPovProfile {
+  summary: string;
+  boldness: ContentPovBoldness;
+}
+
 export interface ContentAsset {
   id: string;
   businessId?: string;
@@ -65,6 +92,7 @@ export interface ContentAsset {
   sourceKind?: ContentAssetSourceKind;
   sourceIdeaId?: string;
   textContent?: string;
+  intelligence?: ContentAssetIntelligence;
   createdAt: string;
   updatedAt?: string;
 }
@@ -77,6 +105,12 @@ export interface WorkspaceMetricDaily {
   totalCopies: number;
   totalRemixes: number;
   totalPublishes: number;
+  postsCreated: number;
+  postsScheduled: number;
+  postsPublished: number;
+  emailsSent: number;
+  active: boolean;
+  lastActiveAt?: string;
   createdAt: string;
 }
 

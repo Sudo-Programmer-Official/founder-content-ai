@@ -1,5 +1,6 @@
 import type { QueryResultRow } from "pg";
 import type {
+  BrandCompetitorReference,
   BrandProfile,
   BrandTone,
   BusinessMembership,
@@ -58,6 +59,7 @@ interface BrandProfileRow extends QueryResultRow {
   visual_style: string | null;
   topics: unknown;
   patterns: unknown;
+  selected_competitors: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -83,6 +85,49 @@ function parseStringArray<TValue extends string>(value: unknown): TValue[] {
   }
 
   return [];
+}
+
+function parseCompetitorReferences(value: unknown): BrandCompetitorReference[] {
+  const parsed =
+    typeof value === "string"
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return parsed.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const candidate = entry as Partial<BrandCompetitorReference>;
+
+    if (
+      typeof candidate.id !== "string" ||
+      typeof candidate.label !== "string" ||
+      (candidate.sourceType !== "public_url" && candidate.sourceType !== "website_page") ||
+      (candidate.origin !== "suggested" && candidate.origin !== "custom")
+    ) {
+      return [];
+    }
+
+    return [{
+      id: candidate.id,
+      label: candidate.label,
+      url: typeof candidate.url === "string" ? candidate.url : undefined,
+      sourceType: candidate.sourceType,
+      rationale: typeof candidate.rationale === "string" ? candidate.rationale : undefined,
+      origin: candidate.origin,
+    }];
+  });
 }
 
 function mapOnboardingProfile(row: OnboardingProfileRow): OnboardingProfile {
@@ -119,6 +164,7 @@ function mapBrandProfile(row: BrandProfileRow): BrandProfile {
     visualStyle: row.visual_style ?? undefined,
     topics: parseStringArray<string>(row.topics),
     patterns: parseStringArray<string>(row.patterns),
+    selectedCompetitors: parseCompetitorReferences(row.selected_competitors),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -306,6 +352,7 @@ async function loadBrandProfile(businessId: string): Promise<BrandProfile | null
         visual_style,
         topics,
         patterns,
+        selected_competitors,
         created_at,
         updated_at
       from brand_profiles
@@ -468,6 +515,7 @@ async function persistBrandProfile(input: {
         visual_style,
         topics,
         patterns,
+        selected_competitors,
         created_at,
         updated_at
     `,

@@ -3,17 +3,20 @@ import type {
   HookGenerationRequest,
   HookGenerationResponse,
   IdeaGenerationRequest,
+  IdeaGenerationResponse,
   LinkedInPostGenerationRequest,
   LinkedInPostGenerationResponse,
-  IdeaGenerationResponse,
+  LinkedInPostVariation,
   RemixContentResponse,
   StructuredContentGenerationRequest,
+  StructuredContentResponse,
 } from "../../../../packages/shared-types/index.ts";
 import {
   generateContent,
 } from "../../../../packages/content-engine/src/index.ts";
 import { getBrandPromptContextForBusiness } from "./brandIntelligence/brandProfileService.ts";
 import { buildSavedSourceMemoryContext } from "./content/brandSourceMemoryService.ts";
+import { buildContentAssetIntelligenceFromText } from "./contentIntelligenceService.ts";
 import { getLinkedInGenerationContextForBusiness } from "./socialAuthService.ts";
 
 function appendSavedSourceContext(inputText: string, sourceContext: string | undefined): string {
@@ -24,6 +27,32 @@ function appendSavedSourceContext(inputText: string, sourceContext: string | und
   }
 
   return `${normalizedInput}\n\n${sourceContext}`;
+}
+
+function enrichVariation(
+  variation: LinkedInPostVariation,
+  brandContext: Awaited<ReturnType<typeof getBrandPromptContextForBusiness>> | undefined,
+): LinkedInPostVariation {
+  const intelligence = buildContentAssetIntelligenceFromText(variation.content, brandContext);
+
+  return {
+    ...variation,
+    quality: intelligence?.quality,
+    pov: intelligence?.pov,
+  };
+}
+
+function enrichStructuredResponse<TResponse extends StructuredContentResponse>(
+  response: TResponse,
+  brandContext: Awaited<ReturnType<typeof getBrandPromptContextForBusiness>> | undefined,
+): TResponse {
+  const intelligence = buildContentAssetIntelligenceFromText(response.post, brandContext);
+
+  return {
+    ...response,
+    quality: intelligence?.quality,
+    pov: intelligence?.pov,
+  };
 }
 
 export async function generateIdeasWithAI(
@@ -68,7 +97,7 @@ export async function generatePostsWithAI(
     getLinkedInGenerationContextForBusiness(input.businessId),
   ]);
 
-  return generateContent({
+  const response = await generateContent({
     input,
     channel: "linkedin",
     tone: input.tone,
@@ -76,6 +105,10 @@ export async function generatePostsWithAI(
     platformContext,
     format: "post",
   });
+
+  return {
+    variations: response.variations.map((variation) => enrichVariation(variation, brandContext)),
+  };
 }
 
 export async function generateCapturedContentWithAI(
@@ -87,7 +120,7 @@ export async function generateCapturedContentWithAI(
     getLinkedInGenerationContextForBusiness(input.businessId),
   ]);
 
-  return generateContent({
+  const response = await generateContent({
     input: {
       ...input,
       rawInputText: appendSavedSourceContext(input.rawInputText, savedSourceContext),
@@ -99,6 +132,8 @@ export async function generateCapturedContentWithAI(
     intent: "POST_GENERATION",
     format: "content",
   });
+
+  return enrichStructuredResponse(response, brandContext);
 }
 
 export async function generateRemixedContentWithAI(
@@ -110,7 +145,7 @@ export async function generateRemixedContentWithAI(
     getLinkedInGenerationContextForBusiness(input.businessId),
   ]);
 
-  return generateContent({
+  const response = await generateContent({
     input: {
       ...input,
       rawInputText: appendSavedSourceContext(input.rawInputText, savedSourceContext),
@@ -122,4 +157,6 @@ export async function generateRemixedContentWithAI(
     intent: "REMIX",
     format: "content",
   });
+
+  return enrichStructuredResponse(response, brandContext);
 }

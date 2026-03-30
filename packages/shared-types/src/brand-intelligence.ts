@@ -1,11 +1,13 @@
-import type { BrandProfile } from "./onboarding.ts";
+import type { BrandCompetitorReference, BrandProfile } from "./onboarding.ts";
 
 export interface BrandPromptContext {
   tone?: string;
   writingStyle?: string;
   visualStyle?: string;
+  goals?: string[];
   topics?: string[];
   patterns?: string[];
+  marketReferences?: string[];
 }
 
 export interface BrandSignalSummary {
@@ -21,6 +23,7 @@ export interface BrandProfileQuery {
 
 export interface BrandProfileResponse {
   brandProfile: BrandProfile;
+  suggestedCompetitors: BrandCompetitorReference[];
   visualPromptTemplate: string;
   signalSummary: BrandSignalSummary;
 }
@@ -36,6 +39,7 @@ export interface UpdateBrandProfileRequest {
   visualStyle?: string;
   topics?: string[];
   patterns?: string[];
+  selectedCompetitors?: BrandCompetitorReference[];
   refreshFromSignals?: boolean;
 }
 

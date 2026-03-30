@@ -7,6 +7,7 @@ export type EmailContactStatus =
 export type EmailCampaignStatus = "draft" | "queued" | "sending" | "sent" | "failed";
 export type EmailCampaignRecipientStatus =
   | "queued"
+  | "sending"
   | "sent"
   | "delivered"
   | "failed"
@@ -163,6 +164,7 @@ export interface EmailCampaign {
   createdAt: string;
   updatedAt?: string;
   recipientCount: number;
+  pendingCount: number;
   sentCount: number;
   deliveredCount: number;
   failedCount: number;
@@ -189,21 +191,125 @@ export interface EmailCampaignRecipient {
 export interface EmailCampaignStats {
   campaignId: string;
   recipientCount: number;
+  pendingCount: number;
   sentCount: number;
   deliveredCount: number;
   failedCount: number;
   unsubscribedCount: number;
 }
 
+export type EmailContactImportField =
+  | "email"
+  | "name"
+  | "firstName"
+  | "lastName"
+  | "tags";
+
+export type EmailContactImportDuplicateStrategy = "upsert" | "skip";
+export type EmailJobStatus = "queued" | "processing" | "completed" | "failed" | "paused";
+export type EmailContactImportJobStatus = "queued" | "processing" | "completed" | "failed";
+
+export type EmailContactImportMapping = Partial<Record<EmailContactImportField, string>>;
+
+export interface EmailContactImportJobError {
+  message: string;
+  rowCount?: number;
+}
+
+export interface EmailContactImportJob {
+  id: string;
+  businessId: string;
+  jobId?: string;
+  listName: string;
+  fileName?: string;
+  status: EmailContactImportJobStatus;
+  totalRows: number;
+  processedRows: number;
+  insertedCount: number;
+  updatedCount: number;
+  skippedCount: number;
+  errorCount: number;
+  mapping: EmailContactImportMapping;
+  errorSummary: EmailContactImportJobError[];
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface EmailContactImportFieldPreview {
+  field: EmailContactImportField;
+  label: string;
+  required: boolean;
+  columnName?: string;
+  confidence: "high" | "medium" | "low" | "none";
+}
+
+export interface EmailContactImportPreviewRow {
+  email?: string;
+  name?: string;
+  firstName?: string;
+  lastName?: string;
+  tags: string[];
+  issues: string[];
+  raw: Record<string, string>;
+}
+
+export interface EmailContactImportPreviewSummary {
+  totalRows: number;
+  validRows: number;
+  invalidRows: number;
+  duplicateRows: number;
+  existingContacts: number;
+}
+
+export interface ImportEmailContactsPreviewRequest {
+  csvText: string;
+  mapping?: EmailContactImportMapping;
+}
+
+export interface ImportEmailContactsPreviewResponse {
+  columns: string[];
+  suggestedMapping: EmailContactImportMapping;
+  fields: EmailContactImportFieldPreview[];
+  previewRows: EmailContactImportPreviewRow[];
+  summary: EmailContactImportPreviewSummary;
+}
+
 export interface ImportEmailContactsRequest {
   listName: string;
   csvText: string;
+  mapping?: EmailContactImportMapping;
+  duplicateStrategy?: EmailContactImportDuplicateStrategy;
+}
+
+export interface QueueEmailContactsImportRequest extends ImportEmailContactsRequest {
+  fileName?: string;
 }
 
 export interface ImportEmailContactsResponse {
   list: EmailList;
   contacts: EmailContact[];
   importedCount: number;
+  createdCount: number;
+  updatedCount: number;
+  skippedCount: number;
+}
+
+export interface QueueEmailContactsImportResponse {
+  importJob: EmailContactImportJob;
+}
+
+export interface EmailContactImportJobResponse {
+  importJob: EmailContactImportJob;
+}
+
+export interface EmailContactImportJobListResponse {
+  importJobs: EmailContactImportJob[];
+}
+
+export interface EmailContactListResponse {
+  contacts: EmailContact[];
+  total: number;
 }
 
 export interface EmailListListResponse {

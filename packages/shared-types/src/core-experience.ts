@@ -1,15 +1,52 @@
-import type { ContentAsset, ContentAssetStatus } from "./analytics.ts";
+import type {
+  ContentAsset,
+  ContentAssetFormat,
+  ContentAssetHookType,
+  ContentAssetLengthBucket,
+  ContentAssetStatus,
+} from "./analytics.ts";
 import type { RecommendedPostTimeSlot } from "./social-publishing.ts";
 
 export type IdeaInboxStatus = "new" | "converted" | "archived";
+export type IdeaInboxInputType = "text" | "voice" | "image" | "link";
+export type IdeaInboxUnderstandingStatus = "queued" | "processing" | "completed" | "failed";
 export type DashboardSuggestionType = "activity" | "timing" | "quality";
 export type ContentPipelineStage = Exclude<ContentAssetStatus, "published">;
+export type DashboardNextActionType = "generate" | "schedule" | "review" | "improve";
+
+export interface IdeaInboxMetadata {
+  sourceUrl?: string;
+  hostname?: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface IdeaInboxUnderstanding {
+  topic: string;
+  intent: "educate" | "story" | "opinion" | "proof";
+  contentType: "insight" | "story" | "opinion" | "proof";
+  businessGoal?: string;
+  businessAngle: string;
+  povSummary: string;
+  suggestedCta?: string;
+  confidenceScore?: number;
+}
 
 export interface IdeaInboxItem {
   id: string;
   businessId: string;
   userId?: string;
+  inputType: IdeaInboxInputType;
   text: string;
+  rawInput?: string;
+  metadata?: IdeaInboxMetadata;
+  understanding?: IdeaInboxUnderstanding;
+  understandingStatus: IdeaInboxUnderstandingStatus;
+  understandingError?: string;
+  understandingConfidenceScore?: number;
   status: IdeaInboxStatus;
   createdAt: string;
   updatedAt: string;
@@ -44,9 +81,56 @@ export interface ContentPipelineColumn {
   items: ContentAsset[];
 }
 
+export interface DashboardIntelligenceSummary {
+  postsPublished7d: number;
+  postedDays7d: number;
+  bestWeekPostedDays: number;
+  skippedDays7d: number;
+  nextSuggestedPostLabel?: string;
+  topFormat?: ContentAssetFormat;
+  topHookType?: ContentAssetHookType;
+  topLength?: ContentAssetLengthBucket;
+}
+
+export interface DashboardRetentionSummary {
+  activeDays7d: number;
+  postsCreated7d: number;
+  postsScheduled7d: number;
+  postsPublished7d: number;
+  emailsSent7d: number;
+  consistencyScore: number;
+  previousConsistencyScore: number;
+  consistencyDelta: number;
+  currentStreakDays: number;
+  inactivityDays: number;
+  bestDayLabel?: string;
+  nudgeTitle: string;
+  nudgeMessage: string;
+  nudgeActionLabel?: string;
+  nudgeActionTarget?: string;
+}
+
+export interface DashboardRecentResultsSummary {
+  lastPublishedPostAt?: string;
+  lastCampaignCompletedAt?: string;
+  nextScheduledPostAt?: string;
+}
+
+export interface DashboardNextAction {
+  type: DashboardNextActionType;
+  title: string;
+  description: string;
+  cta: string;
+  route: string;
+}
+
 export interface ControlDashboardResponse {
   businessId: string;
   today: DashboardTodaySummary;
+  intelligence: DashboardIntelligenceSummary;
+  retention: DashboardRetentionSummary;
+  recentResults: DashboardRecentResultsSummary;
+  nextAction: DashboardNextAction;
   pipeline: ContentPipelineColumn[];
   ideaInbox: IdeaInboxItem[];
   suggestions: DashboardSuggestion[];
@@ -58,7 +142,11 @@ export interface ControlDashboardQuery {
 
 export interface CreateIdeaInboxRequest {
   businessId: string;
-  text: string;
+  text?: string;
+  inputType?: IdeaInboxInputType;
+  rawInput?: string;
+  processedText?: string;
+  metadata?: IdeaInboxMetadata;
 }
 
 export interface CreateIdeaInboxResponse {
@@ -82,6 +170,26 @@ export interface UpdateContentPipelineItemRequest {
 }
 
 export interface UpdateContentPipelineItemResponse {
+  asset: ContentAsset;
+}
+
+export interface DeleteContentPipelineItemResponse {
+  deletedAssetId: string;
+}
+
+export interface CreateContentPipelineItemRequest {
+  businessId: string;
+  title?: string;
+  textContent: string;
+  contentBody?: Record<string, unknown>;
+  sourceKind?: ContentAsset["sourceKind"];
+}
+
+export interface CreateContentPipelineItemResponse {
+  asset: ContentAsset;
+}
+
+export interface DuplicateContentPipelineItemResponse {
   asset: ContentAsset;
 }
 

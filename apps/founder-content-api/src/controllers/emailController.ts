@@ -6,10 +6,18 @@ import type {
   CreateEmailDomainResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
+  EmailContactListResponse,
+  EmailContactStatus,
   EmailDomainSettingsResponse,
+  EmailContactImportJobListResponse,
+  EmailContactImportJobResponse,
   EmailListListResponse,
   ImportEmailContactsRequest,
+  ImportEmailContactsPreviewRequest,
+  ImportEmailContactsPreviewResponse,
   ImportEmailContactsResponse,
+  QueueEmailContactsImportRequest,
+  QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
   UnsubscribeEmailResponse,
   VerifyEmailDomainResponse,
@@ -20,11 +28,16 @@ import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "../serv
 import {
   createEmailCampaign,
   createEmailDomain,
+  getEmailContactImportJob,
   getEmailDomainSettings,
   getEmailCampaignStatsResponse,
+  listEmailContactImportJobs,
+  listEmailContacts,
   listEmailLists,
   importEmailContacts,
   listEmailCampaigns,
+  previewEmailContactsImport,
+  queueEmailContactsImport,
   sendEmailCampaign,
   unsubscribeEmail,
   verifyEmailDomain,
@@ -35,6 +48,21 @@ import { handleApiError, sendApiError } from "../utils/http.ts";
 
 function readBusinessId(request: Request<{ businessId: string }>): string | undefined {
   return request.params.businessId?.trim() || undefined;
+}
+
+function readEmailContactStatus(value: unknown): EmailContactStatus | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized === "active" ||
+    normalized === "unsubscribed" ||
+    normalized === "bounced" ||
+    normalized === "complained" ||
+    normalized === "suppressed"
+    ? normalized
+    : undefined;
 }
 
 function buildUnsubscribeHtml(input: {
@@ -139,6 +167,78 @@ export async function postEmailContactsImport(
       code: "email_contacts_import_failed",
       message: "Unable to import email contacts.",
       logMessage: "Failed to import email contacts.",
+    });
+  }
+}
+
+export async function postEmailContactsImportPreview(
+  request: Request<{ businessId: string }, unknown, ImportEmailContactsPreviewRequest>,
+  response: Response<ImportEmailContactsPreviewResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceReadAccess(request.auth, businessId, "email_campaigns");
+    const result = await previewEmailContactsImport(businessId, request.body);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_contacts_preview_failed",
+      message: "Unable to preview email contacts.",
+      logMessage: "Failed to preview email contacts.",
+    });
+  }
+}
+
+export async function postEmailContactsImportJob(
+  request: Request<{ businessId: string }, unknown, QueueEmailContactsImportRequest>,
+  response: Response<QueueEmailContactsImportResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+    const actor = await ensureCurrentUser(request.auth);
+    const result = await queueEmailContactsImport(businessId, actor.id, request.body);
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_contact_import_job_create_failed",
+      message: "Unable to queue the email contact import.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_contact_import_job_create_failed",
+      message: "Unable to queue the email contact import.",
+      logMessage: "Failed to queue email contact import job.",
     });
   }
 }
@@ -297,6 +397,104 @@ export async function getEmailLists(
       code: "email_lists_load_failed",
       message: "Unable to load email lists.",
       logMessage: "Failed to load email lists.",
+    });
+  }
+}
+
+export async function getEmailContacts(
+  request: Request<{ businessId: string }>,
+  response: Response<EmailContactListResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceReadAccess(request.auth, businessId, "email_campaigns");
+    const result = await listEmailContacts(businessId, {
+      search: typeof request.query.search === "string" ? request.query.search : undefined,
+      listId: typeof request.query.listId === "string" ? request.query.listId : undefined,
+      status: readEmailContactStatus(request.query.status),
+      limit:
+        typeof request.query.limit === "string"
+          ? Number.parseInt(request.query.limit, 10)
+          : undefined,
+    });
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_contacts_load_failed",
+      message: "Unable to load contacts.",
+      logMessage: "Failed to load email contacts.",
+    });
+  }
+}
+
+export async function getEmailContactImportJobsController(
+  request: Request<{ businessId: string }>,
+  response: Response<EmailContactImportJobListResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceReadAccess(request.auth, businessId, "email_campaigns");
+    const result = await listEmailContactImportJobs(businessId);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_contact_import_jobs_load_failed",
+      message: "Unable to load import jobs.",
+      logMessage: "Failed to load email contact import jobs.",
+    });
+  }
+}
+
+export async function getEmailContactImportJobController(
+  request: Request<{ businessId: string; jobId: string }>,
+  response: Response<EmailContactImportJobResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceReadAccess(request.auth, businessId, "email_campaigns");
+    const result = await getEmailContactImportJob(businessId, request.params.jobId);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_contact_import_job_load_failed",
+      message: "Unable to load the import job.",
+      logMessage: "Failed to load email contact import job.",
     });
   }
 }

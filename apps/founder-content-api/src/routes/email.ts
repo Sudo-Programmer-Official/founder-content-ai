@@ -2,12 +2,17 @@ import express, { Router } from "express";
 import {
   getEmailCampaignStats,
   getEmailCampaigns,
+  getEmailContacts,
+  getEmailContactImportJobController,
+  getEmailContactImportJobsController,
   getEmailDomainSettingsController,
   getEmailLists,
   getEmailUnsubscribe,
   postEmailCampaign,
   postEmailCampaignSend,
   postEmailContactsImport,
+  postEmailContactsImportJob,
+  postEmailContactsImportPreview,
   postEmailDomain,
   postEmailDomainVerify,
   postSesWebhook,
@@ -17,7 +22,12 @@ import { requireAuth } from "../middleware/auth.ts";
 export const emailRoute = Router();
 
 emailRoute.post("/api/email/webhooks/ses", express.text({ type: "*/*", limit: "1mb" }), postSesWebhook);
+emailRoute.post("/api/businesses/:businessId/email/contacts/import/preview", requireAuth(), postEmailContactsImportPreview);
 emailRoute.post("/api/businesses/:businessId/email/contacts/import", requireAuth(), postEmailContactsImport);
+emailRoute.post("/api/businesses/:businessId/email/import-jobs", requireAuth(), postEmailContactsImportJob);
+emailRoute.get("/api/businesses/:businessId/email/import-jobs", requireAuth(), getEmailContactImportJobsController);
+emailRoute.get("/api/businesses/:businessId/email/import-jobs/:jobId", requireAuth(), getEmailContactImportJobController);
+emailRoute.get("/api/businesses/:businessId/email/contacts", requireAuth(), getEmailContacts);
 emailRoute.get("/api/businesses/:businessId/email/lists", requireAuth(), getEmailLists);
 emailRoute.get("/api/businesses/:businessId/email/settings", requireAuth(), getEmailDomainSettingsController);
 emailRoute.post("/api/businesses/:businessId/email/campaigns", requireAuth(), postEmailCampaign);

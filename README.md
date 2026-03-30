@@ -76,10 +76,8 @@ Frontend app:
 
 Not in MVP:
 
-- scheduling
-- analytics dashboards
-- multi-channel publishing
 - team workflows
-- background workers
+- advanced analytics dashboards
+- multi-channel beyond the current platform surfaces
 
 Those remain future roadmap items.

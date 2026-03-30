@@ -1,10 +1,10 @@
-export type GrowthDistributionFormat = "thread" | "carousel" | "video";
+export type GrowthDistributionFormat = "thread" | "carousel" | "video" | "email";
 
 export interface RepurposeSeedPayload {
   text: string;
   title?: string;
   format?: GrowthDistributionFormat;
-  source: "dashboard" | "variation";
+  source: "dashboard" | "variation" | "history" | "result";
 }
 
 const REPURPOSE_SEED_STORAGE_KEY = "fc:repurpose-seed";
@@ -37,7 +37,12 @@ export function consumeRepurposeSeed(): RepurposeSeedPayload | null {
       return null;
     }
 
-    if (parsed.source !== "dashboard" && parsed.source !== "variation") {
+    if (
+      parsed.source !== "dashboard" &&
+      parsed.source !== "variation" &&
+      parsed.source !== "history" &&
+      parsed.source !== "result"
+    ) {
       return null;
     }
 
@@ -46,6 +51,7 @@ export function consumeRepurposeSeed(): RepurposeSeedPayload | null {
       && parsed.format !== "thread"
       && parsed.format !== "carousel"
       && parsed.format !== "video"
+      && parsed.format !== "email"
     ) {
       return null;
     }

@@ -11,7 +11,10 @@ import type {
   EmailCampaignStats,
   EmailCampaignStatsResponse,
   EmailContact,
+  EmailContactImportJob,
+  EmailContactImportJobError,
   EmailContactStatus,
+  EmailContactListResponse,
   EmailDnsRecord,
   EmailDnsInstruction,
   EmailDomainConflictFlag,
@@ -20,9 +23,20 @@ import type {
   EmailList,
   EmailListListResponse,
   EmailMxRecord,
+  EmailContactImportDuplicateStrategy,
+  EmailContactImportField,
+  EmailContactImportFieldPreview,
+  EmailContactImportMapping,
+  EmailContactImportPreviewRow,
+  EmailContactImportPreviewSummary,
   EmailSpfValidationState,
   ImportEmailContactsRequest,
+  ImportEmailContactsPreviewResponse,
   ImportEmailContactsResponse,
+  EmailContactImportJobListResponse,
+  EmailContactImportJobResponse,
+  QueueEmailContactsImportRequest,
+  QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
   UnsubscribeEmailResponse,
   VerifyEmailDomainResponse,
@@ -32,11 +46,14 @@ import { incrementBusinessDailyUsage } from "../adminControlService.ts";
 import { safeLogEvent } from "../analytics/eventLoggingService.ts";
 import { queryDb, withDbTransaction } from "../db/client.ts";
 import { deriveProviderSignals, inspectDomainDns } from "./dnsInspectionService.ts";
+import { sendEmailCampaignLifecycleNotification } from "./emailCampaignNotificationService.ts";
 import { recalculateEmailDomainReputation } from "./emailDeliverabilityService.ts";
 import { ensureSesDomainIdentity, getSesDomainIdentity } from "./sesIdentityService.ts";
 import { sendPlatformEmail } from "./emailTransportService.ts";
 import { HttpError } from "../../utils/http.ts";
+import { logWarn } from "../../utils/logger.ts";
 import { safeCreateSystemErrorLog } from "../systemErrorLogService.ts";
+import { claimQueuedJobs, createJob, markJobCompleted, markJobFailed } from "../jobQueueService.ts";
 
 interface EmailSettingsRow extends QueryResultRow {
   id: string;
@@ -115,6 +132,7 @@ interface EmailCampaignRow extends QueryResultRow {
   created_at: Date | string;
   updated_at: Date | string;
   recipient_count?: string | number;
+  pending_count?: string | number;
   sent_count?: string | number;
   delivered_count?: string | number;
   failed_count?: string | number;
@@ -151,8 +169,77 @@ interface BusinessIdRow extends QueryResultRow {
   business_id: string;
 }
 
+interface EmailCampaignRecipientProgressRow extends QueryResultRow {
+  queued_total: string | number;
+  sending_total: string | number;
+  failed_total: string | number;
+}
+
+interface EmailContactImportJobRow extends QueryResultRow {
+  id: string;
+  business_id: string;
+  job_id: string | null;
+  list_name: string;
+  file_name: string | null;
+  status: string;
+  total_rows: string | number;
+  processed_rows: string | number;
+  inserted_count: string | number;
+  updated_count: string | number;
+  skipped_count: string | number;
+  error_count: string | number;
+  mapping_json: unknown;
+  error_summary_json: unknown;
+  created_at: Date | string;
+  started_at: Date | string | null;
+  completed_at: Date | string | null;
+}
+
+interface ProcessQueuedEmailCampaignsOptions {
+  businessId?: string;
+  campaignId?: string;
+  batchSize?: number;
+}
+
+interface ProcessQueuedEmailCampaignsResult {
+  campaignsVisited: number;
+  campaignsFinalized: number;
+  recipientsClaimed: number;
+  recipientsSent: number;
+  recipientsFailed: number;
+  recipientsUnsubscribed: number;
+  requeuedRecipients: number;
+}
+
+interface EmailContactImportJobPayload {
+  listName: string;
+  csvText: string;
+  mapping?: EmailContactImportMapping;
+  duplicateStrategy?: EmailContactImportDuplicateStrategy;
+  fileName?: string | null;
+  actorUserId?: string | null;
+}
+
+interface ProcessQueuedEmailContactImportJobsOptions {
+  batchSize?: number;
+}
+
+interface ProcessQueuedEmailContactImportJobsResult {
+  jobsClaimed: number;
+  jobsCompleted: number;
+  jobsFailed: number;
+  contactsInserted: number;
+  contactsUpdated: number;
+  contactsSkipped: number;
+  contactErrors: number;
+}
+
 const DOMAIN_STATUS_VERIFIED = "verified";
 const EMAIL_ADDRESS_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/i;
+const DEFAULT_EMAIL_CAMPAIGN_WORKER_BATCH_SIZE = 100;
+const DEFAULT_EMAIL_CAMPAIGN_RECIPIENT_LEASE_MINUTES = 30;
+const DEFAULT_EMAIL_CONTACT_IMPORT_WORKER_BATCH_SIZE = 2;
+const MAX_EMAIL_CAMPAIGN_DRAIN_PASSES = 1000;
 const EMAIL_SETTINGS_SELECT_FIELDS = `
   id,
   business_id,
@@ -176,6 +263,38 @@ const EMAIL_SETTINGS_SELECT_FIELDS = `
   updated_at
 `;
 
+function resolvePositiveIntegerEnv(envName: string, fallback: number): number {
+  const rawValue = process.env[envName]?.trim();
+
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const parsedValue = Number.parseInt(rawValue, 10);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+}
+
+function resolveEmailCampaignWorkerBatchSize(): number {
+  return resolvePositiveIntegerEnv(
+    "EMAIL_CAMPAIGN_WORKER_BATCH_SIZE",
+    DEFAULT_EMAIL_CAMPAIGN_WORKER_BATCH_SIZE,
+  );
+}
+
+function resolveEmailCampaignRecipientLeaseMinutes(): number {
+  return resolvePositiveIntegerEnv(
+    "EMAIL_CAMPAIGN_RECIPIENT_LEASE_MINUTES",
+    DEFAULT_EMAIL_CAMPAIGN_RECIPIENT_LEASE_MINUTES,
+  );
+}
+
+function resolveEmailContactImportWorkerBatchSize(): number {
+  return resolvePositiveIntegerEnv(
+    "EMAIL_CONTACT_IMPORT_WORKER_BATCH_SIZE",
+    DEFAULT_EMAIL_CONTACT_IMPORT_WORKER_BATCH_SIZE,
+  );
+}
+
 function toIsoString(value: Date | string | null | undefined): string | undefined {
   return value ? new Date(value).toISOString() : undefined;
 }
@@ -187,6 +306,14 @@ function toNumber(value: string | number | null | undefined): number {
 
 function parseJsonArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function parseJsonObject<T>(value: unknown): T {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as T;
+  }
+
+  return {} as T;
 }
 
 function normalizeEmail(value: string): string {
@@ -467,10 +594,33 @@ function mapEmailCampaign(row: EmailCampaignRow): EmailCampaign {
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: toIsoString(row.updated_at),
     recipientCount: toNumber(row.recipient_count),
+    pendingCount: toNumber(row.pending_count),
     sentCount: toNumber(row.sent_count),
     deliveredCount: toNumber(row.delivered_count),
     failedCount: toNumber(row.failed_count),
     unsubscribedCount: toNumber(row.unsubscribed_count),
+  };
+}
+
+function mapEmailContactImportJob(row: EmailContactImportJobRow): EmailContactImportJob {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    jobId: row.job_id ?? undefined,
+    listName: row.list_name,
+    fileName: row.file_name ?? undefined,
+    status: row.status as EmailContactImportJob["status"],
+    totalRows: toNumber(row.total_rows),
+    processedRows: toNumber(row.processed_rows),
+    insertedCount: toNumber(row.inserted_count),
+    updatedCount: toNumber(row.updated_count),
+    skippedCount: toNumber(row.skipped_count),
+    errorCount: toNumber(row.error_count),
+    mapping: parseJsonObject(row.mapping_json),
+    errorSummary: parseJsonArray<EmailContactImportJobError>(row.error_summary_json),
+    createdAt: new Date(row.created_at).toISOString(),
+    startedAt: toIsoString(row.started_at),
+    completedAt: toIsoString(row.completed_at),
   };
 }
 
@@ -646,6 +796,78 @@ function appendUnsubscribeFooter(html: string, text: string, unsubscribeUrl: str
   };
 }
 
+interface ParsedEmailImportContact {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  tags: string[];
+  raw: Record<string, string>;
+  issues: string[];
+}
+
+interface ParsedEmailImportPayload {
+  columns: string[];
+  suggestedMapping: EmailContactImportMapping;
+  fieldPreviews: EmailContactImportFieldPreview[];
+  previewRows: EmailContactImportPreviewRow[];
+  contacts: ParsedEmailImportContact[];
+  summary: Omit<EmailContactImportPreviewSummary, "existingContacts">;
+}
+
+interface UpsertContactResult {
+  row: EmailContactRow;
+  operation: "created" | "updated" | "skipped";
+}
+
+const EMAIL_CONTACT_IMPORT_FIELDS: Array<{
+  field: EmailContactImportField;
+  label: string;
+  required: boolean;
+}> = [
+  { field: "email", label: "Email", required: true },
+  { field: "name", label: "Full name", required: false },
+  { field: "firstName", label: "First name", required: false },
+  { field: "lastName", label: "Last name", required: false },
+  { field: "tags", label: "Tags", required: false },
+];
+
+const EMAIL_CONTACT_IMPORT_FIELD_ALIASES: Record<EmailContactImportField, string[]> = {
+  email: [
+    "email",
+    "emailaddress",
+    "email_address",
+    "e-mail",
+    "mail",
+    "contactemail",
+    "contact_email",
+    "workemail",
+  ],
+  name: [
+    "name",
+    "fullname",
+    "full_name",
+    "full name",
+    "contactname",
+    "contact_name",
+  ],
+  firstName: [
+    "firstname",
+    "first_name",
+    "first name",
+    "givenname",
+    "given_name",
+  ],
+  lastName: [
+    "lastname",
+    "last_name",
+    "last name",
+    "surname",
+    "familyname",
+    "family_name",
+  ],
+  tags: ["tags", "tag", "labels", "segments", "interests"],
+};
+
 function parseCsvRows(csvText: string): string[][] {
   const rows: string[][] = [];
   let currentCell = "";
@@ -698,60 +920,323 @@ function parseCsvRows(csvText: string): string[][] {
   return rows;
 }
 
-function parseContactsFromCsv(csvText: string): Array<{
-  email: string;
-  firstName?: string;
-  lastName?: string;
-  tags: string[];
-}> {
+function normalizeColumnName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function computeLevenshteinDistance(left: string, right: string): number {
+  if (left === right) {
+    return 0;
+  }
+
+  if (!left) {
+    return right.length;
+  }
+
+  if (!right) {
+    return left.length;
+  }
+
+  const rows = left.length + 1;
+  const columns = right.length + 1;
+  const matrix = Array.from({ length: rows }, () => Array<number>(columns).fill(0));
+
+  for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
+    matrix[rowIndex][0] = rowIndex;
+  }
+
+  for (let columnIndex = 0; columnIndex < columns; columnIndex += 1) {
+    matrix[0][columnIndex] = columnIndex;
+  }
+
+  for (let rowIndex = 1; rowIndex < rows; rowIndex += 1) {
+    for (let columnIndex = 1; columnIndex < columns; columnIndex += 1) {
+      const cost = left[rowIndex - 1] === right[columnIndex - 1] ? 0 : 1;
+      matrix[rowIndex][columnIndex] = Math.min(
+        matrix[rowIndex - 1][columnIndex] + 1,
+        matrix[rowIndex][columnIndex - 1] + 1,
+        matrix[rowIndex - 1][columnIndex - 1] + cost,
+      );
+    }
+  }
+
+  return matrix[left.length][right.length];
+}
+
+function looksLikeHeaderRow(row: string[]): boolean {
+  const normalized = row.map((cell) => normalizeColumnName(cell));
+
+  if (
+    normalized.some((cell) =>
+      Object.values(EMAIL_CONTACT_IMPORT_FIELD_ALIASES).some((aliases) =>
+        aliases.map(normalizeColumnName).includes(cell),
+      ),
+    )
+  ) {
+    return true;
+  }
+
+  return !row.some((cell) => EMAIL_ADDRESS_PATTERN.test(cell.trim()));
+}
+
+function scoreColumnMatch(field: EmailContactImportField, columnName: string): {
+  score: number;
+  confidence: EmailContactImportFieldPreview["confidence"];
+} {
+  const normalizedColumn = normalizeColumnName(columnName);
+
+  if (!normalizedColumn) {
+    return { score: 0, confidence: "none" };
+  }
+
+  const aliases = EMAIL_CONTACT_IMPORT_FIELD_ALIASES[field].map(normalizeColumnName);
+
+  if (aliases.includes(normalizedColumn)) {
+    return { score: 100, confidence: "high" };
+  }
+
+  if (aliases.some((alias) => alias.includes(normalizedColumn) || normalizedColumn.includes(alias))) {
+    return { score: 82, confidence: "medium" };
+  }
+
+  let bestDistance = Number.POSITIVE_INFINITY;
+
+  for (const alias of aliases) {
+    bestDistance = Math.min(bestDistance, computeLevenshteinDistance(alias, normalizedColumn));
+  }
+
+  if (bestDistance <= 2) {
+    return { score: 68 - bestDistance * 6, confidence: "low" };
+  }
+
+  return { score: 0, confidence: "none" };
+}
+
+function buildSuggestedImportMapping(columns: string[]): {
+  mapping: EmailContactImportMapping;
+  fields: EmailContactImportFieldPreview[];
+} {
+  const mapping: EmailContactImportMapping = {};
+  const fields: EmailContactImportFieldPreview[] = [];
+  const availableColumns = [...columns];
+
+  for (const definition of EMAIL_CONTACT_IMPORT_FIELDS) {
+    let selectedColumn = "";
+    let selectedConfidence: EmailContactImportFieldPreview["confidence"] = "none";
+    let selectedScore = -1;
+
+    for (const columnName of availableColumns) {
+      const { score, confidence } = scoreColumnMatch(definition.field, columnName);
+
+      if (score > selectedScore) {
+        selectedScore = score;
+        selectedColumn = columnName;
+        selectedConfidence = confidence;
+      }
+    }
+
+    if (selectedScore > 0 && selectedColumn) {
+      mapping[definition.field] = selectedColumn;
+      const selectedIndex = availableColumns.indexOf(selectedColumn);
+
+      if (selectedIndex >= 0) {
+        availableColumns.splice(selectedIndex, 1);
+      }
+    }
+
+    fields.push({
+      field: definition.field,
+      label: definition.label,
+      required: definition.required,
+      columnName: selectedScore > 0 ? selectedColumn : undefined,
+      confidence: selectedScore > 0 ? selectedConfidence : "none",
+    });
+  }
+
+  if (!mapping.email && columns[0]) {
+    mapping.email = columns[0];
+    const emailField = fields.find((field) => field.field === "email");
+
+    if (emailField) {
+      emailField.columnName = columns[0];
+      emailField.confidence = "low";
+    }
+  }
+
+  if (!mapping.name && columns[1] && columns[1] !== mapping.email) {
+    mapping.name = columns[1];
+    const nameField = fields.find((field) => field.field === "name");
+
+    if (nameField) {
+      nameField.columnName = columns[1];
+      nameField.confidence = "low";
+    }
+  }
+
+  return { mapping, fields };
+}
+
+function sanitizeImportMapping(
+  mapping: EmailContactImportMapping | undefined,
+  availableColumns: string[],
+): EmailContactImportMapping {
+  const available = new Set(availableColumns);
+  const sanitized: EmailContactImportMapping = {};
+  const usedColumns = new Set<string>();
+
+  for (const field of EMAIL_CONTACT_IMPORT_FIELDS.map((definition) => definition.field)) {
+    const candidate = mapping?.[field]?.trim();
+
+    if (!candidate || !available.has(candidate) || usedColumns.has(candidate)) {
+      continue;
+    }
+
+    sanitized[field] = candidate;
+    usedColumns.add(candidate);
+  }
+
+  return sanitized;
+}
+
+function splitTags(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(/[|,;]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function extractAppliedImportMapping(
+  fields: EmailContactImportFieldPreview[],
+): EmailContactImportMapping {
+  const mapping: EmailContactImportMapping = {};
+
+  for (const field of fields) {
+    if (field.columnName) {
+      mapping[field.field] = field.columnName;
+    }
+  }
+
+  return mapping;
+}
+
+function buildImportErrorSummary(summary: {
+  invalidRows: number;
+  duplicateRows: number;
+}): EmailContactImportJobError[] {
+  const errorSummary: EmailContactImportJobError[] = [];
+
+  if (summary.invalidRows > 0) {
+    errorSummary.push({
+      message: "Invalid rows were skipped because they were missing a usable email.",
+      rowCount: summary.invalidRows,
+    });
+  }
+
+  if (summary.duplicateRows > 0) {
+    errorSummary.push({
+      message: "Duplicate emails in the uploaded file were collapsed before import.",
+      rowCount: summary.duplicateRows,
+    });
+  }
+
+  return errorSummary;
+}
+
+function parseContactImportPayload(
+  csvText: string,
+  overrideMapping?: EmailContactImportMapping,
+): ParsedEmailImportPayload {
   const rows = parseCsvRows(csvText);
 
   if (rows.length === 0) {
     throw new HttpError(400, "contacts_csv_empty", "CSV input is empty.");
   }
 
-  const normalizedHeader = rows[0].map((cell) => cell.toLowerCase());
-  const hasHeader = normalizedHeader.includes("email");
+  const hasHeader = looksLikeHeaderRow(rows[0]);
+  const columns = hasHeader ? rows[0].map((cell, index) => cell.trim() || `column_${index + 1}`) : rows[0].map((_, index) => `column_${index + 1}`);
   const dataRows = hasHeader ? rows.slice(1) : rows;
-  const columnIndex = {
-    email: hasHeader ? normalizedHeader.indexOf("email") : 0,
-    firstName: hasHeader
-      ? Math.max(normalizedHeader.indexOf("first_name"), normalizedHeader.indexOf("firstname"))
-      : -1,
-    lastName: hasHeader
-      ? Math.max(normalizedHeader.indexOf("last_name"), normalizedHeader.indexOf("lastname"))
-      : -1,
-    name: hasHeader ? normalizedHeader.indexOf("name") : 1,
-    tags: hasHeader ? normalizedHeader.indexOf("tags") : -1,
+  const { mapping: suggestedMapping, fields } = buildSuggestedImportMapping(columns);
+  const mapping = {
+    ...suggestedMapping,
+    ...sanitizeImportMapping(overrideMapping, columns),
   };
+  const sanitizedMapping = sanitizeImportMapping(mapping, columns);
+  const seenEmails = new Set<string>();
+  const contacts: ParsedEmailImportContact[] = [];
+  const previewRows: EmailContactImportPreviewRow[] = [];
+  let invalidRows = 0;
+  let duplicateRows = 0;
 
-  const contacts = dataRows
-    .map((row) => {
-      const email = row[columnIndex.email]?.trim().toLowerCase() || "";
-      const nameValue = columnIndex.name >= 0 ? row[columnIndex.name]?.trim() || "" : "";
-      const firstName = columnIndex.firstName >= 0 ? row[columnIndex.firstName]?.trim() || "" : "";
-      const lastName = columnIndex.lastName >= 0 ? row[columnIndex.lastName]?.trim() || "" : "";
-      const [fallbackFirstName, ...fallbackRest] = nameValue.split(/\s+/).filter(Boolean);
-      return {
-        email,
-        firstName: firstName || fallbackFirstName || undefined,
-        lastName: lastName || (fallbackRest.length > 0 ? fallbackRest.join(" ") : undefined),
-        tags:
-          columnIndex.tags >= 0
-            ? (row[columnIndex.tags] ?? "")
-                .split("|")
-                .map((tag) => tag.trim())
-                .filter(Boolean)
-            : [],
-      };
-    })
-    .filter((contact) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(contact.email));
+  for (const row of dataRows) {
+    const raw = Object.fromEntries(columns.map((columnName, index) => [columnName, row[index]?.trim() || ""]));
+    const email = normalizeOptionalEmail(sanitizedMapping.email ? raw[sanitizedMapping.email] : undefined) || "";
+    const nameValue = sanitizedMapping.name ? raw[sanitizedMapping.name] : "";
+    const firstNameValue = sanitizedMapping.firstName ? raw[sanitizedMapping.firstName] : "";
+    const lastNameValue = sanitizedMapping.lastName ? raw[sanitizedMapping.lastName] : "";
+    const [fallbackFirstName, ...fallbackRest] = nameValue.split(/\s+/).filter(Boolean);
+    const issues: string[] = [];
+
+    if (!email) {
+      issues.push("Missing email");
+    } else if (!EMAIL_ADDRESS_PATTERN.test(email)) {
+      issues.push("Invalid email");
+    }
+
+    if (email && seenEmails.has(email)) {
+      issues.push("Duplicate email in file");
+      duplicateRows += 1;
+    }
+
+    const tags = splitTags(sanitizedMapping.tags ? raw[sanitizedMapping.tags] : undefined);
+    const parsedContact: ParsedEmailImportContact = {
+      email,
+      firstName: firstNameValue || fallbackFirstName || undefined,
+      lastName: lastNameValue || (fallbackRest.length > 0 ? fallbackRest.join(" ") : undefined),
+      tags,
+      raw,
+      issues,
+    };
+
+    if (issues.length > 0) {
+      invalidRows += issues.includes("Duplicate email in file") && issues.length === 1 ? 0 : 1;
+    } else {
+      seenEmails.add(email);
+      contacts.push(parsedContact);
+    }
+
+    if (previewRows.length < 10) {
+      previewRows.push({
+        email: email || undefined,
+        name: nameValue || undefined,
+        firstName: parsedContact.firstName,
+        lastName: parsedContact.lastName,
+        tags,
+        issues,
+        raw,
+      });
+    }
+  }
 
   if (contacts.length === 0) {
     throw new HttpError(400, "contacts_csv_invalid", "CSV must include at least one valid email.");
   }
 
-  return contacts;
+  return {
+    columns,
+    suggestedMapping: suggestedMapping,
+    fieldPreviews: fields.map((field) => ({
+      ...field,
+      columnName: sanitizedMapping[field.field] ?? field.columnName,
+    })),
+    previewRows,
+    contacts,
+    summary: {
+      totalRows: dataRows.length,
+      validRows: contacts.length,
+      invalidRows,
+      duplicateRows,
+    },
+  };
 }
 
 async function ensureEmailSettingsRow(
@@ -928,8 +1413,9 @@ async function upsertContact(
     lastName?: string;
     tags: string[];
   },
+  strategy: EmailContactImportDuplicateStrategy,
   client: PoolClient,
-): Promise<EmailContactRow> {
+): Promise<UpsertContactResult> {
   const normalizedEmail = normalizeEmail(input.email);
   const isSuppressed = await isEmailUnsubscribed(businessId, normalizedEmail, client);
   const existingResult = await executeQuery<EmailContactRow>(
@@ -961,22 +1447,29 @@ async function upsertContact(
   const tagJson = JSON.stringify(input.tags);
 
   if (existingResult.rows[0]) {
+    if (strategy === "skip") {
+      return {
+        row: existingResult.rows[0],
+        operation: "skipped",
+      };
+    }
+
     const updateResult = await executeQuery<EmailContactRow>(
       `
         update email_contacts
         set
-          first_name = coalesce($3, first_name),
-          last_name = coalesce($4, last_name),
+          first_name = coalesce($2, first_name),
+          last_name = coalesce($3, last_name),
           status = case
-            when $6 then 'unsubscribed'
+            when $5 then 'unsubscribed'
             else status
           end,
           unsubscribed_at = case
-            when $6 and unsubscribed_at is null then now()
+            when $5 and unsubscribed_at is null then now()
             else unsubscribed_at
           end,
           tags_json = case
-            when jsonb_array_length($5::jsonb) > 0 then $5::jsonb
+            when jsonb_array_length($4::jsonb) > 0 then $4::jsonb
             else tags_json
           end,
           updated_at = now()
@@ -1007,7 +1500,10 @@ async function upsertContact(
       client,
     );
 
-    return updateResult.rows[0];
+    return {
+      row: updateResult.rows[0],
+      operation: "updated",
+    };
   }
 
   const insertResult = await executeQuery<EmailContactRow>(
@@ -1057,7 +1553,10 @@ async function upsertContact(
     client,
   );
 
-  return insertResult.rows[0];
+  return {
+    row: insertResult.rows[0],
+    operation: "created",
+  };
 }
 
 async function loadEmailCampaignOrThrow(
@@ -1084,6 +1583,7 @@ async function loadEmailCampaignOrThrow(
         c.created_at,
         c.updated_at,
         count(r.id)::int as recipient_count,
+        count(r.id) filter (where r.status in ('queued', 'sending'))::int as pending_count,
         count(r.id) filter (where r.status in ('sent', 'delivered'))::int as sent_count,
         count(r.id) filter (where r.status = 'delivered')::int as delivered_count,
         count(r.id) filter (where r.status = 'failed')::int as failed_count,
@@ -1141,6 +1641,71 @@ async function loadEmailListOrThrow(
   }
 
   return row;
+}
+
+async function ensureEmailListByName(
+  businessId: string,
+  listName: string,
+  createdByUserId?: string,
+  client?: PoolClient,
+): Promise<EmailListRow> {
+  const normalizedListName = listName.trim();
+
+  if (!normalizedListName) {
+    throw new HttpError(400, "email_list_name_required", "List name is required.");
+  }
+
+  const existingResult = await executeQuery<EmailListRow>(
+    `
+      select
+        l.id,
+        l.business_id,
+        l.name,
+        l.created_by_user_id,
+        l.created_at,
+        l.updated_at,
+        count(m.id)::int as contact_count
+      from email_lists l
+      left join email_list_members m on m.list_id = l.id
+      where l.business_id = $1::uuid
+        and lower(l.name) = lower($2)
+      group by l.id
+      order by l.created_at desc
+      limit 1
+    `,
+    [businessId, normalizedListName],
+    client,
+  );
+
+  if (existingResult.rows[0]) {
+    return existingResult.rows[0];
+  }
+
+  const insertedResult = await executeQuery<EmailListRow>(
+    `
+      insert into email_lists (
+        business_id,
+        name,
+        created_by_user_id
+      ) values (
+        $1::uuid,
+        $2,
+        $3::uuid
+      )
+      returning
+        id,
+        business_id,
+        name,
+        created_by_user_id,
+        created_at,
+        updated_at,
+        0::int as contact_count
+    `,
+    [businessId, normalizedListName, createdByUserId ?? null],
+    client,
+  );
+
+  return insertedResult.rows[0];
 }
 
 async function loadCampaignContacts(
@@ -1244,6 +1809,7 @@ async function getCampaignStats(
 ): Promise<EmailCampaignStats> {
   const result = await executeQuery<{
     total: string | number;
+    pending_total: string | number;
     sent_total: string | number;
     delivered_total: string | number;
     failed_total: string | number;
@@ -1252,6 +1818,7 @@ async function getCampaignStats(
     `
       select
         count(*)::int as total,
+        count(*) filter (where r.status in ('queued', 'sending'))::int as pending_total,
         count(*) filter (where r.status in ('sent', 'delivered'))::int as sent_total,
         count(*) filter (where r.status = 'delivered')::int as delivered_total,
         count(*) filter (where r.status = 'failed')::int as failed_total,
@@ -1270,11 +1837,281 @@ async function getCampaignStats(
   return {
     campaignId,
     recipientCount: toNumber(row?.total),
+    pendingCount: toNumber(row?.pending_total),
     sentCount: toNumber(row?.sent_total),
     deliveredCount: toNumber(row?.delivered_total),
     failedCount: toNumber(row?.failed_total),
     unsubscribedCount: toNumber(row?.unsubscribed_total),
   };
+}
+
+async function requeueStaleSendingRecipients(
+  campaignId: string,
+  leaseMinutes: number,
+  client?: PoolClient,
+): Promise<number> {
+  const result = await executeQuery<CountRow>(
+    `
+      with requeued as (
+        update email_campaign_recipients
+        set
+          status = 'queued',
+          updated_at = now()
+        where campaign_id = $1::uuid
+          and status = 'sending'
+          and updated_at < now() - ($2::int * interval '1 minute')
+        returning 1
+      )
+      select count(*)::int as total
+      from requeued
+    `,
+    [campaignId, leaseMinutes],
+    client,
+  );
+
+  return toNumber(result.rows[0]?.total);
+}
+
+async function claimQueuedCampaignRecipients(
+  campaignId: string,
+  batchSize: number,
+  client?: PoolClient,
+): Promise<EmailCampaignRecipientRow[]> {
+  const result = await executeQuery<EmailCampaignRecipientRow>(
+    `
+      with candidate_ids as (
+        select r.id
+        from email_campaign_recipients r
+        where r.campaign_id = $1::uuid
+          and r.status = 'queued'
+        order by r.created_at asc
+        limit $2
+        for update skip locked
+      ),
+      claimed as (
+        update email_campaign_recipients r
+        set
+          status = 'sending',
+          updated_at = now()
+        from candidate_ids c
+        where r.id = c.id
+        returning
+          r.id,
+          r.campaign_id,
+          r.contact_id,
+          r.personalized_subject,
+          r.personalized_body_html,
+          r.personalized_body_text,
+          r.status,
+          r.ses_message_id,
+          r.sent_at,
+          r.delivered_at,
+          r.failed_at,
+          r.failure_reason,
+          r.created_at,
+          r.updated_at
+      )
+      select
+        claimed.id,
+        claimed.campaign_id,
+        claimed.contact_id,
+        claimed.personalized_subject,
+        claimed.personalized_body_html,
+        claimed.personalized_body_text,
+        claimed.status,
+        claimed.ses_message_id,
+        claimed.sent_at,
+        claimed.delivered_at,
+        claimed.failed_at,
+        claimed.failure_reason,
+        claimed.created_at,
+        claimed.updated_at,
+        c.email as contact_email,
+        c.status as contact_status,
+        c.first_name,
+        c.last_name,
+        c.unsubscribe_token
+      from claimed
+      inner join email_contacts c on c.id = claimed.contact_id
+      order by claimed.created_at asc
+    `,
+    [campaignId, batchSize],
+    client,
+  );
+
+  return result.rows;
+}
+
+async function syncCampaignSendStatusFromRecipients(
+  campaignId: string,
+  client?: PoolClient,
+): Promise<EmailCampaign["status"]> {
+  const result = await executeQuery<EmailCampaignRecipientProgressRow>(
+    `
+      select
+        count(*) filter (where status = 'queued')::int as queued_total,
+        count(*) filter (where status = 'sending')::int as sending_total,
+        count(*) filter (where status = 'failed')::int as failed_total
+      from email_campaign_recipients
+      where campaign_id = $1::uuid
+    `,
+    [campaignId],
+    client,
+  );
+
+  const row = result.rows[0];
+  const queuedTotal = toNumber(row?.queued_total);
+  const sendingTotal = toNumber(row?.sending_total);
+  const failedTotal = toNumber(row?.failed_total);
+
+  const nextStatus: EmailCampaign["status"] =
+    queuedTotal + sendingTotal > 0 ? "sending" : failedTotal > 0 ? "failed" : "sent";
+
+  await executeQuery(
+    `
+      update email_campaigns
+      set
+        status = $2,
+        send_started_at = case
+          when $2 = 'sending' then coalesce(send_started_at, now())
+          else send_started_at
+        end,
+        send_completed_at = case
+          when $2 = 'sending' then null
+          else now()
+        end,
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [campaignId, nextStatus],
+    client,
+  );
+
+  return nextStatus;
+}
+
+async function markCampaignRecipientUnsubscribed(
+  recipientId: string,
+  source: "business_unsubscribe" | "contact_status",
+): Promise<void> {
+  await executeQuery(
+    `
+      update email_campaign_recipients
+      set
+        status = 'unsubscribed',
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [recipientId],
+  );
+
+  await executeQuery(
+    `
+      insert into email_events (
+        campaign_recipient_id,
+        event_type,
+        payload_json,
+        occurred_at
+      ) values (
+        $1::uuid,
+        'unsubscribe',
+        $2::jsonb,
+        now()
+      )
+    `,
+    [
+      recipientId,
+      JSON.stringify({
+        source,
+      }),
+    ],
+  );
+}
+
+async function markCampaignRecipientFailure(
+  recipientId: string,
+  failureMessage: string,
+): Promise<void> {
+  await executeQuery(
+    `
+      update email_campaign_recipients
+      set
+        status = 'failed',
+        failed_at = now(),
+        failure_reason = $2,
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [recipientId, failureMessage],
+  );
+
+  await executeQuery(
+    `
+      insert into email_events (
+        campaign_recipient_id,
+        event_type,
+        payload_json,
+        occurred_at
+      ) values (
+        $1::uuid,
+        'failed',
+        $2::jsonb,
+        now()
+      )
+    `,
+    [
+      recipientId,
+      JSON.stringify({
+        message: failureMessage,
+      }),
+    ],
+  );
+}
+
+async function markCampaignRecipientSent(
+  recipientId: string,
+  sent: {
+    messageId: string;
+    sentAt: string;
+    provider: string;
+  },
+): Promise<void> {
+  await executeQuery(
+    `
+      update email_campaign_recipients
+      set
+        status = 'sent',
+        ses_message_id = $2,
+        sent_at = $3::timestamptz,
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [recipientId, sent.messageId, sent.sentAt],
+  );
+
+  await executeQuery(
+    `
+      insert into email_events (
+        campaign_recipient_id,
+        event_type,
+        provider_message_id,
+        payload_json,
+        occurred_at
+      ) values (
+        $1::uuid,
+        'sent',
+        $2,
+        $3::jsonb,
+        $4::timestamptz
+      )
+    `,
+    [
+      recipientId,
+      sent.messageId,
+      JSON.stringify({ provider: sent.provider }),
+      sent.sentAt,
+    ],
+  );
 }
 
 export async function importEmailContacts(
@@ -1288,37 +2125,20 @@ export async function importEmailContacts(
     throw new HttpError(400, "email_list_name_required", "List name is required.");
   }
 
-  const contacts = parseContactsFromCsv(input.csvText);
+  const parsedImport = parseContactImportPayload(input.csvText, input.mapping);
+  const contacts = parsedImport.contacts;
+  const duplicateStrategy = input.duplicateStrategy ?? "upsert";
 
   return withDbTransaction(async (client) => {
-    const listResult = await executeQuery<EmailListRow>(
-      `
-        insert into email_lists (
-          business_id,
-          name,
-          created_by_user_id
-        ) values (
-          $1::uuid,
-          $2,
-          $3::uuid
-        )
-        returning
-          id,
-          business_id,
-          name,
-          created_by_user_id,
-          created_at,
-          updated_at,
-          0::int as contact_count
-      `,
-      [businessId, listName, actorUserId ?? null],
-      client,
-    );
+    const listRow = await ensureEmailListByName(businessId, listName, actorUserId, client);
 
     const importedContacts: EmailContact[] = [];
+    let createdCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
 
     for (const contact of contacts) {
-      const contactRow = await upsertContact(businessId, contact, client);
+      const contactResult = await upsertContact(businessId, contact, duplicateStrategy, client);
       await executeQuery(
         `
           insert into email_list_members (
@@ -1330,19 +2150,587 @@ export async function importEmailContacts(
           )
           on conflict (list_id, contact_id) do nothing
         `,
-        [listResult.rows[0].id, contactRow.id],
+        [listRow.id, contactResult.row.id],
         client,
       );
-      importedContacts.push(mapEmailContact(contactRow));
+      importedContacts.push(mapEmailContact(contactResult.row));
+
+      if (contactResult.operation === "created") {
+        createdCount += 1;
+      } else if (contactResult.operation === "updated") {
+        updatedCount += 1;
+      } else {
+        skippedCount += 1;
+      }
     }
 
-    const hydratedList = await loadEmailListOrThrow(businessId, listResult.rows[0].id, client);
+    const hydratedList = await loadEmailListOrThrow(businessId, listRow.id, client);
     return {
       list: mapEmailList(hydratedList),
       contacts: importedContacts,
       importedCount: importedContacts.length,
+      createdCount,
+      updatedCount,
+      skippedCount,
     };
   });
+}
+
+export async function previewEmailContactsImport(
+  businessId: string,
+  input: {
+    csvText: string;
+    mapping?: EmailContactImportMapping;
+  },
+): Promise<ImportEmailContactsPreviewResponse> {
+  const parsed = parseContactImportPayload(input.csvText, input.mapping);
+  const uniqueEmails = [...new Set(parsed.contacts.map((contact) => contact.email))];
+  let existingContacts = 0;
+
+  if (uniqueEmails.length > 0) {
+    const existingResult = await executeQuery<CountRow>(
+      `
+        select count(*)::int as total
+        from email_contacts
+        where business_id = $1::uuid
+          and lower(email) = any($2::text[])
+      `,
+      [businessId, uniqueEmails],
+    );
+
+    existingContacts = toNumber(existingResult.rows[0]?.total);
+  }
+
+  return {
+    columns: parsed.columns,
+    suggestedMapping: parsed.suggestedMapping,
+    fields: parsed.fieldPreviews,
+    previewRows: parsed.previewRows,
+    summary: {
+      ...parsed.summary,
+      existingContacts,
+    },
+  };
+}
+
+async function loadEmailContactImportJobOrThrow(
+  businessId: string,
+  importJobId: string,
+  client?: PoolClient,
+): Promise<EmailContactImportJobRow> {
+  const result = await executeQuery<EmailContactImportJobRow>(
+    `
+      select
+        id,
+        business_id,
+        job_id,
+        list_name,
+        file_name,
+        status,
+        total_rows,
+        processed_rows,
+        inserted_count,
+        updated_count,
+        skipped_count,
+        error_count,
+        mapping_json,
+        error_summary_json,
+        created_at,
+        started_at,
+        completed_at
+      from email_contact_import_jobs
+      where business_id = $1::uuid
+        and id = $2::uuid
+      limit 1
+    `,
+    [businessId, importJobId],
+    client,
+  );
+
+  const row = result.rows[0];
+
+  if (!row) {
+    throw new HttpError(404, "email_contact_import_job_not_found", "Import job not found.");
+  }
+
+  return row;
+}
+
+async function loadEmailContactImportJobByJobIdOrThrow(
+  businessId: string,
+  jobId: string,
+  client?: PoolClient,
+): Promise<EmailContactImportJobRow> {
+  const result = await executeQuery<EmailContactImportJobRow>(
+    `
+      select
+        id,
+        business_id,
+        job_id,
+        list_name,
+        file_name,
+        status,
+        total_rows,
+        processed_rows,
+        inserted_count,
+        updated_count,
+        skipped_count,
+        error_count,
+        mapping_json,
+        error_summary_json,
+        created_at,
+        started_at,
+        completed_at
+      from email_contact_import_jobs
+      where business_id = $1::uuid
+        and job_id = $2::uuid
+      limit 1
+    `,
+    [businessId, jobId],
+    client,
+  );
+
+  const row = result.rows[0];
+
+  if (!row) {
+    throw new HttpError(
+      404,
+      "email_contact_import_job_not_found",
+      "Import job metadata was not found.",
+    );
+  }
+
+  return row;
+}
+
+async function updateEmailContactImportJobProgress(
+  importJobId: string,
+  input: {
+    status?: EmailContactImportJob["status"];
+    totalRows?: number;
+    processedRows?: number;
+    insertedCount?: number;
+    updatedCount?: number;
+    skippedCount?: number;
+    errorCount?: number;
+    mapping?: EmailContactImportMapping;
+    errorSummary?: EmailContactImportJobError[];
+    startedAt?: string | null;
+    completedAt?: string | null;
+  },
+  client?: PoolClient,
+): Promise<void> {
+  await executeQuery(
+    `
+      update email_contact_import_jobs
+      set
+        status = coalesce($2, status),
+        total_rows = coalesce($3::int, total_rows),
+        processed_rows = coalesce($4::int, processed_rows),
+        inserted_count = coalesce($5::int, inserted_count),
+        updated_count = coalesce($6::int, updated_count),
+        skipped_count = coalesce($7::int, skipped_count),
+        error_count = coalesce($8::int, error_count),
+        mapping_json = coalesce($9::jsonb, mapping_json),
+        error_summary_json = coalesce($10::jsonb, error_summary_json),
+        started_at = case
+          when $11::timestamptz is not null then $11::timestamptz
+          else started_at
+        end,
+        completed_at = case
+          when $12::timestamptz is not null then $12::timestamptz
+          else completed_at
+        end
+      where id = $1::uuid
+    `,
+    [
+      importJobId,
+      input.status ?? null,
+      input.totalRows ?? null,
+      input.processedRows ?? null,
+      input.insertedCount ?? null,
+      input.updatedCount ?? null,
+      input.skippedCount ?? null,
+      input.errorCount ?? null,
+      input.mapping ? JSON.stringify(input.mapping) : null,
+      input.errorSummary ? JSON.stringify(input.errorSummary) : null,
+      input.startedAt ?? null,
+      input.completedAt ?? null,
+    ],
+    client,
+  );
+}
+
+export async function queueEmailContactsImport(
+  businessId: string,
+  actorUserId: string | undefined,
+  input: QueueEmailContactsImportRequest,
+): Promise<QueueEmailContactsImportResponse> {
+  const listName = input.listName.trim();
+
+  if (listName === "") {
+    throw new HttpError(400, "email_list_name_required", "List name is required.");
+  }
+
+  const parsedImport = parseContactImportPayload(input.csvText, input.mapping);
+  const appliedMapping = extractAppliedImportMapping(parsedImport.fieldPreviews);
+  const errorSummary = buildImportErrorSummary(parsedImport.summary);
+
+  return withDbTransaction(async (client) => {
+    const queuedJob = await createJob({
+      businessId,
+      type: "email_contact_import",
+      priority: 120,
+      payload: {
+        listName,
+        csvText: input.csvText,
+        mapping: appliedMapping,
+        duplicateStrategy: input.duplicateStrategy ?? "upsert",
+        fileName: input.fileName ?? null,
+        actorUserId: actorUserId ?? null,
+      },
+      client,
+    });
+
+    const result = await executeQuery<EmailContactImportJobRow>(
+      `
+        insert into email_contact_import_jobs (
+          business_id,
+          job_id,
+          list_name,
+          file_name,
+          status,
+          total_rows,
+          processed_rows,
+          inserted_count,
+          updated_count,
+          skipped_count,
+          error_count,
+          mapping_json,
+          error_summary_json,
+          created_by_user_id
+        ) values (
+          $1::uuid,
+          $2::uuid,
+          $3,
+          $4,
+          'queued',
+          $5::int,
+          0,
+          0,
+          0,
+          0,
+          $6::int,
+          $7::jsonb,
+          $8::jsonb,
+          $9::uuid
+        )
+        returning
+          id,
+          business_id,
+          job_id,
+          list_name,
+          file_name,
+          status,
+          total_rows,
+          processed_rows,
+          inserted_count,
+          updated_count,
+          skipped_count,
+          error_count,
+          mapping_json,
+          error_summary_json,
+          created_at,
+          started_at,
+          completed_at
+      `,
+      [
+        businessId,
+        queuedJob.id,
+        listName,
+        input.fileName?.trim() || null,
+        parsedImport.summary.totalRows,
+        parsedImport.summary.invalidRows,
+        JSON.stringify(appliedMapping),
+        JSON.stringify(errorSummary),
+        actorUserId ?? null,
+      ],
+      client,
+    );
+
+    return {
+      importJob: mapEmailContactImportJob(result.rows[0]),
+    };
+  });
+}
+
+export async function listEmailContactImportJobs(
+  businessId: string,
+): Promise<EmailContactImportJobListResponse> {
+  const result = await executeQuery<EmailContactImportJobRow>(
+    `
+      select
+        id,
+        business_id,
+        job_id,
+        list_name,
+        file_name,
+        status,
+        total_rows,
+        processed_rows,
+        inserted_count,
+        updated_count,
+        skipped_count,
+        error_count,
+        mapping_json,
+        error_summary_json,
+        created_at,
+        started_at,
+        completed_at
+      from email_contact_import_jobs
+      where business_id = $1::uuid
+      order by created_at desc
+      limit 20
+    `,
+    [businessId],
+  );
+
+  return {
+    importJobs: result.rows.map(mapEmailContactImportJob),
+  };
+}
+
+export async function getEmailContactImportJob(
+  businessId: string,
+  importJobId: string,
+): Promise<EmailContactImportJobResponse> {
+  return {
+    importJob: mapEmailContactImportJob(await loadEmailContactImportJobOrThrow(businessId, importJobId)),
+  };
+}
+
+export async function listEmailContacts(
+  businessId: string,
+  input: {
+    search?: string;
+    status?: EmailContactStatus;
+    listId?: string;
+    limit?: number;
+  } = {},
+): Promise<EmailContactListResponse> {
+  const normalizedSearch = input.search?.trim().toLowerCase() ?? "";
+  const searchPattern = normalizedSearch ? `%${normalizedSearch}%` : "";
+  const limit = Math.max(1, Math.min(input.limit ?? 100, 250));
+
+  const countResult = await executeQuery<CountRow>(
+    `
+      select count(*)::int as total
+      from email_contacts c
+      left join email_list_members lm
+        on lm.contact_id = c.id
+       and ($4::uuid is null or lm.list_id = $4::uuid)
+      where c.business_id = $1::uuid
+        and ($2::text = '' or (
+          lower(c.email) like $3
+          or lower(coalesce(c.first_name, '')) like $3
+          or lower(coalesce(c.last_name, '')) like $3
+        ))
+        and ($5::text is null or c.status = $5::text)
+        and ($4::uuid is null or lm.id is not null)
+    `,
+    [businessId, normalizedSearch, searchPattern, input.listId ?? null, input.status ?? null],
+  );
+
+  const result = await executeQuery<EmailContactRow>(
+    `
+      select
+        c.id,
+        c.business_id,
+        c.email,
+        c.first_name,
+        c.last_name,
+        c.tags_json,
+        c.status,
+        c.unsubscribe_token,
+        c.unsubscribed_at,
+        c.last_bounce_at,
+        c.last_complaint_at,
+        c.last_provider_event_at,
+        c.created_at,
+        c.updated_at
+      from email_contacts c
+      left join email_list_members lm
+        on lm.contact_id = c.id
+       and ($4::uuid is null or lm.list_id = $4::uuid)
+      where c.business_id = $1::uuid
+        and ($2::text = '' or (
+          lower(c.email) like $3
+          or lower(coalesce(c.first_name, '')) like $3
+          or lower(coalesce(c.last_name, '')) like $3
+        ))
+        and ($5::text is null or c.status = $5::text)
+        and ($4::uuid is null or lm.id is not null)
+      order by c.updated_at desc, c.created_at desc
+      limit $6::int
+    `,
+    [businessId, normalizedSearch, searchPattern, input.listId ?? null, input.status ?? null, limit],
+  );
+
+  return {
+    contacts: result.rows.map(mapEmailContact),
+    total: toNumber(countResult.rows[0]?.total),
+  };
+}
+
+export async function processQueuedEmailContactImportJobs(
+  options: ProcessQueuedEmailContactImportJobsOptions = {},
+): Promise<ProcessQueuedEmailContactImportJobsResult> {
+  const summary: ProcessQueuedEmailContactImportJobsResult = {
+    jobsClaimed: 0,
+    jobsCompleted: 0,
+    jobsFailed: 0,
+    contactsInserted: 0,
+    contactsUpdated: 0,
+    contactsSkipped: 0,
+    contactErrors: 0,
+  };
+  const claimedJobs = await claimQueuedJobs<EmailContactImportJobPayload>({
+    types: ["email_contact_import"],
+    batchSize: options.batchSize ?? resolveEmailContactImportWorkerBatchSize(),
+    lockedBy: process.env.RENDER_SERVICE_NAME?.trim() || `app-worker:${process.pid}`,
+    staleAfterMinutes: 30,
+  });
+
+  for (const job of claimedJobs) {
+    summary.jobsClaimed += 1;
+
+    if (!job.businessId) {
+      await markJobFailed(job.id, "Email contact import job is missing a business id.");
+      summary.jobsFailed += 1;
+      continue;
+    }
+
+    try {
+      const payload = job.payload;
+      const parsedImport = parseContactImportPayload(payload.csvText, payload.mapping);
+      const importJob = await loadEmailContactImportJobByJobIdOrThrow(job.businessId, job.id);
+      const appliedMapping = extractAppliedImportMapping(parsedImport.fieldPreviews);
+      const errorSummary = buildImportErrorSummary(parsedImport.summary);
+      let processedRows = parsedImport.summary.invalidRows + parsedImport.summary.duplicateRows;
+      let insertedCount = 0;
+      let updatedCount = 0;
+      let skippedCount = parsedImport.summary.duplicateRows;
+      const errorCount = parsedImport.summary.invalidRows;
+
+      await updateEmailContactImportJobProgress(importJob.id, {
+        status: "processing",
+        totalRows: parsedImport.summary.totalRows,
+        processedRows,
+        insertedCount,
+        updatedCount,
+        skippedCount,
+        errorCount,
+        mapping: appliedMapping,
+        errorSummary,
+        startedAt: new Date().toISOString(),
+      });
+
+      const listRow = await withDbTransaction(async (client) =>
+        ensureEmailListByName(job.businessId!, payload.listName, payload.actorUserId ?? undefined, client),
+      );
+
+      for (const contact of parsedImport.contacts) {
+        const contactResult = await withDbTransaction(async (client) => {
+          const upsertedContact = await upsertContact(
+            job.businessId!,
+            contact,
+            payload.duplicateStrategy ?? "upsert",
+            client,
+          );
+
+          await executeQuery(
+            `
+              insert into email_list_members (
+                list_id,
+                contact_id
+              ) values (
+                $1::uuid,
+                $2::uuid
+              )
+              on conflict (list_id, contact_id) do nothing
+            `,
+            [listRow.id, upsertedContact.row.id],
+            client,
+          );
+
+          return upsertedContact;
+        });
+
+        processedRows += 1;
+
+        if (contactResult.operation === "created") {
+          insertedCount += 1;
+          summary.contactsInserted += 1;
+        } else if (contactResult.operation === "updated") {
+          updatedCount += 1;
+          summary.contactsUpdated += 1;
+        } else {
+          skippedCount += 1;
+          summary.contactsSkipped += 1;
+        }
+
+        if (processedRows % 25 === 0) {
+          await updateEmailContactImportJobProgress(importJob.id, {
+            processedRows,
+            insertedCount,
+            updatedCount,
+            skippedCount,
+            errorCount,
+          });
+        }
+      }
+
+      summary.contactsSkipped += parsedImport.summary.duplicateRows;
+      summary.contactErrors += parsedImport.summary.invalidRows;
+
+      await updateEmailContactImportJobProgress(importJob.id, {
+        status: "completed",
+        processedRows: parsedImport.summary.totalRows,
+        insertedCount,
+        updatedCount,
+        skippedCount,
+        errorCount,
+        errorSummary,
+        completedAt: new Date().toISOString(),
+      });
+      await markJobCompleted(job.id);
+      summary.jobsCompleted += 1;
+    } catch (error) {
+      const failureMessage =
+        error instanceof Error ? error.message : "Unable to process the email contact import.";
+      const nextJobStatus = job.attempts >= job.maxAttempts ? "failed" : "queued";
+
+      try {
+        const importJob = await loadEmailContactImportJobByJobIdOrThrow(job.businessId, job.id);
+        await updateEmailContactImportJobProgress(importJob.id, {
+          status: nextJobStatus as EmailContactImportJob["status"],
+          completedAt: nextJobStatus === "failed" ? new Date().toISOString() : null,
+        });
+      } catch {
+        // Ignore metadata lookup failures; the queue row still captures the error.
+      }
+
+      await markJobFailed(job.id, failureMessage);
+      summary.jobsFailed += 1;
+      logWarn("Email contact import job failed.", {
+        businessId: job.businessId,
+        jobId: job.id,
+        message: failureMessage,
+      });
+    }
+  }
+
+  return summary;
 }
 
 export async function createEmailCampaign(
@@ -1398,6 +2786,7 @@ export async function createEmailCampaign(
           created_at,
           updated_at,
           0::int as recipient_count,
+          0::int as pending_count,
           0::int as sent_count,
           0::int as delivered_count,
           0::int as failed_count,
@@ -1467,6 +2856,7 @@ export async function listEmailCampaigns(businessId: string): Promise<EmailCampa
         c.created_at,
         c.updated_at,
         count(r.id)::int as recipient_count,
+        count(r.id) filter (where r.status in ('queued', 'sending'))::int as pending_count,
         count(r.id) filter (where r.status in ('sent', 'delivered'))::int as sent_count,
         count(r.id) filter (where r.status = 'delivered')::int as delivered_count,
         count(r.id) filter (where r.status = 'failed')::int as failed_count,
@@ -1495,10 +2885,11 @@ export async function getEmailCampaignStatsResponse(
   };
 }
 
-export async function processQueuedEmailCampaigns(options: {
-  businessId?: string;
-  campaignId?: string;
-} = {}): Promise<void> {
+export async function processQueuedEmailCampaigns(
+  options: ProcessQueuedEmailCampaignsOptions = {},
+): Promise<ProcessQueuedEmailCampaignsResult> {
+  const batchSize = options.batchSize ?? resolveEmailCampaignWorkerBatchSize();
+  const recipientLeaseMinutes = resolveEmailCampaignRecipientLeaseMinutes();
   const campaignResult = await executeQuery<EmailCampaignRow>(
     `
       select
@@ -1533,7 +2924,22 @@ export async function processQueuedEmailCampaigns(options: {
     [options.businessId ?? null, options.campaignId ?? null],
   );
 
+  const summary: ProcessQueuedEmailCampaignsResult = {
+    campaignsVisited: 0,
+    campaignsFinalized: 0,
+    recipientsClaimed: 0,
+    recipientsSent: 0,
+    recipientsFailed: 0,
+    recipientsUnsubscribed: 0,
+    requeuedRecipients: 0,
+  };
+
   for (const campaign of campaignResult.rows) {
+    summary.campaignsVisited += 1;
+
+    const recoveredRecipients = await requeueStaleSendingRecipients(campaign.id, recipientLeaseMinutes);
+    summary.requeuedRecipients += recoveredRecipients;
+
     try {
       await ensureBusinessEmailSendingPreconditions(campaign.business_id);
     } catch (error) {
@@ -1562,21 +2968,10 @@ export async function processQueuedEmailCampaigns(options: {
           ],
           client,
         );
-
-        await executeQuery(
-          `
-            update email_campaigns
-            set
-              status = 'failed',
-              send_started_at = coalesce(send_started_at, now()),
-              send_completed_at = now(),
-              updated_at = now()
-            where id = $1::uuid
-          `,
-          [campaign.id],
-          client,
-        );
+        await syncCampaignSendStatusFromRecipients(campaign.id, client);
       });
+
+      summary.campaignsFinalized += 1;
 
       void safeCreateSystemErrorLog({
         route: "/api/businesses/:id/email/campaigns/:campaignId/send",
@@ -1588,24 +2983,37 @@ export async function processQueuedEmailCampaigns(options: {
         },
       });
 
+      void sendEmailCampaignLifecycleNotification({
+        campaignId: campaign.id,
+        eventType: "failed",
+      }).catch((notificationError) => {
+        logWarn("Email campaign failure notification failed.", {
+          businessId: campaign.business_id,
+          campaignId: campaign.id,
+          message:
+            notificationError instanceof Error ? notificationError.message : "Unknown error",
+        });
+      });
+
       continue;
     }
 
-    await withDbTransaction(async (client) => {
-      const settings = mapEmailSettings(await ensureEmailSettingsRow(campaign.business_id, client));
-      const fromEmail = settings.fromEmail || process.env.SYSTEM_FROM_EMAIL?.trim();
-      const fromName = settings.fromName || process.env.SYSTEM_FROM_NAME?.trim() || undefined;
+    const settings = mapEmailSettings(await ensureEmailSettingsRow(campaign.business_id));
+    const fromEmail = settings.fromEmail || process.env.SYSTEM_FROM_EMAIL?.trim();
+    const fromName = settings.fromName || process.env.SYSTEM_FROM_NAME?.trim() || undefined;
 
-      if (!fromEmail) {
-        throw new HttpError(500, "system_from_email_missing", "SYSTEM_FROM_EMAIL is not configured.");
-      }
+    if (!fromEmail) {
+      throw new HttpError(500, "system_from_email_missing", "SYSTEM_FROM_EMAIL is not configured.");
+    }
 
+    const claimedRecipients = await withDbTransaction(async (client) => {
       await executeQuery(
         `
           update email_campaigns
           set
             status = 'sending',
             send_started_at = coalesce(send_started_at, now()),
+            send_completed_at = null,
             updated_at = now()
           where id = $1::uuid
         `,
@@ -1613,252 +3021,171 @@ export async function processQueuedEmailCampaigns(options: {
         client,
       );
 
-      const recipientResult = await executeQuery<EmailCampaignRecipientRow>(
-        `
-          select
-            r.id,
-            r.campaign_id,
-            r.contact_id,
-            r.personalized_subject,
-            r.personalized_body_html,
-            r.personalized_body_text,
-            r.status,
-            r.ses_message_id,
-            r.sent_at,
-            r.delivered_at,
-            r.failed_at,
-            r.failure_reason,
-            r.created_at,
-            r.updated_at,
-            c.email as contact_email,
-            c.status as contact_status,
-            c.first_name,
-            c.last_name,
-            c.unsubscribe_token
-          from email_campaign_recipients r
-          inner join email_contacts c on c.id = r.contact_id
-          where r.campaign_id = $1::uuid
-            and r.status = 'queued'
-          order by r.created_at asc
-        `,
-        [campaign.id],
-        client,
-      );
+      return claimQueuedCampaignRecipients(campaign.id, batchSize, client);
+    });
 
-      let failedCount = 0;
+    summary.recipientsClaimed += claimedRecipients.length;
 
-      for (const recipientRow of recipientResult.rows) {
-        const contactEmail = recipientRow.contact_email ?? "";
-        const suppressedByBusinessUnsubscribe = contactEmail
-          ? await isEmailUnsubscribed(campaign.business_id, contactEmail, client)
-          : false;
+    if (claimedRecipients.length > 0) {
+      void sendEmailCampaignLifecycleNotification({
+        campaignId: campaign.id,
+        eventType: "started",
+      }).catch((notificationError) => {
+        logWarn("Email campaign start notification failed during worker processing.", {
+          businessId: campaign.business_id,
+          campaignId: campaign.id,
+          message: notificationError instanceof Error ? notificationError.message : "Unknown error",
+        });
+      });
+    }
 
-        if (
-          recipientRow.contact_status === "unsubscribed" ||
-          suppressedByBusinessUnsubscribe
-        ) {
-          await executeQuery(
-            `
-              update email_campaign_recipients
-              set
-                status = 'unsubscribed',
-                updated_at = now()
-              where id = $1::uuid
-            `,
-            [recipientRow.id],
-            client,
-          );
-
-          await executeQuery(
-            `
-              insert into email_events (
-                campaign_recipient_id,
-                event_type,
-                payload_json,
-                occurred_at
-              ) values (
-                $1::uuid,
-                'unsubscribe',
-                $2::jsonb,
-                now()
-              )
-            `,
-            [
-              recipientRow.id,
-              JSON.stringify({
-                source: suppressedByBusinessUnsubscribe ? "business_unsubscribe" : "contact_status",
-              }),
-            ],
-            client,
-          );
-          continue;
-        }
-
-        if (recipientRow.contact_status === "bounced" || recipientRow.contact_status === "complained") {
-          failedCount += 1;
-          const failureMessage = `Contact is suppressed (${recipientRow.contact_status}).`;
-
-          await executeQuery(
-            `
-              update email_campaign_recipients
-              set
-                status = 'failed',
-                failed_at = now(),
-                failure_reason = $2,
-                updated_at = now()
-              where id = $1::uuid
-            `,
-            [recipientRow.id, failureMessage],
-            client,
-          );
-
-          await executeQuery(
-            `
-              insert into email_events (
-                campaign_recipient_id,
-                event_type,
-                payload_json,
-                occurred_at
-              ) values (
-                $1::uuid,
-                'failed',
-                $2::jsonb,
-                now()
-              )
-            `,
-            [
-              recipientRow.id,
-              JSON.stringify({
-                message: failureMessage,
-              }),
-            ],
-            client,
-          );
-          continue;
-        }
-
-        try {
-          const sent = await sendPlatformEmail({
-            fromEmail,
-            fromName,
-            replyToEmail: campaign.reply_to_email || settings.replyToEmail,
-            toEmail: contactEmail,
-            subject: recipientRow.personalized_subject,
-            htmlBody: recipientRow.personalized_body_html,
-            textBody: recipientRow.personalized_body_text,
-            tags: {
-              campaign_id: campaign.id,
-              business_id: campaign.business_id,
-              recipient_id: recipientRow.id,
-            },
-          });
-
-          await executeQuery(
-            `
-              update email_campaign_recipients
-              set
-                status = 'sent',
-                ses_message_id = $2,
-                sent_at = $3::timestamptz,
-                updated_at = now()
-              where id = $1::uuid
-            `,
-            [recipientRow.id, sent.messageId, sent.sentAt],
-            client,
-          );
-
-          await executeQuery(
-            `
-              insert into email_events (
-                campaign_recipient_id,
-                event_type,
-                provider_message_id,
-                payload_json,
-                occurred_at
-              ) values (
-                $1::uuid,
-                'sent',
-                $2,
-                $3::jsonb,
-                $4::timestamptz
-              )
-            `,
-            [
-              recipientRow.id,
-              sent.messageId,
-              JSON.stringify({ provider: sent.provider }),
-              sent.sentAt,
-            ],
-            client,
-          );
-        } catch (error) {
-          failedCount += 1;
-          const failureMessage = error instanceof Error ? error.message : "Unknown email send failure.";
-
-          await executeQuery(
-            `
-              update email_campaign_recipients
-              set
-                status = 'failed',
-                failed_at = now(),
-                failure_reason = $2,
-                updated_at = now()
-              where id = $1::uuid
-            `,
-            [recipientRow.id, failureMessage],
-            client,
-          );
-
-          await executeQuery(
-            `
-              insert into email_events (
-                campaign_recipient_id,
-                event_type,
-                payload_json,
-                occurred_at
-              ) values (
-                $1::uuid,
-                'failed',
-                $2::jsonb,
-                now()
-              )
-            `,
-            [
-              recipientRow.id,
-              JSON.stringify({
-                message: failureMessage,
-              }),
-            ],
-            client,
-          );
-
-          void safeCreateSystemErrorLog({
-            route: "/api/businesses/:id/email/campaigns/:campaignId/send",
+    if (claimedRecipients.length === 0) {
+      const finalStatus = await syncCampaignSendStatusFromRecipients(campaign.id);
+      if (finalStatus !== "sending") {
+        summary.campaignsFinalized += 1;
+        void sendEmailCampaignLifecycleNotification({
+          campaignId: campaign.id,
+          eventType: finalStatus === "failed" ? "failed" : "completed",
+        }).catch((notificationError) => {
+          logWarn("Email campaign finalization notification failed.", {
             businessId: campaign.business_id,
-            code: "email_send_failed",
-            message: failureMessage,
-            metadata: {
-              campaignId: campaign.id,
-              recipientId: recipientRow.id,
-            },
+            campaignId: campaign.id,
+            eventType: finalStatus,
+            message:
+              notificationError instanceof Error ? notificationError.message : "Unknown error",
           });
-        }
+        });
+      }
+      continue;
+    }
+
+    for (const recipientRow of claimedRecipients) {
+      const contactEmail = recipientRow.contact_email?.trim() ?? "";
+      const suppressedByBusinessUnsubscribe = contactEmail
+        ? await isEmailUnsubscribed(campaign.business_id, contactEmail)
+        : false;
+
+      if (
+        recipientRow.contact_status === "unsubscribed" ||
+        suppressedByBusinessUnsubscribe
+      ) {
+        await markCampaignRecipientUnsubscribed(
+          recipientRow.id,
+          suppressedByBusinessUnsubscribe ? "business_unsubscribe" : "contact_status",
+        );
+        summary.recipientsUnsubscribed += 1;
+        continue;
       }
 
-      await executeQuery(
-        `
-          update email_campaigns
-          set
-            status = case when $2::int > 0 then 'failed' else 'sent' end,
-            send_completed_at = now(),
-            updated_at = now()
-          where id = $1::uuid
-        `,
-        [campaign.id, failedCount],
-        client,
-      );
-    });
+      if (recipientRow.contact_status === "bounced" || recipientRow.contact_status === "complained") {
+        await markCampaignRecipientFailure(
+          recipientRow.id,
+          `Contact is suppressed (${recipientRow.contact_status}).`,
+        );
+        summary.recipientsFailed += 1;
+        continue;
+      }
+
+      if (contactEmail === "") {
+        await markCampaignRecipientFailure(recipientRow.id, "Contact email is missing.");
+        summary.recipientsFailed += 1;
+        continue;
+      }
+
+      try {
+        const sent = await sendPlatformEmail({
+          fromEmail,
+          fromName,
+          replyToEmail: campaign.reply_to_email || settings.replyToEmail,
+          toEmail: contactEmail,
+          subject: recipientRow.personalized_subject,
+          htmlBody: recipientRow.personalized_body_html,
+          textBody: recipientRow.personalized_body_text,
+          tags: {
+            campaign_id: campaign.id,
+            business_id: campaign.business_id,
+            recipient_id: recipientRow.id,
+          },
+        });
+
+        await markCampaignRecipientSent(recipientRow.id, sent);
+        summary.recipientsSent += 1;
+      } catch (error) {
+        const failureMessage = error instanceof Error ? error.message : "Unknown email send failure.";
+
+        await markCampaignRecipientFailure(recipientRow.id, failureMessage);
+        summary.recipientsFailed += 1;
+
+        void safeCreateSystemErrorLog({
+          route: "/api/businesses/:id/email/campaigns/:campaignId/send",
+          businessId: campaign.business_id,
+          code: "email_send_failed",
+          message: failureMessage,
+          metadata: {
+            campaignId: campaign.id,
+            recipientId: recipientRow.id,
+          },
+        });
+      }
+    }
+
+    const finalStatus = await syncCampaignSendStatusFromRecipients(campaign.id);
+    if (finalStatus !== "sending") {
+      summary.campaignsFinalized += 1;
+      void sendEmailCampaignLifecycleNotification({
+        campaignId: campaign.id,
+        eventType: finalStatus === "failed" ? "failed" : "completed",
+      }).catch((notificationError) => {
+        logWarn("Email campaign finalization notification failed.", {
+          businessId: campaign.business_id,
+          campaignId: campaign.id,
+          eventType: finalStatus,
+          message:
+            notificationError instanceof Error ? notificationError.message : "Unknown error",
+        });
+      });
+    }
   }
+
+  return summary;
+}
+
+export async function drainQueuedEmailCampaigns(
+  options: ProcessQueuedEmailCampaignsOptions = {},
+): Promise<ProcessQueuedEmailCampaignsResult> {
+  const aggregate: ProcessQueuedEmailCampaignsResult = {
+    campaignsVisited: 0,
+    campaignsFinalized: 0,
+    recipientsClaimed: 0,
+    recipientsSent: 0,
+    recipientsFailed: 0,
+    recipientsUnsubscribed: 0,
+    requeuedRecipients: 0,
+  };
+
+  for (let pass = 0; pass < MAX_EMAIL_CAMPAIGN_DRAIN_PASSES; pass += 1) {
+    const result = await processQueuedEmailCampaigns(options);
+
+    aggregate.campaignsVisited += result.campaignsVisited;
+    aggregate.campaignsFinalized += result.campaignsFinalized;
+    aggregate.recipientsClaimed += result.recipientsClaimed;
+    aggregate.recipientsSent += result.recipientsSent;
+    aggregate.recipientsFailed += result.recipientsFailed;
+    aggregate.recipientsUnsubscribed += result.recipientsUnsubscribed;
+    aggregate.requeuedRecipients += result.requeuedRecipients;
+
+    if (result.recipientsClaimed === 0 && result.requeuedRecipients === 0) {
+      return aggregate;
+    }
+  }
+
+  logWarn("Email campaign drain reached the maximum pass limit.", {
+    businessId: options.businessId ?? null,
+    campaignId: options.campaignId ?? null,
+    maxPasses: MAX_EMAIL_CAMPAIGN_DRAIN_PASSES,
+  });
+
+  return aggregate;
 }
 
 export async function sendEmailCampaign(
@@ -1870,6 +3197,15 @@ export async function sendEmailCampaign(
 
   await withDbTransaction(async (client) => {
     const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
+
+    if (campaign.status === "queued" || campaign.status === "sending") {
+      throw new HttpError(
+        409,
+        "email_campaign_already_processing",
+        "This campaign is already being processed.",
+      );
+    }
+
     const contacts = await loadCampaignContacts(businessId, campaign.id, client);
 
     if (contacts.length === 0) {
@@ -1884,6 +3220,11 @@ export async function sendEmailCampaign(
         update email_campaigns
         set
           status = 'queued',
+          send_started_at = null,
+          send_completed_at = null,
+          start_notification_sent_at = null,
+          completion_notification_sent_at = null,
+          failure_notification_sent_at = null,
           updated_at = now()
         where id = $1::uuid
       `,
@@ -1892,14 +3233,31 @@ export async function sendEmailCampaign(
     );
   });
 
-  await processQueuedEmailCampaigns({
+  void drainQueuedEmailCampaigns({
     businessId,
     campaignId,
+  }).catch((error) => {
+    logWarn("Background email campaign drain failed after enqueue.", {
+      businessId,
+      campaignId,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
   });
 
   void safeLogEvent("content_selected", actorUserId, businessId, {
     source: "email_campaign",
     campaignId,
+  });
+
+  void sendEmailCampaignLifecycleNotification({
+    campaignId,
+    eventType: "started",
+  }).catch((notificationError) => {
+    logWarn("Email campaign start notification failed.", {
+      businessId,
+      campaignId,
+      message: notificationError instanceof Error ? notificationError.message : "Unknown error",
+    });
   });
 
   const campaign = mapEmailCampaign(await loadEmailCampaignOrThrow(businessId, campaignId));

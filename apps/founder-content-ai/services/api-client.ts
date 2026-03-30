@@ -13,6 +13,25 @@ export interface ApiRequestOptions {
   timeoutMs?: number;
 }
 
+export class ApiRequestError extends Error {
+  statusCode: number;
+  code?: string;
+  details?: Record<string, unknown>;
+
+  constructor(input: {
+    message: string;
+    statusCode: number;
+    code?: string;
+    details?: Record<string, unknown>;
+  }) {
+    super(input.message);
+    this.name = "ApiRequestError";
+    this.statusCode = input.statusCode;
+    this.code = input.code;
+    this.details = input.details;
+  }
+}
+
 function normalizeApiBaseUrl(value: string): string {
   return value.trim().replace(/\/$/, "").replace(/\/health$/i, "");
 }
@@ -148,7 +167,20 @@ async function requestJson<TResponse>(
         responseBody && typeof responseBody === "object" && "error" in responseBody
           ? responseBody.error.message
           : `Request failed with status ${response.status}.`;
-      throw new Error(message);
+      const code =
+        responseBody && typeof responseBody === "object" && "error" in responseBody
+          ? responseBody.error.code
+          : undefined;
+      const details =
+        responseBody && typeof responseBody === "object" && "error" in responseBody
+          ? responseBody.error.details
+          : undefined;
+      throw new ApiRequestError({
+        message,
+        statusCode: response.status,
+        code,
+        details,
+      });
     }
 
     if (!responseBody) {

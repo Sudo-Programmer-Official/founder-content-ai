@@ -1,16 +1,22 @@
-import type { QueryResultRow } from "pg";
+import { createHash } from "node:crypto";
+import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import type {
   PostAsset,
+  PostPerformanceLabel,
   PublishPostRequest,
   PublishPostResponse,
   SchedulePostRequest,
   SchedulePostResponse,
+  SchedulingSafetyWarning,
   ScheduledPost,
   ScheduledPostMutationAction,
   ScheduledPostSlide,
   ScheduledPostsResponse,
   ScheduledPostStatus,
+  SocialAccountIdentityType,
   UpdateScheduledPostRequest,
+  UpdateScheduledPostPerformanceRequest,
+  UpdateScheduledPostPerformanceResponse,
   UpdateScheduledPostResponse,
 } from "../../../../packages/shared-types/index.ts";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
@@ -21,6 +27,15 @@ import {
   enforceWorkspaceReadAccess,
   enforceWorkspaceWriteAccess,
 } from "./governanceService.ts";
+import {
+  claimQueuedJobs,
+  createJob,
+  markJobCompleted,
+  markJobFailed,
+  markJobTerminalFailed,
+  pauseJob,
+  releaseJob,
+} from "./jobQueueService.ts";
 import { loadPostAssetsByPostIds, loadReadyPostImageAssets } from "./postAssetService.ts";
 import {
   publishLinkedInImagePost,
@@ -37,11 +52,20 @@ interface ScheduledPostRow extends QueryResultRow {
   user_id: string;
   social_account_id: string | null;
   social_account_identity_id: string | null;
+  social_account_identity_display_name?: string | null;
+  social_account_identity_type?: SocialAccountIdentityType | null;
   platform: "linkedin";
   content_text: string;
   asset_group_id: string | null;
   asset_payload: unknown;
   scheduled_at: Date | string;
+  earliest_dispatch_at: Date | string;
+  latest_dispatch_at: Date | string;
+  dispatch_job_id: string | null;
+  dispatch_priority: string | number;
+  hook_hash: string | null;
+  body_hash: string | null;
+  content_fingerprint: string | null;
   audience_timezone: string;
   status: ScheduledPostStatus;
   external_post_id: string | null;
@@ -54,9 +78,36 @@ interface ScheduledPostRow extends QueryResultRow {
   updated_at: Date | string;
 }
 
+interface PostMetricRow extends QueryResultRow {
+  scheduled_post_id: string;
+  performance_label: PostPerformanceLabel | null;
+  engagement_score: string | number | null;
+  updated_at: Date | string;
+}
+
 interface SocialPublishingTargetRow extends QueryResultRow {
   id: string;
   selected_identity_id: string;
+}
+
+interface ScheduledPostPublishJobPayload {
+  scheduledPostId: string;
+}
+
+interface SchedulingConflictCheckResult extends QueryResultRow {
+  id: string;
+}
+
+async function executeQuery<TRow extends QueryResultRow>(
+  text: string,
+  values: unknown[],
+  client?: PoolClient,
+): Promise<QueryResult<TRow>> {
+  if (client) {
+    return client.query<TRow>(text, values);
+  }
+
+  return queryDb<TRow>(text, values);
 }
 
 function toIsoString(value: Date | string | null | undefined): string | undefined {
@@ -100,23 +151,40 @@ function parseSlides(assetPayload: unknown): ScheduledPostSlide[] {
   return [];
 }
 
-function mapScheduledPost(row: ScheduledPostRow): ScheduledPost {
+function mapScheduledPost(
+  row: ScheduledPostRow,
+  metric?: {
+    performanceLabel?: PostPerformanceLabel;
+    engagementScore?: number;
+    performanceRecordedAt?: string;
+  },
+): ScheduledPost {
   return {
     id: row.id,
     businessId: row.business_id,
     userId: row.user_id,
     platform: row.platform,
+    selectedIdentityId: row.social_account_identity_id ?? undefined,
+    selectedIdentityDisplayName: row.social_account_identity_display_name ?? undefined,
+    selectedIdentityType: row.social_account_identity_type ?? undefined,
     contentText: row.content_text,
     assetGroupId: row.asset_group_id ?? undefined,
     slides: parseSlides(row.asset_payload),
     assets: [],
     scheduledAt: new Date(row.scheduled_at).toISOString(),
+    earliestDispatchAt: new Date(row.earliest_dispatch_at).toISOString(),
+    latestDispatchAt: new Date(row.latest_dispatch_at).toISOString(),
     audienceTimezone: row.audience_timezone,
     status: row.status,
+    dispatchPriority: toNumber(row.dispatch_priority),
+    dispatchJobId: row.dispatch_job_id ?? undefined,
     externalPostId: row.external_post_id ?? undefined,
     externalPostUrl: row.external_post_url ?? undefined,
     errorMessage: row.error_message ?? undefined,
     retryCount: toNumber(row.retry_count),
+    performanceLabel: metric?.performanceLabel,
+    performanceRecordedAt: metric?.performanceRecordedAt,
+    engagementScore: metric?.engagementScore,
     lastAttemptAt: toIsoString(row.last_attempt_at),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
@@ -140,14 +208,66 @@ async function loadLinkedPostAssetsMap(rows: ScheduledPostRow[]): Promise<Map<st
   return loadPostAssetsByPostIds(postIds, { includePreviewUrls: true });
 }
 
+async function loadPostMetricsMap(rows: ScheduledPostRow[]): Promise<
+  Map<
+    string,
+    {
+      performanceLabel?: PostPerformanceLabel;
+      engagementScore?: number;
+      performanceRecordedAt?: string;
+    }
+  >
+> {
+  const scheduledPostIds = Array.from(new Set(rows.map((row) => row.id))).filter(Boolean);
+
+  if (scheduledPostIds.length === 0) {
+    return new Map();
+  }
+
+  const result = await queryDb<PostMetricRow>(
+    `
+      select
+        scheduled_post_id,
+        performance_label,
+        engagement_score,
+        updated_at
+      from post_metrics
+      where scheduled_post_id = any($1::uuid[])
+    `,
+    [scheduledPostIds],
+  );
+
+  return new Map(
+    result.rows.map((row) => [
+      row.scheduled_post_id,
+      {
+        performanceLabel: row.performance_label ?? undefined,
+        engagementScore:
+          row.engagement_score === null || row.engagement_score === undefined
+            ? undefined
+            : Number(row.engagement_score),
+        performanceRecordedAt: toIsoString(row.updated_at),
+      },
+    ]),
+  );
+}
+
 function mapScheduledPostWithAssets(
   row: ScheduledPostRow,
   linkedAssetsMap: Map<string, PostAsset[]>,
+  metricsMap: Map<
+    string,
+    {
+      performanceLabel?: PostPerformanceLabel;
+      engagementScore?: number;
+      performanceRecordedAt?: string;
+    }
+  >,
 ): ScheduledPost {
   const linkedAssets = row.asset_group_id ? linkedAssetsMap.get(row.asset_group_id) ?? [] : [];
 
   return {
-    ...mapScheduledPost(row),
+    ...mapScheduledPost(row, metricsMap.get(row.id)),
     assets: linkedAssets,
   };
 }
@@ -210,41 +330,159 @@ function normalizeSlides(slides: SchedulePostRequest["slides"]): ScheduledPostSl
 }
 
 function resolveDailyLimit(): number {
-  const parsed = Number(process.env.POST_SAFETY_DAILY_LIMIT ?? 3);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 3;
+  const parsed = Number(process.env.POST_SAFETY_DAILY_LIMIT ?? 2);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 2;
 }
 
 function resolveMinGapMinutes(): number {
-  const parsed = Number(process.env.POST_SAFETY_MIN_GAP_MINUTES ?? 180);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 180;
+  const parsed = Number(process.env.POST_SAFETY_MIN_GAP_MINUTES ?? 240);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 240;
 }
 
 function resolveJitterMinutes(): number {
-  const parsed = Number(process.env.POST_SAFETY_JITTER_MINUTES ?? 9);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 9;
+  const parsed = Number(process.env.POST_SAFETY_JITTER_MINUTES ?? 20);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 20;
 }
 
 function resolveMaxRetryCount(): number {
-  const parsed = Number(process.env.SCHEDULED_POST_MAX_RETRIES ?? 1);
-  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 1;
+  const parsed = Number(process.env.SCHEDULED_POST_MAX_RETRIES ?? 2);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : 2;
 }
 
-function applySchedulingJitter(scheduledAt: Date): Date {
-  const jitterMinutes = resolveJitterMinutes();
+function resolveDispatchPriority(): number {
+  const parsed = Number(process.env.POST_PUBLISH_JOB_PRIORITY ?? 40);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 40;
+}
 
-  if (jitterMinutes <= 0) {
-    return scheduledAt;
+function normalizeContentForHash(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, "");
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 24);
+}
+
+function extractHookCandidate(contentText: string): string {
+  const firstNonEmptyLine = contentText
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+
+  return firstNonEmptyLine ?? contentText.trim();
+}
+
+function buildContentFingerprint(contentText: string): {
+  hookHash: string;
+  bodyHash: string;
+  contentFingerprint: string;
+} {
+  const normalizedBody = normalizeContentForHash(contentText);
+  const normalizedHook = normalizeContentForHash(extractHookCandidate(contentText));
+
+  return {
+    hookHash: hashText(normalizedHook),
+    bodyHash: hashText(normalizedBody),
+    contentFingerprint: hashText(`${normalizedHook}::${normalizedBody}`),
+  };
+}
+
+function selectDispatchRunAfter(start: Date, end: Date): Date {
+  const spanMs = Math.max(0, end.getTime() - start.getTime());
+
+  if (spanMs === 0) {
+    return start;
   }
 
-  const offsetMinutes = Math.floor(Math.random() * (jitterMinutes + 1));
-  return new Date(scheduledAt.getTime() + offsetMinutes * 60 * 1000);
+  return new Date(start.getTime() + Math.floor(Math.random() * (spanMs + 1)));
 }
 
-async function enforceDailyPostLimit(
-  userId: string,
+function buildDispatchWindow(scheduledAt: Date): {
+  earliestDispatchAt: Date;
+  latestDispatchAt: Date;
+  runAfter: Date;
+} {
+  const jitterMinutes = resolveJitterMinutes();
+  const earlyMinutes = Math.floor(jitterMinutes * 0.4);
+  const nowFloor = new Date(Date.now() + 60 * 1000);
+  const earliestDispatchAt = new Date(
+    Math.max(scheduledAt.getTime() - earlyMinutes * 60 * 1000, nowFloor.getTime()),
+  );
+  const latestDispatchAt = new Date(
+    Math.max(scheduledAt.getTime() + jitterMinutes * 60 * 1000, earliestDispatchAt.getTime()),
+  );
+
+  return {
+    earliestDispatchAt,
+    latestDispatchAt,
+    runAfter: selectDispatchRunAfter(earliestDispatchAt, latestDispatchAt),
+  };
+}
+
+function buildImmediateDispatchWindow(dispatchAt = new Date()): {
+  earliestDispatchAt: Date;
+  latestDispatchAt: Date;
+  runAfter: Date;
+} {
+  return {
+    earliestDispatchAt: dispatchAt,
+    latestDispatchAt: dispatchAt,
+    runAfter: dispatchAt,
+  };
+}
+
+function buildDailyLimitWarning(limit: number): SchedulingSafetyWarning {
+  return {
+    code: "daily_limit",
+    title: "Daily LinkedIn limit reached",
+    message: `This workspace already has ${limit} LinkedIn post${limit === 1 ? "" : "s"} planned for this day. Schedule anyway?`,
+  };
+}
+
+function buildMinimumGapWarning(minGapMinutes: number): SchedulingSafetyWarning {
+  return {
+    code: "minimum_gap",
+    title: "Posts are too close together",
+    message: `Another LinkedIn post is already scheduled within ${minGapMinutes} minutes of this time. Schedule anyway?`,
+  };
+}
+
+function summarizePublishFailure(error: unknown): string {
+  if (error instanceof HttpError) {
+    if (error.code === "linkedin_not_connected") {
+      return "LinkedIn connection expired or is not configured. Reconnect LinkedIn and retry the post.";
+    }
+
+    return error.message;
+  }
+
+  return error instanceof Error ? error.message : "Unknown publishing error.";
+}
+
+function isRetryablePublishError(error: unknown): boolean {
+  if (error instanceof HttpError) {
+    if (error.code === "linkedin_not_connected") {
+      return false;
+    }
+
+    if (error.statusCode >= 500) {
+      return true;
+    }
+
+    return false;
+  }
+
+  return true;
+}
+
+async function loadDailyLimitWarning(
+  businessId: string,
   scheduledAt: Date,
   ignoreScheduledPostId?: string | null,
-): Promise<void> {
+): Promise<SchedulingSafetyWarning | null> {
   const startOfDay = new Date(scheduledAt);
   startOfDay.setUTCHours(0, 0, 0, 0);
   const endOfDay = new Date(startOfDay);
@@ -253,33 +491,34 @@ async function enforceDailyPostLimit(
     `
       select count(*)::int as total
       from scheduled_posts
-      where user_id = $1
+      where business_id = $1
+        and platform = 'linkedin'
         and status in ('scheduled', 'processing', 'published')
         and scheduled_at >= $2
         and scheduled_at < $3
         and ($4::uuid is null or id <> $4)
     `,
-    [userId, startOfDay.toISOString(), endOfDay.toISOString(), ignoreScheduledPostId ?? null],
+    [businessId, startOfDay.toISOString(), endOfDay.toISOString(), ignoreScheduledPostId ?? null],
   );
 
-  if (toNumber(result.rows[0]?.total) >= resolveDailyLimit()) {
-    throw new HttpError(
-      429,
-      "posting_limit_reached",
-      "Daily scheduling limit reached for this user.",
-    );
+  const limit = resolveDailyLimit();
+
+  if (toNumber(result.rows[0]?.total) >= limit) {
+    return buildDailyLimitWarning(limit);
   }
+
+  return null;
 }
 
-async function enforceMinimumGap(
-  userId: string,
+async function loadMinimumGapWarning(
+  businessId: string,
   scheduledAt: Date,
   ignoreScheduledPostId?: string | null,
-): Promise<void> {
+): Promise<SchedulingSafetyWarning | null> {
   const minGapMinutes = resolveMinGapMinutes();
 
   if (minGapMinutes <= 0) {
-    return;
+    return null;
   }
 
   const gapStart = new Date(scheduledAt.getTime() - minGapMinutes * 60 * 1000);
@@ -288,7 +527,8 @@ async function enforceMinimumGap(
     `
       select scheduled_at
       from scheduled_posts
-      where user_id = $1
+      where business_id = $1
+        and platform = 'linkedin'
         and status in ('scheduled', 'processing', 'published')
         and scheduled_at >= $2
         and scheduled_at <= $3
@@ -297,7 +537,7 @@ async function enforceMinimumGap(
       limit 1
     `,
     [
-      userId,
+      businessId,
       gapStart.toISOString(),
       gapEnd.toISOString(),
       scheduledAt.toISOString(),
@@ -306,12 +546,25 @@ async function enforceMinimumGap(
   );
 
   if (result.rows[0]?.scheduled_at) {
-    throw new HttpError(
-      409,
-      "posting_gap_conflict",
-      `Leave at least ${minGapMinutes} minutes between scheduled posts for the same user.`,
-    );
+    return buildMinimumGapWarning(minGapMinutes);
   }
+
+  return null;
+}
+
+async function collectSchedulingSafetyWarnings(input: {
+  businessId: string;
+  scheduledAt: Date;
+  ignoreScheduledPostId?: string | null;
+}): Promise<SchedulingSafetyWarning[]> {
+  const [dailyLimitWarning, minimumGapWarning] = await Promise.all([
+    loadDailyLimitWarning(input.businessId, input.scheduledAt, input.ignoreScheduledPostId),
+    loadMinimumGapWarning(input.businessId, input.scheduledAt, input.ignoreScheduledPostId),
+  ]);
+
+  return [dailyLimitWarning, minimumGapWarning].filter(
+    (warning): warning is SchedulingSafetyWarning => Boolean(warning),
+  );
 }
 
 async function resolveLinkedInPublishingTarget(businessId: string): Promise<{
@@ -367,6 +620,147 @@ async function resolveBusinessTimezone(businessId: string): Promise<string> {
   return timezone || "UTC";
 }
 
+async function hasActivePublishingConflict(row: ScheduledPostRow): Promise<boolean> {
+  const result = await queryDb<SchedulingConflictCheckResult>(
+    `
+      select id
+      from scheduled_posts
+      where id <> $1::uuid
+        and status = 'processing'
+        and (
+          business_id = $2::uuid
+          or (
+            $3::uuid is not null
+            and social_account_identity_id = $3::uuid
+          )
+        )
+      limit 1
+    `,
+    [row.id, row.business_id, row.social_account_identity_id ?? null],
+  );
+
+  return Boolean(result.rows[0]?.id);
+}
+
+async function updateScheduledPostDispatchState(
+  input: {
+    scheduledPostId: string;
+    scheduledAt: Date;
+    businessId: string;
+    contentText: string;
+    previousDispatchJobId?: string | null;
+    dispatchMode?: "scheduled" | "immediate";
+  },
+  client: PoolClient,
+): Promise<{
+  dispatchJobId: string;
+  earliestDispatchAt: string;
+  latestDispatchAt: string;
+  runAfter: string;
+}> {
+  if (input.previousDispatchJobId) {
+    await pauseJob(input.previousDispatchJobId, client);
+  }
+
+  const dispatchWindow =
+    input.dispatchMode === "immediate"
+      ? buildImmediateDispatchWindow(input.scheduledAt)
+      : buildDispatchWindow(input.scheduledAt);
+  const fingerprint = buildContentFingerprint(input.contentText);
+  const queuedJob = await createJob<ScheduledPostPublishJobPayload>({
+    businessId: input.businessId,
+    type: "post_publish",
+    priority: resolveDispatchPriority(),
+    payload: {
+      scheduledPostId: input.scheduledPostId,
+    },
+    maxAttempts: resolveMaxRetryCount(),
+    runAfter: dispatchWindow.runAfter.toISOString(),
+    client,
+  });
+
+  await executeQuery(
+    `
+      update scheduled_posts
+      set
+        earliest_dispatch_at = $2::timestamptz,
+        latest_dispatch_at = $3::timestamptz,
+        dispatch_priority = $4::int,
+        dispatch_job_id = $5::uuid,
+        hook_hash = $6,
+        body_hash = $7,
+        content_fingerprint = $8,
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [
+      input.scheduledPostId,
+      dispatchWindow.earliestDispatchAt.toISOString(),
+      dispatchWindow.latestDispatchAt.toISOString(),
+      resolveDispatchPriority(),
+      queuedJob.id,
+      fingerprint.hookHash,
+      fingerprint.bodyHash,
+      fingerprint.contentFingerprint,
+    ],
+    client,
+  );
+
+  return {
+    dispatchJobId: queuedJob.id,
+    earliestDispatchAt: dispatchWindow.earliestDispatchAt.toISOString(),
+    latestDispatchAt: dispatchWindow.latestDispatchAt.toISOString(),
+    runAfter: dispatchWindow.runAfter.toISOString(),
+  };
+}
+
+async function markScheduledPostQueuedForRetry(
+  scheduledPostId: string,
+  errorMessage: string,
+  retryCount: number,
+): Promise<void> {
+  await executeQuery(
+    `
+      update scheduled_posts
+      set
+        status = 'scheduled',
+        error_message = $2,
+        retry_count = $3::int,
+        last_attempt_at = now(),
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [scheduledPostId, errorMessage, retryCount],
+  );
+
+  await recordPublicationEvent(scheduledPostId, "scheduled", {
+    retryQueued: true,
+    message: errorMessage,
+    retryCount,
+  });
+}
+
+async function markScheduledPostProcessing(scheduledPostId: string, attemptCount: number): Promise<void> {
+  await executeQuery(
+    `
+      update scheduled_posts
+      set
+        status = 'processing',
+        error_message = null,
+        retry_count = $2::int,
+        last_attempt_at = now(),
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [scheduledPostId, attemptCount],
+  );
+
+  await recordPublicationEvent(scheduledPostId, "processing", {
+    claimedAt: new Date().toISOString(),
+    attemptCount,
+  });
+}
+
 async function recordPublicationEvent(
   scheduledPostId: string,
   status: ScheduledPostStatus,
@@ -391,7 +785,7 @@ async function recordPublicationEvent(
 async function syncLinkedContentAssetStage(input: {
   businessId: string;
   linkedAssetId?: string | null;
-  stage: "review" | "scheduled" | "posted";
+  stage: "draft" | "review" | "scheduled" | "posted";
 }): Promise<void> {
   const linkedAssetId = input.linkedAssetId?.trim();
 
@@ -420,29 +814,40 @@ async function loadScheduledPostRow(
   const result = await queryDb<ScheduledPostRow>(
     `
       select
-        id,
-        business_id,
-        user_id,
-        social_account_id,
-        social_account_identity_id,
-        platform,
-        content_text,
-        asset_group_id,
-        asset_payload,
-        scheduled_at,
-        audience_timezone,
-        status,
-        external_post_id,
-        external_post_url,
-        error_message,
-        retry_count,
-        last_attempt_at,
-        published_at,
-        created_at,
-        updated_at
-      from scheduled_posts
-      where id = $1
-        and business_id = $2
+        sp.id,
+        sp.business_id,
+        sp.user_id,
+        sp.social_account_id,
+        sp.social_account_identity_id,
+        sai.display_name as social_account_identity_display_name,
+        sai.identity_type as social_account_identity_type,
+        sp.platform,
+        sp.content_text,
+        sp.asset_group_id,
+        sp.asset_payload,
+        sp.scheduled_at,
+        sp.earliest_dispatch_at,
+        sp.latest_dispatch_at,
+        sp.dispatch_job_id,
+        sp.dispatch_priority,
+        sp.hook_hash,
+        sp.body_hash,
+        sp.content_fingerprint,
+        sp.audience_timezone,
+        sp.status,
+        sp.external_post_id,
+        sp.external_post_url,
+        sp.error_message,
+        sp.retry_count,
+        sp.last_attempt_at,
+        sp.published_at,
+        sp.created_at,
+        sp.updated_at
+      from scheduled_posts sp
+      left join social_account_identities sai
+        on sai.id = sp.social_account_identity_id
+      where sp.id = $1
+        and sp.business_id = $2
       limit 1
     `,
     [scheduledPostId, businessId],
@@ -475,6 +880,39 @@ function canRescheduleScheduledPost(status: ScheduledPostStatus): boolean {
 
 function canRetryScheduledPost(status: ScheduledPostStatus): boolean {
   return status === "failed";
+}
+
+function canPublishNowScheduledPost(status: ScheduledPostStatus): boolean {
+  return status === "scheduled" || status === "paused" || status === "failed";
+}
+
+function canMoveScheduledPostToDraft(row: ScheduledPostRow): boolean {
+  return Boolean(
+    row.asset_group_id
+      && (row.status === "scheduled" || row.status === "paused" || row.status === "failed" || row.status === "canceled"),
+  );
+}
+
+function normalizePostPerformanceLabel(value: string): PostPerformanceLabel {
+  switch (value) {
+    case "low":
+    case "medium":
+    case "high":
+      return value;
+    default:
+      throw new HttpError(400, "bad_request", "performanceLabel must be low, medium, or high.");
+  }
+}
+
+function engagementScoreFromPerformanceLabel(label: PostPerformanceLabel): number {
+  switch (label) {
+    case "high":
+      return 0.9;
+    case "medium":
+      return 0.6;
+    default:
+      return 0.25;
+  }
 }
 
 async function markScheduledPostPublished(
@@ -533,31 +971,11 @@ async function markScheduledPostFailed(scheduledPostId: string, error: unknown):
   });
 }
 
-async function claimDueScheduledPosts(limit: number): Promise<ScheduledPostRow[]> {
+async function backfillScheduledPostDispatchJobs(limit: number): Promise<number> {
   return withDbTransaction(async (client) => {
-    const result = await client.query<ScheduledPostRow>(
+    const result = await executeQuery<ScheduledPostRow>(
       `
-        with due_posts as (
-          select id
-          from scheduled_posts
-          where status = 'scheduled'
-            and scheduled_at <= now()
-            and platform = 'linkedin'
-            and coalesce(retry_count, 0) < $2
-          order by scheduled_at asc
-          limit $1
-          for update skip locked
-        )
-        update scheduled_posts sp
-        set
-          status = 'processing',
-          error_message = null,
-          retry_count = coalesce(sp.retry_count, 0) + 1,
-          last_attempt_at = now(),
-          updated_at = now()
-        from due_posts
-        where sp.id = due_posts.id
-        returning
+        select
           sp.id,
           sp.business_id,
           sp.user_id,
@@ -568,6 +986,13 @@ async function claimDueScheduledPosts(limit: number): Promise<ScheduledPostRow[]
           sp.asset_group_id,
           sp.asset_payload,
           sp.scheduled_at,
+          sp.earliest_dispatch_at,
+          sp.latest_dispatch_at,
+          sp.dispatch_job_id,
+          sp.dispatch_priority,
+          sp.hook_hash,
+          sp.body_hash,
+          sp.content_fingerprint,
           sp.audience_timezone,
           sp.status,
           sp.external_post_id,
@@ -578,28 +1003,37 @@ async function claimDueScheduledPosts(limit: number): Promise<ScheduledPostRow[]
           sp.published_at,
           sp.created_at,
           sp.updated_at
+        from scheduled_posts sp
+        left join jobs j on j.id = sp.dispatch_job_id
+        where sp.platform = 'linkedin'
+          and sp.status = 'scheduled'
+          and (
+            sp.dispatch_job_id is null
+            or j.id is null
+            or j.status not in ('queued', 'processing')
+          )
+        order by sp.scheduled_at asc
+        limit $1
+        for update of sp skip locked
       `,
-      [limit, resolveMaxRetryCount()],
+      [limit],
+      client,
     );
 
     for (const row of result.rows) {
-      await client.query(
-        `
-          insert into publication_events (
-            scheduled_post_id,
-            status,
-            response
-          ) values (
-            $1,
-            'processing',
-            $2::jsonb
-          )
-        `,
-        [row.id, JSON.stringify({ claimedAt: new Date().toISOString() })],
+      await updateScheduledPostDispatchState(
+        {
+          scheduledPostId: row.id,
+          scheduledAt: new Date(row.scheduled_at),
+          businessId: row.business_id,
+          contentText: row.content_text,
+          previousDispatchJobId: row.dispatch_job_id,
+        },
+        client,
       );
     }
 
-    return result.rows;
+    return result.rows.length;
   });
 }
 
@@ -612,9 +1046,15 @@ function normalizeScheduledPostMutationAction(
     case "cancel":
     case "reschedule":
     case "retry":
+    case "publish_now":
+    case "move_to_draft":
       return value;
     default:
-      throw new HttpError(400, "bad_request", "action must be pause, resume, cancel, retry, or reschedule.");
+      throw new HttpError(
+        400,
+        "bad_request",
+        "action must be pause, resume, cancel, retry, reschedule, publish_now, or move_to_draft.",
+      );
   }
 }
 
@@ -641,45 +1081,33 @@ export async function updateScheduledPost(
       throw new HttpError(409, "scheduled_post_conflict", "Only scheduled posts can be paused.");
     }
 
-    const result = await queryDb<ScheduledPostRow>(
-      `
-        update scheduled_posts
-        set
-          status = 'paused',
-          updated_at = now()
-        where id = $1
-        returning
-          id,
-          business_id,
-          user_id,
-          social_account_id,
-          social_account_identity_id,
-          platform,
-          content_text,
-          asset_group_id,
-          asset_payload,
-          scheduled_at,
-          audience_timezone,
-          status,
-          external_post_id,
-          external_post_url,
-          error_message,
-          retry_count,
-          last_attempt_at,
-          published_at,
-          created_at,
-          updated_at
-      `,
-      [existing.id],
-    );
+    await withDbTransaction(async (client) => {
+      if (existing.dispatch_job_id) {
+        await pauseJob(existing.dispatch_job_id, client);
+      }
+
+      await executeQuery(
+        `
+          update scheduled_posts
+          set
+            status = 'paused',
+            updated_at = now()
+          where id = $1::uuid
+        `,
+        [existing.id],
+        client,
+      );
+    });
 
     await recordPublicationEvent(existing.id, "paused", {
       action: "pause",
       previousStatus: existing.status,
     });
-    const linkedAssetsMap = await loadLinkedPostAssetsMap(result.rows);
+    const updatedRow = await loadScheduledPostRow(businessId, existing.id);
+    const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);
+    const metricsMap = await loadPostMetricsMap([updatedRow]);
 
-    return { scheduledPost: mapScheduledPostWithAssets(result.rows[0], linkedAssetsMap) };
+    return { scheduledPost: mapScheduledPostWithAssets(updatedRow, linkedAssetsMap, metricsMap) };
   }
 
   if (action === "resume") {
@@ -687,38 +1115,31 @@ export async function updateScheduledPost(
       throw new HttpError(409, "scheduled_post_conflict", "Only paused posts can be resumed.");
     }
 
-    const result = await queryDb<ScheduledPostRow>(
-      `
-        update scheduled_posts
-        set
-          status = 'scheduled',
-          error_message = null,
-          updated_at = now()
-        where id = $1
-        returning
-          id,
-          business_id,
-          user_id,
-          social_account_id,
-          social_account_identity_id,
-          platform,
-          content_text,
-          asset_group_id,
-          asset_payload,
-          scheduled_at,
-          audience_timezone,
-          status,
-          external_post_id,
-          external_post_url,
-          error_message,
-          retry_count,
-          last_attempt_at,
-          published_at,
-          created_at,
-          updated_at
-      `,
-      [existing.id],
-    );
+    await withDbTransaction(async (client) => {
+      await executeQuery(
+        `
+          update scheduled_posts
+          set
+            status = 'scheduled',
+            error_message = null,
+            updated_at = now()
+          where id = $1::uuid
+        `,
+        [existing.id],
+        client,
+      );
+
+      await updateScheduledPostDispatchState(
+        {
+          scheduledPostId: existing.id,
+          scheduledAt: new Date(existing.scheduled_at),
+          businessId,
+          contentText: existing.content_text,
+          previousDispatchJobId: existing.dispatch_job_id,
+        },
+        client,
+      );
+    });
 
     await recordPublicationEvent(existing.id, "scheduled", {
       action: "resume",
@@ -726,9 +1147,11 @@ export async function updateScheduledPost(
       scheduledAt: new Date(existing.scheduled_at).toISOString(),
       audienceTimezone: existing.audience_timezone,
     });
-    const linkedAssetsMap = await loadLinkedPostAssetsMap(result.rows);
+    const updatedRow = await loadScheduledPostRow(businessId, existing.id);
+    const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);
+    const metricsMap = await loadPostMetricsMap([updatedRow]);
 
-    return { scheduledPost: mapScheduledPostWithAssets(result.rows[0], linkedAssetsMap) };
+    return { scheduledPost: mapScheduledPostWithAssets(updatedRow, linkedAssetsMap, metricsMap) };
   }
 
   if (action === "cancel") {
@@ -740,37 +1163,23 @@ export async function updateScheduledPost(
       );
     }
 
-    const result = await queryDb<ScheduledPostRow>(
-      `
-        update scheduled_posts
-        set
-          status = 'canceled',
-          updated_at = now()
-        where id = $1
-        returning
-          id,
-          business_id,
-          user_id,
-          social_account_id,
-          social_account_identity_id,
-          platform,
-          content_text,
-          asset_group_id,
-          asset_payload,
-          scheduled_at,
-          audience_timezone,
-          status,
-          external_post_id,
-          external_post_url,
-          error_message,
-          retry_count,
-          last_attempt_at,
-          published_at,
-          created_at,
-          updated_at
-      `,
-      [existing.id],
-    );
+    await withDbTransaction(async (client) => {
+      if (existing.dispatch_job_id) {
+        await pauseJob(existing.dispatch_job_id, client);
+      }
+
+      await executeQuery(
+        `
+          update scheduled_posts
+          set
+            status = 'canceled',
+            updated_at = now()
+          where id = $1::uuid
+        `,
+        [existing.id],
+        client,
+      );
+    });
 
     await recordPublicationEvent(existing.id, "canceled", {
       action: "cancel",
@@ -781,9 +1190,11 @@ export async function updateScheduledPost(
       linkedAssetId: existing.asset_group_id,
       stage: "review",
     });
-    const linkedAssetsMap = await loadLinkedPostAssetsMap(result.rows);
+    const updatedRow = await loadScheduledPostRow(businessId, existing.id);
+    const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);
+    const metricsMap = await loadPostMetricsMap([updatedRow]);
 
-    return { scheduledPost: mapScheduledPostWithAssets(result.rows[0], linkedAssetsMap) };
+    return { scheduledPost: mapScheduledPostWithAssets(updatedRow, linkedAssetsMap, metricsMap) };
   }
 
   if (action === "retry") {
@@ -791,40 +1202,33 @@ export async function updateScheduledPost(
       throw new HttpError(409, "scheduled_post_conflict", "Only failed posts can be retried.");
     }
 
-    const result = await queryDb<ScheduledPostRow>(
-      `
-        update scheduled_posts
-        set
-          status = 'scheduled',
-          error_message = null,
-          retry_count = 0,
-          last_attempt_at = null,
-          updated_at = now()
-        where id = $1
-        returning
-          id,
-          business_id,
-          user_id,
-          social_account_id,
-          social_account_identity_id,
-          platform,
-          content_text,
-          asset_group_id,
-          asset_payload,
-          scheduled_at,
-          audience_timezone,
-          status,
-          external_post_id,
-          external_post_url,
-          error_message,
-          retry_count,
-          last_attempt_at,
-          published_at,
-          created_at,
-          updated_at
-      `,
-      [existing.id],
-    );
+    await withDbTransaction(async (client) => {
+      await executeQuery(
+        `
+          update scheduled_posts
+          set
+            status = 'scheduled',
+            error_message = null,
+            retry_count = 0,
+            last_attempt_at = null,
+            updated_at = now()
+          where id = $1::uuid
+        `,
+        [existing.id],
+        client,
+      );
+
+      await updateScheduledPostDispatchState(
+        {
+          scheduledPostId: existing.id,
+          scheduledAt: new Date(existing.scheduled_at),
+          businessId,
+          contentText: existing.content_text,
+          previousDispatchJobId: existing.dispatch_job_id,
+        },
+        client,
+      );
+    });
 
     await recordPublicationEvent(existing.id, "scheduled", {
       action: "retry",
@@ -832,9 +1236,119 @@ export async function updateScheduledPost(
       scheduledAt: new Date(existing.scheduled_at).toISOString(),
       audienceTimezone: existing.audience_timezone,
     });
-    const linkedAssetsMap = await loadLinkedPostAssetsMap(result.rows);
+    const updatedRow = await loadScheduledPostRow(businessId, existing.id);
+    const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);
+    const metricsMap = await loadPostMetricsMap([updatedRow]);
 
-    return { scheduledPost: mapScheduledPostWithAssets(result.rows[0], linkedAssetsMap) };
+    return { scheduledPost: mapScheduledPostWithAssets(updatedRow, linkedAssetsMap, metricsMap) };
+  }
+
+  if (action === "publish_now") {
+    if (!canPublishNowScheduledPost(existing.status)) {
+      throw new HttpError(
+        409,
+        "scheduled_post_conflict",
+        "Only scheduled, paused, or failed posts can be pushed to publish now.",
+      );
+    }
+
+    const immediateDispatchAt = new Date();
+
+    await withDbTransaction(async (client) => {
+      await executeQuery(
+        `
+          update scheduled_posts
+          set
+            scheduled_at = $2::timestamptz,
+            audience_timezone = $3,
+            status = 'scheduled',
+            error_message = null,
+            retry_count = case when $4::boolean then 0 else retry_count end,
+            last_attempt_at = case when $4::boolean then null else last_attempt_at end,
+            updated_at = now()
+          where id = $1::uuid
+        `,
+        [
+          existing.id,
+          immediateDispatchAt.toISOString(),
+          existing.audience_timezone,
+          existing.status === "failed",
+        ],
+        client,
+      );
+
+      await updateScheduledPostDispatchState(
+        {
+          scheduledPostId: existing.id,
+          scheduledAt: immediateDispatchAt,
+          businessId,
+          contentText: existing.content_text,
+          previousDispatchJobId: existing.dispatch_job_id,
+          dispatchMode: "immediate",
+        },
+        client,
+      );
+    });
+
+    await recordPublicationEvent(existing.id, "scheduled", {
+      action: "publish_now",
+      previousStatus: existing.status,
+      scheduledAt: immediateDispatchAt.toISOString(),
+      audienceTimezone: existing.audience_timezone,
+    });
+    await syncLinkedContentAssetStage({
+      businessId,
+      linkedAssetId: existing.asset_group_id,
+      stage: "scheduled",
+    });
+    const updatedRow = await loadScheduledPostRow(businessId, existing.id);
+    const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);
+    const metricsMap = await loadPostMetricsMap([updatedRow]);
+
+    return { scheduledPost: mapScheduledPostWithAssets(updatedRow, linkedAssetsMap, metricsMap) };
+  }
+
+  if (action === "move_to_draft") {
+    if (!canMoveScheduledPostToDraft(existing)) {
+      throw new HttpError(
+        409,
+        "scheduled_post_conflict",
+        "Only scheduled slots with a linked draft can be moved back to the backlog.",
+      );
+    }
+
+    await withDbTransaction(async (client) => {
+      if (existing.dispatch_job_id) {
+        await pauseJob(existing.dispatch_job_id, client);
+      }
+
+      await executeQuery(
+        `
+          update scheduled_posts
+          set
+            status = 'canceled',
+            updated_at = now()
+          where id = $1::uuid
+        `,
+        [existing.id],
+        client,
+      );
+    });
+
+    await recordPublicationEvent(existing.id, "canceled", {
+      action: "move_to_draft",
+      previousStatus: existing.status,
+    });
+    await syncLinkedContentAssetStage({
+      businessId,
+      linkedAssetId: existing.asset_group_id,
+      stage: "draft",
+    });
+    const updatedRow = await loadScheduledPostRow(businessId, existing.id);
+    const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);
+    const metricsMap = await loadPostMetricsMap([updatedRow]);
+
+    return { scheduledPost: mapScheduledPostWithAssets(updatedRow, linkedAssetsMap, metricsMap) };
   }
 
   if (!canRescheduleScheduledPost(existing.status)) {
@@ -853,54 +1367,70 @@ export async function updateScheduledPost(
     normalizeTimezone(input.audienceTimezone) ??
     existing.audience_timezone ??
     (await resolveBusinessTimezone(businessId));
-  const nextScheduledAt = applySchedulingJitter(parseScheduledAt(input.scheduledAt.trim()));
+  const nextScheduledAt = parseScheduledAt(input.scheduledAt.trim());
+  const safetyWarnings = await collectSchedulingSafetyWarnings({
+    businessId,
+    scheduledAt: nextScheduledAt,
+    ignoreScheduledPostId: existing.id,
+  });
 
-  await enforceDailyPostLimit(existing.user_id, nextScheduledAt, existing.id);
-  await enforceMinimumGap(existing.user_id, nextScheduledAt, existing.id);
+  if (safetyWarnings.length > 0 && !input.ignoreSafetyWarnings) {
+    throw new HttpError(
+      409,
+      "scheduling_safety_warning",
+      safetyWarnings[0]?.message ?? "Scheduling needs confirmation.",
+      { warnings: safetyWarnings },
+    );
+  }
 
   const nextStatus: ScheduledPostStatus = existing.status === "paused" ? "paused" : "scheduled";
-  const result = await queryDb<ScheduledPostRow>(
-    `
-      update scheduled_posts
-      set
-        scheduled_at = $2,
-        audience_timezone = $3,
-        status = $4,
-        error_message = null,
-        retry_count = case when $5::boolean then 0 else retry_count end,
-        last_attempt_at = case when $5::boolean then null else last_attempt_at end,
-        updated_at = now()
-      where id = $1
-      returning
-        id,
-        business_id,
-        user_id,
-        social_account_id,
-        social_account_identity_id,
-        platform,
-        content_text,
-        asset_group_id,
-        asset_payload,
-        scheduled_at,
-        audience_timezone,
-        status,
-        external_post_id,
-        external_post_url,
-        error_message,
-        retry_count,
-        last_attempt_at,
-        published_at,
-        created_at,
-        updated_at
-    `,
-    [
-      existing.id,
-      nextScheduledAt.toISOString(),
-      nextAudienceTimezone,
-      nextStatus,
-      existing.status === "failed",
-    ],
-  );
+  await withDbTransaction(async (client) => {
+    if (existing.dispatch_job_id) {
+      await pauseJob(existing.dispatch_job_id, client);
+    }
+
+    const dispatchWindow = buildDispatchWindow(nextScheduledAt);
+
+    await executeQuery(
+      `
+        update scheduled_posts
+        set
+          scheduled_at = $2::timestamptz,
+          earliest_dispatch_at = $3::timestamptz,
+          latest_dispatch_at = $4::timestamptz,
+          audience_timezone = $5,
+          status = $6,
+          error_message = null,
+          retry_count = case when $7::boolean then 0 else retry_count end,
+          last_attempt_at = case when $7::boolean then null else last_attempt_at end,
+          updated_at = now()
+        where id = $1::uuid
+      `,
+      [
+        existing.id,
+        nextScheduledAt.toISOString(),
+        dispatchWindow.earliestDispatchAt.toISOString(),
+        dispatchWindow.latestDispatchAt.toISOString(),
+        nextAudienceTimezone,
+        nextStatus,
+        existing.status === "failed",
+      ],
+      client,
+    );
+
+    if (nextStatus === "scheduled") {
+      await updateScheduledPostDispatchState(
+        {
+          scheduledPostId: existing.id,
+          scheduledAt: nextScheduledAt,
+          businessId,
+          contentText: existing.content_text,
+          previousDispatchJobId: existing.dispatch_job_id,
+        },
+        client,
+      );
+    }
+  });
 
   await recordPublicationEvent(existing.id, nextStatus, {
     action: "reschedule",
@@ -908,9 +1438,14 @@ export async function updateScheduledPost(
     scheduledAt: nextScheduledAt.toISOString(),
     audienceTimezone: nextAudienceTimezone,
   });
-  const linkedAssetsMap = await loadLinkedPostAssetsMap(result.rows);
+  const updatedRow = await loadScheduledPostRow(businessId, existing.id);
+  const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);
+  const metricsMap = await loadPostMetricsMap([updatedRow]);
 
-  return { scheduledPost: mapScheduledPostWithAssets(result.rows[0], linkedAssetsMap) };
+  return {
+    scheduledPost: mapScheduledPostWithAssets(updatedRow, linkedAssetsMap, metricsMap),
+    safetyWarnings,
+  };
 }
 
 export async function createScheduledPost(
@@ -933,7 +1468,7 @@ export async function createScheduledPost(
     throw new HttpError(400, "bad_request", "contentText is required.");
   }
 
-  const scheduledAt = applySchedulingJitter(parseScheduledAt(input.scheduledAt));
+  const scheduledAt = parseScheduledAt(input.scheduledAt);
   const slides = normalizeSlides(input.slides);
   const audienceTimezone =
     normalizeTimezone(input.audienceTimezone) ?? (await resolveBusinessTimezone(businessId));
@@ -944,73 +1479,101 @@ export async function createScheduledPost(
     usageMetric: "posts",
   });
   await requireBusinessMembership(principal, businessId);
-  await enforceDailyPostLimit(principal.userId, scheduledAt);
-  await enforceMinimumGap(principal.userId, scheduledAt);
+  const safetyWarnings = await collectSchedulingSafetyWarnings({
+    businessId,
+    scheduledAt,
+  });
+
+  if (safetyWarnings.length > 0 && !input.ignoreSafetyWarnings) {
+    throw new HttpError(
+      409,
+      "scheduling_safety_warning",
+      safetyWarnings[0]?.message ?? "Scheduling needs confirmation.",
+      { warnings: safetyWarnings },
+    );
+  }
   const publishingTarget = await resolveLinkedInPublishingTarget(businessId);
   const linkedAssetId = input.assetGroupId?.trim() || null;
-  const result = await queryDb<ScheduledPostRow>(
-    `
-      insert into scheduled_posts (
-        business_id,
-        user_id,
-        social_account_id,
-        social_account_identity_id,
-        platform,
-        content_text,
-        asset_group_id,
-        asset_payload,
-        scheduled_at,
-        audience_timezone,
-        status
-      ) values (
-        $1,
-        $2,
-        $3,
-        $4,
-        'linkedin',
-        $5,
-        $6,
-        $7::jsonb,
-        $8,
-        $9,
-        'scheduled'
-      )
-      returning
-        id,
-        business_id,
-        user_id,
-        social_account_id,
-        social_account_identity_id,
-        platform,
-        content_text,
-        asset_group_id,
-        asset_payload,
-        scheduled_at,
-        audience_timezone,
-        status,
-        external_post_id,
-        external_post_url,
-        error_message,
-        retry_count,
-        last_attempt_at,
-        published_at,
-        created_at,
-        updated_at
-    `,
-    [
-      businessId,
-      principal.userId,
-      publishingTarget.socialAccountId,
-      publishingTarget.socialAccountIdentityId,
-      contentText,
-      linkedAssetId,
-      JSON.stringify({ slides }),
-      scheduledAt.toISOString(),
-      audienceTimezone,
-    ],
-  );
+  let createdScheduledPostId = "";
 
-  await recordPublicationEvent(result.rows[0].id, "scheduled", {
+  await withDbTransaction(async (client) => {
+    const dispatchWindow = buildDispatchWindow(scheduledAt);
+    const fingerprint = buildContentFingerprint(contentText);
+    const insertResult = await executeQuery<{ id: string }>(
+      `
+        insert into scheduled_posts (
+          business_id,
+          user_id,
+          social_account_id,
+          social_account_identity_id,
+          platform,
+          content_text,
+          asset_group_id,
+          asset_payload,
+          scheduled_at,
+          earliest_dispatch_at,
+          latest_dispatch_at,
+          audience_timezone,
+          status,
+          dispatch_priority,
+          hook_hash,
+          body_hash,
+          content_fingerprint
+        ) values (
+          $1::uuid,
+          $2::uuid,
+          $3::uuid,
+          $4::uuid,
+          'linkedin',
+          $5,
+          $6,
+          $7::jsonb,
+          $8::timestamptz,
+          $9::timestamptz,
+          $10::timestamptz,
+          $11,
+          'scheduled',
+          $12::int,
+          $13,
+          $14,
+          $15
+        )
+        returning id
+      `,
+      [
+        businessId,
+        principal.userId,
+        publishingTarget.socialAccountId,
+        publishingTarget.socialAccountIdentityId,
+        contentText,
+        linkedAssetId,
+        JSON.stringify({ slides }),
+        scheduledAt.toISOString(),
+        dispatchWindow.earliestDispatchAt.toISOString(),
+        dispatchWindow.latestDispatchAt.toISOString(),
+        audienceTimezone,
+        resolveDispatchPriority(),
+        fingerprint.hookHash,
+        fingerprint.bodyHash,
+        fingerprint.contentFingerprint,
+      ],
+      client,
+    );
+
+    createdScheduledPostId = insertResult.rows[0].id;
+
+    await updateScheduledPostDispatchState(
+      {
+        scheduledPostId: createdScheduledPostId,
+        scheduledAt,
+        businessId,
+        contentText,
+      },
+      client,
+    );
+  });
+
+  await recordPublicationEvent(createdScheduledPostId, "scheduled", {
     scheduledAt: scheduledAt.toISOString(),
     audienceTimezone,
     slideCount: slides.length,
@@ -1021,10 +1584,13 @@ export async function createScheduledPost(
     linkedAssetId,
     stage: "scheduled",
   });
-  const linkedAssetsMap = await loadLinkedPostAssetsMap(result.rows);
+  const createdRow = await loadScheduledPostRow(businessId, createdScheduledPostId);
+  const linkedAssetsMap = await loadLinkedPostAssetsMap([createdRow]);
+  const metricsMap = await loadPostMetricsMap([createdRow]);
 
   return {
-    scheduledPost: mapScheduledPostWithAssets(result.rows[0], linkedAssetsMap),
+    scheduledPost: mapScheduledPostWithAssets(createdRow, linkedAssetsMap, metricsMap),
+    safetyWarnings,
   };
 }
 
@@ -1105,6 +1671,8 @@ export async function publishPostNow(
           asset_group_id,
           asset_payload,
           scheduled_at,
+          earliest_dispatch_at,
+          latest_dispatch_at,
           audience_timezone,
           status,
           external_post_id,
@@ -1121,6 +1689,8 @@ export async function publishPostNow(
           $5,
           $6,
           $7::jsonb,
+          now(),
+          now(),
           now(),
           $8,
           'published',
@@ -1174,37 +1744,119 @@ export async function listScheduledPosts(
   const result = await queryDb<ScheduledPostRow>(
     `
       select
-        id,
-        business_id,
-        user_id,
-        social_account_id,
-        social_account_identity_id,
-        platform,
-        content_text,
-        asset_group_id,
-        asset_payload,
-        scheduled_at,
-        audience_timezone,
-        status,
-        external_post_id,
-        external_post_url,
-        error_message,
-        retry_count,
-        last_attempt_at,
-        published_at,
-        created_at,
-        updated_at
-      from scheduled_posts
-      where business_id = $1
-      order by scheduled_at desc
+        sp.id,
+        sp.business_id,
+        sp.user_id,
+        sp.social_account_id,
+        sp.social_account_identity_id,
+        sai.display_name as social_account_identity_display_name,
+        sai.identity_type as social_account_identity_type,
+        sp.platform,
+        sp.content_text,
+        sp.asset_group_id,
+        sp.asset_payload,
+        sp.scheduled_at,
+        sp.earliest_dispatch_at,
+        sp.latest_dispatch_at,
+        sp.dispatch_job_id,
+        sp.dispatch_priority,
+        sp.hook_hash,
+        sp.body_hash,
+        sp.content_fingerprint,
+        sp.audience_timezone,
+        sp.status,
+        sp.external_post_id,
+        sp.external_post_url,
+        sp.error_message,
+        sp.retry_count,
+        sp.last_attempt_at,
+        sp.published_at,
+        sp.created_at,
+        sp.updated_at
+      from scheduled_posts sp
+      left join social_account_identities sai
+        on sai.id = sp.social_account_identity_id
+      where sp.business_id = $1
+      order by sp.scheduled_at desc
       limit 200
     `,
     [businessId],
   );
   const linkedAssetsMap = await loadLinkedPostAssetsMap(result.rows);
+  const metricsMap = await loadPostMetricsMap(result.rows);
 
   return {
-    scheduledPosts: result.rows.map((row) => mapScheduledPostWithAssets(row, linkedAssetsMap)),
+    scheduledPosts: result.rows.map((row) => mapScheduledPostWithAssets(row, linkedAssetsMap, metricsMap)),
+  };
+}
+
+export async function updateScheduledPostPerformance(
+  principal: AuthenticatedPrincipal,
+  scheduledPostId: string,
+  input: UpdateScheduledPostPerformanceRequest,
+): Promise<UpdateScheduledPostPerformanceResponse> {
+  const businessId = input.businessId.trim();
+  const performanceLabel = normalizePostPerformanceLabel(input.performanceLabel);
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "scheduler",
+    usageMetric: "posts",
+  });
+  await requireBusinessMembership(principal, businessId);
+
+  const existing = await loadScheduledPostRow(businessId, scheduledPostId);
+
+  if (existing.status !== "published") {
+    throw new HttpError(
+      409,
+      "scheduled_post_conflict",
+      "Performance can only be recorded after the post has been published.",
+    );
+  }
+
+  await queryDb(
+    `
+      insert into post_metrics (
+        business_id,
+        scheduled_post_id,
+        source,
+        performance_label,
+        engagement_score
+      ) values (
+        $1::uuid,
+        $2::uuid,
+        'manual',
+        $3,
+        $4
+      )
+      on conflict (scheduled_post_id)
+      do update set
+        source = excluded.source,
+        performance_label = excluded.performance_label,
+        engagement_score = excluded.engagement_score,
+        updated_at = now()
+    `,
+    [
+      businessId,
+      scheduledPostId,
+      performanceLabel,
+      engagementScoreFromPerformanceLabel(performanceLabel),
+    ],
+  );
+
+  await recordPublicationEvent(existing.id, "published", {
+    action: "performance_feedback",
+    performanceLabel,
+  });
+
+  const updatedRow = await loadScheduledPostRow(businessId, existing.id);
+  const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);
+  const metricsMap = await loadPostMetricsMap([updatedRow]);
+
+  return {
+    scheduledPost: mapScheduledPostWithAssets(updatedRow, linkedAssetsMap, metricsMap),
   };
 }
 
@@ -1213,12 +1865,56 @@ export async function processDueScheduledPosts(limit: number): Promise<{
   published: number;
   failed: number;
 }> {
-  const duePosts = await claimDueScheduledPosts(limit);
+  await backfillScheduledPostDispatchJobs(Math.max(limit * 2, 10));
+  const queuedJobs = await claimQueuedJobs<ScheduledPostPublishJobPayload>({
+    types: ["post_publish"],
+    batchSize: limit,
+    lockedBy: process.env.RENDER_SERVICE_NAME?.trim() || `app-worker:${process.pid}`,
+    staleAfterMinutes: 20,
+  });
   let published = 0;
   let failed = 0;
 
-  for (const duePost of duePosts) {
+  for (const job of queuedJobs) {
+    if (!job.businessId || !job.payload.scheduledPostId) {
+      await markJobTerminalFailed(job.id, "Scheduled publish job is missing required context.");
+      failed += 1;
+      continue;
+    }
+
+    let duePost: ScheduledPostRow;
+
     try {
+      duePost = await loadScheduledPostRow(job.businessId, job.payload.scheduledPostId);
+    } catch {
+      await markJobTerminalFailed(job.id, "Scheduled post no longer exists.");
+      failed += 1;
+      continue;
+    }
+
+    if (duePost.status !== "scheduled") {
+      await markJobCompleted(job.id);
+      continue;
+    }
+
+    if (duePost.dispatch_job_id && duePost.dispatch_job_id !== job.id) {
+      await markJobCompleted(job.id);
+      continue;
+    }
+
+    if (await hasActivePublishingConflict(duePost)) {
+      await releaseJob(
+        job.id,
+        {
+          runAfter: new Date(Date.now() + 60 * 1000).toISOString(),
+          errorMessage: "Delayed briefly to keep LinkedIn publishing safely serialized for this workspace.",
+        },
+      );
+      continue;
+    }
+
+    try {
+      await markScheduledPostProcessing(duePost.id, job.attempts);
       const readyAssets =
         duePost.asset_group_id && isUuidLike(duePost.asset_group_id)
           ? await loadReadyPostImageAssets(duePost.business_id, duePost.asset_group_id)
@@ -1254,6 +1950,7 @@ export async function processDueScheduledPosts(limit: number): Promise<{
         duePost.asset_group_id,
         duePost.business_id,
       );
+      await markJobCompleted(job.id);
       try {
         await sendScheduledPostPublishedNotification(duePost.id);
       } catch (error) {
@@ -1268,17 +1965,28 @@ export async function processDueScheduledPosts(limit: number): Promise<{
         externalPostId: publishResult.externalPostId,
       });
     } catch (error) {
-      await markScheduledPostFailed(duePost.id, error);
-      failed += 1;
+      const failureMessage = summarizePublishFailure(error);
+      const shouldRetry = isRetryablePublishError(error) && job.attempts < job.maxAttempts;
+
+      if (shouldRetry) {
+        await markScheduledPostQueuedForRetry(duePost.id, failureMessage, job.attempts);
+        await markJobFailed(job.id, failureMessage);
+      } else {
+        await markScheduledPostFailed(duePost.id, new Error(failureMessage));
+        await markJobTerminalFailed(job.id, failureMessage);
+        failed += 1;
+      }
+
       logError("Failed to publish scheduled LinkedIn post.", {
         scheduledPostId: duePost.id,
-        message: error instanceof Error ? error.message : "Unknown error",
+        message: failureMessage,
+        retryQueued: shouldRetry,
       });
     }
   }
 
   return {
-    claimed: duePosts.length,
+    claimed: queuedJobs.length,
     published,
     failed,
   };

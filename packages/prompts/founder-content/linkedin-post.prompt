@@ -8,6 +8,7 @@ INPUT VARIABLES
 - selected_hook (optional)
 - brand_context (optional)
 - platform_context (optional)
+- pov_context (optional)
 
 OUTPUT FORMAT
 Return JSON with this shape:
@@ -36,6 +37,7 @@ CONSTRAINTS
 - If a selected hook is provided, use it naturally without making the post feel forced.
 - If brand_context is provided, align wording, topics, and structural patterns to it.
 - If platform_context is provided, treat it as live publishing guidance for this workspace and optimize formatting, whitespace, and CTA discipline accordingly.
+- If pov_context is provided, use it to sharpen the stance, business relevance, and founder-level specificity without sounding preachy or synthetic.
 - Default to a conversational founder voice, not a generic playbook or consultant framework voice.
 - Avoid emoji bullets, numbered lists, and "here are 3 lessons/frameworks" structure unless the input clearly asks for a list or the requested tone is explicitly structured.
 - For storytelling and direct tones, favor short paragraphs, lived experience, tension, and plainspoken language over formal marketing phrasing.

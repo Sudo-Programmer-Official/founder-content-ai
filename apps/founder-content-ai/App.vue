@@ -104,11 +104,11 @@ async function handleLogout(): Promise<void> {
     <template v-if="!usesWorkspaceShell">
       <header class="site-header" :class="{ 'public-shell': isPublicShell }">
         <router-link class="brand" to="/">
-          <span class="brand-mark">FC</span>
-          <span class="brand-copy">
-            <strong>FounderContent AI</strong>
-            <small>Content from anything.</small>
-          </span>
+          <img
+            class="brand-logo"
+            src="/foundercontent-wordmark.svg"
+            alt="FounderContent"
+          />
         </router-link>
 
         <nav class="site-nav" :class="{ 'public-nav': isPublicShell }">
@@ -156,14 +156,12 @@ async function handleLogout(): Promise<void> {
     <template v-else>
       <aside class="workspace-sidebar">
         <router-link class="sidebar-brand" to="/">
-          <span class="brand-mark">FC</span>
-          <span class="brand-copy">
-            <strong>FounderContent AI</strong>
-            <small>Workspace OS</small>
-          </span>
+          <img
+            class="brand-logo"
+            src="/foundercontent-wordmark.svg"
+            alt="FounderContent"
+          />
         </router-link>
-
-        <router-link class="sidebar-cta" :to="appRoutes.appGenerate">New Post</router-link>
 
         <nav class="sidebar-nav" aria-label="Workspace navigation">
           <router-link
@@ -203,11 +201,11 @@ async function handleLogout(): Promise<void> {
           <aside class="mobile-sidebar">
             <div class="mobile-sidebar-header">
               <router-link class="sidebar-brand" to="/">
-                <span class="brand-mark">FC</span>
-                <span class="brand-copy">
-                  <strong>FounderContent AI</strong>
-                  <small>Workspace OS</small>
-                </span>
+                <img
+                  class="brand-logo"
+                  src="/foundercontent-wordmark.svg"
+                  alt="FounderContent"
+                />
               </router-link>
 
               <button
@@ -220,8 +218,6 @@ async function handleLogout(): Promise<void> {
                 <span></span>
               </button>
             </div>
-
-            <router-link class="sidebar-cta" :to="appRoutes.appGenerate">New Post</router-link>
 
             <nav class="sidebar-nav" aria-label="Mobile workspace navigation">
               <router-link
@@ -284,10 +280,12 @@ async function handleLogout(): Promise<void> {
 
           <div class="workspace-header-actions">
             <WorkspaceSwitcher class="workspace-header-switcher" />
-            <span v-if="userLabel" class="header-user-pill desktop-only">{{ userLabel }}</span>
-            <button class="header-secondary-button desktop-only" type="button" @click="handleLogout">
-              Logout
-            </button>
+            <div class="workspace-header-session desktop-only">
+              <span v-if="userLabel" class="header-user-pill">{{ userLabel }}</span>
+              <button class="header-secondary-button" type="button" @click="handleLogout">
+                Logout
+              </button>
+            </div>
             <router-link class="header-cta" :to="appRoutes.appGenerate">New Post</router-link>
           </div>
         </header>
@@ -337,35 +335,18 @@ async function handleLogout(): Promise<void> {
 .sidebar-brand {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
   color: var(--fc-text);
   text-decoration: none;
 }
 
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-emerald) 100%);
-  color: var(--fc-accent-contrast);
-  font-weight: 800;
-  letter-spacing: 0.04em;
+.brand-logo {
+  display: block;
+  width: clamp(172px, 18vw, 214px);
+  height: auto;
 }
 
-.brand-copy {
-  display: grid;
-}
-
-.brand-copy strong {
-  font-size: 1rem;
-}
-
-.brand-copy small {
-  color: var(--fc-text-muted);
-  font-size: 0.78rem;
+.sidebar-brand .brand-logo {
+  width: min(100%, 182px);
 }
 
 .site-nav {
@@ -391,7 +372,8 @@ async function handleLogout(): Promise<void> {
 }
 
 .header-controls,
-.workspace-header-actions {
+.workspace-header-actions,
+.workspace-header-session {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -406,6 +388,7 @@ async function handleLogout(): Promise<void> {
 .workspace-header-switcher {
   flex: 1 1 320px;
   max-width: 380px;
+  min-width: 220px;
 }
 
 .header-controls.public-controls {
@@ -444,10 +427,13 @@ async function handleLogout(): Promise<void> {
   color: var(--fc-text-muted);
   font-size: 0.84rem;
   font-weight: 700;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.header-cta,
-.sidebar-cta {
+.header-cta {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -467,17 +453,13 @@ async function handleLogout(): Promise<void> {
   z-index: 25;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 18px;
   width: 288px;
   padding: 22px 18px;
   border-right: 1px solid var(--fc-border);
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--fc-surface) 90%, white 10%) 0%, color-mix(in srgb, var(--fc-surface-subtle) 94%, white 6%) 100%);
   box-shadow: 24px 0 48px rgba(64, 44, 28, 0.06);
-}
-
-.sidebar-cta {
-  width: 100%;
 }
 
 .sidebar-nav {
@@ -584,8 +566,8 @@ async function handleLogout(): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 18px 24px;
+  gap: 20px;
+  padding: 18px clamp(18px, 2.8vw, 28px);
   border-bottom: 1px solid var(--fc-border);
   background: color-mix(in srgb, var(--fc-header-bg) 88%, white 12%);
 }
@@ -594,15 +576,18 @@ async function handleLogout(): Promise<void> {
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
 .workspace-header-copy > div {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .workspace-header-copy strong {
   font-size: 0.98rem;
+  line-height: 1.35;
 }
 
 .workspace-header-kicker {
@@ -612,6 +597,22 @@ async function handleLogout(): Promise<void> {
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+.workspace-header-session {
+  padding: 4px;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-surface) 88%, white 12%);
+}
+
+.workspace-header-session .header-user-pill {
+  background: transparent;
+}
+
+.workspace-header-session .header-secondary-button {
+  min-height: 36px;
+  padding: 0 14px;
 }
 
 .app-content {
@@ -707,6 +708,10 @@ async function handleLogout(): Promise<void> {
     flex-wrap: wrap;
   }
 
+  .brand-logo {
+    width: clamp(160px, 24vw, 188px);
+  }
+
   .header-controls {
     width: 100%;
     justify-content: space-between;
@@ -741,6 +746,15 @@ async function handleLogout(): Promise<void> {
     max-width: 42ch;
   }
 
+  .workspace-header-actions {
+    gap: 10px;
+  }
+
+  .workspace-header-switcher {
+    flex: 1 1 260px;
+    max-width: none;
+  }
+
   .mobile-menu-button {
     display: inline-flex;
   }
@@ -755,6 +769,10 @@ async function handleLogout(): Promise<void> {
 }
 
 @media (max-width: 560px) {
+  .brand-logo {
+    width: 158px;
+  }
+
   .site-nav {
     gap: 12px;
     justify-content: flex-start;
@@ -763,19 +781,23 @@ async function handleLogout(): Promise<void> {
   .workspace-header {
     align-items: start;
     flex-direction: column;
+    gap: 14px;
   }
 
   .workspace-header-actions {
     width: 100%;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
   }
 
   .workspace-header-switcher {
     max-width: none;
+    min-width: 0;
   }
 
   .header-cta {
-    flex: 1 1 auto;
+    width: 100%;
   }
 
   .header-secondary-button,

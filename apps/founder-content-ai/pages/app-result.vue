@@ -7,16 +7,19 @@ import type {
   PostAsset,
   RecommendedPostTimeSlot,
   RepurposeContentResponse,
+  SchedulingSafetyWarning,
   SocialAccount,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import { calculateContentScore } from "../composables/useContentScore";
+import { ApiRequestError } from "../services/api-client";
 import {
   getActivationDraft,
   replaceActivationDraft,
   type ActivationDraftRecord,
 } from "../services/activation-flow-service";
 import {
+  requestCreatePipelineItem,
   requestContentAiEditPreview,
   requestPipelineItem,
   requestUpdatePipelineItem,
@@ -43,6 +46,7 @@ import {
   toDateKeyInTimezone,
   toTimeValueInTimezone,
 } from "../utils/timezone";
+import { saveRepurposeSeed } from "../utils/repurpose-loop";
 
 const route = useRoute();
 const router = useRouter();
@@ -96,6 +100,56 @@ const AI_QUICK_COMMANDS = [
   { label: "Founder voice", value: "Make this sound like a founder talking to another founder, not a consultant or AI assistant." },
   { label: "Punchier close", value: "Tighten the ending and land on a stronger punchline." },
 ] as const;
+
+function extractSchedulingWarnings(error: unknown): SchedulingSafetyWarning[] {
+  if (!(error instanceof ApiRequestError) || error.code !== "scheduling_safety_warning") {
+    return [];
+  }
+
+  const warnings = error.details?.warnings;
+
+  if (!Array.isArray(warnings)) {
+    return [];
+  }
+
+  return warnings.flatMap((warning) => {
+    if (!warning || typeof warning !== "object") {
+      return [];
+    }
+
+    const candidate = warning as Record<string, unknown>;
+
+    if (
+      typeof candidate.code !== "string" ||
+      typeof candidate.title !== "string" ||
+      typeof candidate.message !== "string"
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        code: candidate.code as SchedulingSafetyWarning["code"],
+        title: candidate.title,
+        message: candidate.message,
+      },
+    ];
+  });
+}
+
+function buildSchedulingWarningMessage(warnings: SchedulingSafetyWarning[]): string {
+  return warnings.map((warning) => `${warning.title}\n${warning.message}`).join("\n\n");
+}
+
+function confirmSchedulingWarnings(warnings: SchedulingSafetyWarning[]): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.confirm(
+    `${buildSchedulingWarningMessage(warnings)}\n\nChoose OK to schedule anyway, or Cancel to keep the safer spacing.`,
+  );
+}
 
 function splitPostParagraphs(value: string): string[] {
   return value
@@ -189,16 +243,19 @@ const previewBodyParagraphs = computed(() =>
   extractPreviewBody(postParagraphs.value, previewLeadLines.value),
 );
 const hooks = computed(() => draft.value?.result.hooks ?? []);
+const povSummary = computed(() => draft.value?.result.pov?.summary ?? "");
+const qualitySummary = computed(() => draft.value?.result.quality);
 const hasPersistedAsset = computed(() => Boolean(draft.value?.result.asset?.id));
 const persistedPostId = computed(() => draft.value?.result.asset?.id ?? "");
 const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? "");
+const canPersistDraft = computed(() => Boolean(activeBusinessId.value && draft.value));
 const schedulerEnabled = computed(
   () =>
     Boolean(activeBusinessId.value) &&
     (!bootstrap.value?.activeBusinessId || isFeatureEnabled("scheduler")),
 );
 const canScheduleDraft = computed(
-  () => schedulerEnabled.value && hasPersistedAsset.value,
+  () => schedulerEnabled.value && canPersistDraft.value,
 );
 const audienceTimezoneOptions = computed(() => {
   const unique = new Set<string>([
@@ -476,6 +533,76 @@ function clearAiEditPreview(): void {
   aiEditFeedback.value = "";
 }
 
+function buildDraftContentBody(): Record<string, unknown> {
+  if (!draft.value) {
+    return { content: postContent.value };
+  }
+
+  const { asset: _ignoredAsset, ...resultWithoutAsset } = draft.value.result;
+
+  return {
+    ...resultWithoutAsset,
+    post: postContent.value,
+  };
+}
+
+function buildPersistedDraftRecord(nextAsset: ContentAsset): ActivationDraftRecord | null {
+  if (!draft.value) {
+    return null;
+  }
+
+  return {
+    ...draft.value,
+    id: nextAsset.id,
+    result: {
+      ...draft.value.result,
+      post: postContent.value,
+      asset: nextAsset,
+    },
+  };
+}
+
+async function ensurePersistedDraft(): Promise<string | null> {
+  if (!draft.value) {
+    feedbackMessage.value = "Generate a post first.";
+    return null;
+  }
+
+  if (!activeBusinessId.value) {
+    feedbackMessage.value = "Select a workspace before saving this draft.";
+    return null;
+  }
+
+  if (persistedPostId.value) {
+    return persistedPostId.value;
+  }
+
+  const response = await requestCreatePipelineItem({
+    businessId: activeBusinessId.value,
+    title: draft.value.result.idea.title,
+    textContent: postContent.value,
+    contentBody: buildDraftContentBody(),
+    sourceKind: draft.value.mode === "improve" ? "remix" : "capture",
+  });
+
+  const nextDraft = buildPersistedDraftRecord(response.asset);
+
+  if (!nextDraft) {
+    return response.asset.id;
+  }
+
+  draft.value = replaceActivationDraft(nextDraft);
+  await router.replace({
+    path: route.path,
+    query: {
+      ...route.query,
+      id: response.asset.id,
+    },
+  });
+
+  return response.asset.id;
+}
+
 async function previewAiEdit(commandOverride?: string): Promise<void> {
   if (!draft.value) {
     return;
@@ -733,8 +860,20 @@ async function loadRecommendedScheduleSlots(preferredTimezone?: string): Promise
 }
 
 async function openSchedulePanel(): Promise<void> {
-  if (!canScheduleDraft.value) {
-    feedbackMessage.value = "Save this draft in the workspace before scheduling it.";
+  if (!schedulerEnabled.value) {
+    feedbackMessage.value = "Scheduling is not enabled for this workspace.";
+    return;
+  }
+
+  try {
+    const persistedId = await ensurePersistedDraft();
+
+    if (!persistedId) {
+      return;
+    }
+  } catch (error) {
+    feedbackMessage.value =
+      error instanceof Error ? error.message : "Unable to save this draft right now.";
     return;
   }
 
@@ -764,8 +903,8 @@ function applyRecommendedSchedule(): void {
 }
 
 async function scheduleDraft(): Promise<void> {
-  if (!draft.value || !persistedPostId.value) {
-    scheduleFeedback.value = "Save this draft first, then schedule it.";
+  if (!draft.value) {
+    scheduleFeedback.value = "Generate a post first.";
     return;
   }
 
@@ -783,23 +922,54 @@ async function scheduleDraft(): Promise<void> {
   scheduleFeedback.value = "";
   feedbackMessage.value = "";
 
+  const scheduleRequest = {
+    businessId: activeBusinessId.value,
+    platform: "linkedin" as const,
+    contentText: postContent.value,
+    assetGroupId: draft.value.id,
+    slides: [],
+    scheduledAt: convertZonedDateTimeToUtcIso(
+      scheduleDateKey.value,
+      scheduleTime.value,
+      audienceTimezone.value,
+    ),
+    audienceTimezone: audienceTimezone.value,
+  };
+
   try {
-    await requestSchedulePost({
-      businessId: activeBusinessId.value,
-      platform: "linkedin",
-      contentText: postContent.value,
-      assetGroupId: persistedPostId.value,
-      slides: [],
-      scheduledAt: convertZonedDateTimeToUtcIso(
-        scheduleDateKey.value,
-        scheduleTime.value,
-        audienceTimezone.value,
-      ),
-      audienceTimezone: audienceTimezone.value,
-    });
+    const ensuredPostId = await ensurePersistedDraft();
+
+    if (!ensuredPostId) {
+      scheduleFeedback.value = "Unable to save this draft before scheduling it.";
+      return;
+    }
+
+    let response;
+
+    try {
+      response = await requestSchedulePost({
+        ...scheduleRequest,
+        assetGroupId: ensuredPostId,
+      });
+    } catch (error) {
+      const warnings = extractSchedulingWarnings(error);
+
+      if (warnings.length === 0 || !confirmSchedulingWarnings(warnings)) {
+        throw error;
+      }
+
+      response = await requestSchedulePost({
+        ...scheduleRequest,
+        assetGroupId: ensuredPostId,
+        ignoreSafetyWarnings: true,
+      });
+      feedbackMessage.value = "Scheduled with a manual safety override.";
+    }
 
     isSchedulePanelOpen.value = false;
-    feedbackMessage.value = `Scheduled for ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
+    if (!feedbackMessage.value) {
+      feedbackMessage.value = `Scheduled for ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
+    }
   } catch (error) {
     scheduleFeedback.value =
       error instanceof Error ? error.message : "Unable to schedule this draft right now.";
@@ -836,17 +1006,24 @@ async function goToOutreach(): Promise<void> {
 }
 
 async function goToPlanner(): Promise<void> {
-  if (!persistedPostId.value) {
-    feedbackMessage.value = "Save this draft in the workspace before scheduling it.";
+  try {
+    const ensuredPostId = await ensurePersistedDraft();
+
+    if (!ensuredPostId) {
+      return;
+    }
+
+    await router.push({
+      path: appRoutes.appPlanner,
+      query: {
+        draftId: ensuredPostId,
+      },
+    });
+  } catch (error) {
+    feedbackMessage.value =
+      error instanceof Error ? error.message : "Unable to save this draft right now.";
     return;
   }
-
-  await router.push({
-    path: appRoutes.appPlanner,
-    query: {
-      draftId: persistedPostId.value,
-    },
-  });
 }
 
 async function goToEmail(): Promise<void> {
@@ -860,6 +1037,26 @@ async function goToEmail(): Promise<void> {
       draftId: draft.value.id,
       prefill: postContent.value,
     },
+  });
+}
+
+async function goToRepurpose(): Promise<void> {
+  if (!draft.value) {
+    return;
+  }
+
+  saveRepurposeSeed({
+    text: postContent.value,
+    title: draft.value.result.idea.title,
+    source: "result",
+  });
+
+  await router.push({
+    path: appRoutes.appCreate,
+    query: {
+      mode: "repurpose",
+    },
+    hash: "#repurpose-panel",
   });
 }
 
@@ -1046,6 +1243,10 @@ onBeforeUnmount(() => {
             <span>{{ quickSignals.readyLabel }}</span>
             <span>{{ quickSignals.formatLabel }}</span>
           </p>
+          <p v-if="povSummary" class="signal-line">
+            <span>{{ povSummary }}</span>
+            <span v-if="qualitySummary">POV quality {{ qualitySummary.overall }}/100</span>
+          </p>
 
           <section class="result-signal-grid">
             <article class="result-signal-card" :data-tone="attentionSignal.tone">
@@ -1057,6 +1258,13 @@ onBeforeUnmount(() => {
               <p class="panel-meta">Structure</p>
               <strong>{{ structureSignal }}</strong>
               <span>{{ postParagraphs.length }} paragraph{{ postParagraphs.length === 1 ? "" : "s" }} ready for feed reading.</span>
+            </article>
+            <article v-if="qualitySummary" class="result-signal-card">
+              <p class="panel-meta">POV profile</p>
+              <strong>{{ draft.result.pov?.boldness || "balanced" }}</strong>
+              <span>
+                Hook {{ qualitySummary.hookStrength }}/100 · Clarity {{ qualitySummary.clarity }}/100 · Alignment {{ qualitySummary.businessAlignment }}/100
+              </span>
             </article>
             <article class="result-signal-card">
               <p class="panel-meta">Best next move</p>
@@ -1162,6 +1370,9 @@ onBeforeUnmount(() => {
 
             <button type="button" class="secondary-action" @click="goToImprove">
               Improve
+            </button>
+            <button type="button" class="secondary-action" @click="goToRepurpose">
+              Repurpose
             </button>
 
             <button

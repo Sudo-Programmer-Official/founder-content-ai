@@ -10,6 +10,8 @@ import type {
   SchedulePostRequest,
   SchedulePostResponse,
   UpdateScheduledPostRequest,
+  UpdateScheduledPostPerformanceRequest,
+  UpdateScheduledPostPerformanceResponse,
   UpdateScheduledPostResponse,
   ScheduledPostsResponse,
   SelectSocialAccountIdentityRequest,
@@ -93,6 +95,16 @@ export async function requestUpdateScheduledPost(
 ): Promise<UpdateScheduledPostResponse> {
   return apiPatch<UpdateScheduledPostRequest, UpdateScheduledPostResponse>(
     `/scheduled-posts/${encodeURIComponent(scheduledPostId)}`,
+    input,
+  );
+}
+
+export async function requestUpdateScheduledPostPerformance(
+  scheduledPostId: string,
+  input: UpdateScheduledPostPerformanceRequest,
+): Promise<UpdateScheduledPostPerformanceResponse> {
+  return apiPatch<UpdateScheduledPostPerformanceRequest, UpdateScheduledPostPerformanceResponse>(
+    `/scheduled-posts/${encodeURIComponent(scheduledPostId)}/performance`,
     input,
   );
 }

@@ -7,6 +7,7 @@ INPUT VARIABLES
 - intent
 - brand_context (optional)
 - platform_context (optional)
+- pov_context (optional)
 
 OUTPUT FORMAT
 Return JSON with this shape:
@@ -33,6 +34,7 @@ CONSTRAINTS
 - If the input is incomplete, make reasonable framing assumptions without inventing precise facts.
 - If brand_context is provided, align the output to that brand tone, topic focus, and recurring patterns.
 - If platform_context is provided, optimize the final post for direct LinkedIn publishing with strong first-line readability, short paragraphs, and clean founder-style structure.
+- If pov_context is provided, use it to sharpen the post into a clearer founder opinion that still feels natural to the raw input.
 - Prefer conversational founder language over numbered frameworks, playbooks, or generic "step 1 / step 2" structure.
 - Avoid emojis, overused listicle intros, and "let me break this down" phrasing unless the source clearly demands it.
 - If tone is storytelling or direct, write like a founder sharing a learned lesson in public, with natural paragraph breaks and no synthetic-feeling summary voice.

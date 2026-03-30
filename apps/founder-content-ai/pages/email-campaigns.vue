@@ -37,6 +37,7 @@ const errorMessage = ref("");
 const feedbackMessage = ref("");
 const lastDomainId = ref("");
 let domainVerificationPollHandle: number | null = null;
+let campaignProgressPollHandle: number | null = null;
 
 const contactImport = ref<ImportEmailContactsRequest>({
   listName: "Launch List",
@@ -240,6 +241,9 @@ const shouldPollDomainVerification = computed(() => {
       !brandedSendingReady.value,
   );
 });
+const hasProcessingCampaigns = computed(() =>
+  campaigns.value.some((campaign) => campaign.status === "queued" || campaign.status === "sending"),
+);
 
 function formatStatus(value?: string): string {
   return (value ?? "pending")
@@ -287,6 +291,15 @@ function stopDomainVerificationPolling(): void {
   domainVerificationPollHandle = null;
 }
 
+function stopCampaignProgressPolling(): void {
+  if (campaignProgressPollHandle === null || typeof window === "undefined") {
+    return;
+  }
+
+  window.clearInterval(campaignProgressPollHandle);
+  campaignProgressPollHandle = null;
+}
+
 function startDomainVerificationPolling(): void {
   stopDomainVerificationPolling();
 
@@ -301,6 +314,22 @@ function startDomainVerificationPolling(): void {
 
     void loadDomainSettings({ silent: true });
   }, 10000);
+}
+
+function startCampaignProgressPolling(): void {
+  stopCampaignProgressPolling();
+
+  if (!hasProcessingCampaigns.value || typeof window === "undefined") {
+    return;
+  }
+
+  campaignProgressPollHandle = window.setInterval(() => {
+    if (!selectedBusinessId.value || isSending.value) {
+      return;
+    }
+
+    void loadEmailState();
+  }, 5000);
 }
 
 async function loadBusinesses(): Promise<void> {
@@ -334,6 +363,7 @@ async function loadDomainSettings(options: { syncForm?: boolean; silent?: boolea
 
 async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promise<void> {
   if (!selectedBusinessId.value || !emailFeatureEnabled.value) {
+    stopCampaignProgressPolling();
     emailLists.value = [];
     campaigns.value = [];
     applyDomainSettings(null, { syncForm: options.syncDomainForm });
@@ -348,6 +378,7 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
   emailLists.value = listsResponse.lists;
   campaigns.value = campaignsResponse.campaigns;
   applyDomainSettings(domainResponse.settings, { syncForm: options.syncDomainForm });
+  startCampaignProgressPolling();
 
   if (!campaignForm.value.listId && emailLists.value[0]) {
     campaignForm.value.listId = emailLists.value[0].id;
@@ -425,7 +456,7 @@ async function sendCampaign(campaignId: string): Promise<void> {
 
   try {
     const response = await requestEmailCampaignSend(selectedBusinessId.value, campaignId);
-    feedbackMessage.value = `Sent ${response.stats.sentCount} emails from ${response.campaign.name}. ${response.stats.unsubscribedCount} contacts are suppressed.`;
+    feedbackMessage.value = `Campaign queued. Processing ${response.stats.recipientCount} recipients in the background.`;
     await Promise.all([loadEmailState(), refreshProductAccess(selectedBusinessId.value)]);
   } catch (error) {
     errorMessage.value =
@@ -475,6 +506,26 @@ async function verifyDomain(): Promise<void> {
   }
 }
 
+function getCampaignActionLabel(campaign: EmailCampaign): string {
+  if (campaign.status === "queued") {
+    return "Queued";
+  }
+
+  if (campaign.status === "sending") {
+    return "Sending...";
+  }
+
+  if (campaign.status === "sent") {
+    return "Sent";
+  }
+
+  if (campaign.status === "failed") {
+    return "Retry";
+  }
+
+  return isSending.value ? "Starting..." : "Send";
+}
+
 watch(selectedBusinessId, (nextBusinessId) => {
   stopDomainVerificationPolling();
   feedbackMessage.value = "";
@@ -508,6 +559,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopDomainVerificationPolling();
+  stopCampaignProgressPolling();
 });
 </script>
 
@@ -661,10 +713,10 @@ onBeforeUnmount(() => {
                 <td>
                   <button
                     class="dashboard-button secondary"
-                    :disabled="isSending || campaign.status === 'sent'"
+                    :disabled="isSending || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
                     @click="sendCampaign(campaign.id)"
                   >
-                    {{ campaign.status === "sent" ? "Sent" : isSending ? "Sending..." : "Send" }}
+                    {{ getCampaignActionLabel(campaign) }}
                   </button>
                 </td>
               </tr>

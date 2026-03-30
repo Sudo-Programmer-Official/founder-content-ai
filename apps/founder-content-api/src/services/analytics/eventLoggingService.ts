@@ -10,6 +10,10 @@ import type {
 import { isDatabaseConfigured, queryDb } from "../db/client.ts";
 import { logError } from "../../utils/logger.ts";
 import { toErrorContext } from "../../utils/http.ts";
+import {
+  buildContentAssetIntelligenceFromText,
+  resolveStoredContentAssetIntelligence,
+} from "../contentIntelligenceService.ts";
 
 interface UsageEventRow {
   id: string;
@@ -44,6 +48,7 @@ interface ContentAssetOptions {
   pipelineStage?: Exclude<ContentAssetStatus, "published">;
   sourceKind?: ContentAssetSourceKind;
   sourceIdeaId?: string;
+  intelligence?: ContentAsset["intelligence"];
 }
 
 interface ContentAssetRow {
@@ -57,6 +62,7 @@ interface ContentAssetRow {
   pipeline_stage: Exclude<ContentAssetStatus, "published"> | null;
   source_kind: ContentAssetSourceKind | null;
   source_idea_id: string | null;
+  content_metadata: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -193,6 +199,9 @@ export async function safeLogContentGeneration(options: GenerationLogOptions): P
 }
 
 export async function createContentAsset(options: ContentAssetOptions): Promise<void> {
+  const textContent = extractTextContent(options.contentBody) ?? options.title ?? "";
+  const intelligence = options.intelligence ?? buildContentAssetIntelligenceFromText(textContent);
+
   await queryDb(
     `
       insert into content_assets (
@@ -204,7 +213,8 @@ export async function createContentAsset(options: ContentAssetOptions): Promise<
         status,
         pipeline_stage,
         source_kind,
-        source_idea_id
+        source_idea_id,
+        content_metadata
       ) values (
         $1,
         $2,
@@ -214,7 +224,8 @@ export async function createContentAsset(options: ContentAssetOptions): Promise<
         $6,
         $7,
         $8,
-        $9
+        $9,
+        $10::jsonb
       )
     `,
     [
@@ -227,6 +238,7 @@ export async function createContentAsset(options: ContentAssetOptions): Promise<
       options.pipelineStage ?? "draft",
       options.sourceKind ?? "generated",
       options.sourceIdeaId ?? null,
+      JSON.stringify(intelligence ?? {}),
     ],
   );
 }
@@ -267,6 +279,8 @@ function extractTextContent(value: unknown): string | undefined {
 }
 
 function mapContentAsset(row: ContentAssetRow): ContentAsset {
+  const textContent = extractTextContent(row.content_body);
+
   return {
     id: row.id,
     businessId: row.business_id ?? undefined,
@@ -278,7 +292,8 @@ function mapContentAsset(row: ContentAssetRow): ContentAsset {
     pipelineStage: row.pipeline_stage ?? undefined,
     sourceKind: row.source_kind ?? undefined,
     sourceIdeaId: row.source_idea_id ?? undefined,
-    textContent: extractTextContent(row.content_body),
+    textContent,
+    intelligence: resolveStoredContentAssetIntelligence(row.content_metadata, textContent ?? ""),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -287,6 +302,9 @@ function mapContentAsset(row: ContentAssetRow): ContentAsset {
 export async function createContentAssetRecord(
   options: ContentAssetOptions,
 ): Promise<ContentAsset> {
+  const textContent = extractTextContent(options.contentBody) ?? options.title ?? "";
+  const intelligence = options.intelligence ?? buildContentAssetIntelligenceFromText(textContent);
+
   const result = await queryDb<ContentAssetRow>(
     `
       insert into content_assets (
@@ -298,7 +316,8 @@ export async function createContentAssetRecord(
         status,
         pipeline_stage,
         source_kind,
-        source_idea_id
+        source_idea_id,
+        content_metadata
       ) values (
         $1,
         $2,
@@ -308,7 +327,8 @@ export async function createContentAssetRecord(
         $6,
         $7,
         $8,
-        $9
+        $9,
+        $10::jsonb
       )
       returning
         id,
@@ -321,6 +341,7 @@ export async function createContentAssetRecord(
         pipeline_stage,
         source_kind,
         source_idea_id,
+        content_metadata,
         created_at,
         updated_at
     `,
@@ -334,6 +355,7 @@ export async function createContentAssetRecord(
       options.pipelineStage ?? "draft",
       options.sourceKind ?? "generated",
       options.sourceIdeaId ?? null,
+      JSON.stringify(intelligence ?? {}),
     ],
   );
 

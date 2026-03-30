@@ -1,10 +1,24 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
-import type { BusinessMembership, ScheduledPost, ScheduledPostStatus } from "../../../packages/shared-types";
+import { useRoute, useRouter } from "vue-router";
+import type {
+  BusinessMembership,
+  PostPerformanceLabel,
+  ScheduledPost,
+  SchedulingSafetyWarning,
+  ScheduledPostStatus,
+} from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
+import HistorySkeleton from "../components/skeletons/HistorySkeleton.vue";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
-import { requestScheduledPosts, requestUpdateScheduledPost } from "../services/publishing-service";
+import { ApiRequestError } from "../services/api-client";
+import {
+  requestLinkedInSocialAuthStart,
+  requestScheduledPosts,
+  requestUpdateScheduledPost,
+  requestUpdateScheduledPostPerformance,
+} from "../services/publishing-service";
+import { saveRepurposeSeed } from "../utils/repurpose-loop";
 import { appRoutes } from "../utils/routes";
 import {
   convertZonedDateTimeToUtcIso,
@@ -23,7 +37,14 @@ const HISTORY_TABS: { id: HistoryTab; label: string }[] = [
   { id: "failed", label: "Failed" },
   { id: "all", label: "All" },
 ];
+const HISTORY_PAGE_SIZE = 20;
+const PERFORMANCE_OPTIONS: { value: PostPerformanceLabel; label: string }[] = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
 
+const route = useRoute();
 const router = useRouter();
 const {
   bootstrap: productAccess,
@@ -48,13 +69,20 @@ const COMMON_AUDIENCE_TIMEZONES = [
 
 const businesses = ref<BusinessMembership[]>([]);
 const scheduledPosts = ref<ScheduledPost[]>([]);
-const selectedTab = ref<HistoryTab>("published");
+const selectedTab = ref<HistoryTab>(
+  HISTORY_TABS.some((tab) => tab.id === route.query.tab)
+    ? (route.query.tab as HistoryTab)
+    : "published",
+);
 const selectedScheduledPostId = ref("");
 const audienceTimezone = ref("");
 const selectedAudienceDateKey = ref("");
 const scheduleTime = ref("09:00");
+const searchQuery = ref("");
+const currentPage = ref(1);
 const isLoading = ref(true);
 const isUpdating = ref(false);
+const isConnectingLinkedIn = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 
@@ -148,6 +176,19 @@ function resolveStatusTone(status: ScheduledPostStatus): "default" | "success" |
   }
 }
 
+function resolvePerformanceLabel(label: PostPerformanceLabel | undefined): string {
+  switch (label) {
+    case "high":
+      return "High signal";
+    case "medium":
+      return "Medium signal";
+    case "low":
+      return "Low signal";
+    default:
+      return "Not rated";
+  }
+}
+
 function matchesTab(post: ScheduledPost, tab: HistoryTab): boolean {
   switch (tab) {
     case "published":
@@ -180,11 +221,35 @@ const sortedPosts = computed(() =>
 );
 
 const filteredPosts = computed(() =>
-  sortedPosts.value.filter((post) => matchesTab(post, selectedTab.value)),
+  sortedPosts.value.filter((post) => {
+    if (!matchesTab(post, selectedTab.value)) {
+      return false;
+    }
+
+    const query = searchQuery.value.trim().toLowerCase();
+
+    if (!query) {
+      return true;
+    }
+
+    return (
+      getDisplayTitle(post).toLowerCase().includes(query) ||
+      post.contentText.toLowerCase().includes(query) ||
+      resolveStatusLabel(post.status).toLowerCase().includes(query)
+    );
+  }),
 );
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredPosts.value.length / HISTORY_PAGE_SIZE)));
+const paginatedPosts = computed(() => {
+  const startIndex = (currentPage.value - 1) * HISTORY_PAGE_SIZE;
+  return filteredPosts.value.slice(startIndex, startIndex + HISTORY_PAGE_SIZE);
+});
 
 const selectedScheduledPost = computed(
-  () => filteredPosts.value.find((post) => post.id === selectedScheduledPostId.value) ?? filteredPosts.value[0] ?? null,
+  () =>
+    paginatedPosts.value.find((post) => post.id === selectedScheduledPostId.value) ??
+    paginatedPosts.value[0] ??
+    null,
 );
 
 const selectedScheduledPostCanPause = computed(
@@ -199,6 +264,11 @@ const selectedScheduledPostCanRetry = computed(
   () => selectedScheduledPost.value?.status === "failed",
 );
 
+const selectedScheduledPostCanPublishNow = computed(() => {
+  const status = selectedScheduledPost.value?.status;
+  return status === "scheduled" || status === "paused" || status === "failed";
+});
+
 const selectedScheduledPostCanCancel = computed(() => {
   const status = selectedScheduledPost.value?.status;
   return status === "scheduled" || status === "paused" || status === "failed";
@@ -207,6 +277,21 @@ const selectedScheduledPostCanCancel = computed(() => {
 const selectedScheduledPostCanReschedule = computed(() => {
   const status = selectedScheduledPost.value?.status;
   return status === "scheduled" || status === "paused" || status === "failed";
+});
+
+const selectedScheduledPostCanMoveToDraft = computed(() => {
+  const post = selectedScheduledPost.value;
+
+  if (!post?.assetGroupId) {
+    return false;
+  }
+
+  return (
+    post.status === "scheduled"
+    || post.status === "paused"
+    || post.status === "failed"
+    || post.status === "canceled"
+  );
 });
 
 const overviewCards = computed(() => {
@@ -253,6 +338,112 @@ const selectedLocalTimeLabel = computed(() => {
   return formatTimeWithZone(scheduledAt, userTimezone);
 });
 
+const selectedScheduledPostNeedsReconnect = computed(() => {
+  const message = selectedScheduledPost.value?.errorMessage?.toLowerCase() || "";
+  return message.includes("reconnect linkedin") || message.includes("connection expired");
+});
+
+function formatDispatchWindow(post: ScheduledPost): string {
+  return `${formatTimeWithZone(post.earliestDispatchAt, post.audienceTimezone)} - ${formatTimeWithZone(
+    post.latestDispatchAt,
+    post.audienceTimezone,
+  )}`;
+}
+
+function resolveIdentityTypeLabel(post: ScheduledPost): string {
+  if (post.selectedIdentityType === "organization") {
+    return "Page";
+  }
+
+  if (post.selectedIdentityType === "person") {
+    return "Personal";
+  }
+
+  return "LinkedIn";
+}
+
+function resolveSelectedIdentityLabel(post: ScheduledPost): string {
+  if (!post.selectedIdentityDisplayName) {
+    return "Workspace LinkedIn identity";
+  }
+
+  return `${post.selectedIdentityDisplayName} · ${resolveIdentityTypeLabel(post)}`;
+}
+
+function extractSchedulingWarnings(error: unknown): SchedulingSafetyWarning[] {
+  if (!(error instanceof ApiRequestError) || error.code !== "scheduling_safety_warning") {
+    return [];
+  }
+
+  const warnings = error.details?.warnings;
+
+  if (!Array.isArray(warnings)) {
+    return [];
+  }
+
+  return warnings.flatMap((warning) => {
+    if (!warning || typeof warning !== "object") {
+      return [];
+    }
+
+    const candidate = warning as Record<string, unknown>;
+
+    if (
+      typeof candidate.code !== "string" ||
+      typeof candidate.title !== "string" ||
+      typeof candidate.message !== "string"
+    ) {
+      return [];
+    }
+
+    return [
+      {
+        code: candidate.code as SchedulingSafetyWarning["code"],
+        title: candidate.title,
+        message: candidate.message,
+      },
+    ];
+  });
+}
+
+function buildSchedulingWarningMessage(warnings: SchedulingSafetyWarning[]): string {
+  return warnings.map((warning) => `${warning.title}\n${warning.message}`).join("\n\n");
+}
+
+function confirmSchedulingWarnings(warnings: SchedulingSafetyWarning[]): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return window.confirm(
+    `${buildSchedulingWarningMessage(warnings)}\n\nChoose OK to schedule anyway, or Cancel to keep the safer spacing.`,
+  );
+}
+
+async function reconnectLinkedIn(): Promise<void> {
+  if (!resolvedBusinessId.value) {
+    errorMessage.value = "Pick a workspace before reconnecting LinkedIn.";
+    return;
+  }
+
+  isConnectingLinkedIn.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestLinkedInSocialAuthStart({
+      businessId: resolvedBusinessId.value,
+      returnPath: route.fullPath,
+    });
+
+    window.location.assign(response.authorizationUrl);
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to start LinkedIn reconnection.";
+  } finally {
+    isConnectingLinkedIn.value = false;
+  }
+}
+
 function syncSelectedScheduleForm(post: ScheduledPost | null): void {
   if (!post) {
     return;
@@ -278,8 +469,10 @@ function syncSelection(): void {
     return;
   }
 
-  if (!filteredPosts.value.some((post) => post.id === selectedScheduledPostId.value)) {
-    selectedScheduledPostId.value = filteredPosts.value[0].id;
+  currentPage.value = Math.min(currentPage.value, totalPages.value);
+
+  if (!paginatedPosts.value.some((post) => post.id === selectedScheduledPostId.value)) {
+    selectedScheduledPostId.value = paginatedPosts.value[0]?.id ?? "";
   }
 
   syncSelectedScheduleForm(selectedScheduledPost.value);
@@ -329,20 +522,24 @@ async function initializePage(): Promise<void> {
 function selectPost(postId: string): void {
   selectedScheduledPostId.value = postId;
   syncSelectedScheduleForm(
-    filteredPosts.value.find((post) => post.id === postId) ?? null,
+    paginatedPosts.value.find((post) => post.id === postId) ?? null,
   );
   feedbackMessage.value = "";
   errorMessage.value = "";
 }
 
-async function mutateSelectedPost(action: "pause" | "resume" | "cancel" | "retry"): Promise<void> {
+async function mutateSelectedPost(
+  action: "pause" | "resume" | "cancel" | "retry" | "publish_now" | "move_to_draft",
+): Promise<void> {
   if (!resolvedBusinessId.value || !selectedScheduledPost.value) {
     errorMessage.value = "Pick a post first.";
     return;
   }
 
+  const selectedAssetGroupId = selectedScheduledPost.value.assetGroupId;
   isUpdating.value = true;
   errorMessage.value = "";
+  feedbackMessage.value = "";
 
   try {
     const response = await requestUpdateScheduledPost(selectedScheduledPost.value.id, {
@@ -357,10 +554,23 @@ async function mutateSelectedPost(action: "pause" | "resume" | "cancel" | "retry
           ? "Scheduled post resumed."
           : action === "cancel"
             ? "Scheduled post canceled."
-            : "Failed post re-queued for publishing.";
+            : action === "retry"
+              ? "Failed post re-queued for publishing."
+              : action === "publish_now"
+                ? "Post pushed to publish now."
+                : "Slot removed. The draft is back in the planner backlog.";
     selectedScheduledPostId.value = response.scheduledPost.id;
     await loadHistoryData();
     syncSelection();
+
+    if (action === "move_to_draft" && selectedAssetGroupId) {
+      await router.push({
+        path: appRoutes.appPlanner,
+        query: {
+          draftId: selectedAssetGroupId,
+        },
+      });
+    }
   } catch (error) {
     errorMessage.value =
       error instanceof Error ? error.message : "Unable to update that post right now.";
@@ -378,22 +588,42 @@ async function rescheduleSelectedPost(): Promise<void> {
   isUpdating.value = true;
   errorMessage.value = "";
 
-  try {
-    const response = await requestUpdateScheduledPost(selectedScheduledPost.value.id, {
-      businessId: resolvedBusinessId.value,
-      action: "reschedule",
-      scheduledAt: convertZonedDateTimeToUtcIso(
-        selectedAudienceDateKey.value,
-        scheduleTime.value,
-        audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
-      ),
-      audienceTimezone: audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
-    });
+  const rescheduleRequest = {
+    businessId: resolvedBusinessId.value,
+    action: "reschedule" as const,
+    scheduledAt: convertZonedDateTimeToUtcIso(
+      selectedAudienceDateKey.value,
+      scheduleTime.value,
+      audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
+    ),
+    audienceTimezone: audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
+  };
 
-    feedbackMessage.value =
-      response.scheduledPost.status === "paused"
-        ? "Paused post rescheduled without resuming it."
-        : "Publishing slot updated.";
+  try {
+    let response;
+
+    try {
+      response = await requestUpdateScheduledPost(selectedScheduledPost.value.id, rescheduleRequest);
+    } catch (error) {
+      const warnings = extractSchedulingWarnings(error);
+
+      if (warnings.length === 0 || !confirmSchedulingWarnings(warnings)) {
+        throw error;
+      }
+
+      response = await requestUpdateScheduledPost(selectedScheduledPost.value.id, {
+        ...rescheduleRequest,
+        ignoreSafetyWarnings: true,
+      });
+      feedbackMessage.value = "Publishing slot updated with a manual safety override.";
+    }
+
+    if (!feedbackMessage.value) {
+      feedbackMessage.value =
+        response.scheduledPost.status === "paused"
+          ? "Paused post rescheduled without resuming it."
+          : "Publishing slot updated.";
+    }
     selectedScheduledPostId.value = response.scheduledPost.id;
     await loadHistoryData();
     syncSelection();
@@ -403,6 +633,52 @@ async function rescheduleSelectedPost(): Promise<void> {
   } finally {
     isUpdating.value = false;
   }
+}
+
+async function saveSelectedPostPerformance(performanceLabel: PostPerformanceLabel): Promise<void> {
+  if (!resolvedBusinessId.value || !selectedScheduledPost.value) {
+    errorMessage.value = "Pick a published post before saving performance.";
+    return;
+  }
+
+  isUpdating.value = true;
+  errorMessage.value = "";
+  feedbackMessage.value = "";
+
+  try {
+    const response = await requestUpdateScheduledPostPerformance(selectedScheduledPost.value.id, {
+      businessId: resolvedBusinessId.value,
+      performanceLabel,
+    });
+
+    selectedScheduledPostId.value = response.scheduledPost.id;
+    scheduledPosts.value = scheduledPosts.value.map((post) =>
+      post.id === response.scheduledPost.id ? response.scheduledPost : post,
+    );
+    feedbackMessage.value = `Saved ${resolvePerformanceLabel(performanceLabel).toLowerCase()} for this post.`;
+    syncSelection();
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to save post performance right now.";
+  } finally {
+    isUpdating.value = false;
+  }
+}
+
+function openRepurpose(post: ScheduledPost): void {
+  saveRepurposeSeed({
+    text: post.contentText,
+    title: getDisplayTitle(post),
+    source: "history",
+  });
+
+  void router.push({
+    path: appRoutes.appCreate,
+    query: {
+      mode: "repurpose",
+    },
+    hash: "#repurpose-panel",
+  });
 }
 
 function openDraftEditor(assetId?: string): void {
@@ -450,6 +726,28 @@ watch(
 watch(
   () => selectedTab.value,
   () => {
+    currentPage.value = 1;
+    void router.replace({
+      query: {
+        ...route.query,
+        tab: selectedTab.value,
+      },
+    });
+    syncSelection();
+  },
+);
+
+watch(
+  () => searchQuery.value,
+  () => {
+    currentPage.value = 1;
+    syncSelection();
+  },
+);
+
+watch(
+  () => currentPage.value,
+  () => {
     syncSelection();
   },
 );
@@ -487,36 +785,37 @@ onMounted(() => {
       </div>
     </section>
 
-    <section class="history-overview-grid">
-      <article
-        v-for="card in overviewCards"
-        :key="card.label"
-        class="workspace-card history-overview-card"
-        :data-tone="card.tone"
-      >
-        <span>{{ card.label }}</span>
-        <strong>{{ card.value }}</strong>
-      </article>
-    </section>
+    <HistorySkeleton v-if="isLoading" />
 
-    <p v-if="isLoading" class="workspace-description">Loading history...</p>
+    <template v-else>
+      <section class="history-overview-grid">
+        <article
+          v-for="card in overviewCards"
+          :key="card.label"
+          class="workspace-card history-overview-card"
+          :data-tone="card.tone"
+        >
+          <span>{{ card.label }}</span>
+          <strong>{{ card.value }}</strong>
+        </article>
+      </section>
 
-    <section v-else-if="errorMessage" class="workspace-card empty-state">
-      <h2>History unavailable</h2>
-      <p>{{ errorMessage }}</p>
-    </section>
+      <section v-if="errorMessage" class="workspace-card empty-state">
+        <h2>History unavailable</h2>
+        <p>{{ errorMessage }}</p>
+      </section>
 
-    <section v-else-if="!resolvedBusinessId" class="workspace-card empty-state">
-      <h2>No workspace selected</h2>
-      <p>Switch into a workspace first, then use history to verify what shipped and recover failures.</p>
-    </section>
+      <section v-else-if="!resolvedBusinessId" class="workspace-card empty-state">
+        <h2>No workspace selected</h2>
+        <p>Switch into a workspace first, then use history to verify what shipped and recover failures.</p>
+      </section>
 
-    <section v-else-if="!schedulerEnabled" class="workspace-card empty-state">
-      <h2>History is not enabled here</h2>
-      <p>Turn on the scheduler feature for this workspace to unlock execution history.</p>
-    </section>
+      <section v-else-if="!schedulerEnabled" class="workspace-card empty-state">
+        <h2>History is not enabled here</h2>
+        <p>Turn on the scheduler feature for this workspace to unlock execution history.</p>
+      </section>
 
-    <section v-else class="history-main-grid">
+      <section v-else class="history-main-grid">
       <article class="workspace-card history-list-panel">
         <div class="history-toolbar">
           <div>
@@ -526,17 +825,28 @@ onMounted(() => {
             </p>
           </div>
 
-          <div class="history-tab-row" role="tablist" aria-label="History filters">
-            <button
-              v-for="tab in HISTORY_TABS"
-              :key="tab.id"
-              type="button"
-              class="history-tab"
-              :class="{ active: tab.id === selectedTab }"
-              @click="selectedTab = tab.id"
-            >
-              {{ tab.label }}
-            </button>
+          <div class="history-toolbar-actions">
+            <div class="history-tab-row" role="tablist" aria-label="History filters">
+              <button
+                v-for="tab in HISTORY_TABS"
+                :key="tab.id"
+                type="button"
+                class="history-tab"
+                :class="{ active: tab.id === selectedTab }"
+                @click="selectedTab = tab.id"
+              >
+                {{ tab.label }}
+              </button>
+            </div>
+
+            <label class="history-search">
+              <span>Search posts</span>
+              <input
+                v-model="searchQuery"
+                type="search"
+                placeholder="Search title, content, or status"
+              />
+            </label>
           </div>
         </div>
 
@@ -554,8 +864,30 @@ onMounted(() => {
         </div>
 
         <div v-else class="history-list">
+          <div class="history-list-meta">
+            <span>{{ filteredPosts.length }} matching post{{ filteredPosts.length === 1 ? "" : "s" }}</span>
+            <div class="history-page-controls">
+              <button
+                type="button"
+                class="workspace-secondary-button compact"
+                :disabled="currentPage <= 1"
+                @click="currentPage -= 1"
+              >
+                Previous
+              </button>
+              <span>Page {{ currentPage }} / {{ totalPages }}</span>
+              <button
+                type="button"
+                class="workspace-secondary-button compact"
+                :disabled="currentPage >= totalPages"
+                @click="currentPage += 1"
+              >
+                Next
+              </button>
+            </div>
+          </div>
           <button
-            v-for="post in filteredPosts"
+            v-for="post in paginatedPosts"
             :key="post.id"
             type="button"
             class="history-row"
@@ -567,6 +899,12 @@ onMounted(() => {
               <div class="history-chip-row">
                 <span class="workspace-chip">LI</span>
                 <span class="workspace-chip">{{ resolveStatusLabel(post.status) }}</span>
+                <span v-if="post.selectedIdentityDisplayName" class="workspace-chip">
+                  {{ resolveSelectedIdentityLabel(post) }}
+                </span>
+                <span v-if="post.performanceLabel" class="workspace-chip">
+                  {{ resolvePerformanceLabel(post.performanceLabel) }}
+                </span>
                 <span v-if="getMediaCount(post) > 0" class="workspace-chip">
                   📎 {{ getMediaCount(post) }}
                 </span>
@@ -625,10 +963,19 @@ onMounted(() => {
               )
             }}
           </p>
+          <p class="workspace-description compact">
+            Publishing as {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
+          </p>
 
           <article class="history-preview-card">
             <div class="history-preview-chip-row">
               <p class="workspace-chip">{{ resolveStatusLabel(selectedScheduledPost.status) }}</p>
+              <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
+                {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
+              </p>
+              <p v-if="selectedScheduledPost.performanceLabel" class="workspace-chip">
+                {{ resolvePerformanceLabel(selectedScheduledPost.performanceLabel) }}
+              </p>
               <p v-if="getMediaCount(selectedScheduledPost) > 0" class="workspace-chip">
                 📎 {{ getMediaCount(selectedScheduledPost) }} image{{ getMediaCount(selectedScheduledPost) === 1 ? "" : "s" }}
               </p>
@@ -636,9 +983,33 @@ onMounted(() => {
             <p>{{ selectedScheduledPost.contentText }}</p>
           </article>
 
+          <div v-if="selectedScheduledPost.status === 'published'" class="history-inline-section">
+            <label class="history-inline-label">How did this perform?</label>
+            <div class="history-chip-row">
+              <button
+                v-for="option in PERFORMANCE_OPTIONS"
+                :key="option.value"
+                type="button"
+                class="workspace-secondary-button"
+                :disabled="isUpdating"
+                :data-active="selectedScheduledPost.performanceLabel === option.value"
+                @click="saveSelectedPostPerformance(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+            <p class="workspace-description compact">
+              Save a simple signal now. This becomes the first step toward performance-informed generation.
+            </p>
+          </div>
+
           <div v-if="selectedScheduledPost.errorMessage" class="history-feedback danger">
             {{ selectedScheduledPost.errorMessage }}
           </div>
+
+          <p class="workspace-description compact">
+            Dispatch window: {{ formatDispatchWindow(selectedScheduledPost) }}
+          </p>
 
           <div v-if="selectedScheduledPostCanReschedule" class="history-inline-section">
             <label class="history-inline-label">Reschedule slot</label>
@@ -690,6 +1061,22 @@ onMounted(() => {
               View on LinkedIn
             </a>
             <button
+              type="button"
+              class="workspace-secondary-button"
+              @click="openRepurpose(selectedScheduledPost)"
+            >
+              Repurpose
+            </button>
+            <button
+              v-if="selectedScheduledPostCanPublishNow"
+              type="button"
+              class="workspace-primary-button"
+              :disabled="isUpdating"
+              @click="mutateSelectedPost('publish_now')"
+            >
+              {{ isUpdating ? "Updating..." : "Publish now" }}
+            </button>
+            <button
               v-if="selectedScheduledPostCanRetry"
               type="button"
               class="workspace-primary-button"
@@ -717,6 +1104,15 @@ onMounted(() => {
               {{ isUpdating ? "Updating..." : "Resume" }}
             </button>
             <button
+              v-if="selectedScheduledPostNeedsReconnect"
+              type="button"
+              class="workspace-secondary-button"
+              :disabled="isConnectingLinkedIn"
+              @click="reconnectLinkedIn"
+            >
+              {{ isConnectingLinkedIn ? "Redirecting..." : "Reconnect LinkedIn" }}
+            </button>
+            <button
               v-if="selectedScheduledPostCanReschedule"
               type="button"
               class="workspace-secondary-button"
@@ -724,6 +1120,15 @@ onMounted(() => {
               @click="rescheduleSelectedPost"
             >
               {{ isUpdating ? "Updating..." : "Reschedule" }}
+            </button>
+            <button
+              v-if="selectedScheduledPostCanMoveToDraft"
+              type="button"
+              class="workspace-secondary-button"
+              :disabled="isUpdating"
+              @click="mutateSelectedPost('move_to_draft')"
+            >
+              {{ isUpdating ? "Updating..." : "Move to draft" }}
             </button>
             <button
               v-if="selectedScheduledPostCanCancel"
@@ -755,7 +1160,8 @@ onMounted(() => {
 
         <p v-if="feedbackMessage" class="history-feedback success">{{ feedbackMessage }}</p>
       </aside>
-    </section>
+      </section>
+    </template>
   </main>
 </template>
 
@@ -779,11 +1185,18 @@ onMounted(() => {
 }
 
 .history-top-actions,
-.history-sidebar-actions {
+.history-sidebar-actions,
+.history-page-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
   justify-content: flex-end;
+}
+
+.history-toolbar-actions,
+.history-list-meta {
+  display: grid;
+  gap: 1rem;
 }
 
 .history-overview-grid {
@@ -840,6 +1253,28 @@ onMounted(() => {
   align-items: start;
 }
 
+.history-search {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.history-search span {
+  color: rgba(68, 51, 43, 0.72);
+  font-size: 0.82rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.history-search input {
+  min-width: min(100%, 18rem);
+  border: 1px solid rgba(68, 51, 43, 0.14);
+  border-radius: 0.95rem;
+  padding: 0.85rem 0.95rem;
+  font: inherit;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.88);
+}
+
 .history-tab-row {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -872,6 +1307,13 @@ onMounted(() => {
 .history-list {
   display: grid;
   gap: 0.9rem;
+}
+
+.history-list-meta {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  color: rgba(68, 51, 43, 0.72);
+  font-size: 0.92rem;
 }
 
 .history-row {
@@ -977,6 +1419,12 @@ onMounted(() => {
 .history-danger-button {
   border-color: rgba(184, 75, 60, 0.22);
   color: #9f3f32;
+}
+
+.workspace-secondary-button[data-active="true"] {
+  background: rgba(225, 104, 48, 0.12);
+  border-color: rgba(225, 104, 48, 0.38);
+  color: #b45321;
 }
 
 @media (max-width: 1100px) {

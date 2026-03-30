@@ -6,6 +6,7 @@ import { generateCompletion } from "../../../../../packages/ai-core/src/generate
 import { buildBrandAlignedImagePrompt } from "../../../../../packages/content-engine/src/index.ts";
 import { brandIntelligencePromptFiles } from "../../../../../packages/prompts/index.ts";
 import type {
+  BrandCompetitorReference,
   BrandProfile,
   BrandProfileQuery,
   BrandProfileResponse,
@@ -44,6 +45,7 @@ interface BrandProfileRow extends QueryResultRow {
   visual_style: string | null;
   topics: unknown;
   patterns: unknown;
+  selected_competitors: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -78,6 +80,94 @@ interface ExtractedBrandSignals {
   signalSummary: BrandSignalSummary;
 }
 
+interface CompetitorSuggestionSeed extends BrandCompetitorReference {
+  tags: string[];
+}
+
+const competitorSuggestionCatalog: CompetitorSuggestionSeed[] = [
+  {
+    id: "justin-welsh",
+    label: "Justin Welsh",
+    url: "https://www.justinwelsh.me/",
+    sourceType: "website_page",
+    rationale: "Strong founder-led hooks, short paragraphs, and audience-growth positioning.",
+    origin: "suggested",
+    tags: ["founder", "saas", "audience", "growth", "linkedin", "creator", "personal-brand"],
+  },
+  {
+    id: "lenny-rachitsky",
+    label: "Lenny Rachitsky",
+    url: "https://www.lennysnewsletter.com/",
+    sourceType: "website_page",
+    rationale: "Clear product and growth frameworks with practical founder education.",
+    origin: "suggested",
+    tags: ["product", "growth", "saas", "startup", "education", "newsletter"],
+  },
+  {
+    id: "sahil-bloom",
+    label: "Sahil Bloom",
+    url: "https://www.sahilbloom.com/",
+    sourceType: "website_page",
+    rationale: "High-performing opinion-led hooks and sharp audience-building structure.",
+    origin: "suggested",
+    tags: ["founder", "audience", "growth", "storytelling", "contrarian", "personal-brand"],
+  },
+  {
+    id: "april-dunford",
+    label: "April Dunford",
+    url: "https://www.aprildunford.com/",
+    sourceType: "website_page",
+    rationale: "Excellent positioning language and messaging clarity for B2B and SaaS products.",
+    origin: "suggested",
+    tags: ["positioning", "messaging", "b2b", "saas", "product-marketing"],
+  },
+  {
+    id: "wes-kao",
+    label: "Wes Kao",
+    url: "https://www.weskao.com/",
+    sourceType: "website_page",
+    rationale: "Sharp educational content with crisp frameworks and strong teaching voice.",
+    origin: "suggested",
+    tags: ["education", "frameworks", "writing", "audience", "growth", "messaging"],
+  },
+  {
+    id: "katelyn-bourgoin",
+    label: "Katelyn Bourgoin",
+    url: "https://www.katelynbourgoin.com/",
+    sourceType: "website_page",
+    rationale: "Buyer-psychology angles and memorable hooks for growth and marketing content.",
+    origin: "suggested",
+    tags: ["marketing", "growth", "psychology", "audience", "messaging"],
+  },
+  {
+    id: "brian-balfour",
+    label: "Brian Balfour",
+    url: "https://brianbalfour.com/",
+    sourceType: "website_page",
+    rationale: "Deep startup and growth-system thinking for operators scaling products.",
+    origin: "suggested",
+    tags: ["growth", "startup", "saas", "product", "systems"],
+  },
+  {
+    id: "gergely-orosz",
+    label: "Gergely Orosz",
+    url: "https://newsletter.pragmaticengineer.com/",
+    sourceType: "website_page",
+    rationale: "Technical storytelling and engineering leadership patterns that resonate with builders.",
+    origin: "suggested",
+    tags: ["engineering", "developer", "ai", "technical", "builders", "software"],
+  },
+  {
+    id: "swyx",
+    label: "swyx",
+    url: "https://www.swyx.io/",
+    sourceType: "website_page",
+    rationale: "Builder-first AI and developer content with strong curiosity-driven hooks.",
+    origin: "suggested",
+    tags: ["ai", "developer", "engineering", "builders", "technical", "startup"],
+  },
+];
+
 function toIsoString(value: Date | string): string {
   return new Date(value).toISOString();
 }
@@ -111,8 +201,137 @@ function parseStringArray<TValue extends string>(value: unknown): TValue[] {
   return [];
 }
 
+function parseCompetitorReferences(value: unknown): BrandCompetitorReference[] {
+  const parsed =
+    typeof value === "string"
+      ? (() => {
+          try {
+            return JSON.parse(value) as unknown;
+          } catch {
+            return [];
+          }
+        })()
+      : value;
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return parsed.flatMap((entry) => normalizeCompetitorReference(entry));
+}
+
 function uniqueValues<TValue extends string>(values: TValue[]): TValue[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value !== ""))] as TValue[];
+}
+
+function normalizeCompetitorReference(value: unknown): BrandCompetitorReference[] {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  const candidate = value as Partial<BrandCompetitorReference>;
+  const label = normalizeOptionalString(candidate.label);
+
+  if (!label) {
+    return [];
+  }
+
+  const normalizedUrl = normalizeOptionalPublicUrl(candidate.url);
+  const sourceType =
+    candidate.sourceType === "public_url" || candidate.sourceType === "website_page"
+      ? candidate.sourceType
+      : normalizedUrl?.includes("linkedin.com")
+        ? "public_url"
+        : "website_page";
+
+  const origin = candidate.origin === "suggested" ? "suggested" : "custom";
+  const idBase = normalizeOptionalString(candidate.id) ?? label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+
+  return [{
+    id: idBase || `competitor-${Date.now()}`,
+    label,
+    url: normalizedUrl,
+    sourceType,
+    rationale: normalizeOptionalString(candidate.rationale),
+    origin,
+  }];
+}
+
+function dedupeCompetitorReferences(
+  competitors: BrandCompetitorReference[] | undefined,
+): BrandCompetitorReference[] {
+  if (!competitors) {
+    return [];
+  }
+
+  const deduped = new Map<string, BrandCompetitorReference>();
+
+  for (const competitor of competitors.flatMap((entry) => normalizeCompetitorReference(entry))) {
+    const key = competitor.url?.toLowerCase() ?? competitor.label.toLowerCase();
+
+    if (!deduped.has(key)) {
+      deduped.set(key, competitor);
+    }
+  }
+
+  return Array.from(deduped.values()).slice(0, 8);
+}
+
+function tokenizeSuggestionInputs(profile: BrandProfile | null): string[] {
+  const hostFragments = [
+    profile?.linkedinUrl,
+    profile?.instagramUrl,
+    profile?.facebookUrl,
+    profile?.websiteUrl,
+  ]
+    .flatMap((value) => normalizeOptionalString(value)?.toLowerCase().split(/[^a-z0-9]+/g) ?? []);
+
+  return uniqueValues([
+    profile?.industry ?? "",
+    profile?.tone ?? "",
+    profile?.writingStyle ?? "",
+    profile?.visualStyle ?? "",
+    ...(profile?.topics ?? []),
+    ...(profile?.patterns ?? []),
+    ...hostFragments,
+  ]
+    .join(" ")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter((value) => value.length >= 2));
+}
+
+function buildSuggestedCompetitors(profile: BrandProfile | null): BrandCompetitorReference[] {
+  const tokens = new Set(tokenizeSuggestionInputs(profile));
+
+  const ranked = competitorSuggestionCatalog
+    .map((candidate) => ({
+      candidate,
+      score: candidate.tags.reduce((total, tag) => total + (tokens.has(tag) ? 2 : 0), 0) +
+        (profile?.selectedCompetitors.some((entry) => entry.id === candidate.id) ? 1 : 0),
+    }))
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return left.candidate.label.localeCompare(right.candidate.label);
+    })
+    .map((entry) => entry.candidate);
+
+  const defaultFallbackOrder = [
+    "justin-welsh",
+    "lenny-rachitsky",
+    "april-dunford",
+    "wes-kao",
+    "gergely-orosz",
+  ];
+
+  const fallback = defaultFallbackOrder
+    .map((id) => competitorSuggestionCatalog.find((entry) => entry.id === id))
+    .filter((entry): entry is CompetitorSuggestionSeed => Boolean(entry));
+
+  return dedupeCompetitorReferences([...ranked, ...fallback]).slice(0, 5);
 }
 
 function mapBrandProfile(row: BrandProfileRow): BrandProfile {
@@ -132,6 +351,7 @@ function mapBrandProfile(row: BrandProfileRow): BrandProfile {
     visualStyle: row.visual_style ?? undefined,
     topics: parseStringArray<string>(row.topics),
     patterns: parseStringArray<string>(row.patterns),
+    selectedCompetitors: parseCompetitorReferences(row.selected_competitors),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -181,6 +401,7 @@ async function loadBrandProfileRecord(businessId: string): Promise<BrandProfile 
         visual_style,
         topics,
         patterns,
+        selected_competitors,
         created_at,
         updated_at
       from brand_profiles
@@ -408,13 +629,29 @@ function inferVisualStyle(
   return "clean minimal + bold editorial layout";
 }
 
-function toBrandPromptContext(profile: BrandProfile): BrandPromptContext {
+function toBrandPromptContext(
+  profile: BrandProfile,
+  suggestedCompetitors?: BrandCompetitorReference[],
+): BrandPromptContext {
+  const marketReferences = (
+    profile.selectedCompetitors.length > 0
+      ? profile.selectedCompetitors
+      : suggestedCompetitors?.slice(0, 3) ?? []
+  )
+    .map((competitor) =>
+      competitor.rationale
+        ? `${competitor.label} (${competitor.rationale})`
+        : competitor.label,
+    );
+
   return {
     tone: profile.tone ?? profile.preferredTone,
     writingStyle: profile.writingStyle,
     visualStyle: profile.visualStyle,
+    goals: profile.goals,
     topics: profile.topics,
     patterns: profile.patterns,
+    marketReferences,
   };
 }
 
@@ -656,6 +893,7 @@ async function upsertBrandProfile(input: {
   visualStyle?: string;
   topics?: string[];
   patterns?: string[];
+  selectedCompetitors?: BrandCompetitorReference[];
 }): Promise<BrandProfile> {
   const result = await queryDb<BrandProfileRow>(
     `
@@ -673,7 +911,8 @@ async function upsertBrandProfile(input: {
         writing_style,
         visual_style,
         topics,
-        patterns
+        patterns,
+        selected_competitors
       ) values (
         $1,
         $2,
@@ -688,7 +927,8 @@ async function upsertBrandProfile(input: {
         $11,
         $12,
         $13::jsonb,
-        $14::jsonb
+        $14::jsonb,
+        $15::jsonb
       )
       on conflict (business_id)
       do update set
@@ -705,6 +945,7 @@ async function upsertBrandProfile(input: {
         visual_style = excluded.visual_style,
         topics = excluded.topics,
         patterns = excluded.patterns,
+        selected_competitors = excluded.selected_competitors,
         updated_at = now()
       returning
         id,
@@ -722,6 +963,7 @@ async function upsertBrandProfile(input: {
         visual_style,
         topics,
         patterns,
+        selected_competitors,
         created_at,
         updated_at
     `,
@@ -740,6 +982,7 @@ async function upsertBrandProfile(input: {
       input.visualStyle ?? input.existingProfile?.visualStyle ?? null,
       JSON.stringify(clampList(input.topics, input.existingProfile?.topics ?? [])),
       JSON.stringify(clampList(input.patterns, input.existingProfile?.patterns ?? [])),
+      JSON.stringify(dedupeCompetitorReferences(input.selectedCompetitors ?? input.existingProfile?.selectedCompetitors)),
     ],
   );
 
@@ -831,11 +1074,14 @@ export async function getBrandProfile(
         },
       };
 
+  const suggestedCompetitors = buildSuggestedCompetitors(result.brandProfile);
+
   return {
     brandProfile: result.brandProfile,
+    suggestedCompetitors,
     visualPromptTemplate: buildBrandAlignedImagePrompt(
       "Create a brand-aligned LinkedIn visual.",
-      toBrandPromptContext(result.brandProfile),
+      toBrandPromptContext(result.brandProfile, suggestedCompetitors),
     ),
     signalSummary: result.signalSummary,
   };
@@ -895,13 +1141,20 @@ export async function updateBrandProfile(
       input.patterns !== undefined
         ? uniqueValues(input.patterns)
         : baseResult.brandProfile?.patterns,
+    selectedCompetitors:
+      input.selectedCompetitors !== undefined
+        ? dedupeCompetitorReferences(input.selectedCompetitors)
+        : baseResult.brandProfile?.selectedCompetitors,
   });
+
+  const suggestedCompetitors = buildSuggestedCompetitors(updatedProfile);
 
   return {
     brandProfile: updatedProfile,
+    suggestedCompetitors,
     visualPromptTemplate: buildBrandAlignedImagePrompt(
       "Create a brand-aligned LinkedIn visual.",
-      toBrandPromptContext(updatedProfile),
+      toBrandPromptContext(updatedProfile, suggestedCompetitors),
     ),
     signalSummary: baseResult.signalSummary,
   };
@@ -918,6 +1171,7 @@ export async function getBrandPromptContextForBusiness(
 
   try {
     const existingProfile = await loadBrandProfileRecord(normalizedBusinessId);
+    const suggestedCompetitors = existingProfile ? buildSuggestedCompetitors(existingProfile) : [];
 
     if (
       existingProfile &&
@@ -927,11 +1181,11 @@ export async function getBrandPromptContextForBusiness(
       existingProfile.topics.length > 0 &&
       existingProfile.patterns.length > 0
     ) {
-      return toBrandPromptContext(existingProfile);
+      return toBrandPromptContext(existingProfile, suggestedCompetitors);
     }
 
     const result = await ensureBrandProfileFromSignals(normalizedBusinessId);
-    return toBrandPromptContext(result.brandProfile);
+    return toBrandPromptContext(result.brandProfile, buildSuggestedCompetitors(result.brandProfile));
   } catch (error) {
     logWarn("Skipping brand prompt context enrichment.", {
       businessId: normalizedBusinessId,

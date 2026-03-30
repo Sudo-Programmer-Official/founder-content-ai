@@ -20,6 +20,7 @@ interface UserPreferencesRow extends QueryResultRow {
   layout_mode: UserPreferences["layoutMode"];
   ai_assist_level: UserPreferences["aiAssistLevel"];
   notify_post_published: boolean;
+  notify_email_campaign_updates: boolean;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -31,9 +32,16 @@ const DEFAULT_PREFERENCES = {
   layoutMode: "dashboard",
   aiAssistLevel: "balanced",
   notifyPostPublished: true,
+  notifyEmailCampaignUpdates: true,
 } as const satisfies Pick<
   UserPreferences,
-  "theme" | "fontSize" | "density" | "layoutMode" | "aiAssistLevel" | "notifyPostPublished"
+  | "theme"
+  | "fontSize"
+  | "density"
+  | "layoutMode"
+  | "aiAssistLevel"
+  | "notifyPostPublished"
+  | "notifyEmailCampaignUpdates"
 >;
 
 const VALID_THEMES = new Set<UserPreferences["theme"]>(["light", "dark", "focus"]);
@@ -60,6 +68,7 @@ function mapRow(row: UserPreferencesRow): UserPreferences {
     layoutMode: row.layout_mode,
     aiAssistLevel: row.ai_assist_level,
     notifyPostPublished: row.notify_post_published,
+    notifyEmailCampaignUpdates: row.notify_email_campaign_updates,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -101,6 +110,13 @@ function validatePreferences(input: UpdateUserPreferencesRequest): void {
   ) {
     throw new HttpError(400, "bad_request", "notifyPostPublished is invalid.");
   }
+
+  if (
+    typeof input.notifyEmailCampaignUpdates !== "undefined" &&
+    typeof input.notifyEmailCampaignUpdates !== "boolean"
+  ) {
+    throw new HttpError(400, "bad_request", "notifyEmailCampaignUpdates is invalid.");
+  }
 }
 
 async function ensurePreferenceRow(userId: string): Promise<void> {
@@ -113,7 +129,8 @@ async function ensurePreferenceRow(userId: string): Promise<void> {
         density,
         layout_mode,
         ai_assist_level,
-        notify_post_published
+        notify_post_published,
+        notify_email_campaign_updates
       ) values (
         $1,
         $2,
@@ -121,7 +138,8 @@ async function ensurePreferenceRow(userId: string): Promise<void> {
         $4,
         $5,
         $6,
-        $7
+        $7,
+        $8
       )
       on conflict (user_id) do nothing
     `,
@@ -133,6 +151,7 @@ async function ensurePreferenceRow(userId: string): Promise<void> {
       DEFAULT_PREFERENCES.layoutMode,
       DEFAULT_PREFERENCES.aiAssistLevel,
       DEFAULT_PREFERENCES.notifyPostPublished,
+      DEFAULT_PREFERENCES.notifyEmailCampaignUpdates,
     ],
   );
 }
@@ -148,6 +167,7 @@ async function loadPreferencesRow(userId: string): Promise<UserPreferencesRow | 
         layout_mode,
         ai_assist_level,
         notify_post_published,
+        notify_email_campaign_updates,
         created_at,
         updated_at
       from user_preferences
@@ -198,7 +218,8 @@ export async function updateUserPreferences(
         density,
         layout_mode,
         ai_assist_level,
-        notify_post_published
+        notify_post_published,
+        notify_email_campaign_updates
       ) values (
         $1,
         $2,
@@ -206,7 +227,8 @@ export async function updateUserPreferences(
         $4,
         $5,
         $6,
-        $7
+        $7,
+        $8
       )
       on conflict (user_id)
       do update set
@@ -216,6 +238,7 @@ export async function updateUserPreferences(
         layout_mode = coalesce($5, user_preferences.layout_mode),
         ai_assist_level = coalesce($6, user_preferences.ai_assist_level),
         notify_post_published = coalesce($7, user_preferences.notify_post_published),
+        notify_email_campaign_updates = coalesce($8, user_preferences.notify_email_campaign_updates),
         updated_at = now()
       returning
         user_id,
@@ -225,6 +248,7 @@ export async function updateUserPreferences(
         layout_mode,
         ai_assist_level,
         notify_post_published,
+        notify_email_campaign_updates,
         created_at,
         updated_at
     `,
@@ -236,6 +260,9 @@ export async function updateUserPreferences(
       input.layoutMode ?? null,
       input.aiAssistLevel ?? null,
       typeof input.notifyPostPublished === "boolean" ? input.notifyPostPublished : null,
+      typeof input.notifyEmailCampaignUpdates === "boolean"
+        ? input.notifyEmailCampaignUpdates
+        : null,
     ],
   );
 
@@ -248,6 +275,7 @@ export async function updateUserPreferences(
     layoutMode: preferences.layoutMode,
     aiAssistLevel: preferences.aiAssistLevel,
     notifyPostPublished: preferences.notifyPostPublished,
+    notifyEmailCampaignUpdates: preferences.notifyEmailCampaignUpdates,
   });
 
   return {

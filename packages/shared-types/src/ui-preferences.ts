@@ -12,6 +12,7 @@ export interface UserPreferences {
   layoutMode: UiLayoutMode;
   aiAssistLevel: AiAssistLevel;
   notifyPostPublished: boolean;
+  notifyEmailCampaignUpdates: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -28,6 +29,7 @@ export interface UpdateUserPreferencesRequest {
   layoutMode?: UiLayoutMode;
   aiAssistLevel?: AiAssistLevel;
   notifyPostPublished?: boolean;
+  notifyEmailCampaignUpdates?: boolean;
 }
 
 export interface UpdateUserPreferencesResponse {

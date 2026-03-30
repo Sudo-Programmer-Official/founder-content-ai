@@ -17,6 +17,7 @@ import { listAdminWorkspacesWithAccess } from "../adminControlService.ts";
 import { queryDb } from "../db/client.ts";
 import { evaluateAlerts } from "./alertService.ts";
 import { getAICostSummary } from "./costService.ts";
+import { resolveStoredContentAssetIntelligence } from "../contentIntelligenceService.ts";
 
 interface CountRow {
   total: string | number;
@@ -59,6 +60,7 @@ interface ContentAssetRow {
   pipeline_stage: "draft" | "review" | "scheduled" | "posted" | null;
   source_kind: "generated" | "manual" | "idea" | "capture" | "remix" | null;
   source_idea_id: string | null;
+  content_metadata: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -71,6 +73,12 @@ interface WorkspaceMetricRow {
   total_copies: string | number;
   total_remixes: string | number;
   total_publishes: string | number;
+  posts_created: string | number;
+  posts_scheduled: string | number;
+  posts_published: string | number;
+  emails_sent: string | number;
+  active_flag: boolean;
+  last_active_at: Date | string | null;
   created_at: Date | string;
 }
 
@@ -172,6 +180,8 @@ function extractTextContent(value: unknown): string | undefined {
 }
 
 function mapContentAsset(row: ContentAssetRow): ContentAsset {
+  const textContent = extractTextContent(row.content_body);
+
   return {
     id: row.id,
     businessId: row.business_id ?? undefined,
@@ -183,7 +193,8 @@ function mapContentAsset(row: ContentAssetRow): ContentAsset {
     pipelineStage: row.pipeline_stage ?? undefined,
     sourceKind: row.source_kind ?? undefined,
     sourceIdeaId: row.source_idea_id ?? undefined,
-    textContent: extractTextContent(row.content_body),
+    textContent,
+    intelligence: resolveStoredContentAssetIntelligence(row.content_metadata, textContent ?? ""),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -198,6 +209,12 @@ function mapWorkspaceMetric(row: WorkspaceMetricRow): WorkspaceMetricDaily {
     totalCopies: toNumber(row.total_copies),
     totalRemixes: toNumber(row.total_remixes),
     totalPublishes: toNumber(row.total_publishes),
+    postsCreated: toNumber(row.posts_created),
+    postsScheduled: toNumber(row.posts_scheduled),
+    postsPublished: toNumber(row.posts_published),
+    emailsSent: toNumber(row.emails_sent),
+    active: row.active_flag,
+    lastActiveAt: row.last_active_at ? toIsoString(row.last_active_at) : undefined,
     createdAt: toIsoString(row.created_at),
   };
 }
@@ -357,6 +374,12 @@ export async function getWorkspaceOverview(businessId: string): Promise<Workspac
           total_copies,
           total_remixes,
           total_publishes,
+          posts_created,
+          posts_scheduled,
+          posts_published,
+          emails_sent,
+          active_flag,
+          last_active_at,
           created_at
         from workspace_metrics_daily
         where business_id = $1
@@ -378,6 +401,7 @@ export async function getWorkspaceOverview(businessId: string): Promise<Workspac
           pipeline_stage,
           source_kind,
           source_idea_id,
+          content_metadata,
           created_at,
           updated_at
         from content_assets

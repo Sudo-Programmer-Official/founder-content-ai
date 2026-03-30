@@ -21,6 +21,10 @@ import { isDatabaseConfigured, queryDb } from "./db/client.ts";
 import { HttpError } from "../utils/http.ts";
 import { logError } from "../utils/logger.ts";
 import { recordStyleSignal } from "./styleProfileService.ts";
+import {
+  buildContentAssetIntelligenceFromText,
+  resolveStoredContentAssetIntelligence,
+} from "./contentIntelligenceService.ts";
 
 interface ContentAssetRow {
   id: string;
@@ -33,6 +37,7 @@ interface ContentAssetRow {
   pipeline_stage: NonNullable<ContentAsset["pipelineStage"]> | null;
   source_kind: NonNullable<ContentAsset["sourceKind"]> | null;
   source_idea_id: string | null;
+  content_metadata: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -191,6 +196,8 @@ function extractTextContent(value: unknown): string | undefined {
 }
 
 function mapContentAsset(row: ContentAssetRow): ContentAsset {
+  const textContent = extractTextContent(row.content_body);
+
   return {
     id: row.id,
     businessId: row.business_id ?? undefined,
@@ -202,7 +209,8 @@ function mapContentAsset(row: ContentAssetRow): ContentAsset {
     pipelineStage: row.pipeline_stage ?? undefined,
     sourceKind: row.source_kind ?? undefined,
     sourceIdeaId: row.source_idea_id ?? undefined,
-    textContent: extractTextContent(row.content_body),
+    textContent,
+    intelligence: resolveStoredContentAssetIntelligence(row.content_metadata, textContent ?? ""),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -242,6 +250,7 @@ async function persistRepurposedAsset(input: {
         pipeline_stage,
         source_kind,
         source_idea_id,
+        content_metadata,
         created_at,
         updated_at
       from content_assets
@@ -265,6 +274,7 @@ async function persistRepurposedAsset(input: {
         title = $3,
         content_body = $4::jsonb,
         source_kind = $5,
+        content_metadata = $6::jsonb,
         updated_at = now()
       where id = $1
         and business_id = $2
@@ -279,6 +289,7 @@ async function persistRepurposedAsset(input: {
         pipeline_stage,
         source_kind,
         source_idea_id,
+        content_metadata,
         created_at,
         updated_at
     `,
@@ -288,6 +299,7 @@ async function persistRepurposedAsset(input: {
       input.title,
       JSON.stringify(input.contentBody),
       input.sourceKind,
+      JSON.stringify(buildContentAssetIntelligenceFromText(extractTextContent(input.contentBody) ?? input.title) ?? {}),
     ],
   );
 

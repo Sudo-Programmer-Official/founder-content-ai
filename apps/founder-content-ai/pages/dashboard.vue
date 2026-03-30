@@ -7,6 +7,7 @@ import ConsistencyRing from "../components/dashboard/ConsistencyRing.vue";
 import MissionCard from "../components/dashboard/MissionCard.vue";
 import PipelineBoard from "../components/dashboard/PipelineBoard.vue";
 import QuickCreateBar from "../components/dashboard/QuickCreateBar.vue";
+import DashboardSkeleton from "../components/skeletons/DashboardSkeleton.vue";
 import VoiceRecorder from "../components/VoiceRecorder.vue";
 import { useContentScore } from "../composables/useContentScore";
 import { useMission } from "../composables/useMission";
@@ -16,6 +17,7 @@ import type {
   ContentAsset,
   ContentPipelineStage,
   ControlDashboardResponse,
+  IdeaInboxInputType,
   IdeaOption,
   IdeaInboxItem,
 } from "../../../packages/shared-types";
@@ -57,6 +59,14 @@ interface DashboardActionPreview {
   selectedOptionId: string;
 }
 
+const captureModeOptions: Array<{ value: IdeaInboxInputType; label: string; description: string }> = [
+  { value: "text", label: "Text", description: "Drop a rough thought, note, or headline." },
+  { value: "voice", label: "Voice", description: "Speak one idea and let the transcript land here." },
+  { value: "image", label: "Screenshot", description: "Save a screenshot, dashboard proof, or visual cue." },
+  { value: "link", label: "Link", description: "Store one public post, article, or page URL." },
+];
+const MAX_CAPTURE_IMAGE_BYTES = 4 * 1024 * 1024;
+
 const router = useRouter();
 const {
   bootstrap: productAccess,
@@ -71,8 +81,16 @@ const dashboard = ref<ControlDashboardResponse | null>(null);
 const isLoading = ref(true);
 const errorMessage = ref("");
 const newIdeaText = ref("");
+const ideaCaptureMode = ref<IdeaInboxInputType>("text");
+const capturedLinkUrl = ref("");
+const uploadedIdeaImageName = ref("");
+const uploadedIdeaImageDataUrl = ref("");
+const uploadedIdeaImageMimeType = ref("");
+const uploadedIdeaImageSizeBytes = ref(0);
+const uploadedIdeaImageDimensions = ref<{ width: number; height: number } | null>(null);
 const ideaFeedback = ref("");
 const isSavingIdea = ref(false);
+const isPreparingIdeaImage = ref(false);
 const convertingIdeaId = ref("");
 const editingAssetId = ref("");
 const savingAssetId = ref("");
@@ -210,11 +228,75 @@ const inactivityActive = computed(() => {
   return nowMs.value - new Date(lastActivityAt).getTime() > 24 * 60 * 60 * 1000;
 });
 
-const weeklyConsistencyPercent = computed(() =>
-  Math.min(100, Math.round(((dashboard.value?.today.streakDays ?? 0) / 7) * 100)),
-);
-
 const flatPipelineItems = computed(() => pipelineColumns.value.flatMap((column) => column.items));
+const ideaInboxItems = computed(() => dashboard.value?.ideaInbox ?? []);
+const activeCaptureMode = computed(
+  () => captureModeOptions.find((option) => option.value === ideaCaptureMode.value) ?? captureModeOptions[0],
+);
+const captureTextareaLabel = computed(() => {
+  if (ideaCaptureMode.value === "link") {
+    return "What should we pull from this link?";
+  }
+
+  if (ideaCaptureMode.value === "image") {
+    return "What matters in this screenshot?";
+  }
+
+  if (ideaCaptureMode.value === "voice") {
+    return "Voice transcript";
+  }
+
+  return "Drop the idea";
+});
+const captureTextareaPlaceholder = computed(() => {
+  if (ideaCaptureMode.value === "link") {
+    return "Example: turn this article into a founder post about trust, proof, and what changed my thinking.";
+  }
+
+  if (ideaCaptureMode.value === "image") {
+    return "Example: Stripe screenshot showing our first meaningful revenue month. Turn it into a proof-driven founder post.";
+  }
+
+  if (ideaCaptureMode.value === "voice") {
+    return "Your transcript lands here. Tighten it if needed, then save it to the inbox.";
+  }
+
+  return "Paste a rough thought, customer note, lesson, or one-line hook...";
+});
+const captureSaveLabel = computed(() => {
+  if (isSavingIdea.value) {
+    return "Saving...";
+  }
+
+  if (ideaCaptureMode.value === "link") {
+    return "Save link to inbox";
+  }
+
+  if (ideaCaptureMode.value === "image") {
+    return "Save screenshot to inbox";
+  }
+
+  if (ideaCaptureMode.value === "voice") {
+    return "Save voice note";
+  }
+
+  return "Save to inbox";
+});
+const canSaveIdeaCapture = computed(() => {
+  if (!selectedBusinessId.value || isSavingIdea.value || isPreparingIdeaImage.value) {
+    return false;
+  }
+
+  if (ideaCaptureMode.value === "image") {
+    return uploadedIdeaImageDataUrl.value !== "";
+  }
+
+  if (ideaCaptureMode.value === "link") {
+    return normalizeCapturedLinkUrl(capturedLinkUrl.value) !== "";
+  }
+
+  return newIdeaText.value.trim() !== "";
+});
 
 const mission = computed<MissionState | null>(() =>
   buildMission({
@@ -275,44 +357,226 @@ const aiSuggestions = computed(() =>
   ),
 );
 
-const averagePipelineScore = computed(() => {
-  if (flatPipelineItems.value.length === 0) {
-    return 0;
+const intelligenceSummary = computed(() => dashboard.value?.intelligence ?? null);
+const retentionSummary = computed(() => dashboard.value?.retention ?? null);
+const recentResultsSummary = computed(() => dashboard.value?.recentResults ?? null);
+const weeklyConsistencyPercent = computed(
+  () =>
+    retentionSummary.value?.consistencyScore ??
+    Math.min(100, Math.round(((dashboard.value?.today.streakDays ?? 0) / 7) * 100)),
+);
+const weeklyReportHeading = computed(() => {
+  const retention = retentionSummary.value;
+
+  if (!retention) {
+    return "Your weekly execution loop is warming up.";
   }
 
-  const totalScore = flatPipelineItems.value.reduce(
-    (sum, asset) => sum + calculateContentScore(asset).score,
-    0,
-  );
+  if (retention.consistencyScore >= 85) {
+    return "Your content system is compounding.";
+  }
 
-  return Math.round(totalScore / flatPipelineItems.value.length);
+  if (retention.consistencyScore >= 50) {
+    return "The rhythm is forming.";
+  }
+
+  return "Consistency needs one clear push.";
 });
-const strongestPipelineAsset = computed(
+const consistencyDeltaLabel = computed(() => {
+  const retention = retentionSummary.value;
+
+  if (!retention || retention.consistencyDelta === 0) {
+    return "Flat from last week";
+  }
+
+  return retention.consistencyDelta > 0
+    ? `Up ${retention.consistencyDelta} pts from last week`
+    : `Down ${Math.abs(retention.consistencyDelta)} pts from last week`;
+});
+const intelligencePatternLabel = computed(() => {
+  const summary = intelligenceSummary.value;
+
+  if (!summary?.topFormat || !summary.topHookType || !summary.topLength) {
+    return "Content pattern memory will sharpen as you create and publish more posts.";
+  }
+
+  return `Recent pattern: ${summary.topFormat} posts with ${summary.topHookType.replace(/_/g, " ")} hooks, mostly ${summary.topLength} length.`;
+});
+const latestUpdatedAsset = computed(
   () =>
     [...flatPipelineItems.value].sort(
-      (left, right) => calculateContentScore(right).score - calculateContentScore(left).score,
+      (left, right) =>
+        new Date(right.updatedAt ?? right.createdAt).getTime() -
+        new Date(left.updatedAt ?? left.createdAt).getTime(),
     )[0] ?? null,
 );
-const weeklyReportHeading = computed(() =>
-  averagePipelineScore.value >= 84
-    ? "Your content system is compounding."
-    : "Your weekly execution loop is warming up.",
+const readyPipelineAsset = computed(
+  () => flatPipelineItems.value.find((asset) => asset.pipelineStage === "review") ?? null,
 );
-const weeklyReportLines = computed(() => {
-  const showedUpDays = Math.min(7, dashboard.value?.today.streakDays ?? 0);
-  const strongestAsset = strongestPipelineAsset.value;
-  const strongestScore = strongestAsset ? calculateContentScore(strongestAsset).score : 0;
+const draftPipelineAsset = computed(
+  () =>
+    flatPipelineItems.value.find(
+      (asset) => (asset.pipelineStage ?? "draft") === "draft",
+    ) ?? null,
+);
+const weeklyMissedDays = computed(() =>
+  Math.max(0, 7 - (retentionSummary.value?.activeDays7d ?? Math.min(7, dashboard.value?.today.streakDays ?? 0))),
+);
+const recentResultsLines = computed(() => {
+  const results = recentResultsSummary.value;
+
+  const formatTime = (value?: string, fallback = "No signal yet.") => {
+    if (!value) {
+      return fallback;
+    }
+
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(value));
+  };
 
   return [
-    `You showed up ${showedUpDays} day${showedUpDays === 1 ? "" : "s"} this week.`,
-    averagePipelineScore.value > 0
-      ? `Average content quality: ${averagePipelineScore.value}/100.`
-      : "No quality baseline yet. One published post starts the loop.",
-    strongestAsset
-      ? `Top draft: ${strongestAsset.title ?? strongestAsset.contentType} at ${strongestScore}/100.`
-      : "Capture one more idea to create your first top-performing asset.",
+    results?.lastPublishedPostAt
+      ? `Last post published: ${formatTime(results.lastPublishedPostAt)}.`
+      : "No published post yet. The first live result will show here.",
+    results?.lastCampaignCompletedAt
+      ? `Last campaign finished: ${formatTime(results.lastCampaignCompletedAt)}.`
+      : "No completed campaign yet. Email outcomes will show up once a send finishes.",
+    results?.nextScheduledPostAt
+      ? `Next scheduled item: ${formatTime(results.nextScheduledPostAt)}.`
+      : "Nothing else is scheduled yet. Queue the next post before the week gets away.",
   ];
 });
+const pipelineSummaryCards = computed(() => [
+  {
+    id: "draft",
+    label: "Draft",
+    count: dashboard.value?.today.draftCount ?? 0,
+    copy: "Needs shaping before it can ship.",
+  },
+  {
+    id: "review",
+    label: "Ready",
+    count: dashboard.value?.today.reviewCount ?? 0,
+    copy: "Closest thing to your next post.",
+  },
+  {
+    id: "scheduled",
+    label: "Scheduled",
+    count: dashboard.value?.today.scheduledCount ?? 0,
+    copy: "Already committed to the planner.",
+  },
+  {
+    id: "posted",
+    label: "Posted",
+    count: dashboard.value?.today.postedCount ?? 0,
+    copy: "Use history to verify what shipped.",
+  },
+]);
+
+function resolveFallbackDashboardRoute(action: string): string {
+  switch (action) {
+    case "open_planner":
+    case "schedule_ready":
+      return appRoutes.appPlanner;
+    case "open_history":
+      return appRoutes.appHistory;
+    default:
+      return appRoutes.appCreate;
+  }
+}
+
+const fallbackNextActionState = computed(() => {
+  const scheduledCount = dashboard.value?.today.scheduledCount ?? 0;
+  const readyAsset = readyPipelineAsset.value;
+  const draftAsset = draftPipelineAsset.value;
+
+  if (readyAsset) {
+    return {
+      heading: "You have one post ready to schedule",
+      description: `Move "${readyAsset.title ?? "this post"}" into the planner before ${bestTimeCountdownLabel.value.toLowerCase()}.`,
+      primaryLabel: "Schedule now",
+      primaryAction: "schedule_ready",
+      secondaryLabel: "Improve before posting",
+      secondaryAction: "edit_ready",
+    } as const;
+  }
+
+  if (draftAsset) {
+    return {
+      heading: "You already have a draft to finish",
+      description: `Tighten "${draftAsset.title ?? "this draft"}" and move it toward execution instead of starting another thread.`,
+      primaryLabel: "Improve draft",
+      primaryAction: "edit_draft",
+      secondaryLabel: "Open planner",
+      secondaryAction: "open_planner",
+    } as const;
+  }
+
+  if (scheduledCount > 0) {
+    return {
+      heading: "Execution is already lined up",
+      description: `${scheduledCount} post${scheduledCount === 1 ? "" : "s"} ${scheduledCount === 1 ? "is" : "are"} scheduled. Inspect the planner or verify what already shipped.`,
+      primaryLabel: "Open planner",
+      primaryAction: "open_planner",
+      secondaryLabel: "View history",
+      secondaryAction: "open_history",
+    } as const;
+  }
+
+  return {
+    heading: "Today still needs a post",
+    description: "Create one clear post and move it into the planner. That is the whole job.",
+    primaryLabel: "Create post",
+    primaryAction: "create_post",
+    secondaryLabel: "Open planner",
+    secondaryAction: "open_planner",
+  } as const;
+});
+const dashboardNextAction = computed(() => {
+  const nextAction = dashboard.value?.nextAction;
+
+  if (nextAction) {
+    return {
+      heading: nextAction.title,
+      description: nextAction.description,
+      primaryLabel: nextAction.cta,
+      route: nextAction.route,
+    } as const;
+  }
+
+  return {
+    heading: fallbackNextActionState.value.heading,
+    description: fallbackNextActionState.value.description,
+    primaryLabel: fallbackNextActionState.value.primaryLabel,
+    route: resolveFallbackDashboardRoute(fallbackNextActionState.value.primaryAction),
+  } as const;
+});
+const recentActivityItems = computed(() =>
+  [...flatPipelineItems.value]
+    .sort(
+      (left, right) =>
+        new Date(right.updatedAt ?? right.createdAt).getTime() -
+        new Date(left.updatedAt ?? left.createdAt).getTime(),
+    )
+    .slice(0, 5)
+    .map((asset) => ({
+      asset,
+      title: asset.title ?? asset.textContent?.split("\n")[0] ?? "Untitled post",
+      description:
+        asset.pipelineStage === "posted"
+          ? "Marked as posted"
+          : asset.pipelineStage === "scheduled"
+            ? "Moved into the execution queue"
+            : asset.pipelineStage === "review"
+              ? "Ready for scheduling"
+              : "Still in draft",
+      whenLabel: new Date(asset.updatedAt ?? asset.createdAt).toLocaleString(),
+    })),
+);
 const selectedActionPreviewOption = computed(() =>
   actionPreview.value?.options.find((option) => option.id === actionPreview.value?.selectedOptionId) ?? null,
 );
@@ -619,13 +883,169 @@ async function initializeDashboard() {
   }
 }
 
+function normalizeCapturedLinkUrl(value: string): string {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return "";
+  }
+
+  try {
+    return new URL(trimmedValue).toString();
+  } catch {
+    try {
+      return new URL(`https://${trimmedValue}`).toString();
+    } catch {
+      return "";
+    }
+  }
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+
+      reject(new Error("Unable to read the uploaded file."));
+    };
+
+    reader.onerror = () => reject(new Error("Unable to read the uploaded file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readImageDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+
+    image.onload = () => {
+      resolve({
+        width: image.naturalWidth,
+        height: image.naturalHeight,
+      });
+    };
+
+    image.onerror = () => reject(new Error("Unable to inspect the uploaded image."));
+    image.src = dataUrl;
+  });
+}
+
+function resetCaptureComposer(keepMode = false) {
+  newIdeaText.value = "";
+  capturedLinkUrl.value = "";
+  uploadedIdeaImageName.value = "";
+  uploadedIdeaImageDataUrl.value = "";
+  uploadedIdeaImageMimeType.value = "";
+  uploadedIdeaImageSizeBytes.value = 0;
+  uploadedIdeaImageDimensions.value = null;
+
+  if (!keepMode) {
+    ideaCaptureMode.value = "text";
+  }
+}
+
+async function persistIdeaCaptureImage(file: File) {
+  if (file.size > MAX_CAPTURE_IMAGE_BYTES) {
+    throw new Error("Screenshots must be 4 MB or smaller.");
+  }
+
+  if (!file.type.startsWith("image/")) {
+    throw new Error("Only image uploads are supported for screenshot capture.");
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const dimensions = await readImageDimensions(dataUrl);
+
+  uploadedIdeaImageName.value = file.name;
+  uploadedIdeaImageDataUrl.value = dataUrl;
+  uploadedIdeaImageMimeType.value = file.type;
+  uploadedIdeaImageSizeBytes.value = file.size;
+  uploadedIdeaImageDimensions.value = dimensions;
+  ideaCaptureMode.value = "image";
+
+  if (!newIdeaText.value.trim()) {
+    newIdeaText.value = `Screenshot insight from ${file.name.replace(/\.[a-z0-9]+$/i, "")}.`;
+  }
+}
+
+async function handleIdeaImageUpload(event: Event) {
+  const target = event.target as HTMLInputElement | null;
+  const file = target?.files?.[0];
+
+  if (!file) {
+    uploadedIdeaImageName.value = "";
+    uploadedIdeaImageDataUrl.value = "";
+    uploadedIdeaImageMimeType.value = "";
+    uploadedIdeaImageSizeBytes.value = 0;
+    uploadedIdeaImageDimensions.value = null;
+    return;
+  }
+
+  isPreparingIdeaImage.value = true;
+  ideaFeedback.value = "";
+
+  try {
+    await persistIdeaCaptureImage(file);
+    ideaFeedback.value = "Screenshot ready. Review the extracted angle, then save it to the inbox.";
+  } catch (error) {
+    ideaFeedback.value = error instanceof Error ? error.message : "Unable to process the screenshot.";
+  } finally {
+    isPreparingIdeaImage.value = false;
+
+    if (target) {
+      target.value = "";
+    }
+  }
+}
+
+async function handleIdeaImageDrop(event: DragEvent) {
+  const file = event.dataTransfer?.files?.[0];
+
+  if (!file) {
+    return;
+  }
+
+  isPreparingIdeaImage.value = true;
+  ideaFeedback.value = "";
+
+  try {
+    await persistIdeaCaptureImage(file);
+    ideaFeedback.value = "Screenshot ready. Review the extracted angle, then save it to the inbox.";
+  } catch (error) {
+    ideaFeedback.value = error instanceof Error ? error.message : "Unable to process the screenshot.";
+  } finally {
+    isPreparingIdeaImage.value = false;
+  }
+}
+
 async function addIdeaInboxItem() {
   if (!selectedBusinessId.value) {
     ideaFeedback.value = "Create or select a workspace first.";
     return;
   }
 
-  if (!newIdeaText.value.trim()) {
+  const normalizedLinkUrl = normalizeCapturedLinkUrl(capturedLinkUrl.value);
+  const processedText = newIdeaText.value.trim();
+
+  if (ideaCaptureMode.value === "image" && !uploadedIdeaImageDataUrl.value) {
+    ideaFeedback.value = "Upload one screenshot before saving it.";
+    return;
+  }
+
+  if (ideaCaptureMode.value === "link" && !normalizedLinkUrl) {
+    ideaFeedback.value = "Paste one valid public link before saving it.";
+    return;
+  }
+
+  if (
+    (ideaCaptureMode.value === "text" || ideaCaptureMode.value === "voice")
+    && !processedText
+  ) {
     ideaFeedback.value = "Write one idea before saving it.";
     return;
   }
@@ -636,10 +1056,36 @@ async function addIdeaInboxItem() {
   try {
     await requestCreateIdeaInboxItem({
       businessId: selectedBusinessId.value,
-      text: newIdeaText.value,
+      inputType: ideaCaptureMode.value,
+      processedText:
+        processedText
+        || (ideaCaptureMode.value === "link" && normalizedLinkUrl
+          ? `Link capture from ${new URL(normalizedLinkUrl).hostname.replace(/^www\./i, "")}.`
+          : undefined),
+      rawInput:
+        ideaCaptureMode.value === "image"
+          ? uploadedIdeaImageDataUrl.value
+          : ideaCaptureMode.value === "link"
+            ? normalizedLinkUrl
+            : processedText,
+      metadata:
+        ideaCaptureMode.value === "image"
+          ? {
+              fileName: uploadedIdeaImageName.value || undefined,
+              mimeType: uploadedIdeaImageMimeType.value || undefined,
+              sizeBytes: uploadedIdeaImageSizeBytes.value || undefined,
+              width: uploadedIdeaImageDimensions.value?.width,
+              height: uploadedIdeaImageDimensions.value?.height,
+            }
+          : ideaCaptureMode.value === "link"
+            ? {
+                sourceUrl: normalizedLinkUrl,
+                hostname: new URL(normalizedLinkUrl).hostname.replace(/^www\./i, ""),
+              }
+            : undefined,
     });
-    newIdeaText.value = "";
-    ideaFeedback.value = "Idea saved to the inbox.";
+    resetCaptureComposer();
+    ideaFeedback.value = "Capture saved to the inbox.";
     await loadDashboard(selectedBusinessId.value);
   } catch (error) {
     ideaFeedback.value = error instanceof Error ? error.message : "Unable to save the idea.";
@@ -655,6 +1101,7 @@ function handleIdeaVoiceTranscript(text: string) {
     return;
   }
 
+  ideaCaptureMode.value = "voice";
   newIdeaText.value = newIdeaText.value.trim()
     ? `${newIdeaText.value.trim()}\n\n${normalizedText}`
     : normalizedText;
@@ -796,6 +1243,57 @@ function focusAsset(assetId: string | undefined) {
   });
 }
 
+function formatIdeaInputLabel(inputType: IdeaInboxInputType): string {
+  switch (inputType) {
+    case "voice":
+      return "Voice";
+    case "image":
+      return "Screenshot";
+    case "link":
+      return "Link";
+    default:
+      return "Text";
+  }
+}
+
+function formatIdeaLabel(value: string | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  return value.replace(/_/g, " ");
+}
+
+function formatIdeaUnderstandingStatus(value: IdeaInboxItem["understandingStatus"]): string {
+  switch (value) {
+    case "processing":
+      return "Understanding";
+    case "completed":
+      return "Ready";
+    case "failed":
+      return "Needs review";
+    default:
+      return "Queued";
+  }
+}
+
+function formatIdeaStrength(value: number | undefined): string {
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+
+  return `${Math.round((value ?? 0) * 100)}% strength`;
+}
+
+function formatIdeaTimestamp(value: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
 function openCreator(target?: ContentAsset | string) {
   dismissActionPreview();
   const hash = typeof target === "string" ? target : undefined;
@@ -809,6 +1307,92 @@ function openCreator(target?: ContentAsset | string) {
     },
     hash,
   });
+}
+
+function openPlanner(draftId?: string) {
+  void router.push({
+    path: appRoutes.appPlanner,
+    query: draftId ? { draftId } : undefined,
+  });
+}
+
+function openHistory(tab?: string) {
+  void router.push({
+    path: appRoutes.appHistory,
+    query: tab ? { tab } : undefined,
+  });
+}
+
+function handleDashboardAction(action: string) {
+  if (action === "schedule_ready") {
+    if (readyPipelineAsset.value) {
+      openPlanner(readyPipelineAsset.value.id);
+      return;
+    }
+
+    openPlanner();
+    return;
+  }
+
+  if (action === "edit_ready") {
+    if (readyPipelineAsset.value) {
+      openCreator(readyPipelineAsset.value);
+      return;
+    }
+
+    openCreator();
+    return;
+  }
+
+  if (action === "edit_draft") {
+    if (draftPipelineAsset.value) {
+      openCreator(draftPipelineAsset.value);
+      return;
+    }
+
+    openCreator();
+    return;
+  }
+
+  if (action === "open_planner") {
+    openPlanner();
+    return;
+  }
+
+  if (action === "open_history") {
+    openHistory();
+    return;
+  }
+
+  openCreator();
+}
+
+function openDashboardNextAction(): void {
+  void router.push(dashboardNextAction.value.route);
+}
+
+function handlePipelineSummaryClick(stage: string) {
+  if (stage === "posted") {
+    openHistory("published");
+    return;
+  }
+
+  if (stage === "scheduled") {
+    openPlanner();
+    return;
+  }
+
+  if (stage === "review" && readyPipelineAsset.value) {
+    openPlanner(readyPipelineAsset.value.id);
+    return;
+  }
+
+  if (stage === "draft" && draftPipelineAsset.value) {
+    openCreator(draftPipelineAsset.value);
+    return;
+  }
+
+  openPlanner();
 }
 
 function handleQuickCreateAction(action: QuickCreateAction) {
@@ -1093,7 +1677,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="dashboard-shell workspace-dashboard">
-    <p v-if="isLoading" class="dashboard-feedback">Loading your control dashboard...</p>
+    <DashboardSkeleton v-if="isLoading" />
     <p v-else-if="errorMessage" class="dashboard-feedback error">{{ errorMessage }}</p>
 
     <template v-else>
@@ -1120,31 +1704,6 @@ onBeforeUnmount(() => {
 
       <div v-else-if="dashboard" class="workspace-frame">
         <div class="workspace-content">
-          <header class="dashboard-topbar">
-            <QuickCreateBar
-              :best-time-label="bestTimeCountdownLabel"
-              :inactivity-message="inactivityAlert"
-              :inactivity-active="inactivityActive"
-              :daily-idea-loading="isGeneratingDailyIdea"
-              :write-disabled="!canCreateContent"
-              :daily-idea-disabled="!canCreateContent"
-              @write="handleQuickCreateAction('write')"
-              @daily-idea="handleQuickCreateAction('daily-idea')"
-            />
-
-            <div class="topbar-status">
-              <div class="topbar-status-card consistency-status">
-                <ConsistencyRing
-                  :percent="weeklyConsistencyPercent"
-                  :streak-days="dashboard.today.streakDays"
-                  label="weekly consistency"
-                />
-              </div>
-              <span v-if="productAccess?.access?.readOnly" class="topbar-pill warning">Read-only</span>
-              <span class="profile-chip">{{ profileInitial }}</span>
-            </div>
-          </header>
-
           <div v-if="ideaFeedback" class="dashboard-feedback-banner">
             <span class="feedback-badge">Success</span>
             <strong>{{ ideaFeedback }}</strong>
@@ -1161,6 +1720,7 @@ onBeforeUnmount(() => {
 
             <div class="intro-stats">
               <span class="topbar-pill">Streak {{ dashboard.today.streakDays }}</span>
+              <span class="topbar-pill">Consistency {{ weeklyConsistencyPercent }}%</span>
               <span class="topbar-pill muted">
                 {{
                   dashboard.today.lastActivityAt
@@ -1168,247 +1728,352 @@ onBeforeUnmount(() => {
                     : "No recent activity yet"
                 }}
               </span>
+              <span v-if="productAccess?.access?.readOnly" class="topbar-pill warning">Read-only</span>
+              <span class="profile-chip">{{ profileInitial }}</span>
             </div>
           </section>
 
-          <div class="dashboard-main-grid">
-            <div class="dashboard-primary">
-              <AIRail :suggestions="aiSuggestions" @action="handleAISuggestionAction" />
-
-              <section id="today" class="today-section">
-                <MissionCard
-                  :mission="mission"
-                  @task-action="handleMissionTaskAction"
-                  @primary-action="handleMissionTaskAction"
-                />
-                <div class="dashboard-card-grid">
-                  <article class="dashboard-card">
-                    <p class="dashboard-card-label">Drafts</p>
-                    <strong>{{ dashboard.today.draftCount }}</strong>
-                  </article>
-                  <article class="dashboard-card">
-                    <p class="dashboard-card-label">Ready</p>
-                    <strong>{{ dashboard.today.reviewCount }}</strong>
-                  </article>
-                  <article class="dashboard-card">
-                    <p class="dashboard-card-label">Scheduled</p>
-                    <strong>{{ dashboard.today.scheduledCount }}</strong>
-                  </article>
-                  <article class="dashboard-card">
-                    <p class="dashboard-card-label">Posted</p>
-                    <strong>{{ dashboard.today.postedCount }}</strong>
-                  </article>
-                  <article class="dashboard-card">
-                    <p class="dashboard-card-label">Idea Inbox</p>
-                    <strong>{{ dashboard.today.ideaInboxCount }}</strong>
-                  </article>
-                </div>
-              </section>
-
-              <section
-                v-if="actionPreview || actionPreviewError || isPreviewingAction"
-                class="dashboard-panel action-preview-panel"
-              >
-                <div class="panel-header">
-                  <div>
-                    <p class="panel-meta">
-                      {{
-                        actionPreview?.kind === "cta"
-                          ? "CTA Preview"
-                          : "Hook Preview"
-                      }}
-                    </p>
-                    <h2>
-                      {{ actionPreview?.title ?? "Preparing suggestion..." }}
-                    </h2>
-                    <p class="dashboard-description">
-                      {{
-                        actionPreview?.description
-                          ?? "Generating a scoped suggestion for this saved draft."
-                      }}
-                    </p>
-                  </div>
-
-                  <button
-                    v-if="actionPreview || actionPreviewError"
-                    type="button"
-                    class="dashboard-button secondary small-button"
-                    @click="dismissActionPreview"
-                  >
-                    Keep current draft
-                  </button>
-                </div>
-
-                <p v-if="isPreviewingAction" class="dashboard-feedback">
-                  Generating a scoped improvement preview...
-                </p>
-                <p v-else-if="actionPreviewError" class="dashboard-feedback error">
-                  {{ actionPreviewError }}
-                </p>
-
-                <template v-else-if="actionPreview && selectedActionPreviewOption">
-                  <div class="action-preview-options">
-                    <button
-                      v-for="option in actionPreview.options"
-                      :key="option.id"
-                      type="button"
-                      class="action-preview-option"
-                      :class="{ active: actionPreview.selectedOptionId === option.id }"
-                      @click="actionPreview.selectedOptionId = option.id"
-                    >
-                      {{ option.label }}
-                    </button>
-                  </div>
-
-                  <div class="action-preview-diff">
-                    <article class="action-preview-card">
-                      <p class="panel-meta">Before</p>
-                      <strong>{{ actionPreview.kind === "cta" ? "Current ending" : "Current opening" }}</strong>
-                      <pre class="action-preview-copy">{{ actionPreview.originalText }}</pre>
-                    </article>
-
-                    <article class="action-preview-card updated">
-                      <p class="panel-meta">After</p>
-                      <strong>{{ selectedActionPreviewOption.label }}</strong>
-                      <pre class="action-preview-copy">{{ selectedActionPreviewOption.previewText }}</pre>
-                      <p class="action-preview-note">{{ selectedActionPreviewOption.description }}</p>
-                    </article>
-                  </div>
-
-                  <p class="action-preview-scope">{{ actionPreview.scopeHint }}</p>
-
-                  <div class="action-row">
-                    <button
-                      type="button"
-                      class="dashboard-button"
-                      :disabled="isApplyingActionPreview"
-                      @click="applyActionPreview"
-                    >
-                      {{ isApplyingActionPreview ? "Applying..." : "Apply changes" }}
-                    </button>
-                    <button
-                      type="button"
-                      class="dashboard-button secondary small-button"
-                      @click="dismissActionPreview"
-                    >
-                      Reject
-                    </button>
-                  </div>
-                </template>
-              </section>
-
-              <PipelineBoard
-                :columns="pipelineColumnModels"
-                :empty="isPipelineEmpty"
-                @edit="beginEditing"
-                @advance="advancePipelineItem"
-                @save="savePipelineItem"
-                @close="resetEditingState"
-                @open-creator="openCreator"
-                @speak-now="handleQuickCreateAction('speak')"
-                @update-draft="updateDraftState"
-              />
-
-              <section id="idea-inbox" class="dashboard-grid-two">
-                <article class="dashboard-panel">
-                  <p class="panel-meta">Idea Inbox</p>
-                  <h2>Capture first. Shape later.</h2>
+          <section class="dashboard-grid-two dashboard-grid-two--capture">
+            <article class="dashboard-panel capture-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-meta">Capture inbox</p>
+                  <h2>Drop anything. Shape it later.</h2>
                   <p class="dashboard-description">
-                    Save raw thoughts fast, then convert the best ones into drafts when you are ready.
+                    Voice, text, screenshots, and links all land in one inbox before they become drafts.
                   </p>
+                </div>
+              </div>
 
-                  <label class="dashboard-field">
-                    <span>Quick idea</span>
-                    <textarea
-                      v-model="newIdeaText"
-                      rows="5"
-                      placeholder="A founder lesson, objection, observation, or half-formed thought."
-                    />
-                  </label>
+              <div class="capture-mode-row">
+                <button
+                  v-for="option in captureModeOptions"
+                  :key="option.value"
+                  type="button"
+                  :class="['capture-mode-pill', { active: ideaCaptureMode === option.value }]"
+                  @click="ideaCaptureMode = option.value"
+                >
+                  <strong>{{ option.label }}</strong>
+                  <span>{{ option.description }}</span>
+                </button>
+              </div>
 
-                  <VoiceRecorder
-                    title="Capture an idea by voice"
-                    hint="Record a quick thought, then save the transcript into the inbox when it looks right."
-                    @transcribed="handleIdeaVoiceTranscript"
+              <div v-if="ideaCaptureMode === 'voice'" class="capture-block">
+                <VoiceRecorder
+                  title="Capture one thought by voice"
+                  hint="Record a quick note. We will transcribe it here so you can save or tighten it."
+                  @transcribed="handleIdeaVoiceTranscript"
+                />
+              </div>
+
+              <div v-else-if="ideaCaptureMode === 'link'" class="capture-block">
+                <label class="capture-field">
+                  <span>Public link</span>
+                  <input
+                    v-model="capturedLinkUrl"
+                    type="url"
+                    placeholder="https://example.com/post-or-article"
                   />
+                </label>
+              </div>
 
-                  <div class="action-row">
-                    <button
-                      type="button"
-                      class="dashboard-button"
-                      :disabled="isSavingIdea"
-                      @click="addIdeaInboxItem"
-                    >
-                      {{ isSavingIdea ? "Saving..." : "Save idea" }}
-                    </button>
-                  </div>
-
-                  <p v-if="ideaFeedback" class="dashboard-feedback">{{ ideaFeedback }}</p>
-                </article>
-
-                <article class="dashboard-panel">
-                  <p class="panel-meta">Inbox Queue</p>
-                  <h2>{{ dashboard.ideaInbox.length }} saved ideas</h2>
-
-                  <div class="idea-list">
-                    <article v-for="idea in dashboard.ideaInbox" :key="idea.id" class="idea-item">
-                      <div>
-                        <strong>{{ idea.text }}</strong>
-                        <p class="pipeline-meta">
-                          {{ idea.status }} · {{ new Date(idea.updatedAt).toLocaleString() }}
-                        </p>
-                      </div>
-
-                      <button
-                        v-if="idea.status !== 'converted'"
-                        type="button"
-                        class="dashboard-button secondary small-button"
-                        :disabled="convertingIdeaId === idea.id"
-                        @click="convertIdeaToDraft(idea)"
-                      >
-                        {{ convertingIdeaId === idea.id ? "Converting..." : "Convert to draft" }}
-                      </button>
-                    </article>
-
-                    <div v-if="dashboard.ideaInbox.length === 0" class="pipeline-empty-state">
-                      <p class="pipeline-empty">No ideas yet. Start by speaking your first idea.</p>
-                      <button type="button" class="dashboard-button secondary small-button" @click="scrollToSection('idea-inbox')">
-                        Speak now
-                      </button>
-                    </div>
-                  </div>
-                </article>
-              </section>
-            </div>
-
-            <aside class="dashboard-rail">
-              <section class="dashboard-panel rail-panel">
-                <div class="panel-header">
-                  <div>
-                    <p class="panel-meta">Weekly Report</p>
-                    <h2>{{ weeklyReportHeading }}</h2>
-                  </div>
+              <div
+                v-else-if="ideaCaptureMode === 'image'"
+                class="capture-dropzone"
+                @dragover.prevent
+                @drop.prevent="handleIdeaImageDrop"
+              >
+                <div>
+                  <strong>{{ isPreparingIdeaImage ? "Processing screenshot..." : "Drop one screenshot here" }}</strong>
+                  <p class="dashboard-empty-copy">
+                    Or browse from your device. Keep it to proof, tweets, dashboards, or product moments you want to turn into content.
+                  </p>
                 </div>
-
-                <div class="rail-list">
-                  <article
-                    v-for="line in weeklyReportLines"
-                    :key="line"
-                    class="rail-feed-item"
-                  >
-                    {{ line }}
-                  </article>
+                <label class="dashboard-button secondary small-button capture-upload-button">
+                  <span>Choose screenshot</span>
+                  <input type="file" accept="image/*" @change="handleIdeaImageUpload" />
+                </label>
+                <div v-if="uploadedIdeaImageDataUrl" class="capture-image-preview">
+                  <img :src="uploadedIdeaImageDataUrl" alt="Captured screenshot preview" />
+                  <p class="pipeline-meta">
+                    {{ uploadedIdeaImageName || "Screenshot ready" }}
+                    <span v-if="uploadedIdeaImageDimensions">
+                      · {{ uploadedIdeaImageDimensions.width }}×{{ uploadedIdeaImageDimensions.height }}
+                    </span>
+                  </p>
                 </div>
+              </div>
 
+              <label class="capture-field">
+                <span>{{ captureTextareaLabel }}</span>
+                <textarea
+                  v-model="newIdeaText"
+                  rows="5"
+                  :placeholder="captureTextareaPlaceholder"
+                ></textarea>
+              </label>
+
+              <div class="action-row">
+                <button
+                  type="button"
+                  class="dashboard-button"
+                  :disabled="!canSaveIdeaCapture"
+                  @click="addIdeaInboxItem"
+                >
+                  {{ captureSaveLabel }}
+                </button>
                 <button
                   type="button"
                   class="dashboard-button secondary small-button"
-                  @click="handleQuickCreateAction('daily-idea')"
+                  @click="resetCaptureComposer()"
                 >
-                  Plan next week
+                  Clear
+                </button>
+              </div>
+
+              <p class="dashboard-empty-copy">
+                Current mode: {{ activeCaptureMode.label }}. Save first, then generate a draft from the inbox when you are ready.
+              </p>
+            </article>
+
+            <article class="dashboard-panel capture-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-meta">Inbox queue</p>
+                  <h2>{{ ideaInboxItems.length === 0 ? "No saved captures yet" : `${ideaInboxItems.length} saved capture${ideaInboxItems.length === 1 ? "" : "s"}` }}</h2>
+                  <p class="dashboard-description">
+                    This is the staging lane between raw input and generated drafts.
+                  </p>
+                </div>
+              </div>
+
+              <div v-if="ideaInboxItems.length === 0" class="pipeline-empty-state">
+                <p class="pipeline-empty">
+                  Save one thought, screenshot, voice note, or link and it will show up here.
+                </p>
+              </div>
+
+              <div v-else class="idea-inbox-list">
+                <article
+                  v-for="idea in ideaInboxItems"
+                  :key="idea.id"
+                  class="idea-item refined-idea-item"
+                >
+                  <div class="pipeline-item-header">
+                    <div class="pipeline-badges">
+                      <span class="status-tag accent">{{ formatIdeaInputLabel(idea.inputType) }}</span>
+                      <span class="status-tag">{{ idea.status }}</span>
+                      <span class="status-tag subtle">{{ formatIdeaUnderstandingStatus(idea.understandingStatus) }}</span>
+                      <span
+                        v-if="idea.understandingConfidenceScore"
+                        class="status-tag subtle"
+                      >
+                        {{ formatIdeaStrength(idea.understandingConfidenceScore) }}
+                      </span>
+                    </div>
+                    <span class="pipeline-meta">{{ formatIdeaTimestamp(idea.createdAt) }}</span>
+                  </div>
+
+                  <div
+                    v-if="idea.inputType === 'image' && idea.rawInput?.startsWith('data:image/')"
+                    class="idea-image-preview"
+                  >
+                    <img :src="idea.rawInput" alt="Saved screenshot preview" />
+                  </div>
+
+                  <a
+                    v-if="idea.inputType === 'link' && (idea.metadata?.sourceUrl || idea.rawInput)"
+                    class="capture-source-link"
+                    :href="idea.metadata?.sourceUrl || idea.rawInput"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {{ idea.metadata?.hostname || idea.metadata?.sourceUrl || idea.rawInput }}
+                  </a>
+
+                  <p class="pipeline-excerpt">{{ idea.text }}</p>
+
+                  <div v-if="idea.understanding || idea.understandingStatus !== 'completed'" class="idea-understanding">
+                    <p
+                      v-if="idea.understandingStatus === 'processing' || idea.understandingStatus === 'queued'"
+                      class="pipeline-meta"
+                    >
+                      We are shaping this idea into a clearer topic and angle now.
+                    </p>
+                    <p
+                      v-else-if="idea.understandingStatus === 'failed' && idea.understandingError"
+                      class="pipeline-meta pipeline-meta-danger"
+                    >
+                      {{ idea.understandingError }}
+                    </p>
+                    <div class="pipeline-badges">
+                      <span v-if="idea.understanding" class="status-tag">{{ formatIdeaLabel(idea.understanding.intent) }}</span>
+                      <span v-if="idea.understanding" class="status-tag">{{ formatIdeaLabel(idea.understanding.contentType) }}</span>
+                      <span
+                        v-if="idea.understanding?.businessGoal"
+                        class="status-tag"
+                      >
+                        {{ formatIdeaLabel(idea.understanding?.businessGoal) }}
+                      </span>
+                    </div>
+                    <p v-if="idea.understanding" class="pipeline-meta">
+                      <strong>Topic:</strong> {{ idea.understanding.topic }}
+                    </p>
+                    <p v-if="idea.understanding" class="pipeline-meta">
+                      <strong>Angle:</strong> {{ idea.understanding.businessAngle }}
+                    </p>
+                    <p v-if="idea.understanding" class="pipeline-meta">
+                      <strong>POV:</strong> {{ idea.understanding.povSummary }}
+                    </p>
+                  </div>
+
+                  <div class="action-row">
+                    <button
+                      type="button"
+                      class="dashboard-button secondary small-button"
+                      :disabled="convertingIdeaId === idea.id || !canCreateContent"
+                      @click="convertIdeaToDraft(idea)"
+                    >
+                      {{ convertingIdeaId === idea.id ? "Generating..." : "Generate draft" }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </article>
+          </section>
+
+          <div class="dashboard-main-grid dashboard-main-grid--control">
+            <div class="dashboard-primary control-stack">
+              <section class="dashboard-panel decision-panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-meta">Next action</p>
+                    <h2>{{ dashboardNextAction.heading }}</h2>
+                    <p class="dashboard-description">{{ dashboardNextAction.description }}</p>
+                  </div>
+                </div>
+
+                <div class="action-row">
+                  <button
+                    type="button"
+                    class="dashboard-button"
+                    @click="openDashboardNextAction"
+                  >
+                    {{ dashboardNextAction.primaryLabel }}
+                  </button>
+                </div>
+              </section>
+
+              <section class="dashboard-card-grid pipeline-summary-grid">
+                <button
+                  v-for="card in pipelineSummaryCards"
+                  :key="card.id"
+                  type="button"
+                  class="dashboard-card summary-card"
+                  @click="handlePipelineSummaryClick(card.id)"
+                >
+                  <p class="dashboard-card-label">{{ card.label }}</p>
+                  <strong>{{ card.count }}</strong>
+                  <p class="dashboard-empty-copy">{{ card.copy }}</p>
                 </button>
               </section>
-            </aside>
+
+              <section class="dashboard-grid-two">
+                <article class="dashboard-panel">
+                  <div class="panel-header">
+                    <div>
+                      <p class="panel-meta">Weekly signal</p>
+                      <h2>{{ weeklyReportHeading }}</h2>
+                    </div>
+                  </div>
+
+                  <div class="rail-list">
+                    <article class="rail-feed-item">
+                      {{
+                        retentionSummary
+                          ? `Consistency score: ${weeklyConsistencyPercent}% across ${retentionSummary.activeDays7d} active day${retentionSummary.activeDays7d === 1 ? "" : "s"} this week.`
+                          : `Consistency score: ${weeklyConsistencyPercent}%.`
+                      }}
+                    </article>
+                    <article class="rail-feed-item">
+                      {{
+                        retentionSummary
+                          ? `Created ${retentionSummary.postsCreated7d}, scheduled ${retentionSummary.postsScheduled7d}, published ${retentionSummary.postsPublished7d}, emailed ${retentionSummary.emailsSent7d}.`
+                          : weeklyMissedDays === 0
+                            ? "You covered every day this week."
+                            : `You missed ${weeklyMissedDays} day${weeklyMissedDays === 1 ? "" : "s"} this week.`
+                      }}
+                    </article>
+                    <article class="rail-feed-item">
+                      {{
+                        retentionSummary?.bestDayLabel
+                          ? `Best day this week: ${retentionSummary.bestDayLabel}. ${consistencyDeltaLabel}.`
+                          : `${consistencyDeltaLabel}. ${bestTimeSlots[0] ? `Best window: ${bestTimeCountdownLabel}.` : "Best posting window will show up once you build a little more history."}`
+                      }}
+                    </article>
+                    <article class="rail-feed-item">
+                      {{ retentionSummary?.nudgeMessage || "The next nudge will appear once the system sees a little more history." }}
+                    </article>
+                  </div>
+                </article>
+
+                <article class="dashboard-panel">
+                  <div class="panel-header">
+                    <div>
+                      <p class="panel-meta">Recent results</p>
+                      <h2>What happened last</h2>
+                    </div>
+                  </div>
+
+                  <div class="rail-list">
+                    <article
+                      v-for="line in recentResultsLines"
+                      :key="line"
+                      class="rail-feed-item"
+                    >
+                      {{ line }}
+                    </article>
+                    <article class="rail-feed-item">{{ intelligencePatternLabel }}</article>
+                  </div>
+                </article>
+              </section>
+
+              <section class="dashboard-panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-meta">Recent activity</p>
+                    <h2>Last 5 content moves</h2>
+                    <p class="dashboard-description">
+                      Keep this capped. The long archive belongs in History, not on the dashboard.
+                    </p>
+                  </div>
+
+                  <router-link class="dashboard-button secondary small-button" :to="appRoutes.appHistory">
+                    Open history
+                  </router-link>
+                </div>
+
+                <div v-if="recentActivityItems.length === 0" class="pipeline-empty-state">
+                  <p class="pipeline-empty">No recent activity yet. Create one post and the loop starts here.</p>
+                </div>
+
+                <div v-else class="recent-activity-list">
+                  <button
+                    v-for="item in recentActivityItems"
+                    :key="item.asset.id"
+                    type="button"
+                    class="recent-activity-row"
+                    @click="openCreator(item.asset)"
+                  >
+                    <div>
+                      <strong>{{ item.title }}</strong>
+                      <p class="pipeline-meta">{{ item.description }}</p>
+                    </div>
+                    <span class="topbar-pill muted">{{ item.whenLabel }}</span>
+                  </button>
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </div>
@@ -1599,8 +2264,17 @@ onBeforeUnmount(() => {
   align-items: start;
 }
 
+.dashboard-main-grid--control {
+  grid-template-columns: 1fr;
+}
+
 .dashboard-primary,
 .dashboard-rail {
+  display: grid;
+  gap: 24px;
+}
+
+.control-stack {
   display: grid;
   gap: 24px;
 }
@@ -1628,13 +2302,192 @@ onBeforeUnmount(() => {
   align-content: start;
 }
 
+.summary-card {
+  width: 100%;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: var(--fc-panel-bg);
+  color: var(--fc-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.summary-card:hover {
+  border-color: color-mix(in srgb, var(--fc-accent) 24%, var(--fc-border));
+}
+
 .dashboard-card strong {
   font-size: 1.9rem;
 }
 
 .dashboard-grid-two {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
   margin-bottom: 0;
+}
+
+.dashboard-grid-two--capture {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+}
+
+.capture-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.capture-mode-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.capture-mode-pill {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-height: 88px;
+  padding: 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: var(--fc-input-bg);
+  color: var(--fc-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.capture-mode-pill strong {
+  font-size: 0.96rem;
+}
+
+.capture-mode-pill span {
+  color: var(--fc-text-muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.capture-mode-pill.active {
+  border-color: color-mix(in srgb, var(--fc-accent) 30%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 30%, var(--fc-panel-bg));
+}
+
+.capture-block,
+.capture-field {
+  display: grid;
+  gap: 10px;
+}
+
+.capture-field span {
+  font-weight: 600;
+}
+
+.capture-field input,
+.capture-field textarea {
+  width: 100%;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: var(--fc-input-bg);
+  color: var(--fc-text);
+}
+
+.capture-field input {
+  min-height: 48px;
+  padding: 0 16px;
+}
+
+.capture-field textarea {
+  min-height: 132px;
+  padding: 14px 16px;
+  resize: vertical;
+}
+
+.capture-dropzone {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px dashed color-mix(in srgb, var(--fc-accent) 28%, var(--fc-border));
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-accent-soft) 20%, var(--fc-panel-bg));
+}
+
+.capture-upload-button {
+  position: relative;
+  overflow: hidden;
+  width: fit-content;
+}
+
+.capture-upload-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.capture-image-preview,
+.idea-image-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.capture-image-preview img,
+.idea-image-preview img {
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 1px solid var(--fc-border);
+}
+
+.idea-inbox-list {
+  display: grid;
+  gap: 12px;
+  max-height: 680px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.idea-understanding {
+  display: grid;
+  gap: 8px;
+}
+
+.pipeline-meta-danger {
+  color: #a64632;
+}
+
+.capture-source-link {
+  color: var(--fc-accent-dark);
+  font-size: 0.9rem;
+  text-decoration: none;
+  word-break: break-word;
+}
+
+.capture-source-link:hover {
+  text-decoration: underline;
+}
+
+.recent-activity-list {
+  display: grid;
+  gap: 12px;
+}
+
+.recent-activity-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 16px 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: var(--fc-input-bg);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recent-activity-row:hover {
+  border-color: color-mix(in srgb, var(--fc-accent) 24%, var(--fc-border));
 }
 
 .action-preview-panel {
@@ -1650,6 +2503,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.dashboard-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
 }
 
 .action-preview-option {
@@ -1998,6 +2858,10 @@ onBeforeUnmount(() => {
       "create"
       "status";
   }
+
+  .dashboard-grid-two--capture {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1280px) {
@@ -2097,6 +2961,10 @@ onBeforeUnmount(() => {
   .dashboard-intro {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .capture-mode-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

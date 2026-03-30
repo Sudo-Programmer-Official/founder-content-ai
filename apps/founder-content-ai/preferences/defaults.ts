@@ -10,6 +10,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   layoutMode: "dashboard",
   aiAssistLevel: "balanced",
   notifyPostPublished: true,
+  notifyEmailCampaignUpdates: true,
   createdAt: new Date(0).toISOString(),
   updatedAt: new Date(0).toISOString(),
 };

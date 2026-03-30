@@ -43,8 +43,10 @@ Every business-owned table must include `business_id`.
 Examples for future tables:
 
 - `ideas`
+- `content_batches`
 - `content_items`
 - `content_variants`
+- `schedule_items`
 - `campaigns`
 - `contacts`
 - `email_sends`

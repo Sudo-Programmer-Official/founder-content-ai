@@ -3,6 +3,8 @@ export type SocialAccountStatus = "connected" | "expired" | "revoked" | "error";
 export type PostAssetType = "image";
 export type PostAssetSource = "upload" | "generated";
 export type PostAssetStatus = "uploaded" | "processing" | "ready" | "failed";
+export type PostPerformanceLabel = "low" | "medium" | "high";
+export type SchedulingSafetyWarningCode = "daily_limit" | "minimum_gap";
 export type ScheduledPostStatus =
   | "scheduled"
   | "processing"
@@ -11,7 +13,14 @@ export type ScheduledPostStatus =
   | "paused"
   | "canceled";
 export type SocialAccountIdentityType = "person" | "organization";
-export type ScheduledPostMutationAction = "pause" | "resume" | "cancel" | "reschedule" | "retry";
+export type ScheduledPostMutationAction =
+  | "pause"
+  | "resume"
+  | "cancel"
+  | "reschedule"
+  | "retry"
+  | "publish_now"
+  | "move_to_draft";
 
 export interface SocialAccountIdentity {
   id: string;
@@ -81,21 +90,37 @@ export interface ScheduledPost {
   businessId: string;
   userId: string;
   platform: SocialPlatform;
+  selectedIdentityId?: string;
+  selectedIdentityDisplayName?: string;
+  selectedIdentityType?: SocialAccountIdentityType;
   contentText: string;
   assetGroupId?: string;
   slides: ScheduledPostSlide[];
   assets: PostAsset[];
   scheduledAt: string;
+  earliestDispatchAt: string;
+  latestDispatchAt: string;
   audienceTimezone: string;
   status: ScheduledPostStatus;
+  dispatchPriority: number;
+  dispatchJobId?: string;
   externalPostId?: string;
   externalPostUrl?: string;
   errorMessage?: string;
   retryCount: number;
+  performanceLabel?: PostPerformanceLabel;
+  performanceRecordedAt?: string;
+  engagementScore?: number;
   lastAttemptAt?: string;
   createdAt: string;
   updatedAt: string;
   publishedAt?: string;
+}
+
+export interface SchedulingSafetyWarning {
+  code: SchedulingSafetyWarningCode;
+  title: string;
+  message: string;
 }
 
 export type RecommendPostTimeContentType = "carousel" | "image" | "text";
@@ -174,10 +199,12 @@ export interface SchedulePostRequest {
   slides: ScheduledPostSlide[];
   scheduledAt: string;
   audienceTimezone?: string;
+  ignoreSafetyWarnings?: boolean;
 }
 
 export interface SchedulePostResponse {
   scheduledPost: ScheduledPost;
+  safetyWarnings?: SchedulingSafetyWarning[];
 }
 
 export interface PublishPostRequest {
@@ -210,9 +237,20 @@ export interface UpdateScheduledPostRequest {
   action: ScheduledPostMutationAction;
   scheduledAt?: string;
   audienceTimezone?: string;
+  ignoreSafetyWarnings?: boolean;
 }
 
 export interface UpdateScheduledPostResponse {
+  scheduledPost: ScheduledPost;
+  safetyWarnings?: SchedulingSafetyWarning[];
+}
+
+export interface UpdateScheduledPostPerformanceRequest {
+  businessId: string;
+  performanceLabel: PostPerformanceLabel;
+}
+
+export interface UpdateScheduledPostPerformanceResponse {
   scheduledPost: ScheduledPost;
 }
 

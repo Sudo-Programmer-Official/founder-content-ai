@@ -2,8 +2,8 @@ import { processDueScheduledPosts } from "../services/scheduledPostService.ts";
 import { logError, logInfo } from "../utils/logger.ts";
 
 function resolveBatchSize(): number {
-  const parsed = Number(process.env.SCHEDULED_POST_WORKER_BATCH_SIZE ?? 10);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 10;
+  const parsed = Number(process.env.SCHEDULED_POST_WORKER_BATCH_SIZE ?? 3);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 3;
 }
 
 export async function runScheduledPostWorker(): Promise<void> {
