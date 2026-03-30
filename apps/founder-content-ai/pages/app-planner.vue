@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import type {
   BusinessMembership,
   ControlDashboardResponse,
@@ -39,6 +39,7 @@ interface PlannerDayModel {
   posts: ScheduledPost[];
 }
 
+const route = useRoute();
 const router = useRouter();
 const {
   bootstrap: productAccess,
@@ -82,7 +83,22 @@ const scheduleTime = ref("09:00");
 const audienceTimezone = ref("");
 
 const resolvedBusinessId = computed(
-  () => productAccess.value?.activeBusinessId || activeBusinessId.value || businesses.value[0]?.businessId || "",
+  () => {
+    const availableBusinessIds = new Set(businesses.value.map((membership) => membership.businessId));
+    const bootstrapBusinessId = productAccess.value?.activeBusinessId?.trim() ?? "";
+
+    if (bootstrapBusinessId && availableBusinessIds.has(bootstrapBusinessId)) {
+      return bootstrapBusinessId;
+    }
+
+    const storedBusinessId = activeBusinessId.value?.trim() ?? "";
+
+    if (storedBusinessId && availableBusinessIds.has(storedBusinessId)) {
+      return storedBusinessId;
+    }
+
+    return businesses.value[0]?.businessId || "";
+  },
 );
 
 const currentBusiness = computed(
@@ -344,14 +360,53 @@ function syncSelection(): void {
   }
 }
 
+async function consumeIncomingDraftSelection(): Promise<void> {
+  const incomingDraftId = typeof route.query.draftId === "string" ? route.query.draftId.trim() : "";
+
+  if (!incomingDraftId) {
+    return;
+  }
+
+  const nextQuery = { ...route.query };
+  delete nextQuery.draftId;
+
+  const matchingDraft = unscheduledBacklog.value.find((asset) => asset.id === incomingDraftId);
+
+  if (matchingDraft) {
+    selectBacklogAsset(matchingDraft.id, selectedGridDateKey.value || toDateKeyInTimezone(new Date(), userTimezone));
+    feedbackMessage.value = "Draft loaded from the result page. Pick the slot and schedule it.";
+    await router.replace({ query: nextQuery });
+    return;
+  }
+
+  if (scheduledPosts.value.some((post) => post.assetGroupId === incomingDraftId)) {
+    feedbackMessage.value = "That draft is already scheduled. Update the existing slot from here.";
+    await router.replace({ query: nextQuery });
+    return;
+  }
+
+  feedbackMessage.value = "That draft is not available in the backlog right now.";
+  await router.replace({ query: nextQuery });
+}
+
 async function loadBusinesses(): Promise<void> {
   const response = await requestMyBusinesses();
   businesses.value = response.businesses;
 
-  const preferredBusinessId =
-    productAccess.value?.activeBusinessId || activeBusinessId.value || response.businesses[0]?.businessId || "";
+  const availableBusinessIds = new Set(response.businesses.map((membership) => membership.businessId));
+  const requestedBusinessId = productAccess.value?.activeBusinessId?.trim() ?? activeBusinessId.value?.trim() ?? "";
+  const preferredBusinessId = requestedBusinessId && availableBusinessIds.has(requestedBusinessId)
+    ? requestedBusinessId
+    : response.businesses[0]?.businessId || "";
 
-  if (preferredBusinessId && preferredBusinessId !== productAccess.value?.activeBusinessId) {
+  if (!preferredBusinessId) {
+    if (activeBusinessId.value) {
+      await setActiveBusinessId("");
+    }
+    return;
+  }
+
+  if (preferredBusinessId !== productAccess.value?.activeBusinessId) {
     await setActiveBusinessId(preferredBusinessId);
   }
 }
@@ -410,6 +465,7 @@ async function initializePage(): Promise<void> {
     initializeWeekState();
     await loadPlannerData();
     syncSelection();
+    await consumeIncomingDraftSelection();
   } catch (error) {
     errorMessage.value =
       error instanceof Error ? error.message : "Unable to load the planner right now.";

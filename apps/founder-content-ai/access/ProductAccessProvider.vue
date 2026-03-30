@@ -100,11 +100,15 @@ async function refreshProductAccess(nextBusinessId?: string | null): Promise<MyF
     errorMessage.value = "";
     return response;
   } catch (error) {
-    bootstrap.value = buildAnonymousBootstrap();
-    errorMessage.value =
-      error instanceof Error && !isAuthFailure(error)
-        ? error.message
-        : "";
+    if (isAuthFailure(error)) {
+      bootstrap.value = buildAnonymousBootstrap();
+      activeBusinessId.value = "";
+      storeBusinessId("");
+      errorMessage.value = "";
+      return bootstrap.value;
+    }
+
+    errorMessage.value = error instanceof Error ? error.message : "Unable to load workspace access.";
     return bootstrap.value;
   } finally {
     isLoading.value = false;

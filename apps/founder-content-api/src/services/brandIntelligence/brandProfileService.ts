@@ -23,6 +23,7 @@ import type { AuthenticatedPrincipal } from "../../middleware/auth.ts";
 import { requireBusinessMembership } from "../authBusinessService.ts";
 import { queryDb } from "../db/client.ts";
 import { getCompetitiveIntelligenceSnapshot } from "../competitiveIntelligence/service.ts";
+import { normalizePublicUrl } from "../competitiveIntelligence/fetchUtils.ts";
 import { logWarn } from "../../utils/logger.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../../");
@@ -34,6 +35,10 @@ interface BrandProfileRow extends QueryResultRow {
   preferred_tone: string | null;
   target_channels: unknown;
   goals: unknown;
+  linkedin_url: string | null;
+  instagram_url: string | null;
+  facebook_url: string | null;
+  website_url: string | null;
   tone: string | null;
   writing_style: string | null;
   visual_style: string | null;
@@ -82,6 +87,11 @@ function normalizeOptionalString(value: string | undefined | null): string | und
   return normalized ? normalized : undefined;
 }
 
+function normalizeOptionalPublicUrl(value: string | undefined | null): string | undefined {
+  const normalized = normalizeOptionalString(value);
+  return normalized ? normalizePublicUrl(normalized) : undefined;
+}
+
 function parseStringArray<TValue extends string>(value: unknown): TValue[] {
   if (Array.isArray(value)) {
     return value.filter((entry): entry is TValue => typeof entry === "string");
@@ -113,6 +123,10 @@ function mapBrandProfile(row: BrandProfileRow): BrandProfile {
     preferredTone: (row.preferred_tone as BrandProfile["preferredTone"]) ?? undefined,
     targetChannels: parseStringArray<OnboardingChannel>(row.target_channels),
     goals: parseStringArray<OnboardingGoal>(row.goals),
+    linkedinUrl: row.linkedin_url ?? undefined,
+    instagramUrl: row.instagram_url ?? undefined,
+    facebookUrl: row.facebook_url ?? undefined,
+    websiteUrl: row.website_url ?? undefined,
     tone: row.tone ?? undefined,
     writingStyle: row.writing_style ?? undefined,
     visualStyle: row.visual_style ?? undefined,
@@ -158,6 +172,10 @@ async function loadBrandProfileRecord(businessId: string): Promise<BrandProfile 
         preferred_tone,
         target_channels,
         goals,
+        linkedin_url,
+        instagram_url,
+        facebook_url,
+        website_url,
         tone,
         writing_style,
         visual_style,
@@ -629,6 +647,10 @@ async function loadBrandSignals(businessId: string): Promise<ExtractedBrandSigna
 async function upsertBrandProfile(input: {
   businessId: string;
   existingProfile: BrandProfile | null;
+  linkedinUrl?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
+  websiteUrl?: string;
   tone?: string;
   writingStyle?: string;
   visualStyle?: string;
@@ -643,6 +665,10 @@ async function upsertBrandProfile(input: {
         preferred_tone,
         target_channels,
         goals,
+        linkedin_url,
+        instagram_url,
+        facebook_url,
+        website_url,
         tone,
         writing_style,
         visual_style,
@@ -657,8 +683,12 @@ async function upsertBrandProfile(input: {
         $6,
         $7,
         $8,
-        $9::jsonb,
-        $10::jsonb
+        $9,
+        $10,
+        $11,
+        $12,
+        $13::jsonb,
+        $14::jsonb
       )
       on conflict (business_id)
       do update set
@@ -666,6 +696,10 @@ async function upsertBrandProfile(input: {
         preferred_tone = excluded.preferred_tone,
         target_channels = excluded.target_channels,
         goals = excluded.goals,
+        linkedin_url = excluded.linkedin_url,
+        instagram_url = excluded.instagram_url,
+        facebook_url = excluded.facebook_url,
+        website_url = excluded.website_url,
         tone = excluded.tone,
         writing_style = excluded.writing_style,
         visual_style = excluded.visual_style,
@@ -679,6 +713,10 @@ async function upsertBrandProfile(input: {
         preferred_tone,
         target_channels,
         goals,
+        linkedin_url,
+        instagram_url,
+        facebook_url,
+        website_url,
         tone,
         writing_style,
         visual_style,
@@ -693,6 +731,10 @@ async function upsertBrandProfile(input: {
       input.existingProfile?.preferredTone ?? null,
       JSON.stringify(input.existingProfile?.targetChannels ?? []),
       JSON.stringify(input.existingProfile?.goals ?? []),
+      input.linkedinUrl ?? input.existingProfile?.linkedinUrl ?? null,
+      input.instagramUrl ?? input.existingProfile?.instagramUrl ?? null,
+      input.facebookUrl ?? input.existingProfile?.facebookUrl ?? null,
+      input.websiteUrl ?? input.existingProfile?.websiteUrl ?? null,
       input.tone ?? input.existingProfile?.tone ?? input.existingProfile?.preferredTone ?? null,
       input.writingStyle ?? input.existingProfile?.writingStyle ?? null,
       input.visualStyle ?? input.existingProfile?.visualStyle ?? null,
@@ -820,6 +862,22 @@ export async function updateBrandProfile(
   const updatedProfile = await upsertBrandProfile({
     businessId: input.businessId,
     existingProfile: baseResult.brandProfile,
+    linkedinUrl:
+      input.linkedinUrl !== undefined
+        ? normalizeOptionalPublicUrl(input.linkedinUrl)
+        : baseResult.brandProfile?.linkedinUrl,
+    instagramUrl:
+      input.instagramUrl !== undefined
+        ? normalizeOptionalPublicUrl(input.instagramUrl)
+        : baseResult.brandProfile?.instagramUrl,
+    facebookUrl:
+      input.facebookUrl !== undefined
+        ? normalizeOptionalPublicUrl(input.facebookUrl)
+        : baseResult.brandProfile?.facebookUrl,
+    websiteUrl:
+      input.websiteUrl !== undefined
+        ? normalizeOptionalPublicUrl(input.websiteUrl)
+        : baseResult.brandProfile?.websiteUrl,
     tone:
       input.tone !== undefined
         ? normalizeOptionalString(input.tone)

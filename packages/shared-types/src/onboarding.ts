@@ -37,6 +37,10 @@ export interface BrandProfile {
   preferredTone?: BrandTone;
   targetChannels: OnboardingChannel[];
   goals: OnboardingGoal[];
+  linkedinUrl?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
+  websiteUrl?: string;
   tone?: string;
   writingStyle?: string;
   visualStyle?: string;

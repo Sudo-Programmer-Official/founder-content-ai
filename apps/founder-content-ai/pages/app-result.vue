@@ -35,7 +35,7 @@ import { appRoutes } from "../utils/routes";
 
 const route = useRoute();
 const router = useRouter();
-const { bootstrap } = useProductAccessContext();
+const { bootstrap, isFeatureEnabled } = useProductAccessContext();
 
 const draft = ref<ActivationDraftRecord | null>(null);
 const feedbackMessage = ref("");
@@ -55,12 +55,82 @@ const isPreviewingAiEdit = ref(false);
 const isApplyingAiEdit = ref(false);
 
 const AI_QUICK_COMMANDS = [
+  { label: "Stop the scroll", value: "Rewrite the opening so the first line stops the scroll and creates tension." },
   { label: "Make sharper", value: "Make this sharper and more punchy." },
-  { label: "Remove AI tone", value: "Remove AI-sounding phrasing and make it sound more human." },
+  { label: "Add specificity", value: "Make this more specific with concrete founder realities and cleaner language. Do not invent facts." },
   { label: "Shorten", value: "Shorten this without changing the core message." },
-  { label: "Founder voice", value: "Make this sound more like a founder talking to another founder." },
-  { label: "Remove emojis", value: "Remove emojis and keep the tone clean and direct." },
+  { label: "Founder voice", value: "Make this sound like a founder talking to another founder, not a consultant or AI assistant." },
+  { label: "Punchier close", value: "Tighten the ending and land on a stronger punchline." },
 ] as const;
+
+function splitPostParagraphs(value: string): string[] {
+  return value
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== "");
+}
+
+function extractPreviewLead(paragraphs: string[]): string[] {
+  const firstParagraph = paragraphs[0] ?? "";
+
+  if (!firstParagraph) {
+    return [];
+  }
+
+  const explicitLines = firstParagraph
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+
+  if (explicitLines.length >= 2 && explicitLines[0].length <= 72 && explicitLines[1].length <= 72) {
+    return explicitLines.slice(0, 2);
+  }
+
+  const normalized = firstParagraph.replace(/\s+/g, " ").trim();
+  const firstSentenceMatch = normalized.match(/^[^.!?]+[.!?](?=\s|$)/);
+  const firstSentence = firstSentenceMatch?.[0]?.trim() ?? normalized;
+
+  if (!firstSentence) {
+    return [];
+  }
+
+  if (firstSentence.length <= 96) {
+    const remaining = normalized.slice(firstSentence.length).trim();
+    const secondSentenceMatch = remaining.match(/^[^.!?]+[.!?](?=\s|$)/);
+    const secondSentence = secondSentenceMatch?.[0]?.trim() ?? "";
+
+    if (secondSentence && secondSentence.length <= 72) {
+      return [firstSentence, secondSentence];
+    }
+  }
+
+  return [firstSentence.length > 110 ? `${firstSentence.slice(0, 107).trimEnd()}...` : firstSentence];
+}
+
+function extractPreviewBody(paragraphs: string[], leadLines: string[]): string[] {
+  if (paragraphs.length === 0) {
+    return [];
+  }
+
+  let firstParagraph = paragraphs[0] ?? "";
+
+  for (const leadLine of leadLines) {
+    if (!leadLine) {
+      continue;
+    }
+
+    if (firstParagraph.startsWith(leadLine)) {
+      firstParagraph = firstParagraph.slice(leadLine.length).trimStart();
+      continue;
+    }
+
+    firstParagraph = firstParagraph.replace(leadLine, "").trim();
+  }
+
+  return [firstParagraph, ...paragraphs.slice(1)]
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== "");
+}
 
 const postScore = computed(() =>
   draft.value
@@ -79,10 +149,23 @@ const postScore = computed(() =>
 
 const quickSignals = computed(() => draft.value?.result.quickSignals);
 const postContent = computed(() => draft.value?.result.post ?? "");
+const postParagraphs = computed(() => splitPostParagraphs(postContent.value));
+const previewLeadLines = computed(() => extractPreviewLead(postParagraphs.value));
+const previewBodyParagraphs = computed(() =>
+  extractPreviewBody(postParagraphs.value, previewLeadLines.value),
+);
 const hooks = computed(() => draft.value?.result.hooks ?? []);
 const hasPersistedAsset = computed(() => Boolean(draft.value?.result.asset?.id));
 const persistedPostId = computed(() => draft.value?.result.asset?.id ?? "");
 const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? "");
+const schedulerEnabled = computed(
+  () =>
+    Boolean(activeBusinessId.value) &&
+    (!bootstrap.value?.activeBusinessId || isFeatureEnabled("scheduler")),
+);
+const canScheduleDraft = computed(
+  () => schedulerEnabled.value && hasPersistedAsset.value,
+);
 const connectedLinkedInAccount = computed(() =>
   socialAccounts.value.find(
     (account) => account.platform === "linkedin" && account.status === "connected",
@@ -130,6 +213,61 @@ function getPublishFailureMessage(error: unknown): string {
 
   return rawMessage;
 }
+
+const attentionSignal = computed(() => {
+  if (postScore.value >= 84) {
+    return {
+      label: "High",
+      copy: "Strong feed readability with a clean publishing structure.",
+      tone: "strong",
+    } as const;
+  }
+
+  if (postScore.value >= 72) {
+    return {
+      label: "Promising",
+      copy: "Good foundation. The main unlock is a sharper opening or tighter close.",
+      tone: "steady",
+    } as const;
+  }
+
+  return {
+    label: "Needs punch",
+    copy: "The idea is there, but the hook or paragraph rhythm still needs more tension.",
+    tone: "warning",
+  } as const;
+});
+
+const structureSignal = computed(() => {
+  if (previewLeadLines.value[0] && previewLeadLines.value[0].length <= 72 && postParagraphs.value.length >= 4) {
+    return "Scroll-friendly";
+  }
+
+  if (postParagraphs.value.length >= 3) {
+    return "Readable";
+  }
+
+  return "Dense";
+});
+
+const actionPriorityLabel = computed(() =>
+  canScheduleDraft.value ? "Schedule next" : connectedLinkedInAccount.value ? "Publish now" : "Connect channel",
+);
+
+const signalPills = computed(() => [
+  `${attentionSignal.value.label} attention signal`,
+  `${structureSignal.value} structure`,
+  `${hooks.value.length} alternate hook${hooks.value.length === 1 ? "" : "s"}`,
+]);
+
+const aiPreviewActions = computed(() =>
+  (aiEditPreview.value?.interpretedActions ?? []).map((action) =>
+    action
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" "),
+  ),
+);
 
 function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null {
   if (!asset.contentBody || typeof asset.contentBody !== "object") {
@@ -481,6 +619,20 @@ async function goToOutreach(): Promise<void> {
   });
 }
 
+async function goToPlanner(): Promise<void> {
+  if (!persistedPostId.value) {
+    feedbackMessage.value = "Save this draft in the workspace before scheduling it.";
+    return;
+  }
+
+  await router.push({
+    path: appRoutes.appPlanner,
+    query: {
+      draftId: persistedPostId.value,
+    },
+  });
+}
+
 async function goToEmail(): Promise<void> {
   if (!draft.value) {
     return;
@@ -658,7 +810,9 @@ onBeforeUnmount(() => {
               <p class="panel-meta">Generated post</p>
               <h2>{{ draft.result.idea.title }}</h2>
             </div>
-            <div class="score-badge">Score {{ postScore }}/100</div>
+            <div class="score-badge" :data-tone="attentionSignal.tone">
+              Attention {{ attentionSignal.label }} · {{ postScore }}/100
+            </div>
           </div>
 
           <p v-if="quickSignals" class="signal-line">
@@ -666,23 +820,137 @@ onBeforeUnmount(() => {
             <span>{{ quickSignals.formatLabel }}</span>
           </p>
 
-          <div class="linkedin-status-card" :data-connected="Boolean(connectedLinkedInAccount)">
-            <div>
-              <p class="panel-meta">LinkedIn publishing</p>
-              <strong>
+          <section class="result-signal-grid">
+            <article class="result-signal-card" :data-tone="attentionSignal.tone">
+              <p class="panel-meta">Attention signal</p>
+              <strong>{{ attentionSignal.label }}</strong>
+              <span>{{ attentionSignal.copy }}</span>
+            </article>
+            <article class="result-signal-card">
+              <p class="panel-meta">Structure</p>
+              <strong>{{ structureSignal }}</strong>
+              <span>{{ postParagraphs.length }} paragraph{{ postParagraphs.length === 1 ? "" : "s" }} ready for feed reading.</span>
+            </article>
+            <article class="result-signal-card">
+              <p class="panel-meta">Best next move</p>
+              <strong>{{ actionPriorityLabel }}</strong>
+              <span>
                 {{
-                  connectedLinkedInAccount
-                    ? "Posting optimized for LinkedIn"
-                    : "Direct publishing not connected"
+                  canScheduleDraft
+                    ? "Lock a slot in planner before the draft loses momentum."
+                    : connectedLinkedInAccount
+                      ? "This draft can publish directly from the workspace."
+                      : "Connect LinkedIn first, or keep refining before publishing."
                 }}
-              </strong>
-              <p class="linkedin-status-copy">
-                {{ isLoadingChannels ? "Checking workspace channel..." : linkedInPublishingStatus }}
+              </span>
+            </article>
+          </section>
+
+          <section class="linkedin-feed-preview">
+            <div class="linkedin-feed-header">
+              <div class="linkedin-feed-avatar">{{ connectedLinkedInLabel ? connectedLinkedInLabel.charAt(0).toUpperCase() : "Y" }}</div>
+              <div class="linkedin-feed-identity">
+                <strong>{{ connectedLinkedInLabel || "Your LinkedIn profile" }}</strong>
+                <p>{{ connectedLinkedInAccount ? "Founder post preview" : "Workspace preview before publishing" }}</p>
+              </div>
+            </div>
+
+            <div class="linkedin-preview-pills">
+              <span v-for="pill in signalPills" :key="pill">{{ pill }}</span>
+            </div>
+
+            <div class="linkedin-status-card" :data-connected="Boolean(connectedLinkedInAccount)">
+              <div>
+                <p class="panel-meta">LinkedIn publishing</p>
+                <strong>
+                  {{
+                    connectedLinkedInAccount
+                      ? "Posting optimized for LinkedIn"
+                      : "Direct publishing not connected"
+                  }}
+                </strong>
+                <p class="linkedin-status-copy">
+                  {{ isLoadingChannels ? "Checking workspace channel..." : linkedInPublishingStatus }}
+                </p>
+              </div>
+            </div>
+
+            <div class="linkedin-feed-body">
+              <p
+                v-for="(line, index) in previewLeadLines"
+                :key="`${line}-${index}`"
+                class="linkedin-feed-hook"
+                :class="{ companion: index > 0 }"
+              >
+                {{ line }}
+              </p>
+              <p v-for="paragraph in previewBodyParagraphs" :key="paragraph" class="linkedin-feed-paragraph">
+                {{ paragraph }}
               </p>
             </div>
+          </section>
+
+          <div class="result-primary-actions">
+            <button
+              v-if="canScheduleDraft"
+              type="button"
+              class="primary-action"
+              @click="goToPlanner"
+            >
+              Schedule in Planner
+            </button>
+            <button
+              v-else
+              type="button"
+              class="primary-action"
+              :disabled="
+                isPublishingToLinkedIn ||
+                isConnectingLinkedIn ||
+                isUploadingPostAssets ||
+                !activeBusinessId
+              "
+              @click="connectedLinkedInAccount ? publishToLinkedIn() : connectLinkedIn()"
+            >
+              {{
+                connectedLinkedInAccount
+                  ? isPublishingToLinkedIn
+                    ? "Posting..."
+                    : "Post to LinkedIn"
+                  : isConnectingLinkedIn
+                    ? "Redirecting..."
+                    : "Connect LinkedIn"
+              }}
+            </button>
+
+            <button type="button" class="secondary-action" @click="goToImprove">
+              Refine draft
+            </button>
+
+            <button
+              v-if="canScheduleDraft"
+              type="button"
+              class="secondary-action"
+              :disabled="
+                isPublishingToLinkedIn ||
+                isConnectingLinkedIn ||
+                isUploadingPostAssets ||
+                !activeBusinessId
+              "
+              @click="connectedLinkedInAccount ? publishToLinkedIn() : connectLinkedIn()"
+            >
+              {{
+                connectedLinkedInAccount
+                  ? isPublishingToLinkedIn
+                    ? "Posting..."
+                    : "Post now"
+                  : isConnectingLinkedIn
+                    ? "Redirecting..."
+                    : "Connect LinkedIn"
+              }}
+            </button>
           </div>
 
-          <pre class="post-preview">{{ postContent }}</pre>
+          <p v-if="feedbackMessage" class="result-feedback">{{ feedbackMessage }}</p>
 
           <section v-if="hasPersistedAsset" class="media-panel">
             <div class="media-panel-header">
@@ -786,8 +1054,16 @@ onBeforeUnmount(() => {
             </div>
 
             <div v-else-if="aiEditPreview" class="ai-edit-preview-card">
-              <p class="ai-edit-summary">{{ aiEditPreview.summary }}</p>
-              <p class="ai-edit-scope">{{ aiEditPreview.scopeHint }}</p>
+              <div class="ai-edit-preview-header">
+                <div>
+                  <p class="panel-meta">Change preview</p>
+                  <p class="ai-edit-summary">{{ aiEditPreview.summary }}</p>
+                  <p class="ai-edit-scope">{{ aiEditPreview.scopeHint }}</p>
+                </div>
+                <div v-if="aiPreviewActions.length > 0" class="ai-edit-action-pills">
+                  <span v-for="action in aiPreviewActions" :key="action">{{ action }}</span>
+                </div>
+              </div>
 
               <div class="ai-edit-diff">
                 <article class="ai-edit-diff-card">
@@ -815,59 +1091,31 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </section>
-
-          <div class="result-actions">
-            <button type="button" class="primary-action" @click="goToImprove">Improve</button>
-            <button type="button" class="secondary-action" @click="void copyPost()">
-              Copy for LinkedIn
-            </button>
-            <button
-              type="button"
-              class="secondary-action"
-              :disabled="
-                isPublishingToLinkedIn ||
-                isConnectingLinkedIn ||
-                isUploadingPostAssets ||
-                !activeBusinessId
-              "
-              @click="connectedLinkedInAccount ? publishToLinkedIn() : connectLinkedIn()"
-            >
-              {{
-                connectedLinkedInAccount
-                  ? isPublishingToLinkedIn
-                    ? "Posting..."
-                    : "Post to LinkedIn"
-                  : isConnectingLinkedIn
-                    ? "Redirecting..."
-                    : "Connect LinkedIn"
-              }}
-            </button>
-            <button type="button" class="secondary-action" @click="goToOutreach">
-              Send via Outreach
-            </button>
-            <button type="button" class="secondary-action" @click="goToEmail">
-              Send via Email
-            </button>
-          </div>
-
-          <p v-if="feedbackMessage" class="result-feedback">{{ feedbackMessage }}</p>
         </article>
 
         <aside class="result-side-rail">
           <article class="side-card">
-            <p class="panel-meta">Hooks</p>
+            <p class="panel-meta">Hook bank</p>
+            <h3>Backup openings</h3>
             <ul class="hook-list">
               <li v-for="hook in hooks" :key="hook">{{ hook }}</li>
             </ul>
           </article>
 
           <article class="side-card">
-            <p class="panel-meta">Next actions</p>
-            <ul class="next-action-list">
-              <li>Improve if you want a stronger hook before sending.</li>
-              <li>Use Outreach to push the draft into direct founder conversations.</li>
-              <li>Use Email to turn the same idea into a quick campaign.</li>
-            </ul>
+            <p class="panel-meta">More actions</p>
+            <h3>Use this draft elsewhere</h3>
+            <div class="side-action-stack">
+              <button type="button" class="secondary-action side-action-button" @click="void copyPost()">
+                Copy for LinkedIn
+              </button>
+              <button type="button" class="secondary-action side-action-button" @click="goToOutreach">
+                Send via Outreach
+              </button>
+              <button type="button" class="secondary-action side-action-button" @click="goToEmail">
+                Send via Email
+              </button>
+            </div>
             <p class="shortcut-note">Shortcuts: Cmd/Ctrl + Shift + O for outreach, + E for email.</p>
           </article>
         </aside>
@@ -983,6 +1231,18 @@ onBeforeUnmount(() => {
   font-weight: 800;
 }
 
+.score-badge[data-tone="strong"] {
+  background: color-mix(in srgb, var(--fc-success-bg, rgba(56, 142, 60, 0.12)) 88%, white 12%);
+  border-color: color-mix(in srgb, var(--fc-success-text, #2c6b35) 18%, var(--fc-border));
+  color: var(--fc-success-text, #2c6b35);
+}
+
+.score-badge[data-tone="warning"] {
+  background: color-mix(in srgb, #f8b84e 16%, white 84%);
+  border-color: color-mix(in srgb, #b46a00 20%, var(--fc-border));
+  color: #8a5200;
+}
+
 .signal-line {
   display: flex;
   flex-wrap: wrap;
@@ -1002,12 +1262,108 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
+.result-signal-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.result-signal-card {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.result-signal-card strong {
+  font-size: 1.04rem;
+  line-height: 1.2;
+}
+
+.result-signal-card span {
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+  font-size: 0.93rem;
+}
+
+.result-signal-card[data-tone="strong"] {
+  border-color: color-mix(in srgb, var(--fc-success-text, #2c6b35) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg, rgba(56, 142, 60, 0.12)) 80%, white 20%);
+}
+
+.result-signal-card[data-tone="warning"] {
+  border-color: color-mix(in srgb, #b46a00 22%, var(--fc-border));
+  background: color-mix(in srgb, #f8b84e 10%, white 90%);
+}
+
+.linkedin-feed-preview {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  padding: clamp(20px, 3vw, 28px);
+  border: 1px solid color-mix(in srgb, var(--fc-border) 82%, transparent);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--fc-accent-soft) 38%, transparent) 0%, transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.72) 100%);
+}
+
+.linkedin-feed-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.linkedin-feed-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--fc-accent-soft) 0%, color-mix(in srgb, var(--fc-accent-soft) 55%, white 45%) 100%);
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  font-weight: 800;
+}
+
+.linkedin-feed-identity strong {
+  display: block;
+  line-height: 1.2;
+}
+
+.linkedin-feed-identity p {
+  margin: 4px 0 0;
+  color: var(--fc-text-muted);
+  font-size: 0.93rem;
+}
+
+.linkedin-preview-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.linkedin-preview-pills span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--fc-border);
+  color: var(--fc-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .linkedin-status-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-top: 18px;
   padding: 16px 18px;
   border: 1px solid var(--fc-border);
   border-radius: 20px;
@@ -1030,15 +1386,42 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
-.post-preview {
-  margin: 20px 0 0;
-  padding: 18px;
-  border-radius: 20px;
-  background: var(--fc-surface);
-  border: 1px solid var(--fc-border);
+.linkedin-feed-body {
+  display: grid;
+  gap: 16px;
+}
+
+.linkedin-feed-hook,
+.linkedin-feed-paragraph {
+  margin: 0;
   white-space: pre-wrap;
-  font: inherit;
+}
+
+.linkedin-feed-hook {
+  max-width: 14ch;
+  font-size: clamp(2rem, 5vw, 3.8rem);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  font-weight: 800;
+  text-wrap: balance;
+}
+
+.linkedin-feed-hook.companion {
+  color: color-mix(in srgb, var(--fc-text) 78%, var(--fc-accent-dark));
+}
+
+.linkedin-feed-paragraph {
+  max-width: 62ch;
+  color: var(--fc-text);
+  font-size: 1.02rem;
   line-height: 1.8;
+}
+
+.result-primary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 20px;
 }
 
 .ai-command-panel {
@@ -1193,6 +1576,32 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
+.ai-edit-preview-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.ai-edit-action-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-edit-action-pills span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-accent-soft) 38%, white 62%);
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
 .ai-edit-diff {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1224,13 +1633,6 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 18px;
-}
-
-.result-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 22px;
 }
 
 .primary-action,
@@ -1282,6 +1684,12 @@ onBeforeUnmount(() => {
   gap: 20px;
 }
 
+.side-card h3 {
+  margin: 0;
+  font-size: 1.15rem;
+  line-height: 1.2;
+}
+
 .hook-list,
 .next-action-list {
   display: grid;
@@ -1292,14 +1700,29 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.side-action-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.side-action-button {
+  width: 100%;
+}
+
 @media (max-width: 900px) {
   .result-grid {
     grid-template-columns: 1fr;
   }
 
+  .result-signal-grid,
   .ai-command-row,
   .ai-edit-diff {
     grid-template-columns: 1fr;
+  }
+
+  .linkedin-feed-hook {
+    max-width: none;
   }
 }
 </style>

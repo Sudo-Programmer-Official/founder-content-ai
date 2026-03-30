@@ -40,3 +40,9 @@ CONSTRAINTS
 - Avoid emoji bullets, numbered lists, and "here are 3 lessons/frameworks" structure unless the input clearly asks for a list or the requested tone is explicitly structured.
 - For storytelling and direct tones, favor short paragraphs, lived experience, tension, and plainspoken language over formal marketing phrasing.
 - Keep the post sounding like one founder talking to another, not like an AI summary of best practices.
+- Open with a short first line that can stop the scroll. Do not waste the first sentence on context-setting filler.
+- Each variation should follow a strong rhythm: hook, insight, concrete example or founder reality, then a punchy close.
+- Prefer point of view, tension, and specificity over neutral educational summary.
+- When possible, name a concrete behavior, problem, or observation instead of abstract business language.
+- Avoid generic openings such as "In today's digital landscape", "In a world where", "As a founder", or "The future belongs to".
+- Avoid consultant filler like "unlock growth", "drive impact", "maximize results", "customer acquisition strategies", or "leverage cutting-edge AI" unless the prompt explicitly calls for that style.

@@ -75,6 +75,10 @@ export async function updateBrandProfileController(
     response.json(
       await updateBrandProfile(request.auth, {
         businessId,
+        linkedinUrl: request.body?.linkedinUrl?.trim(),
+        instagramUrl: request.body?.instagramUrl?.trim(),
+        facebookUrl: request.body?.facebookUrl?.trim(),
+        websiteUrl: request.body?.websiteUrl?.trim(),
         tone: request.body?.tone?.trim(),
         writingStyle: request.body?.writingStyle?.trim(),
         visualStyle: request.body?.visualStyle?.trim(),

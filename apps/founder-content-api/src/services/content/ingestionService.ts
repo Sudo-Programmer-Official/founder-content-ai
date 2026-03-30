@@ -110,6 +110,25 @@ function resolveSourceLabel(source: RepurposeSourceUrlInput, safeUrl: string, in
   }
 }
 
+function humanizeIngestionFailure(input: {
+  safeUrl: string;
+  message: string;
+}): string {
+  const normalizedMessage = input.message.trim();
+
+  try {
+    const hostname = new URL(input.safeUrl).hostname.toLowerCase();
+
+    if (hostname.includes("linkedin.com") && normalizedMessage.includes("status 999")) {
+      return "LinkedIn blocked automated fetch for this URL. The listing can still be saved as a workspace default, but preview works better with public websites, blogs, or article links.";
+    }
+  } catch {
+    // Fall back to the raw error message below.
+  }
+
+  return normalizedMessage;
+}
+
 function normalizeSourceUrlsWithErrors(sourceUrls: RepurposeSourceUrlInput[]): {
   sources: Array<{
     url: string;
@@ -233,8 +252,11 @@ export async function previewContentIngestion(
     }
 
     const source = sources[index];
-    const message =
-      result.reason instanceof Error ? result.reason.message : "Unable to read this source right now.";
+    const message = humanizeIngestionFailure({
+      safeUrl: source.safeUrl,
+      message:
+        result.reason instanceof Error ? result.reason.message : "Unable to read this source right now.",
+    });
     errors.push({
       label: source.label,
       url: source.url,
@@ -243,10 +265,12 @@ export async function previewContentIngestion(
   });
 
   if (items.length === 0) {
+    const primaryErrorMessage = errors[0]?.message;
     throw new HttpError(
       400,
       "source_unavailable",
-      "Unable to read content from the provided URLs. Use public page, post, or article links.",
+      primaryErrorMessage ??
+        "Unable to read content from the provided URLs. Use public page, post, or article links.",
     );
   }
 

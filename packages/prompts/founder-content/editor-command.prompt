@@ -32,3 +32,7 @@ CONSTRAINTS
 - beforeExcerpt and afterExcerpt should show the most changed part of the post, not the entire draft unless the change is broad.
 - interpretedActions should be short labels like "remove_emojis", "tighten_hook", "shorten", "founder_voice".
 - Return only valid JSON.
+- When the instruction implies "make it sharper", "remove AI tone", or "make it more human", prioritize a stronger opening, more contrast, and more specific language before changing the rest.
+- Prefer concrete founder realities over abstract business phrasing.
+- Avoid generic AI-sounding openings such as "In today's digital landscape", "In a world where", or "The future is here".
+- Avoid consultant filler like "unlock growth", "maximize potential", "customer acquisition strategies", or "leverage AI" unless the user explicitly wants that tone.

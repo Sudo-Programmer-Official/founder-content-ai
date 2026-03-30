@@ -27,6 +27,10 @@ export interface BrandProfileResponse {
 
 export interface UpdateBrandProfileRequest {
   businessId: string;
+  linkedinUrl?: string;
+  instagramUrl?: string;
+  facebookUrl?: string;
+  websiteUrl?: string;
   tone?: string;
   writingStyle?: string;
   visualStyle?: string;

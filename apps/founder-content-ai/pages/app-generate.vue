@@ -145,13 +145,26 @@ function pickSavedSource(...types: SavedContentSource["sourceType"][]): SavedCon
   return savedSources.value.find((source) => types.includes(source.sourceType)) ?? null;
 }
 
+function resolveWorkspaceSourceDefaultUrl(kind: "linkedin" | "instagram" | "facebook" | "website"): string {
+  switch (kind) {
+    case "linkedin":
+      return brandProfile.value?.linkedinUrl ?? pickSavedSource("linkedin")?.sourceUrl ?? "";
+    case "instagram":
+      return brandProfile.value?.instagramUrl ?? pickSavedSource("instagram")?.sourceUrl ?? "";
+    case "facebook":
+      return brandProfile.value?.facebookUrl ?? pickSavedSource("facebook")?.sourceUrl ?? "";
+    case "website":
+      return brandProfile.value?.websiteUrl ?? pickSavedSource("blog", "url")?.sourceUrl ?? "";
+  }
+}
+
 const workspaceDefaultSources = computed(() =>
   [
-    pickSavedSource("linkedin"),
-    pickSavedSource("instagram"),
-    pickSavedSource("facebook"),
-    pickSavedSource("blog", "url"),
-  ].filter((source): source is SavedContentSource => Boolean(source)),
+    { label: "LinkedIn", url: resolveWorkspaceSourceDefaultUrl("linkedin") },
+    { label: "Instagram", url: resolveWorkspaceSourceDefaultUrl("instagram") },
+    { label: "Facebook", url: resolveWorkspaceSourceDefaultUrl("facebook") },
+    { label: "Blog or website", url: resolveWorkspaceSourceDefaultUrl("website") },
+  ].filter((source) => source.url !== ""),
 );
 
 const hasWorkspaceSourceDefaults = computed(() => workspaceDefaultSources.value.length > 0);
@@ -187,7 +200,7 @@ async function loadSavedSources(): Promise<void> {
     const response = await requestSavedContentSources(businessId);
     savedSources.value = response.sources;
     const shouldForceHydrate = hydratedSourceBusinessId.value !== businessId;
-    hydrateFeedDefaultsFromSavedSources(shouldForceHydrate);
+    hydrateFeedDefaultsFromWorkspaceDefaults(shouldForceHydrate);
     hydratedSourceBusinessId.value = businessId;
   } catch {
     savedSources.value = [];
@@ -209,6 +222,8 @@ async function loadBrandProfile(): Promise<void> {
   try {
     const response = await requestBrandProfile(businessId);
     brandProfile.value = response.brandProfile;
+    const shouldForceHydrate = hydratedSourceBusinessId.value !== businessId;
+    hydrateFeedDefaultsFromWorkspaceDefaults(shouldForceHydrate);
   } catch {
     brandProfile.value = null;
   } finally {
@@ -320,7 +335,7 @@ function buildCombinedFeedPreviewText(
     .join("\n\n");
 }
 
-function hydrateFeedDefaultsFromSavedSources(force = false): void {
+function hydrateFeedDefaultsFromWorkspaceDefaults(force = false): void {
   if (improvementSourceId.value || sourceMode.value !== "feed") {
     return;
   }
@@ -331,14 +346,12 @@ function hydrateFeedDefaultsFromSavedSources(force = false): void {
     return;
   }
 
-  const defaults = workspaceDefaultSources.value;
-
   isHydratingFeedDefaults.value = true;
-  linkedinSourceUrl.value = pickSavedSource("linkedin")?.sourceUrl ?? "";
-  instagramSourceUrl.value = pickSavedSource("instagram")?.sourceUrl ?? "";
-  facebookSourceUrl.value = pickSavedSource("facebook")?.sourceUrl ?? "";
-  blogSourceUrl.value = pickSavedSource("blog", "url")?.sourceUrl ?? "";
-  ingestedSourceItems.value = defaults.map((source) => ({
+  linkedinSourceUrl.value = resolveWorkspaceSourceDefaultUrl("linkedin");
+  instagramSourceUrl.value = resolveWorkspaceSourceDefaultUrl("instagram");
+  facebookSourceUrl.value = resolveWorkspaceSourceDefaultUrl("facebook");
+  blogSourceUrl.value = resolveWorkspaceSourceDefaultUrl("website");
+  ingestedSourceItems.value = savedSources.value.map((source) => ({
     label: source.label,
     sourceType: source.sourceType,
     title: source.title,
@@ -347,7 +360,7 @@ function hydrateFeedDefaultsFromSavedSources(force = false): void {
   }));
   ingestionErrors.value = [];
   feedPreviewText.value = buildCombinedFeedPreviewText(input.value, ingestedSourceItems.value);
-  isFeedPreviewDirty.value = defaults.length === 0;
+  isFeedPreviewDirty.value = savedSources.value.length === 0;
   isHydratingFeedDefaults.value = false;
 }
 
@@ -474,7 +487,7 @@ watch(
   () => {
     void hydrateImprovementState();
     if (resolveSourceModeFromRoute() === "feed") {
-      hydrateFeedDefaultsFromSavedSources();
+      hydrateFeedDefaultsFromWorkspaceDefaults();
     }
   },
   { immediate: true },
@@ -737,15 +750,15 @@ onBeforeUnmount(() => {
           <div class="saved-source-list">
             <span
               v-for="source in workspaceDefaultSources"
-              :key="source.id"
+              :key="`${source.label}-${source.url}`"
               class="saved-source-chip"
             >
-              {{ source.title || source.label }}
+              {{ source.label }}
             </span>
           </div>
 
           <p class="activation-helper">
-            Repurpose can start from these saved listings immediately. Adjust the URLs below only when you want a temporary override.
+            Repurpose preloads these workspace listings automatically. Adjust the URLs below only when you want a temporary override or a fresh preview.
           </p>
         </div>
         <div class="source-grid">

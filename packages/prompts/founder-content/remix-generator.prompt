@@ -36,3 +36,9 @@ CONSTRAINTS
 - Default to conversational founder voice instead of framework-heavy or consultant-style writing.
 - Avoid emoji bullets, numbered breakdowns, and obvious "lesson 1 / lesson 2" structure unless the reference is explicitly list-based and the requested tone calls for structure.
 - For storytelling and direct tones, favor natural paragraph rhythm, tension, and lived-experience language over polished AI-sounding exposition.
+- The first line must stop the scroll. Make it short, specific, and opinionated enough to create immediate tension or curiosity.
+- Structure the post with this rhythm: hook, sharp insight, grounded example or founder reality, then a closing punchline.
+- Prefer contrast, stakes, and specificity over safe summary language.
+- Use concrete examples or constraints when the reference provides them, but do not fabricate precise numbers or unsupported details.
+- Avoid generic openings such as "In today's digital landscape", "In a world where", "As founders navigate", or "The future of business".
+- Avoid consultant filler like "unlock growth", "drive results", "optimize customer acquisition", or "leverage AI" unless the source itself clearly earns that framing.
