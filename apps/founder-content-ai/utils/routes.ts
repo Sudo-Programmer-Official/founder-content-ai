@@ -4,6 +4,7 @@ export const appRoutes = {
   appGenerate: "/app/create",
   appGrowth: "/app/growth",
   appHistory: "/app/history",
+  appIdeas: "/app/ideas",
   appPlanner: "/app/planner",
   appResult: "/app/result",
   appRoot: "/app",

@@ -3,6 +3,7 @@ import type {
   BusinessEmailSettings,
   BusinessMembership,
   EmailContact,
+  EmailCampaignContent,
   EmailContactImportDuplicateStrategy,
   EmailContactImportField,
   EmailContactImportJob,
@@ -13,12 +14,17 @@ import type {
   EmailCampaignStats,
   EmailList,
   ImportEmailContactsRequest,
+  PostAsset,
 } from "../../../packages/shared-types";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "../access/product-access-context";
 import EmailSkeleton from "../components/skeletons/EmailSkeleton.vue";
-import { getActivationDraft } from "../services/activation-flow-service";
+import {
+  getActivationDraft,
+  listActivationDrafts,
+  type ActivationDraftRecord,
+} from "../services/activation-flow-service";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
 import {
   requestEmailCampaignCreate,
@@ -33,21 +39,12 @@ import {
   requestEmailDomainSettings,
   requestEmailLists,
 } from "../services/email-service";
+import {
+  requestCreatePostAsset,
+  requestMediaUploadUrl,
+  requestPostAssets,
+} from "../services/post-assets-service";
 import { appRoutes } from "../utils/routes";
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
-function plainTextToHtml(value: string): string {
-  return value
-    .split(/\n{2,}/)
-    .map((paragraph) => `<p>${escapeHtml(paragraph).replaceAll("\n", "<br />")}</p>`)
-    .join("");
-}
 
 function buildSuggestedSubject(value: string): string {
   const normalized = value.trim().replace(/\s+/g, " ");
@@ -57,6 +54,83 @@ function buildSuggestedSubject(value: string): string {
   }
 
   return normalized.length <= 68 ? normalized : `${normalized.slice(0, 65).trim()}...`;
+}
+
+function htmlToPreviewText(value: string): string {
+  return value
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<\/p>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function dedupeStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value !== ""))];
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function linkifyHtmlText(value: string): string {
+  const urlPattern = /https?:\/\/[^\s<]+/gi;
+  let html = "";
+  let lastIndex = 0;
+
+  for (const match of value.matchAll(urlPattern)) {
+    const rawUrl = match[0];
+    const index = match.index ?? 0;
+
+    html += escapeHtml(value.slice(lastIndex, index));
+    html += `<a href="${escapeHtml(rawUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(rawUrl)}</a>`;
+    lastIndex = index + rawUrl.length;
+  }
+
+  html += escapeHtml(value.slice(lastIndex));
+  return html.replace(/\n/g, "<br />");
+}
+
+function buildSourceTitle(text: string, fallback?: string): string {
+  const normalized = text
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line !== "");
+
+  return fallback?.trim() || buildSuggestedSubject(normalized || text);
+}
+
+function buildSourcePreview(text: string): string {
+  return text.replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+function buildEmailBodyFromSource(sourceText: string, tone: "direct" | "story" | "educational"): string {
+  const paragraphs = sourceText
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== "");
+
+  const opener = "Hi {{first_name}},";
+  const bodyCore = paragraphs.slice(0, 3).join("\n\n");
+
+  if (!bodyCore) {
+    return `${opener}\n\n`;
+  }
+
+  if (tone === "story") {
+    return `${opener}\n\nOne thing that kept coming back for me this week:\n\n${bodyCore}\n\nIf this hits home, reply and tell me what you're seeing too.`;
+  }
+
+  if (tone === "educational") {
+    return `${opener}\n\nHere is the clean takeaway:\n\n${bodyCore}\n\nIf helpful, reply and I will send a few more ideas like this.`;
+  }
+
+  return `${opener}\n\n${bodyCore}\n\nIf this is useful, hit reply and tell me what stands out.`;
 }
 
 const route = useRoute();
@@ -84,13 +158,19 @@ const isCreatingCampaign = ref(false);
 const isSending = ref(false);
 const isSavingDomain = ref(false);
 const isEditingDomainSetup = ref(false);
+const isLoadingDraftMedia = ref(false);
+const isUploadingDraftMedia = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const latestStatsCampaignId = ref("");
+const emailMediaAssets = ref<PostAsset[]>([]);
 let campaignProgressPollHandle: number | null = null;
 let importJobPollHandle: number | null = null;
 
 type EmailTabKey = "overview" | "campaigns" | "contacts" | "settings";
+type CampaignSourceMode = "current" | "draft-library" | "fresh";
+type CampaignToneMode = "direct" | "story" | "educational";
+type CampaignEditorMode = "edit" | "preview";
 
 const EMAIL_TABS: Array<{ key: EmailTabKey; label: string }> = [
   { key: "overview", label: "Overview" },
@@ -122,14 +202,23 @@ const isPreviewingContacts = ref(false);
 const contactSearch = ref("");
 const contactStatusFilter = ref<EmailContactStatus | "all">("all");
 const latestImportJobId = ref("");
+const activationDraftLibrary = ref<ActivationDraftRecord[]>([]);
+const campaignSourceMode = ref<CampaignSourceMode>("fresh");
+const campaignTone = ref<CampaignToneMode>("direct");
+const campaignEditorMode = ref<CampaignEditorMode>("edit");
+const selectedLibraryDraftId = ref("");
 
 const campaignForm = ref({
   listId: "",
   name: "First Campaign",
   subject: "Quick thought for founders trying to stay consistent",
-  bodyHtml:
-    "<p>Hi {{first_name}},</p><p>I am sharing one idea that might help you post more consistently without overthinking every draft.</p>",
+  bodyText:
+    "Hi {{first_name}},\n\nI am sharing one idea that might help you post more consistently without overthinking every draft.",
   replyToEmail: "",
+  headerImageUrl: "",
+  inlineImageUrls: [] as string[],
+  includeSignature: true,
+  mediaUrlInput: "",
 });
 
 const domainForm = ref({
@@ -137,6 +226,7 @@ const domainForm = ref({
   fromName: "",
   fromEmail: "",
   replyToEmail: "",
+  signatureText: "",
 });
 
 const emailFeatureEnabled = computed(
@@ -203,6 +293,12 @@ const overviewStats = computed(() => {
   ];
 });
 const recentCampaigns = computed(() => campaigns.value.slice(0, 4));
+const campaignDashboardCards = computed(() =>
+  recentCampaigns.value.map((campaign) => ({
+    ...campaign,
+    preview: htmlToPreviewText(campaign.bodyText || campaign.bodyHtml).slice(0, 180).trim(),
+  })),
+);
 const contactImportColumns = computed(() => contactImportPreview.value?.columns ?? []);
 const canPreviewContacts = computed(() => contactImport.value.csvText.trim().length > 0);
 const canImportContacts = computed(
@@ -286,14 +382,431 @@ const activationSeed = computed(() => {
 
   return prefillText;
 });
+const activationDraft = computed(() => {
+  const draftId = typeof route.query.draftId === "string" ? route.query.draftId : "";
+  return draftId ? getActivationDraft(draftId) : null;
+});
+const selectedLibraryDraft = computed(() =>
+  selectedLibraryDraftId.value ? getActivationDraft(selectedLibraryDraftId.value) : null,
+);
+const activationSourcePostId = computed(() => {
+  const queryDraftId = typeof route.query.draftId === "string" ? route.query.draftId : "";
+  const assetId = activationDraft.value?.result.asset?.id;
+  return assetId || queryDraftId || "";
+});
+const effectiveSourcePostId = computed(() => {
+  if (campaignSourceMode.value === "draft-library") {
+    return selectedLibraryDraft.value?.result.asset?.id || selectedLibraryDraftId.value || "";
+  }
 
-function applyActivationSeed(): void {
+  if (campaignSourceMode.value === "current") {
+    return activationSourcePostId.value;
+  }
+
+  return "";
+});
+const currentSourceSummary = computed(() => {
   if (!activationSeed.value) {
+    return null;
+  }
+
+  return {
+    title: buildSourceTitle(activationSeed.value, activationDraft.value?.result.idea.title),
+    preview: buildSourcePreview(activationSeed.value),
+    typeLabel: activationDraft.value ? "Existing draft" : "Inbox idea",
+  };
+});
+const libraryDraftCards = computed(() =>
+  activationDraftLibrary.value.map((draft) => ({
+    id: draft.id,
+    title: buildSourceTitle(draft.result.post, draft.result.idea.title),
+    preview: buildSourcePreview(draft.result.post),
+    createdAtLabel: new Date(draft.createdAt).toLocaleDateString(),
+    modeLabel: draft.mode === "improve" ? "Improved draft" : "Draft",
+  })),
+);
+const previewEmailHtml = computed(() => {
+  const bodyText = campaignForm.value.bodyText.trim();
+  const signatureText = campaignForm.value.includeSignature ? effectiveSignatureText.value.trim() : "";
+  const paragraphs = bodyText
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== "");
+
+  const htmlParts: string[] = ['<div class="email-preview-frame-inner">'];
+
+  if (campaignForm.value.headerImageUrl) {
+    htmlParts.push(
+      `<div class="email-preview-image is-header"><img src="${escapeHtml(campaignForm.value.headerImageUrl)}" alt="${escapeHtml(campaignForm.value.subject || "Email header image")}" /></div>`,
+    );
+  }
+
+  paragraphs.forEach((paragraph, index) => {
+    htmlParts.push(`<p>${linkifyHtmlText(paragraph)}</p>`);
+
+    if (index === 0) {
+      for (const imageUrl of campaignForm.value.inlineImageUrls) {
+        htmlParts.push(
+          `<div class="email-preview-image"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(campaignForm.value.subject || "Email image")}" /></div>`,
+        );
+      }
+    }
+  });
+
+  if (paragraphs.length === 0) {
+    htmlParts.push('<p class="email-preview-placeholder">Write the email body here to see the preview.</p>');
+  }
+
+  if (signatureText) {
+    const signatureParagraphs = signatureText
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.trim())
+      .filter((paragraph) => paragraph !== "");
+
+    htmlParts.push('<div class="email-preview-signature">');
+
+    for (const paragraph of signatureParagraphs) {
+      htmlParts.push(`<p>${linkifyHtmlText(paragraph)}</p>`);
+    }
+
+    htmlParts.push("</div>");
+  }
+
+  htmlParts.push("</div>");
+  return htmlParts.join("");
+});
+const availableDraftImages = computed(() =>
+  emailMediaAssets.value.map((asset) => ({
+    id: asset.id,
+    url: asset.previewUrl || asset.storageUrl,
+    label: `Image ${asset.orderIndex + 1}`,
+  })),
+);
+const effectiveSignatureText = computed(() => {
+  const explicit = (domainForm.value.signatureText || domainSettings.value?.signatureText || "").trim();
+
+  if (explicit) {
+    return explicit;
+  }
+
+  return [domainForm.value.fromName || domainSettings.value?.fromName, domainForm.value.fromEmail || domainSettings.value?.fromEmail]
+    .map((value) => value?.trim() || "")
+    .filter((value) => value !== "")
+    .join("\n");
+});
+const selectedInlineImagePreviews = computed(() =>
+  campaignForm.value.inlineImageUrls.map((url, index) => ({
+    id: `${url}-${index}`,
+    url,
+  })),
+);
+const campaignContentPayload = computed<EmailCampaignContent>(() => ({
+  headerImage: campaignForm.value.headerImageUrl
+    ? { url: campaignForm.value.headerImageUrl, altText: campaignForm.value.subject }
+    : undefined,
+  inlineImages: campaignForm.value.inlineImageUrls.map((url) => ({
+    url,
+    altText: campaignForm.value.subject,
+  })),
+  includeSignature: campaignForm.value.includeSignature,
+}));
+const senderIdentitySummary = computed(() => {
+  if (!domainSettings.value?.fromEmail) {
+    return "No sender configured";
+  }
+
+  const fromName = domainSettings.value.fromName?.trim();
+  return fromName
+    ? `${fromName} · ${domainSettings.value.fromEmail}`
+    : domainSettings.value.fromEmail;
+});
+const verificationStatusSummary = computed(() => {
+  if (!domainSettings.value?.domainName) {
+    return "Not configured";
+  }
+
+  if (
+    domainSettings.value.domainStatus === "verified" &&
+    domainSettings.value.dkimStatus === "verified" &&
+    domainSettings.value.spfStatus === "verified"
+  ) {
+    return "Fully verified";
+  }
+
+  return "Needs DNS attention";
+});
+const domainHealthSummary = computed(() => {
+  const deliverability = domainSettings.value?.deliverability;
+
+  if (!domainSettings.value?.domainName) {
+    return "Domain not configured";
+  }
+
+  if (!deliverability) {
+    return domainStatusSummary.value;
+  }
+
+  if (deliverability.scoreBand === "excellent") {
+    return "Healthy sending domain";
+  }
+
+  if (deliverability.scoreBand === "at_risk") {
+    return "Deliverability at risk";
+  }
+
+  return "Needs attention";
+});
+const systemWarnings = computed(() => {
+  const warnings: string[] = [];
+  const settings = domainSettings.value;
+
+  if (!settings?.domainName) {
+    warnings.push("Add a branded sending domain before scaling campaigns.");
+    return warnings;
+  }
+
+  if (settings.spfStatus !== "verified") {
+    warnings.push("SPF is not verified yet.");
+  }
+
+  if (settings.dkimStatus !== "verified") {
+    warnings.push("DKIM is not verified yet.");
+  }
+
+  if (settings.deliverability?.scoreBand === "at_risk") {
+    warnings.push("Recent deliverability signals are at risk.");
+  }
+
+  for (const blocker of settings.deliverability?.blockers ?? []) {
+    if (warnings.length >= 3) {
+      break;
+    }
+    warnings.push(blocker.message);
+  }
+
+  return warnings.slice(0, 3);
+});
+
+function loadActivationDraftLibrary(): void {
+  activationDraftLibrary.value = listActivationDrafts().slice(0, 8);
+
+  if (!selectedLibraryDraftId.value && activationDraftLibrary.value[0]) {
+    selectedLibraryDraftId.value = activationDraftLibrary.value[0].id;
+  }
+}
+
+function resetSelectedMedia(): void {
+  campaignForm.value.headerImageUrl = "";
+  campaignForm.value.inlineImageUrls = [];
+  campaignForm.value.mediaUrlInput = "";
+}
+
+function applySourceToCampaign(sourceText: string, titleFallback?: string): void {
+  const normalizedSource = sourceText.trim();
+
+  if (!normalizedSource) {
     return;
   }
 
-  campaignForm.value.subject = buildSuggestedSubject(activationSeed.value.split("\n")[0] ?? activationSeed.value);
-  campaignForm.value.bodyHtml = plainTextToHtml(activationSeed.value);
+  campaignForm.value.subject = buildSourceTitle(normalizedSource, titleFallback);
+  campaignForm.value.bodyText = buildEmailBodyFromSource(normalizedSource, campaignTone.value);
+  campaignEditorMode.value = "edit";
+}
+
+function applyActivationSeed(): void {
+  if (!activationSeed.value || campaignSourceMode.value !== "current") {
+    return;
+  }
+
+  applySourceToCampaign(activationSeed.value, activationDraft.value?.result.idea.title);
+}
+
+function useCurrentSource(): void {
+  campaignSourceMode.value = "current";
+  resetSelectedMedia();
+
+  if (activationSeed.value) {
+    applySourceToCampaign(activationSeed.value, activationDraft.value?.result.idea.title);
+  }
+}
+
+function useLibraryDraft(draftId: string): void {
+  const draft = getActivationDraft(draftId);
+
+  if (!draft) {
+    return;
+  }
+
+  selectedLibraryDraftId.value = draftId;
+  campaignSourceMode.value = "draft-library";
+  resetSelectedMedia();
+  applySourceToCampaign(draft.result.post, draft.result.idea.title);
+}
+
+function startFreshCampaign(): void {
+  campaignSourceMode.value = "fresh";
+  campaignForm.value.subject = "";
+  campaignForm.value.bodyText = "";
+  resetSelectedMedia();
+  campaignEditorMode.value = "edit";
+}
+
+function setCampaignTone(nextTone: CampaignToneMode): void {
+  campaignTone.value = nextTone;
+
+  if (campaignSourceMode.value === "draft-library" && selectedLibraryDraft.value) {
+    applySourceToCampaign(selectedLibraryDraft.value.result.post, selectedLibraryDraft.value.result.idea.title);
+    return;
+  }
+
+  if (campaignSourceMode.value === "current" && activationSeed.value) {
+    applySourceToCampaign(activationSeed.value, activationDraft.value?.result.idea.title);
+  }
+}
+
+function insertLinkPlaceholder(): void {
+  const nextValue = campaignForm.value.bodyText.trimEnd();
+  campaignForm.value.bodyText = nextValue ? `${nextValue}\n\nhttps://` : "https://";
+}
+
+function toggleSignature(): void {
+  campaignForm.value.includeSignature = !campaignForm.value.includeSignature;
+}
+
+function useHeaderImage(url: string): void {
+  campaignForm.value.headerImageUrl = url;
+}
+
+function toggleInlineImage(url: string): void {
+  if (campaignForm.value.inlineImageUrls.includes(url)) {
+    campaignForm.value.inlineImageUrls = campaignForm.value.inlineImageUrls.filter((value) => value !== url);
+    return;
+  }
+
+  campaignForm.value.inlineImageUrls = dedupeStrings([...campaignForm.value.inlineImageUrls, url]);
+}
+
+function moveInlineImage(url: string, direction: "up" | "down"): void {
+  const currentIndex = campaignForm.value.inlineImageUrls.findIndex((value) => value === url);
+
+  if (currentIndex === -1) {
+    return;
+  }
+
+  const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+
+  if (targetIndex < 0 || targetIndex >= campaignForm.value.inlineImageUrls.length) {
+    return;
+  }
+
+  const nextImages = [...campaignForm.value.inlineImageUrls];
+  const [image] = nextImages.splice(currentIndex, 1);
+  nextImages.splice(targetIndex, 0, image);
+  campaignForm.value.inlineImageUrls = nextImages;
+}
+
+function addManualMediaUrl(mode: "header" | "inline"): void {
+  const nextUrl = campaignForm.value.mediaUrlInput.trim();
+
+  if (!nextUrl) {
+    return;
+  }
+
+  if (mode === "header") {
+    campaignForm.value.headerImageUrl = nextUrl;
+  } else {
+    campaignForm.value.inlineImageUrls = dedupeStrings([...campaignForm.value.inlineImageUrls, nextUrl]);
+  }
+
+  campaignForm.value.mediaUrlInput = "";
+}
+
+async function loadDraftMedia(): Promise<void> {
+  if (!selectedBusinessId.value || !effectiveSourcePostId.value) {
+    emailMediaAssets.value = [];
+    return;
+  }
+
+  isLoadingDraftMedia.value = true;
+
+  try {
+    const response = await requestPostAssets(selectedBusinessId.value, effectiveSourcePostId.value);
+    emailMediaAssets.value = response.assets;
+
+    const firstImageUrl = response.assets[0]?.previewUrl || response.assets[0]?.storageUrl;
+
+    if (firstImageUrl && !campaignForm.value.headerImageUrl && campaignForm.value.inlineImageUrls.length === 0) {
+      campaignForm.value.headerImageUrl = firstImageUrl;
+    }
+  } catch {
+    emailMediaAssets.value = [];
+  } finally {
+    isLoadingDraftMedia.value = false;
+  }
+}
+
+async function handleEmailMediaSelection(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement | null;
+  const files = Array.from(input?.files ?? []);
+
+  if (!files.length) {
+    return;
+  }
+
+  if (!selectedBusinessId.value || !effectiveSourcePostId.value) {
+    feedbackMessage.value = "Paste an image URL, or start from a saved draft to upload media directly.";
+    if (input) {
+      input.value = "";
+    }
+    return;
+  }
+
+  isUploadingDraftMedia.value = true;
+  errorMessage.value = "";
+
+  try {
+    for (const file of files) {
+      const uploadTarget = await requestMediaUploadUrl({
+        businessId: selectedBusinessId.value,
+        postId: effectiveSourcePostId.value,
+        fileType: file.type,
+        fileName: file.name,
+        sizeBytes: file.size,
+      });
+
+      const uploadResponse = await fetch(uploadTarget.uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": file.type,
+        },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Image upload failed. Check storage configuration and try again.");
+      }
+
+      await requestCreatePostAsset({
+        businessId: selectedBusinessId.value,
+        postId: effectiveSourcePostId.value,
+        storageKey: uploadTarget.storageKey,
+        storageUrl: uploadTarget.storageUrl,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        source: "upload",
+      });
+    }
+
+    await loadDraftMedia();
+    feedbackMessage.value = `${files.length} image${files.length === 1 ? "" : "s"} added for this email draft.`;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to upload email media right now.";
+  } finally {
+    isUploadingDraftMedia.value = false;
+    if (input) {
+      input.value = "";
+    }
+  }
 }
 
 function formatStatus(value?: string): string {
@@ -449,6 +962,7 @@ function applyDomainSettings(
     fromName: settings?.fromName ?? "",
     fromEmail: settings?.fromEmail ?? "",
     replyToEmail: settings?.replyToEmail ?? "",
+    signatureText: settings?.signatureText ?? "",
   };
 }
 
@@ -563,6 +1077,8 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
   if (!campaignForm.value.listId && emailLists.value[0]) {
     campaignForm.value.listId = emailLists.value[0].id;
   }
+
+  await loadDraftMedia();
 }
 
 async function initializePage(): Promise<void> {
@@ -570,6 +1086,12 @@ async function initializePage(): Promise<void> {
   errorMessage.value = "";
 
   try {
+    loadActivationDraftLibrary();
+
+    if (activationSeed.value) {
+      campaignSourceMode.value = "current";
+    }
+
     await loadBusinesses();
     await loadEmailState({ syncDomainForm: true });
     applyActivationSeed();
@@ -654,8 +1176,9 @@ async function createCampaign(): Promise<void> {
       listId: campaignForm.value.listId,
       name: campaignForm.value.name,
       subject: campaignForm.value.subject,
-      bodyHtml: campaignForm.value.bodyHtml,
+      bodyText: campaignForm.value.bodyText,
       replyToEmail: campaignForm.value.replyToEmail || undefined,
+      content: campaignContentPayload.value,
     });
     feedbackMessage.value = `Campaign created: ${response.campaign.name}.`;
     await loadEmailState();
@@ -733,9 +1256,23 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
 });
 
 watch(
-  () => route.query.draftId,
+  () => [route.query.draftId, selectedBusinessId.value],
   () => {
+    loadActivationDraftLibrary();
+
+    if (activationSeed.value) {
+      campaignSourceMode.value = "current";
+    }
+
     applyActivationSeed();
+    void loadDraftMedia();
+  },
+);
+
+watch(
+  () => [selectedBusinessId.value, effectiveSourcePostId.value],
+  () => {
+    void loadDraftMedia();
   },
 );
 
@@ -762,18 +1299,12 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="workspace-shell">
-    <section class="workspace-hero">
-      <p class="workspace-eyebrow">/app/email</p>
-      <h1>Turn the post into a simple email campaign.</h1>
-      <p class="workspace-description">
-        Import contacts, create one plain campaign, and send it with the platform sender before
-        worrying about brand-domain setup.
+    <section class="email-page-header">
+      <p class="workspace-eyebrow">Email</p>
+      <h1>Run campaigns without mixing contacts, sending, and settings.</h1>
+      <p class="workspace-description compact">
+        Operational email dashboard for lists, campaigns, delivery, and sender health.
       </p>
-      <div class="workspace-chip-row">
-        <span v-if="emailLimitText" class="workspace-chip">{{ emailLimitText }}</span>
-        <span class="workspace-chip">Platform sender first</span>
-        <span class="workspace-chip">Reply-To supported</span>
-      </div>
     </section>
 
     <p v-if="errorMessage" class="workspace-feedback error">{{ errorMessage }}</p>
@@ -798,16 +1329,8 @@ onBeforeUnmount(() => {
           <div class="email-tabs-header">
             <div>
               <p class="panel-meta">Email workspace</p>
-              <h2>Run campaigns without mixing contacts, sending, and settings.</h2>
-            </div>
-
-            <div class="workspace-actions">
-              <button type="button" class="secondary-action" @click="setEmailTab('contacts')">
-                Import contacts
-              </button>
-              <button type="button" class="primary-action" @click="setEmailTab('campaigns')">
-                New campaign
-              </button>
+              <h2>{{ businesses.find((membership) => membership.businessId === selectedBusinessId)?.business.name || "Workspace email" }}</h2>
+              <p class="panel-note">Lists, campaigns, delivery, and sender health in one place.</p>
             </div>
           </div>
 
@@ -839,60 +1362,98 @@ onBeforeUnmount(() => {
             </article>
           </section>
 
-          <section class="workspace-grid overview-grid">
-            <article class="workspace-card">
+          <section class="overview-quick-actions">
+            <button type="button" class="primary-action overview-action-button" @click="setEmailTab('campaigns')">
+              Create campaign
+            </button>
+            <button type="button" class="secondary-action overview-action-button" @click="setEmailTab('contacts')">
+              Import contacts
+            </button>
+            <button type="button" class="secondary-action overview-action-button" @click="setEmailTab('settings')">
+              Email settings
+            </button>
+          </section>
+
+          <section class="overview-dashboard-grid">
+            <article class="workspace-card overview-campaigns-card">
               <div class="panel-header">
                 <div>
                   <p class="panel-meta">Recent campaigns</p>
-                  <h2>What is already moving</h2>
+                  <h2>Campaigns already in motion</h2>
                 </div>
               </div>
 
-              <div v-if="recentCampaigns.length > 0" class="campaign-list">
-                <article v-for="campaign in recentCampaigns" :key="campaign.id" class="campaign-card">
-                  <div>
-                    <strong>{{ campaign.name }}</strong>
-                    <p>{{ campaign.subject }}</p>
-                    <p class="campaign-metrics">
-                      {{ formatStatus(campaign.status) }} · {{ campaign.sentCount }} sent · {{ campaign.deliveredCount }} delivered
-                    </p>
+              <div v-if="campaignDashboardCards.length > 0" class="campaign-list overview-campaign-list">
+                <article v-for="campaign in campaignDashboardCards" :key="campaign.id" class="campaign-card overview-campaign-card">
+                  <div class="overview-campaign-main">
+                    <div class="overview-campaign-copy">
+                      <strong>{{ campaign.name }}</strong>
+                      <p class="overview-campaign-subject">{{ campaign.subject }}</p>
+                      <p class="overview-campaign-preview">
+                        {{ campaign.preview || "No campaign copy preview yet." }}
+                      </p>
+                    </div>
+                    <div class="overview-campaign-metrics">
+                      <span class="workspace-chip">{{ formatStatus(campaign.status) }}</span>
+                      <span class="workspace-chip">{{ campaign.sentCount }} sent</span>
+                      <span class="workspace-chip">{{ campaign.deliveredCount }} delivered</span>
+                      <span class="workspace-chip" :class="{ warning: campaign.failedCount > 0 }">
+                        {{ campaign.failedCount }} failed<span v-if="campaign.failedCount === 0"> ✓</span><span v-else> ⚠️</span>
+                      </span>
+                    </div>
                   </div>
                   <button type="button" class="secondary-action" @click="setEmailTab('campaigns')">
                     View
                   </button>
                 </article>
               </div>
-              <p v-else class="empty-note">
-                No campaigns yet. Import contacts, then create the first send from the campaigns tab.
-              </p>
+              <div v-else class="empty-note overview-empty-state">
+                <p>No campaigns yet.</p>
+                <button type="button" class="primary-action" @click="setEmailTab('campaigns')">
+                  Create your first campaign
+                </button>
+              </div>
             </article>
 
-            <article class="workspace-card">
+            <article class="workspace-card overview-status-card">
               <div class="panel-header">
                 <div>
-                  <p class="panel-meta">Quick actions</p>
-                  <h2>Move the workflow forward</h2>
+                  <p class="panel-meta">System status</p>
+                  <h2>Sender and deliverability</h2>
                 </div>
               </div>
 
-              <div class="overview-action-stack">
-                <button type="button" class="primary-action" @click="setEmailTab('campaigns')">
-                  Create campaign
-                </button>
-                <button type="button" class="secondary-action" @click="setEmailTab('contacts')">
-                  Import contacts
-                </button>
-                <button type="button" class="secondary-action" @click="setEmailTab('settings')">
-                  Email settings
-                </button>
+              <div class="status-summary-grid">
+                <article class="status-summary-card">
+                  <span>Sender</span>
+                  <strong>{{ senderIdentitySummary }}</strong>
+                </article>
+                <article class="status-summary-card">
+                  <span>Verification</span>
+                  <strong>{{ verificationStatusSummary }}</strong>
+                </article>
+                <article class="status-summary-card">
+                  <span>Domain health</span>
+                  <strong>{{ domainHealthSummary }}</strong>
+                </article>
               </div>
 
-              <div v-if="hasConfiguredDomain" class="overview-domain-status">
+              <div class="overview-domain-status">
                 <span class="workspace-chip">{{ domainStatusSummary }}</span>
                 <p class="workspace-description compact">
-                  {{ domainSettings?.fromName || "Your brand" }} is configured to send from
-                  {{ domainSettings?.fromEmail || domainSettings?.domainName }}.
+                  {{
+                    hasConfiguredDomain
+                      ? `${domainSettings?.fromName || "Your brand"} sends from ${domainSettings?.fromEmail || domainSettings?.domainName}.`
+                      : "Finish sender setup before you rely on campaigns."
+                  }}
                 </p>
+              </div>
+
+              <div v-if="systemWarnings.length > 0" class="status-warning-stack">
+                <p class="panel-meta secondary-panel-meta">Warnings</p>
+                <ul class="status-warning-list">
+                  <li v-for="warning in systemWarnings" :key="warning">{{ warning }}</li>
+                </ul>
               </div>
             </article>
           </section>
@@ -902,10 +1463,141 @@ onBeforeUnmount(() => {
           <div class="panel-header">
             <div>
               <p class="panel-meta">Campaigns</p>
-              <h2>Send the first version fast</h2>
+              <h2>Write once, then send a clean email</h2>
+              <p class="panel-note">Text first. Media supports the message instead of becoming the message.</p>
             </div>
           </div>
 
+          <section class="campaign-flow-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-meta">Step 1 · Source</p>
+                <h3>Start from something that already exists</h3>
+                <p class="panel-note">Use a seeded draft, pull from your draft library, or start fresh. No blank-builder dead end.</p>
+              </div>
+            </div>
+
+            <div class="campaign-source-mode-row">
+              <button
+                v-if="currentSourceSummary"
+                type="button"
+                class="workspace-secondary-button compact"
+                :class="{ active: campaignSourceMode === 'current' }"
+                @click="useCurrentSource"
+              >
+                Current source
+              </button>
+              <button
+                type="button"
+                class="workspace-secondary-button compact"
+                :class="{ active: campaignSourceMode === 'draft-library' }"
+                @click="campaignSourceMode = 'draft-library'"
+              >
+                Draft library
+              </button>
+              <button
+                type="button"
+                class="workspace-secondary-button compact"
+                :class="{ active: campaignSourceMode === 'fresh' }"
+                @click="startFreshCampaign"
+              >
+                Start fresh
+              </button>
+            </div>
+
+            <article v-if="campaignSourceMode === 'current' && currentSourceSummary" class="campaign-source-card active">
+              <div class="campaign-source-copy">
+                <span class="workspace-chip">{{ currentSourceSummary.typeLabel }}</span>
+                <strong>{{ currentSourceSummary.title }}</strong>
+                <p>{{ currentSourceSummary.preview }}</p>
+              </div>
+              <button type="button" class="secondary-action" @click="useCurrentSource">
+                Use source
+              </button>
+            </article>
+
+            <div v-else-if="campaignSourceMode === 'draft-library'" class="campaign-source-grid">
+              <article
+                v-for="draft in libraryDraftCards"
+                :key="draft.id"
+                class="campaign-source-card"
+                :class="{ active: selectedLibraryDraftId === draft.id }"
+              >
+                <div class="campaign-source-copy">
+                  <span class="workspace-chip">{{ draft.modeLabel }}</span>
+                  <strong>{{ draft.title }}</strong>
+                  <p>{{ draft.preview }}</p>
+                  <small>{{ draft.createdAtLabel }}</small>
+                </div>
+                <button type="button" class="secondary-action" @click="useLibraryDraft(draft.id)">
+                  Use draft
+                </button>
+              </article>
+              <p v-if="libraryDraftCards.length === 0" class="panel-note">
+                No saved drafts yet. Generate one from the dashboard or result screen first.
+              </p>
+            </div>
+
+            <p v-else class="panel-note">
+              Starting fresh keeps the editor empty. Use this when the campaign should not inherit a post or draft.
+            </p>
+          </section>
+
+          <div class="campaign-flow-toolbar">
+            <div class="campaign-flow-group">
+              <span class="panel-meta">Step 2 · Transform</span>
+              <div class="campaign-source-mode-row">
+                <button
+                  type="button"
+                  class="workspace-secondary-button compact"
+                  :class="{ active: campaignTone === 'direct' }"
+                  @click="setCampaignTone('direct')"
+                >
+                  Direct
+                </button>
+                <button
+                  type="button"
+                  class="workspace-secondary-button compact"
+                  :class="{ active: campaignTone === 'story' }"
+                  @click="setCampaignTone('story')"
+                >
+                  Story
+                </button>
+                <button
+                  type="button"
+                  class="workspace-secondary-button compact"
+                  :class="{ active: campaignTone === 'educational' }"
+                  @click="setCampaignTone('educational')"
+                >
+                  Educational
+                </button>
+              </div>
+            </div>
+
+            <div class="campaign-flow-group">
+              <span class="panel-meta">Step 3 · Edit or preview</span>
+              <div class="campaign-source-mode-row">
+                <button
+                  type="button"
+                  class="workspace-secondary-button compact"
+                  :class="{ active: campaignEditorMode === 'edit' }"
+                  @click="campaignEditorMode = 'edit'"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  class="workspace-secondary-button compact"
+                  :class="{ active: campaignEditorMode === 'preview' }"
+                  @click="campaignEditorMode = 'preview'"
+                >
+                  Preview
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <p class="panel-meta">Step 4 · Audience</p>
           <select v-model="campaignForm.listId" class="workspace-select full-width">
             <option value="" disabled>Select list</option>
             <option v-for="list in emailLists" :key="list.id" :value="list.id">
@@ -919,12 +1611,143 @@ onBeforeUnmount(() => {
             class="workspace-input"
             placeholder="Reply-to email (optional)"
           />
+          <div class="email-editor-toolbar">
+            <button type="button" class="workspace-secondary-button compact" @click="insertLinkPlaceholder">
+              Insert link
+            </button>
+            <button
+              type="button"
+              class="workspace-secondary-button compact"
+              :class="{ active: campaignForm.includeSignature }"
+              @click="toggleSignature"
+            >
+              {{ campaignForm.includeSignature ? "Signature on" : "Signature off" }}
+            </button>
+          </div>
+
           <textarea
-            v-model="campaignForm.bodyHtml"
+            v-if="campaignEditorMode === 'edit'"
+            v-model="campaignForm.bodyText"
             class="workspace-textarea"
-            placeholder="Write the campaign body here"
+            placeholder="Write the email body here. Links stay clickable and the signature is appended automatically."
           />
 
+          <section v-else class="email-preview-shell">
+            <div class="email-preview-header">
+              <div>
+                <p class="panel-meta">Preview</p>
+                <h3>{{ campaignForm.subject || "Add a subject line" }}</h3>
+              </div>
+              <span class="workspace-chip">{{ campaignTone }}</span>
+            </div>
+            <div class="email-preview-frame" v-html="previewEmailHtml"></div>
+          </section>
+
+          <section v-if="campaignEditorMode === 'edit'" class="email-media-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-meta">Media</p>
+                <h3>Optional images and signature</h3>
+                <p class="panel-note">Use one banner or a few inline images. Keep the email easy to read on mobile.</p>
+              </div>
+            </div>
+
+            <div class="email-media-input-row">
+              <input
+                v-model="campaignForm.mediaUrlInput"
+                class="workspace-input toolbar-input"
+                placeholder="Paste an image URL"
+              />
+              <button type="button" class="secondary-action" @click="addManualMediaUrl('header')">
+                Use as header
+              </button>
+              <button type="button" class="secondary-action" @click="addManualMediaUrl('inline')">
+                Add inline
+              </button>
+              <label class="workspace-secondary-button compact media-upload-trigger" :class="{ disabled: !activationSourcePostId || isUploadingDraftMedia }">
+                <input
+                  class="media-upload-input"
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif"
+                  multiple
+                  :disabled="!activationSourcePostId || isUploadingDraftMedia"
+                  @change="handleEmailMediaSelection"
+                />
+                {{ isUploadingDraftMedia ? "Uploading..." : "Upload image" }}
+              </label>
+            </div>
+
+            <div v-if="availableDraftImages.length > 0" class="draft-media-picker">
+              <p class="panel-meta">From the source post</p>
+              <div class="draft-media-grid">
+                <article v-for="image in availableDraftImages" :key="image.id" class="draft-media-card">
+                  <img :src="image.url" :alt="image.label" class="draft-media-preview" />
+                  <div class="draft-media-actions">
+                    <button type="button" class="workspace-secondary-button compact" @click="useHeaderImage(image.url)">
+                      Banner
+                    </button>
+                    <button
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      :class="{ active: campaignForm.inlineImageUrls.includes(image.url) }"
+                      @click="toggleInlineImage(image.url)"
+                    >
+                      {{ campaignForm.inlineImageUrls.includes(image.url) ? "Inline added" : "Add inline" }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <p v-else-if="isLoadingDraftMedia" class="panel-note">Loading draft media...</p>
+            <p v-else class="panel-note">No source media found. You can still paste image URLs if this email needs visual support.</p>
+
+            <div v-if="campaignForm.headerImageUrl" class="selected-media-stack">
+              <p class="panel-meta">Header image</p>
+              <article class="selected-media-card">
+                <img :src="campaignForm.headerImageUrl" alt="Header image" class="selected-media-preview" />
+                <button type="button" class="workspace-secondary-button compact" @click="campaignForm.headerImageUrl = ''">
+                  Remove
+                </button>
+              </article>
+            </div>
+
+            <div v-if="selectedInlineImagePreviews.length > 0" class="selected-media-stack">
+              <p class="panel-meta">Inline images</p>
+              <div class="draft-media-grid">
+                <article v-for="image in selectedInlineImagePreviews" :key="image.id" class="selected-media-card">
+                  <img :src="image.url" alt="Inline email image" class="selected-media-preview" />
+                  <div class="selected-media-actions">
+                    <button
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      @click="moveInlineImage(image.url, 'up')"
+                    >
+                      Move up
+                    </button>
+                    <button
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      @click="moveInlineImage(image.url, 'down')"
+                    >
+                      Move down
+                    </button>
+                    <button type="button" class="workspace-secondary-button compact" @click="toggleInlineImage(image.url)">
+                      Remove
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <div class="signature-preview-card">
+              <p class="panel-meta">Signature</p>
+              <strong>{{ campaignForm.includeSignature ? "Will be included" : "Not included" }}</strong>
+              <pre>{{ effectiveSignatureText || "Set a sender signature in Email settings." }}</pre>
+            </div>
+          </section>
+
+          <p class="panel-meta">Step 5 · Create draft</p>
           <div class="workspace-actions">
             <button type="button" class="primary-action" :disabled="isCreatingCampaign" @click="createCampaign">
               {{ isCreatingCampaign ? "Creating..." : "Create campaign" }}
@@ -1228,6 +2051,10 @@ onBeforeUnmount(() => {
                 <span class="domain-summary-label">Reply-to</span>
                 <strong>{{ domainSettings?.replyToEmail || "Not set" }}</strong>
               </div>
+              <div>
+                <span class="domain-summary-label">Signature</span>
+                <strong>{{ domainSettings?.signatureText || "Uses sender identity" }}</strong>
+              </div>
             </div>
 
             <div class="workspace-actions">
@@ -1251,6 +2078,11 @@ onBeforeUnmount(() => {
               <input v-model="domainForm.fromEmail" class="workspace-input" placeholder="marketing@yourbrand.com" />
               <input v-model="domainForm.replyToEmail" class="workspace-input" placeholder="reply-to email" />
             </div>
+            <textarea
+              v-model="domainForm.signatureText"
+              class="workspace-textarea compact"
+              placeholder="Abhishek&#10;Founder, PlanCraft AI&#10;https://linkedin.com/in/abhishek"
+            />
 
             <div class="workspace-actions">
               <button type="button" class="primary-action" :disabled="isSavingDomain" @click="saveDomainUpgrade">
@@ -1280,7 +2112,9 @@ onBeforeUnmount(() => {
   padding: 48px 20px 80px;
 }
 
-.workspace-hero {
+.email-page-header {
+  display: grid;
+  gap: 8px;
   margin-bottom: 24px;
 }
 
@@ -1294,10 +2128,10 @@ onBeforeUnmount(() => {
   text-transform: uppercase;
 }
 
-.workspace-hero h1 {
+.email-page-header h1 {
   margin: 0;
-  font-size: clamp(2.1rem, 4vw, 3.3rem);
-  line-height: 1.04;
+  font-size: clamp(1.9rem, 3.4vw, 2.8rem);
+  line-height: 1.08;
 }
 
 .workspace-description {
@@ -1338,16 +2172,6 @@ onBeforeUnmount(() => {
 
 .workspace-description.compact {
   margin-top: 10px;
-}
-
-.workspace-grid {
-  display: grid;
-  gap: 20px;
-  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
-}
-
-.overview-grid {
-  margin-top: 0;
 }
 
 .workspace-card {
@@ -1421,15 +2245,82 @@ onBeforeUnmount(() => {
   color: var(--fc-accent-contrast);
 }
 
+.campaign-flow-panel {
+  display: grid;
+  gap: 16px;
+  margin: 18px 0 20px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 85%, transparent);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--fc-surface) 94%, white 6%);
+}
+
+.campaign-source-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.campaign-flow-toolbar {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.campaign-flow-group {
+  display: grid;
+  gap: 8px;
+}
+
+.campaign-source-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.campaign-source-card {
+  display: grid;
+  gap: 14px;
+  align-content: space-between;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.7);
+  box-shadow: 0 14px 28px rgba(60, 36, 21, 0.05);
+}
+
+.campaign-source-card.active {
+  border-color: color-mix(in srgb, var(--fc-accent) 34%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent) 8%, white 92%);
+}
+
+.campaign-source-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.campaign-source-copy strong {
+  font-size: 1.04rem;
+}
+
+.campaign-source-copy p,
+.campaign-source-copy small {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
+}
+
 .email-overview-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .email-stat-card {
   display: grid;
   gap: 8px;
+  min-height: 132px;
+  align-content: end;
 }
 
 .email-stat-card span {
@@ -1439,8 +2330,8 @@ onBeforeUnmount(() => {
 }
 
 .email-stat-card strong {
-  font-size: 2rem;
-  line-height: 1;
+  font-size: clamp(2rem, 4vw, 2.8rem);
+  line-height: 0.92;
 }
 
 .email-stat-card[data-tone="success"] {
@@ -1491,15 +2382,361 @@ onBeforeUnmount(() => {
   min-height: 160px;
 }
 
-.overview-action-stack {
+.workspace-secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 76%, rgba(221, 128, 56, 0.24));
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--fc-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 12px 28px rgba(74, 47, 28, 0.06);
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.workspace-secondary-button:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--fc-accent) 28%, var(--fc-border));
+  box-shadow: 0 18px 30px rgba(74, 47, 28, 0.1);
+}
+
+.workspace-secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+  transform: none;
+  box-shadow: none;
+}
+
+.workspace-secondary-button.compact {
+  min-height: 38px;
+  padding: 0 14px;
+  font-size: 0.9rem;
+}
+
+.workspace-secondary-button.active,
+.workspace-secondary-button[data-active="true"] {
+  background: color-mix(in srgb, var(--fc-accent) 14%, white 86%);
+  border-color: color-mix(in srgb, var(--fc-accent) 36%, var(--fc-border));
+  color: var(--fc-accent-dark);
+}
+
+.email-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.email-media-panel,
+.draft-media-picker,
+.selected-media-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.email-media-panel {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid color-mix(in srgb, var(--fc-border) 85%, transparent);
+}
+
+.email-media-panel h3 {
+  margin: 0;
+}
+
+.email-preview-shell {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.email-preview-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.email-preview-header h3 {
+  margin: 0;
+}
+
+.email-preview-frame {
+  width: min(100%, 640px);
+  padding: 22px;
+  border: 1px solid var(--fc-border);
+  border-radius: 26px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 250, 244, 0.92));
+  box-shadow: 0 24px 50px rgba(60, 36, 21, 0.08);
+}
+
+.email-preview-frame :deep(.email-preview-frame-inner) {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+  color: #241813;
+}
+
+.email-preview-frame :deep(p) {
+  margin: 0 0 18px;
+  font-size: 16px;
+  line-height: 1.82;
+}
+
+.email-preview-frame :deep(a) {
+  color: var(--fc-accent-dark);
+  text-decoration: underline;
+}
+
+.email-preview-frame :deep(.email-preview-image) {
+  margin: 20px 0;
+}
+
+.email-preview-frame :deep(.email-preview-image.is-header) {
+  margin-top: 0;
+  margin-bottom: 24px;
+}
+
+.email-preview-frame :deep(.email-preview-image img) {
+  display: block;
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 85%, transparent);
+}
+
+.email-preview-frame :deep(.email-preview-signature) {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid #eaded2;
+}
+
+.email-preview-frame :deep(.email-preview-signature p) {
+  margin-bottom: 10px;
+  font-size: 14px;
+  color: #6d5d53;
+}
+
+.email-preview-frame :deep(.email-preview-placeholder) {
+  color: var(--fc-text-muted);
+}
+
+.email-media-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.media-upload-trigger {
+  position: relative;
+  overflow: hidden;
+}
+
+.media-upload-trigger.disabled {
+  opacity: 0.68;
+  cursor: not-allowed;
+}
+
+.media-upload-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.draft-media-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.draft-media-card,
+.selected-media-card {
   display: grid;
   gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--fc-surface) 94%, white 6%);
+  box-shadow: 0 14px 30px rgba(60, 36, 21, 0.05);
+}
+
+.draft-media-preview,
+.selected-media-preview {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+  background: color-mix(in srgb, var(--fc-surface-subtle) 84%, white 16%);
+}
+
+.draft-media-actions,
+.selected-media-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.signature-preview-card {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--fc-border);
+  background: linear-gradient(180deg, rgba(255, 250, 244, 0.96), rgba(255, 246, 238, 0.88));
+}
+
+.signature-preview-card strong {
+  font-size: 1rem;
+}
+
+.signature-preview-card pre {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  color: var(--fc-text-muted);
+  font: inherit;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .overview-domain-status {
   display: grid;
   gap: 8px;
-  margin-top: 20px;
+  margin-top: 18px;
+}
+
+.overview-quick-actions {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.overview-action-button {
+  width: 100%;
+  min-height: 54px;
+}
+
+.overview-dashboard-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.6fr);
+}
+
+.overview-campaigns-card,
+.overview-status-card {
+  display: grid;
+  gap: 18px;
+}
+
+.overview-campaign-list {
+  margin-top: 0;
+}
+
+.overview-campaign-card {
+  align-items: flex-start;
+}
+
+.overview-campaign-main {
+  display: grid;
+  gap: 12px;
+  flex: 1 1 420px;
+}
+
+.overview-campaign-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.overview-campaign-subject {
+  font-weight: 700;
+  color: var(--fc-text);
+}
+
+.overview-campaign-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.overview-campaign-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.workspace-chip.warning {
+  border-color: color-mix(in srgb, #b46a00 20%, var(--fc-border));
+  color: #8a5200;
+  background: color-mix(in srgb, #f8b84e 12%, white 88%);
+}
+
+.overview-empty-state {
+  display: grid;
+  gap: 14px;
+  justify-items: start;
+  margin-top: 0;
+}
+
+.overview-empty-state p {
+  margin: 0;
+}
+
+.status-summary-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.status-summary-card {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.status-summary-card span {
+  color: var(--fc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.status-summary-card strong {
+  line-height: 1.4;
+}
+
+.secondary-panel-meta {
+  margin-bottom: 0;
+}
+
+.status-warning-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.status-warning-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
 }
 
 .contact-import-stack,
@@ -1851,7 +3088,9 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 920px) {
-  .workspace-grid,
+  .email-overview-grid,
+  .overview-quick-actions,
+  .overview-dashboard-grid,
   .domain-grid,
   .contact-import-stack {
     grid-template-columns: 1fr;
@@ -1873,6 +3112,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
+  .email-stat-card {
+    min-height: auto;
+  }
+
   .contact-preview-summary,
   .contact-mapping-grid,
   .contact-preview-row,

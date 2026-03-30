@@ -42,6 +42,10 @@ function readDrafts(): ActivationDraftRecord[] {
   }
 }
 
+export function listActivationDrafts(): ActivationDraftRecord[] {
+  return readDrafts();
+}
+
 function writeDrafts(drafts: ActivationDraftRecord[]): void {
   if (!canUseStorage()) {
     return;

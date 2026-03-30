@@ -34,6 +34,7 @@ const visibleAppLinks = computed(() => {
 
   return [
     { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
+    { to: appRoutes.appIdeas, label: "Ideas", shortLabel: "I", visible: canUseDashboard },
     { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", visible: canUsePlanner },
     { to: appRoutes.appHistory, label: "History", shortLabel: "H", visible: canUsePlanner },
     { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
@@ -57,6 +58,7 @@ const pageTitleMap: Record<string, string> = {
   "app-create": "Create new post",
   "app-growth": "Growth",
   "app-history": "History",
+  "app-ideas": "Idea Inbox",
   "app-planner": "Planner",
   "app-outreach": "Outreach",
   "app-result": "Generated content",
@@ -77,6 +79,10 @@ const currentPageSubtitle = computed(() => {
 
   if (route.name === "app-growth") {
     return "Capture leads, run the nurture flow, and see what the engine is doing.";
+  }
+
+  if (route.name === "app-ideas") {
+    return "Capture ideas, shape angles, and move the best ones into real posts.";
   }
 
   if (route.name === "app-planner") {

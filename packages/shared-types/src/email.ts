@@ -108,6 +108,7 @@ export interface BusinessEmailSettings {
   fromName?: string;
   fromEmail?: string;
   replyToEmail?: string;
+  signatureText?: string;
   domainName?: string;
   domainStatus: string;
   dkimStatus: string;
@@ -196,6 +197,17 @@ export interface EmailCampaignStats {
   deliveredCount: number;
   failedCount: number;
   unsubscribedCount: number;
+}
+
+export interface EmailCampaignImage {
+  url: string;
+  altText?: string;
+}
+
+export interface EmailCampaignContent {
+  headerImage?: EmailCampaignImage;
+  inlineImages?: EmailCampaignImage[];
+  includeSignature?: boolean;
 }
 
 export type EmailContactImportField =
@@ -320,9 +332,10 @@ export interface CreateEmailCampaignRequest {
   listId: string;
   name: string;
   subject: string;
-  bodyHtml: string;
+  bodyHtml?: string;
   bodyText?: string;
   replyToEmail?: string;
+  content?: EmailCampaignContent;
 }
 
 export interface CreateEmailCampaignResponse {
@@ -351,6 +364,7 @@ export interface CreateEmailDomainRequest {
   fromName?: string;
   fromEmail?: string;
   replyToEmail?: string;
+  signatureText?: string;
 }
 
 export interface CreateEmailDomainResponse {

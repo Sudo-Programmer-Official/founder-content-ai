@@ -61,6 +61,7 @@ interface EmailSettingsRow extends QueryResultRow {
   from_name: string | null;
   from_email: string | null;
   reply_to_email: string | null;
+  signature_text: string | null;
   provider: string;
   ses_identity: string | null;
   domain_name: string | null;
@@ -246,6 +247,7 @@ const EMAIL_SETTINGS_SELECT_FIELDS = `
   from_name,
   from_email,
   reply_to_email,
+  signature_text,
   provider,
   ses_identity,
   domain_name,
@@ -327,6 +329,26 @@ function includesAmazonSes(value: string | undefined | null): boolean {
 function normalizeOptionalEmail(value: string | undefined): string | null {
   const normalized = value?.trim().toLowerCase();
   return normalized ? normalized : null;
+}
+
+function normalizeOptionalHttpUrl(value: string | undefined | null): string | null {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    const url = new URL(normalized);
+
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return null;
+    }
+
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 function extractEmailDomain(value: string): string | null {
@@ -514,6 +536,7 @@ function mapEmailSettings(row: EmailSettingsRow): BusinessEmailSettings {
     fromName: row.from_name ?? undefined,
     fromEmail: row.from_email ?? undefined,
     replyToEmail: row.reply_to_email ?? undefined,
+    signatureText: row.signature_text ?? undefined,
     domainName: row.domain_name ?? undefined,
     domainStatus: row.domain_status,
     dkimStatus: row.dkim_status,
@@ -769,6 +792,166 @@ function stripHtml(html: string): string {
     .replace(/<[^>]+>/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function linkifyHtmlText(value: string): string {
+  const urlPattern = /https?:\/\/[^\s<]+/gi;
+  let html = "";
+  let lastIndex = 0;
+
+  for (const match of value.matchAll(urlPattern)) {
+    const rawUrl = match[0];
+    const index = match.index ?? 0;
+
+    html += escapeHtml(value.slice(lastIndex, index));
+    html += `<a href="${escapeHtml(rawUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(rawUrl)}</a>`;
+    lastIndex = index + rawUrl.length;
+  }
+
+  html += escapeHtml(value.slice(lastIndex));
+  return html.replace(/\n/g, "<br />");
+}
+
+function renderEmailImageBlock(input: { url: string; altText?: string; variant: "header" | "inline" }): string {
+  const altText = input.altText?.trim() || (input.variant === "header" ? "Email header image" : "Email image");
+  const margin = input.variant === "header" ? "0 0 24px" : "20px 0";
+  const borderRadius = input.variant === "header" ? "20px" : "18px";
+
+  return `<div style="margin:${margin};text-align:center;"><img src="${escapeHtml(input.url)}" alt="${escapeHtml(altText)}" style="display:block;width:100%;max-width:600px;margin:0 auto;border-radius:${borderRadius};height:auto;border:0;outline:none;text-decoration:none;" /></div>`;
+}
+
+function renderSignatureHtml(signatureText: string): string {
+  const paragraphs = signatureText
+    .trim()
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== "");
+
+  const renderedParagraphs = paragraphs.map(
+    (paragraph) =>
+      `<p style="margin:0 0 10px;font-size:14px;line-height:1.7;color:#6d5d53;">${linkifyHtmlText(paragraph)}</p>`,
+  );
+
+  return `<div style="margin-top:28px;padding-top:18px;border-top:1px solid #eaded2;">${renderedParagraphs.join("")}</div>`;
+}
+
+function resolveEmailSignatureText(
+  settings: Pick<BusinessEmailSettings, "signatureText" | "fromName" | "fromEmail">,
+): string {
+  const explicit = settings.signatureText?.trim();
+
+  if (explicit) {
+    return explicit;
+  }
+
+  return [settings.fromName?.trim(), settings.fromEmail?.trim()].filter(Boolean).join("\n");
+}
+
+function buildEmailCampaignBodies(
+  input: CreateEmailCampaignRequest,
+  settings: Pick<BusinessEmailSettings, "signatureText" | "fromName" | "fromEmail">,
+): { html: string; text: string } {
+  const baseText = (input.bodyText?.trim() || stripHtml(input.bodyHtml ?? "")).trim();
+
+  if (!baseText) {
+    throw new HttpError(400, "email_campaign_invalid", "Subject and email body are required.");
+  }
+
+  const content = input.content;
+  const headerImageUrl = normalizeOptionalHttpUrl(content?.headerImage?.url);
+  const inlineImages = (content?.inlineImages ?? [])
+    .flatMap((image) => {
+      const url = normalizeOptionalHttpUrl(image.url);
+
+      if (!url) {
+        return [];
+      }
+
+      return [
+        {
+          url,
+          altText: image.altText?.trim() || undefined,
+        },
+      ];
+    })
+    .slice(0, 6);
+  const includeSignature = content?.includeSignature !== false;
+  const signatureText = includeSignature ? resolveEmailSignatureText(settings) : "";
+
+  const paragraphs = baseText
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== "");
+
+  const htmlParts: string[] = [
+    `<div style="width:100%;max-width:600px;margin:0 auto;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#241813;background:#fffaf5;">`,
+  ];
+  const textParts: string[] = [];
+
+  if (headerImageUrl) {
+    htmlParts.push(
+      renderEmailImageBlock({
+        url: headerImageUrl,
+        altText: content?.headerImage?.altText,
+        variant: "header",
+      }),
+    );
+    textParts.push(`Header image: ${headerImageUrl}`);
+  }
+
+  paragraphs.forEach((paragraph, index) => {
+    htmlParts.push(
+      `<p style="margin:0 0 18px;font-size:16px;line-height:1.8;color:#241813;">${linkifyHtmlText(paragraph)}</p>`,
+    );
+    textParts.push(paragraph);
+
+    if (index === 0 && inlineImages.length > 0) {
+      for (const image of inlineImages) {
+        htmlParts.push(
+          renderEmailImageBlock({
+            url: image.url,
+            altText: image.altText,
+            variant: "inline",
+          }),
+        );
+        textParts.push(`Image: ${image.url}`);
+      }
+    }
+  });
+
+  if (paragraphs.length === 0 && inlineImages.length > 0) {
+    for (const image of inlineImages) {
+      htmlParts.push(
+        renderEmailImageBlock({
+          url: image.url,
+          altText: image.altText,
+          variant: "inline",
+        }),
+      );
+      textParts.push(`Image: ${image.url}`);
+    }
+  }
+
+  if (signatureText) {
+    htmlParts.push(renderSignatureHtml(signatureText));
+    textParts.push(signatureText);
+  }
+
+  htmlParts.push("</div>");
+
+  return {
+    html: htmlParts.join(""),
+    text: textParts.join("\n\n").trim(),
+  };
 }
 
 function personalizeTemplate(template: string, contact: Pick<EmailContact, "firstName" | "lastName" | "email">): string {
@@ -2738,13 +2921,14 @@ export async function createEmailCampaign(
   actorUserId: string | undefined,
   input: CreateEmailCampaignRequest,
 ): Promise<CreateEmailCampaignResponse> {
-  if (input.subject.trim() === "" || input.bodyHtml.trim() === "") {
+  if (input.subject.trim() === "") {
     throw new HttpError(400, "email_campaign_invalid", "Subject and email body are required.");
   }
 
   return withDbTransaction(async (client) => {
     await loadEmailListOrThrow(businessId, input.listId, client);
-    await ensureEmailSettingsRow(businessId, client);
+    const settingsRow = await ensureEmailSettingsRow(businessId, client);
+    const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow));
 
     const result = await executeQuery<EmailCampaignRow>(
       `
@@ -2797,8 +2981,8 @@ export async function createEmailCampaign(
         input.listId,
         input.name.trim() || input.subject.trim(),
         input.subject.trim(),
-        input.bodyHtml.trim(),
-        input.bodyText?.trim() || stripHtml(input.bodyHtml),
+        renderedBody.html,
+        renderedBody.text,
         input.replyToEmail?.trim() || null,
         actorUserId ?? null,
       ],
@@ -3276,6 +3460,7 @@ export async function createEmailDomain(
   const domainName = input.domainName.trim().toLowerCase();
   const fromEmail = normalizeOptionalEmail(input.fromEmail);
   const replyToEmail = normalizeOptionalEmail(input.replyToEmail);
+  const signatureText = input.signatureText?.trim() || null;
 
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domainName)) {
     throw new HttpError(400, "email_domain_invalid", "A valid domain is required.");
@@ -3318,6 +3503,7 @@ export async function createEmailDomain(
         from_name,
         from_email,
         reply_to_email,
+        signature_text,
         provider,
         domain_name,
         domain_status,
@@ -3337,19 +3523,20 @@ export async function createEmailDomain(
         $2,
         $3,
         $4,
-        'ses',
         $5,
+        'ses',
         $6,
         $7,
         $8,
         $9,
-        $10::jsonb,
+        $10,
         $11::jsonb,
-        $12,
+        $12::jsonb,
         $13,
         $14,
-        $15::jsonb,
-        case when $16 then now() else null end,
+        $15,
+        $16::jsonb,
+        case when $17 then now() else null end,
         now()
       )
       on conflict (business_id)
@@ -3357,6 +3544,7 @@ export async function createEmailDomain(
         from_name = excluded.from_name,
         from_email = excluded.from_email,
         reply_to_email = excluded.reply_to_email,
+        signature_text = excluded.signature_text,
         domain_name = excluded.domain_name,
         domain_status = excluded.domain_status,
         dkim_status = excluded.dkim_status,
@@ -3383,6 +3571,7 @@ export async function createEmailDomain(
       input.fromName?.trim() || process.env.SYSTEM_FROM_NAME?.trim() || null,
       fromEmail,
       replyToEmail,
+      signatureText,
       domainName,
       snapshot.domainStatus,
       snapshot.dkimStatus,

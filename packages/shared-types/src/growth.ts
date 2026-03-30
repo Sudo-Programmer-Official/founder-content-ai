@@ -4,6 +4,7 @@ export type GrowthLeadSource =
   | "manual"
   | "csv_import"
   | "system";
+export type GrowthLeadSourcePlatform = "linkedin" | "email" | "manual" | "website";
 
 export type GrowthLeadStatus = "new" | "engaged" | "trial" | "converted" | "churned";
 export type GrowthAutomationTrigger = "lead_created";
@@ -36,6 +37,10 @@ export interface GrowthLead {
   email: string;
   phone?: string;
   source: GrowthLeadSource;
+  sourcePlatform?: GrowthLeadSourcePlatform;
+  sourceAssetId?: string;
+  sourceAssetTitle?: string;
+  sourceExternalUrl?: string;
   status: GrowthLeadStatus;
   notes?: string;
   firstEmailSentAt?: string;
@@ -112,6 +117,10 @@ export interface CreateGrowthLeadRequest {
   email: string;
   phone?: string;
   source?: GrowthLeadSource;
+  sourcePlatform?: GrowthLeadSourcePlatform;
+  sourceAssetId?: string;
+  sourceAssetTitle?: string;
+  sourceExternalUrl?: string;
   notes?: string;
 }
 

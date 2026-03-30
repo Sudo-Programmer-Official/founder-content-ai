@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import type {
   BusinessMembership,
   CreateGrowthLeadRequest,
@@ -7,6 +8,7 @@ import type {
   GrowthLead,
   GrowthLeadEvent,
   GrowthLeadSource,
+  GrowthLeadSourcePlatform,
   GrowthLeadStatus,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
@@ -27,6 +29,8 @@ const {
   setActiveBusinessId,
   isFeatureEnabled,
 } = useProductAccessContext();
+const route = useRoute();
+const router = useRouter();
 
 const businesses = ref<BusinessMembership[]>([]);
 const selectedBusinessId = ref("");
@@ -56,6 +60,13 @@ const leadForm = ref<{
   notes: "",
 });
 
+const leadAttribution = ref<{
+  sourcePlatform?: GrowthLeadSourcePlatform;
+  sourceAssetId?: string;
+  sourceAssetTitle?: string;
+  sourceExternalUrl?: string;
+}>({});
+
 const leadSourceOptions: Array<{ value: GrowthLeadSource; label: string }> = [
   { value: "manual", label: "Manual" },
   { value: "landing_page", label: "Landing page" },
@@ -63,9 +74,70 @@ const leadSourceOptions: Array<{ value: GrowthLeadSource; label: string }> = [
   { value: "csv_import", label: "CSV import" },
 ];
 
+function getQueryString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeSourcePlatform(value: string): GrowthLeadSourcePlatform | undefined {
+  if (value === "linkedin" || value === "email" || value === "manual" || value === "website") {
+    return value;
+  }
+
+  return undefined;
+}
+
+function formatLeadSourcePlatform(value: GrowthLeadSourcePlatform): string {
+  switch (value) {
+    case "linkedin":
+      return "LinkedIn";
+    case "email":
+      return "Email";
+    case "website":
+      return "Website";
+    default:
+      return "Manual";
+  }
+}
+
 const currentBusiness = computed(() =>
   businesses.value.find((membership) => membership.businessId === selectedBusinessId.value) ?? null,
 );
+
+const routeLeadSourceContext = computed(() => {
+  const sourcePlatform = normalizeSourcePlatform(getQueryString(route.query.sourcePlatform));
+  const sourceAssetId = getQueryString(route.query.sourceAssetId);
+  const sourceAssetTitle = getQueryString(route.query.sourceAssetTitle);
+  const sourceExternalUrl = getQueryString(route.query.sourceExternalUrl);
+
+  if (!sourcePlatform && !sourceAssetId && !sourceAssetTitle && !sourceExternalUrl) {
+    return null;
+  }
+
+  return {
+    sourcePlatform: sourcePlatform || undefined,
+    sourceAssetId: sourceAssetId || undefined,
+    sourceAssetTitle: sourceAssetTitle || undefined,
+    sourceExternalUrl: sourceExternalUrl || undefined,
+  };
+});
+
+const activeLeadSourceContext = computed(() => {
+  const sourcePlatform = leadAttribution.value.sourcePlatform;
+  const sourceAssetId = leadAttribution.value.sourceAssetId;
+  const sourceAssetTitle = leadAttribution.value.sourceAssetTitle;
+  const sourceExternalUrl = leadAttribution.value.sourceExternalUrl;
+
+  if (!sourcePlatform && !sourceAssetId && !sourceAssetTitle && !sourceExternalUrl) {
+    return null;
+  }
+
+  return {
+    sourcePlatform,
+    sourceAssetId,
+    sourceAssetTitle,
+    sourceExternalUrl,
+  };
+});
 
 const selectedLead = computed(() =>
   leads.value.find((lead) => lead.id === selectedLeadId.value) ?? null,
@@ -130,6 +202,10 @@ const leadActivitySummary = computed(() => {
   return counts;
 });
 
+const selectedLeadOriginLabel = computed(() =>
+  selectedLead.value ? formatLeadOrigin(selectedLead.value) : "",
+);
+
 function formatLeadSource(value: GrowthLeadSource): string {
   switch (value) {
     case "landing_page":
@@ -143,6 +219,20 @@ function formatLeadSource(value: GrowthLeadSource): string {
     default:
       return "Manual";
   }
+}
+
+function formatLeadOrigin(lead: Pick<GrowthLead, "source" | "sourcePlatform" | "sourceAssetTitle">): string {
+  const segments = [formatLeadSource(lead.source)];
+
+  if (lead.sourcePlatform) {
+    segments.push(formatLeadSourcePlatform(lead.sourcePlatform));
+  }
+
+  if (lead.sourceAssetTitle) {
+    segments.push(lead.sourceAssetTitle);
+  }
+
+  return segments.join(" · ");
 }
 
 function formatLeadStatus(value: GrowthLeadStatus): string {
@@ -201,7 +291,20 @@ function formatEventCopy(event: GrowthLeadEvent): string {
 
   if (event.eventType === "captured") {
     const source = typeof event.metadata.source === "string" ? event.metadata.source : "manual";
-    return `Source: ${formatLeadSource(source as GrowthLeadSource)}`;
+    const sourcePlatform =
+      typeof event.metadata.sourcePlatform === "string"
+        ? (event.metadata.sourcePlatform as GrowthLeadSourcePlatform)
+        : undefined;
+    const sourceAssetTitle =
+      typeof event.metadata.sourceAssetTitle === "string" ? event.metadata.sourceAssetTitle : "";
+
+    return `Source: ${[
+      formatLeadSource(source as GrowthLeadSource),
+      sourcePlatform ? formatLeadSourcePlatform(sourcePlatform) : "",
+      sourceAssetTitle,
+    ]
+      .filter((value) => value)
+      .join(" · ")}`;
   }
 
   if (templateKey) {
@@ -216,6 +319,49 @@ function syncSelectedLead(): void {
     leads.value.find((lead) => lead.id === selectedLeadId.value) ?? leads.value[0] ?? null;
   selectedLeadId.value = preferredLead?.id ?? "";
   selectedLeadStatusDraft.value = preferredLead?.status ?? "new";
+}
+
+async function applyRouteLeadSeed(): Promise<void> {
+  const queryBusinessId = getQueryString(route.query.businessId);
+  const queryName = getQueryString(route.query.prefillName);
+  const queryEmail = getQueryString(route.query.prefillEmail);
+  const queryNotes = getQueryString(route.query.prefillNotes);
+
+  if (queryBusinessId && queryBusinessId !== selectedBusinessId.value) {
+    selectedBusinessId.value = queryBusinessId;
+
+    if (queryBusinessId !== productAccess.value?.activeBusinessId) {
+      await setActiveBusinessId(queryBusinessId);
+    }
+  }
+
+  if (queryName && !leadForm.value.name.trim()) {
+    leadForm.value.name = queryName;
+  }
+
+  if (queryEmail && !leadForm.value.email.trim()) {
+    leadForm.value.email = queryEmail;
+  }
+
+  if (queryNotes && !leadForm.value.notes.trim()) {
+    leadForm.value.notes = queryNotes;
+  }
+
+  leadAttribution.value = routeLeadSourceContext.value ?? {};
+}
+
+function clearLeadSourceContext(): void {
+  leadAttribution.value = {};
+  void router.replace({ path: appRoutes.appGrowth });
+}
+
+function openLeadSourcePost(sourceAssetId: string): void {
+  void router.push({
+    path: appRoutes.appResult,
+    query: {
+      id: sourceAssetId,
+    },
+  });
 }
 
 async function loadBusinesses(): Promise<void> {
@@ -278,6 +424,7 @@ async function initializePage(): Promise<void> {
 
   try {
     await loadBusinesses();
+    await applyRouteLeadSeed();
     await loadWorkspaceGrowth();
   } catch (error) {
     errorMessage.value =
@@ -308,6 +455,10 @@ async function handleAddLead(): Promise<void> {
       email: leadForm.value.email.trim(),
       phone: leadForm.value.phone.trim() || undefined,
       source: leadForm.value.source,
+      sourcePlatform: leadAttribution.value.sourcePlatform,
+      sourceAssetId: leadAttribution.value.sourceAssetId,
+      sourceAssetTitle: leadAttribution.value.sourceAssetTitle,
+      sourceExternalUrl: leadAttribution.value.sourceExternalUrl,
       notes: leadForm.value.notes.trim() || undefined,
     };
     const response = await requestCreateGrowthLead(payload);
@@ -316,7 +467,7 @@ async function handleAddLead(): Promise<void> {
       name: "",
       email: "",
       phone: "",
-      source: "manual",
+      source: leadForm.value.source,
       notes: "",
     };
     await loadWorkspaceGrowth();
@@ -364,6 +515,13 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (bu
     await loadWorkspaceGrowth();
   })();
 });
+
+watch(
+  () => route.fullPath,
+  () => {
+    void applyRouteLeadSeed();
+  },
+);
 
 watch(selectedLeadId, () => {
   selectedLeadStatusDraft.value = selectedLead.value?.status ?? "new";
@@ -439,6 +597,33 @@ onMounted(() => {
               </div>
               <span class="topbar-pill">V1</span>
             </div>
+
+            <article v-if="activeLeadSourceContext" class="lead-source-context-card">
+              <div>
+                <p class="dashboard-card-label">Linked source</p>
+                <strong>{{ activeLeadSourceContext.sourceAssetTitle || "Content touchpoint" }}</strong>
+                <p class="dashboard-description">
+                  {{
+                    activeLeadSourceContext.sourcePlatform
+                      ? `${formatLeadSourcePlatform(activeLeadSourceContext.sourcePlatform)} engagement will be linked back to this lead automatically.`
+                      : "This lead will be linked back to the source content automatically."
+                  }}
+                </p>
+              </div>
+              <div class="lead-source-context-actions">
+                <button
+                  v-if="activeLeadSourceContext.sourceAssetId"
+                  type="button"
+                  class="dashboard-button secondary"
+                  @click="openLeadSourcePost(activeLeadSourceContext.sourceAssetId)"
+                >
+                  Open source post
+                </button>
+                <button type="button" class="dashboard-button secondary" @click="clearLeadSourceContext">
+                  Detach source
+                </button>
+              </div>
+            </article>
 
             <div class="growth-form-grid">
               <label class="dashboard-field">
@@ -540,10 +725,10 @@ onMounted(() => {
                     @click="selectedLeadId = lead.id"
                   >
                     <td>
-                      <strong>{{ lead.name }}</strong>
-                      <small>{{ lead.email }}</small>
-                    </td>
-                    <td>{{ formatLeadSource(lead.source) }}</td>
+                    <strong>{{ lead.name }}</strong>
+                    <small>{{ lead.email }}</small>
+                  </td>
+                    <td>{{ formatLeadOrigin(lead) }}</td>
                     <td>
                       <span class="status-pill" :data-status="lead.status">
                         {{ formatLeadStatus(lead.status) }}
@@ -571,6 +756,38 @@ onMounted(() => {
             </div>
 
             <template v-if="selectedLead">
+              <article
+                v-if="selectedLeadOriginLabel || selectedLead?.sourceExternalUrl"
+                class="lead-source-context-card selected-lead-source-card"
+              >
+                <div>
+                  <p class="dashboard-card-label">Lead origin</p>
+                  <strong>{{ selectedLeadOriginLabel }}</strong>
+                  <p class="dashboard-description">
+                    This lead stays tied to the source content so nurture performance can be traced back to what generated interest.
+                  </p>
+                </div>
+                <div class="lead-source-context-actions">
+                  <button
+                    v-if="selectedLead?.sourceAssetId"
+                    type="button"
+                    class="dashboard-button secondary"
+                    @click="openLeadSourcePost(selectedLead.sourceAssetId)"
+                  >
+                    Open source post
+                  </button>
+                  <a
+                    v-if="selectedLead?.sourceExternalUrl"
+                    class="dashboard-button secondary external-link-button"
+                    :href="selectedLead.sourceExternalUrl"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open external post
+                  </a>
+                </div>
+              </article>
+
               <div class="activity-summary">
                 <div class="activity-stat">
                   <strong>{{ leadActivitySummary.sent }}</strong>
@@ -663,6 +880,42 @@ onMounted(() => {
 .activity-stat {
   display: grid;
   gap: 4px;
+}
+
+.lead-source-context-card {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(214, 101, 44, 0.18);
+  background: linear-gradient(180deg, rgba(255, 247, 238, 0.94), rgba(255, 252, 247, 0.9));
+}
+
+.lead-source-context-card strong {
+  display: block;
+  font-size: 1rem;
+  line-height: 1.3;
+}
+
+.lead-source-context-card .dashboard-description {
+  margin-top: 6px;
+}
+
+.lead-source-context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.selected-lead-source-card {
+  margin-bottom: 4px;
+}
+
+.external-link-button {
+  text-decoration: none;
 }
 
 .growth-toolbar-copy strong,
@@ -868,7 +1121,8 @@ onMounted(() => {
   .growth-toolbar,
   .panel-heading,
   .status-editor,
-  .timeline-event-head {
+  .timeline-event-head,
+  .lead-source-context-card {
     align-items: stretch;
     flex-direction: column;
   }

@@ -295,6 +295,20 @@ const connectedLinkedInLabel = computed(() => {
 
   return linkedInName || account.accountEmail || account.platformUserId;
 });
+const connectedLinkedInDescriptor = computed(() => {
+  const account = connectedLinkedInAccount.value;
+
+  if (!account) {
+    return "LinkedIn not connected";
+  }
+
+  const typeLabel =
+    account.selectedIdentity?.type === "organization" ? "Company page" : "Personal profile";
+
+  return connectedLinkedInLabel.value
+    ? `${connectedLinkedInLabel.value} · ${typeLabel}`
+    : typeLabel;
+});
 const linkedInPublishingStatus = computed(() => {
   if (!activeBusinessId.value) {
     return "Select a workspace to publish.";
@@ -400,12 +414,188 @@ const selectedLocalTimeLabel = computed(() => {
   return formatTimeWithZone(scheduledAt, userTimezone);
 });
 const bestRecommendedSlot = computed(() => recommendedSlots.value[0] ?? null);
+const selectedScheduledAtIso = computed(() => {
+  if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
+    return "";
+  }
+
+  return convertZonedDateTimeToUtcIso(
+    scheduleDateKey.value,
+    scheduleTime.value,
+    audienceTimezone.value,
+  );
+});
+const selectedDispatchWindowLabel = computed(() => {
+  if (!selectedScheduledAtIso.value || !audienceTimezone.value) {
+    return "";
+  }
+
+  const end = new Date(selectedScheduledAtIso.value);
+  end.setMinutes(end.getMinutes() + 20);
+
+  const startLabel = formatTimeWithZone(selectedScheduledAtIso.value, audienceTimezone.value);
+  const endLabel = formatTimeWithZone(end.toISOString(), audienceTimezone.value);
+
+  return `${startLabel}–${endLabel}`;
+});
 
 const signalPills = computed(() => [
   `${attentionSignal.value.label} attention signal`,
   `${structureSignal.value} structure`,
   `${hooks.value.length} alternate hook${hooks.value.length === 1 ? "" : "s"}`,
 ]);
+
+const feedbackTone = computed(() => {
+  const message = feedbackMessage.value.trim().toLowerCase();
+
+  if (!message) {
+    return "neutral" as const;
+  }
+
+  if (
+    message.includes("unable") ||
+    message.includes("failed") ||
+    message.includes("select a workspace") ||
+    message.includes("connect linkedin") ||
+    message.includes("not live") ||
+    message.includes("error")
+  ) {
+    return "warning" as const;
+  }
+
+  return "success" as const;
+});
+
+const executionStatus = computed(() => {
+  if (isPublishingToLinkedIn.value) {
+    return {
+      tone: "live",
+      label: "Publishing",
+      title: "Sending this post to LinkedIn now",
+      description: linkedInPublishingStatus.value,
+      detail: "If LinkedIn rejects the call, the draft stays in the workspace so you can retry cleanly.",
+    } as const;
+  }
+
+  if (feedbackMessage.value.startsWith("Posted to LinkedIn")) {
+    return {
+      tone: "live",
+      label: "Published",
+      title: "This post is already live",
+      description: "The draft has cleared direct publishing and LinkedIn returned a live post URL.",
+      detail: "Use planner for the next slot, or repurpose this post into email and outreach.",
+    } as const;
+  }
+
+  if (feedbackMessage.value.startsWith("Queued for dispatch")) {
+    return {
+      tone: "queued",
+      label: "Scheduled",
+      title: `${selectedAudienceDateLabel.value} • ${selectedAudienceTimeLabel.value}`,
+      description: selectedDispatchWindowLabel.value
+        ? `Dispatch window: ${selectedDispatchWindowLabel.value}`
+        : "The worker will dispatch this draft inside the selected delivery window.",
+      detail: "Queued jobs are picked in ~5 second worker cycles and retried automatically on transient failures.",
+    } as const;
+  }
+
+  if (canScheduleDraft.value) {
+    return {
+      tone: "ready",
+      label: "Ready to schedule",
+      title: bestRecommendedSlot.value
+        ? `Best time: ${bestRecommendedSlot.value.localLabel}`
+        : "Choose a delivery window",
+      description: bestRecommendedSlot.value?.reason
+        ?? "Pick a time once and let the queue handle dispatch instead of posting manually.",
+      detail: "Scheduling keeps the draft attached to the workspace loop and makes execution visible in planner.",
+    } as const;
+  }
+
+  if (connectedLinkedInAccount.value) {
+    return {
+      tone: "ready",
+      label: "Ready to publish",
+      title: "This draft can go live immediately",
+      description: linkedInPublishingStatus.value,
+      detail: "Publish now for instant delivery, or route it through planner when timing matters.",
+    } as const;
+  }
+
+  return {
+    tone: "warning",
+    label: "Connection needed",
+    title: "Connect LinkedIn before direct publishing",
+    description: linkedInPublishingStatus.value,
+    detail: "You can still refine the copy, attach media, and queue the next slot while the channel is being connected.",
+  } as const;
+});
+
+const executionPanelFacts = computed(() => [
+  {
+    label: "Status",
+    value: executionStatus.value.label,
+  },
+  {
+    label: "Publish as",
+    value: connectedLinkedInDescriptor.value,
+  },
+  {
+    label: "Best time",
+    value: bestRecommendedSlot.value?.localLabel ?? "9:00–11:00 AM",
+  },
+  {
+    label: "Dispatch",
+    value:
+      feedbackMessage.value.startsWith("Queued for dispatch") && selectedDispatchWindowLabel.value
+        ? selectedDispatchWindowLabel.value
+        : "~5s worker polling",
+  },
+  {
+    label: "Worker",
+    value: feedbackMessage.value.startsWith("Queued for dispatch")
+      ? "Active · polls ~5s"
+      : "Ready · polls ~5s",
+  },
+  {
+    label: "Attention",
+    value: attentionSignal.value.label,
+  },
+]);
+
+const executionTimeline = computed(() => {
+  if (feedbackMessage.value.startsWith("Posted to LinkedIn")) {
+    return [
+      "The post is already live on LinkedIn.",
+      "History will track the publish result and let you repurpose it later.",
+      "Use planner to lock the next execution slot while momentum is fresh.",
+    ];
+  }
+
+  if (feedbackMessage.value.startsWith("Queued for dispatch")) {
+    return [
+      "The draft is saved and linked to a real planner slot.",
+      selectedDispatchWindowLabel.value
+        ? `The worker will dispatch it inside ${selectedDispatchWindowLabel.value}.`
+        : "The worker will dispatch it inside the selected window.",
+      "If a transient delivery issue happens, the queue retries without losing the draft.",
+    ];
+  }
+
+  if (connectedLinkedInAccount.value) {
+    return [
+      "Publish now sends the draft to LinkedIn immediately.",
+      "Choose time hands execution to the scheduler and worker loop.",
+      "Open planner if you want the draft inside the weekly queue instead of publishing blind.",
+    ];
+  }
+
+  return [
+    "Connect LinkedIn once to unlock direct publishing.",
+    "Choose time to route this draft into the safer planner flow.",
+    "Keep refining the copy until the timing and hook feel strong enough to push live.",
+  ];
+});
 
 const aiPreviewActions = computed(() =>
   (aiEditPreview.value?.interpretedActions ?? []).map((action) =>
@@ -963,12 +1153,16 @@ async function scheduleDraft(): Promise<void> {
         assetGroupId: ensuredPostId,
         ignoreSafetyWarnings: true,
       });
-      feedbackMessage.value = "Queued for dispatch with a manual safety override.";
+      feedbackMessage.value = selectedDispatchWindowLabel.value
+        ? `Queued for dispatch with a manual safety override. Dispatch window: ${selectedDispatchWindowLabel.value}.`
+        : "Queued for dispatch with a manual safety override.";
     }
 
     isSchedulePanelOpen.value = false;
     if (!feedbackMessage.value) {
-      feedbackMessage.value = `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
+      feedbackMessage.value = selectedDispatchWindowLabel.value
+        ? `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Dispatch window: ${selectedDispatchWindowLabel.value}.`
+        : `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
     }
   } catch (error) {
     scheduleFeedback.value =
@@ -1038,6 +1232,34 @@ async function goToEmail(): Promise<void> {
       prefill: postContent.value,
     },
   });
+}
+
+async function goToGrowth(): Promise<void> {
+  if (!draft.value) {
+    return;
+  }
+
+  try {
+    const ensuredPostId = await ensurePersistedDraft();
+
+    if (!ensuredPostId) {
+      return;
+    }
+
+    await router.push({
+      path: appRoutes.appGrowth,
+      query: {
+        businessId: activeBusinessId.value,
+        sourcePlatform: "linkedin",
+        sourceAssetId: ensuredPostId,
+        sourceAssetTitle: draft.value.result.idea.title,
+        prefillNotes: `Engaged from post: ${draft.value.result.idea.title}`,
+      },
+    });
+  } catch (error) {
+    feedbackMessage.value =
+      error instanceof Error ? error.message : "Unable to open lead capture right now.";
+  }
 }
 
 async function goToRepurpose(): Promise<void> {
@@ -1300,12 +1522,18 @@ onBeforeUnmount(() => {
                 <strong>
                   {{
                     connectedLinkedInAccount
-                      ? "Posting optimized for LinkedIn"
+                      ? "Execution channel is ready"
                       : "Direct publishing not connected"
                   }}
                 </strong>
                 <p class="linkedin-status-copy">
-                  {{ isLoadingChannels ? "Checking workspace channel..." : linkedInPublishingStatus }}
+                  {{
+                    isLoadingChannels
+                      ? "Checking workspace channel..."
+                      : connectedLinkedInAccount
+                        ? connectedLinkedInDescriptor
+                        : linkedInPublishingStatus
+                  }}
                 </p>
               </div>
             </div>
@@ -1325,6 +1553,59 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
+          <section class="execution-status-card" :data-tone="executionStatus.tone">
+            <div class="execution-status-header">
+              <div>
+                <p class="panel-meta">{{ executionStatus.label }}</p>
+                <strong>{{ executionStatus.title }}</strong>
+                <p class="execution-status-description">{{ executionStatus.description }}</p>
+              </div>
+              <button
+                v-if="canScheduleDraft"
+                type="button"
+                class="secondary-action execution-status-button"
+                :disabled="isUploadingPostAssets"
+                @click="goToPlanner"
+              >
+                View in planner
+              </button>
+            </div>
+
+            <div class="execution-chip-row">
+              <article
+                v-for="fact in executionPanelFacts"
+                :key="`status-${fact.label}`"
+                class="execution-chip"
+              >
+                <span>{{ fact.label }}</span>
+                <strong>{{ fact.value }}</strong>
+              </article>
+            </div>
+
+            <div class="execution-status-grid">
+              <article class="execution-status-block">
+                <p class="panel-meta">Preview outcome</p>
+                <ul class="execution-timeline-list">
+                  <li v-for="step in executionTimeline" :key="step">{{ step }}</li>
+                </ul>
+              </article>
+
+              <article class="execution-status-block">
+                <p class="panel-meta">Delivery confidence</p>
+                <strong>{{ actionPriorityLabel }}</strong>
+                <p class="execution-status-description">{{ executionStatus.detail }}</p>
+              </article>
+            </div>
+
+            <p
+              v-if="feedbackMessage && feedbackTone === 'success'"
+              class="result-feedback execution-feedback"
+              data-tone="success"
+            >
+              {{ feedbackMessage }}
+            </p>
+          </section>
+
           <div class="result-primary-actions">
             <button
               type="button"
@@ -1340,8 +1621,8 @@ onBeforeUnmount(() => {
               {{
                 connectedLinkedInAccount
                   ? isPublishingToLinkedIn
-                    ? "Posting..."
-                    : "Post now"
+                    ? "Publishing..."
+                    : "Publish now"
                   : isConnectingLinkedIn
                     ? "Redirecting..."
                     : "Connect LinkedIn"
@@ -1355,7 +1636,7 @@ onBeforeUnmount(() => {
               :disabled="isSchedulingDraft || isUploadingPostAssets"
               @click="void openSchedulePanel()"
             >
-              Schedule
+              Choose time
             </button>
 
             <button
@@ -1365,7 +1646,7 @@ onBeforeUnmount(() => {
               :disabled="isUploadingPostAssets"
               @click="goToPlanner"
             >
-              Save to Planner
+              Open planner
             </button>
 
             <button type="button" class="secondary-action" @click="goToImprove">
@@ -1390,8 +1671,8 @@ onBeforeUnmount(() => {
               {{
                 connectedLinkedInAccount
                   ? isPublishingToLinkedIn
-                    ? "Posting..."
-                    : "Post now"
+                    ? "Publishing..."
+                    : "Publish now"
                   : isConnectingLinkedIn
                     ? "Redirecting..."
                     : "Connect LinkedIn"
@@ -1399,12 +1680,18 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <p v-if="feedbackMessage" class="result-feedback">{{ feedbackMessage }}</p>
+          <p
+            v-if="feedbackMessage && feedbackTone === 'warning'"
+            class="result-feedback"
+            data-tone="warning"
+          >
+            {{ feedbackMessage }}
+          </p>
 
           <section v-if="isSchedulePanelOpen && canScheduleDraft" class="schedule-panel">
             <div class="schedule-panel-header">
               <div>
-                <p class="panel-meta">Schedule this draft</p>
+                <p class="panel-meta">Choose a delivery window</p>
                 <strong>Lock the post into a real publishing slot</strong>
                 <p class="ai-command-copy">
                   Pick the audience time once, then let planner and the worker handle execution.
@@ -1471,10 +1758,10 @@ onBeforeUnmount(() => {
                 :disabled="isSchedulingDraft"
                 @click="void scheduleDraft()"
               >
-                {{ isSchedulingDraft ? "Scheduling..." : "Schedule post" }}
+                {{ isSchedulingDraft ? "Adding to queue..." : "Add to queue" }}
               </button>
               <button type="button" class="secondary-action" @click="goToPlanner">
-                Save to Planner
+                Open planner
               </button>
             </div>
           </section>
@@ -1541,6 +1828,13 @@ onBeforeUnmount(() => {
                   Preview the change first. Nothing overwrites the post until you apply it.
                 </p>
               </div>
+            </div>
+
+            <div class="ai-suggestion-callout">
+              <p class="panel-meta">Suggested improvements</p>
+              <p class="ai-command-copy">
+                Start with a stronger hook, a tighter ending, or a more specific founder example.
+              </p>
             </div>
 
             <div class="ai-command-row">
@@ -1630,8 +1924,23 @@ onBeforeUnmount(() => {
           </article>
 
           <article class="side-card">
-            <p class="panel-meta">More actions</p>
-            <h3>Use this draft elsewhere</h3>
+            <p class="panel-meta">Execution panel</p>
+            <h3>What happens next</h3>
+            <div class="execution-fact-grid">
+              <article v-for="fact in executionPanelFacts" :key="fact.label" class="execution-fact-card">
+                <span>{{ fact.label }}</span>
+                <strong>{{ fact.value }}</strong>
+              </article>
+            </div>
+            <div class="execution-delivery-note">
+              <p class="panel-meta">Delivery</p>
+              <p class="shortcut-note">
+                Scheduling hands this draft to the worker loop. Publish now skips the queue and
+                goes directly to LinkedIn.
+              </p>
+            </div>
+
+            <p class="panel-meta secondary-panel-meta">Use this draft elsewhere</p>
             <div class="side-action-stack">
               <button type="button" class="secondary-action side-action-button" @click="void copyPost()">
                 Copy for LinkedIn
@@ -1640,7 +1949,10 @@ onBeforeUnmount(() => {
                 Send via Outreach
               </button>
               <button type="button" class="secondary-action side-action-button" @click="goToEmail">
-                Send via Email
+                Convert to Email
+              </button>
+              <button type="button" class="secondary-action side-action-button" @click="goToGrowth">
+                Capture engaged lead
               </button>
             </div>
             <p class="shortcut-note">Shortcuts: Cmd/Ctrl + Shift + O for outreach, + E for email.</p>
@@ -1951,6 +2263,114 @@ onBeforeUnmount(() => {
   margin-top: 20px;
 }
 
+.execution-status-card {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 20px;
+  border-radius: 22px;
+  border: 1px solid var(--fc-border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0.58) 100%);
+  box-shadow: 0 18px 36px rgba(35, 21, 13, 0.08);
+}
+
+.execution-status-card[data-tone="queued"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 28%, var(--fc-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--fc-accent-soft) 44%, white 56%) 0%,
+    rgba(255, 255, 255, 0.72) 100%
+  );
+}
+
+.execution-status-card[data-tone="live"] {
+  border-color: color-mix(in srgb, var(--fc-success-text, #2c6b35) 22%, var(--fc-border));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--fc-success-bg, rgba(56, 142, 60, 0.12)) 72%, white 28%) 0%,
+    rgba(255, 255, 255, 0.76) 100%
+  );
+}
+
+.execution-status-card[data-tone="warning"] {
+  border-color: color-mix(in srgb, #b46a00 24%, var(--fc-border));
+  background: linear-gradient(180deg, color-mix(in srgb, #f8b84e 12%, white 88%) 0%, rgba(255, 255, 255, 0.76) 100%);
+}
+
+.execution-status-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.execution-status-header strong,
+.execution-status-block strong {
+  display: block;
+  font-size: 1.08rem;
+  line-height: 1.25;
+}
+
+.execution-status-description {
+  margin: 6px 0 0;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
+}
+
+.execution-status-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.execution-chip-row {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.execution-chip {
+  display: grid;
+  gap: 6px;
+  padding: 14px 15px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.execution-chip span {
+  color: var(--fc-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.execution-chip strong {
+  line-height: 1.35;
+}
+
+.execution-status-block {
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.execution-timeline-list {
+  display: grid;
+  gap: 10px;
+  padding-left: 18px;
+  margin: 10px 0 0;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+}
+
+.execution-feedback {
+  margin-top: 0;
+}
+
 .schedule-panel {
   display: grid;
   gap: 16px;
@@ -2023,6 +2443,14 @@ onBeforeUnmount(() => {
   border-radius: 22px;
   border: 1px solid var(--fc-border);
   background: rgba(255, 255, 255, 0.6);
+}
+
+.ai-suggestion-callout {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 16%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 22%, white 78%);
 }
 
 .ai-command-copy,
@@ -2268,6 +2696,22 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.result-feedback[data-tone="warning"] {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, #b46a00 22%, var(--fc-border));
+  background: color-mix(in srgb, #f8b84e 10%, white 90%);
+  color: #8a5200;
+}
+
+.result-feedback[data-tone="success"] {
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--fc-success-text, #2c6b35) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg, rgba(56, 142, 60, 0.12)) 82%, white 18%);
+  color: var(--fc-success-text, #2c6b35);
+}
+
 .result-feedback.subtle {
   margin-top: 0;
 }
@@ -2281,6 +2725,46 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 1.15rem;
   line-height: 1.2;
+}
+
+.execution-fact-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.execution-fact-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px 15px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.execution-fact-card span {
+  color: var(--fc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.execution-fact-card strong {
+  line-height: 1.35;
+}
+
+.execution-delivery-note {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 14%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 16%, white 84%);
+}
+
+.secondary-panel-meta {
+  margin-top: 20px;
 }
 
 .hook-list,
@@ -2309,6 +2793,9 @@ onBeforeUnmount(() => {
   }
 
   .result-signal-grid,
+  .execution-chip-row,
+  .execution-status-grid,
+  .execution-fact-grid,
   .schedule-form-grid,
   .ai-command-row,
   .ai-edit-diff {

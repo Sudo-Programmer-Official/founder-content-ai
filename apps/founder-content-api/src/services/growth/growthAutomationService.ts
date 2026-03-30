@@ -98,6 +98,10 @@ interface GrowthLeadRow extends QueryResultRow {
   email: string;
   phone: string | null;
   source: GrowthLead["source"];
+  source_platform: GrowthLead["sourcePlatform"] | null;
+  source_asset_id: string | null;
+  source_asset_title: string | null;
+  source_external_url: string | null;
   status: GrowthLeadStatus;
   notes: string | null;
   first_email_sent_at: Date | string | null;
@@ -200,6 +204,10 @@ function mapLead(row: GrowthLeadRow): GrowthLead {
     email: row.email,
     phone: row.phone ?? undefined,
     source: row.source,
+    sourcePlatform: row.source_platform ?? undefined,
+    sourceAssetId: row.source_asset_id ?? undefined,
+    sourceAssetTitle: row.source_asset_title ?? undefined,
+    sourceExternalUrl: row.source_external_url ?? undefined,
     status: row.status,
     notes: row.notes ?? undefined,
     firstEmailSentAt: toIsoString(row.first_email_sent_at),
@@ -420,6 +428,10 @@ async function findGrowthLeadByEmail(
         email,
         phone,
         source,
+        source_platform,
+        source_asset_id,
+        source_asset_title,
+        source_external_url,
         status,
         notes,
         first_email_sent_at,
@@ -688,6 +700,10 @@ export async function listGrowthLeads(
         email,
         phone,
         source,
+        source_platform,
+        source_asset_id,
+        source_asset_title,
+        source_external_url,
         status,
         notes,
         first_email_sent_at,
@@ -847,6 +863,10 @@ export async function createGrowthLead(
             phone = coalesce($4, growth_leads.phone),
             source = coalesce($5, growth_leads.source),
             notes = coalesce($6, growth_leads.notes),
+            source_platform = coalesce($7, growth_leads.source_platform),
+            source_asset_id = coalesce($8::uuid, growth_leads.source_asset_id),
+            source_asset_title = coalesce($9, growth_leads.source_asset_title),
+            source_external_url = coalesce($10, growth_leads.source_external_url),
             updated_at = now()
           where id = $1
             and business_id = $2
@@ -857,6 +877,10 @@ export async function createGrowthLead(
             email,
             phone,
             source,
+            source_platform,
+            source_asset_id,
+            source_asset_title,
+            source_external_url,
             status,
             notes,
             first_email_sent_at,
@@ -871,6 +895,10 @@ export async function createGrowthLead(
           normalizeOptionalString(input.phone),
           input.source ?? null,
           normalizeOptionalString(input.notes),
+          normalizeOptionalString(input.sourcePlatform),
+          normalizeOptionalString(input.sourceAssetId),
+          normalizeOptionalString(input.sourceAssetTitle),
+          normalizeOptionalString(input.sourceExternalUrl),
         ],
       );
 
@@ -884,9 +912,13 @@ export async function createGrowthLead(
             email,
             phone,
             source,
-            notes
+            notes,
+            source_platform,
+            source_asset_id,
+            source_asset_title,
+            source_external_url
           )
-          values ($1, $2, $3, $4, $5, $6)
+          values ($1, $2, $3, $4, $5, $6, $7, $8::uuid, $9, $10)
           returning
             id,
             business_id,
@@ -894,6 +926,10 @@ export async function createGrowthLead(
             email,
             phone,
             source,
+            source_platform,
+            source_asset_id,
+            source_asset_title,
+            source_external_url,
             status,
             notes,
             first_email_sent_at,
@@ -908,6 +944,10 @@ export async function createGrowthLead(
           normalizeOptionalString(input.phone),
           input.source ?? "manual",
           normalizeOptionalString(input.notes),
+          normalizeOptionalString(input.sourcePlatform),
+          normalizeOptionalString(input.sourceAssetId),
+          normalizeOptionalString(input.sourceAssetTitle),
+          normalizeOptionalString(input.sourceExternalUrl),
         ],
       );
 
@@ -922,7 +962,13 @@ export async function createGrowthLead(
       client,
     });
 
-    if (createdLead) {
+    if (
+      createdLead
+      || input.sourcePlatform
+      || input.sourceAssetId
+      || input.sourceAssetTitle
+      || input.sourceExternalUrl
+    ) {
       await recordGrowthLeadEvent(
         {
           businessId: input.businessId,
@@ -930,6 +976,10 @@ export async function createGrowthLead(
           eventType: "captured",
           metadata: {
             source: leadRow.source,
+            sourcePlatform: leadRow.source_platform,
+            sourceAssetId: leadRow.source_asset_id,
+            sourceAssetTitle: leadRow.source_asset_title,
+            sourceExternalUrl: leadRow.source_external_url,
           },
         },
         client,
@@ -959,6 +1009,10 @@ export async function updateGrowthLeadStatus(
           email,
           phone,
           source,
+          source_platform,
+          source_asset_id,
+          source_asset_title,
+          source_external_url,
           status,
           notes,
           first_email_sent_at,
@@ -994,6 +1048,10 @@ export async function updateGrowthLeadStatus(
           email,
           phone,
           source,
+          source_platform,
+          source_asset_id,
+          source_asset_title,
+          source_external_url,
           status,
           notes,
           first_email_sent_at,

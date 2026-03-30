@@ -15,12 +15,9 @@ import { requestMyBusinesses } from "../services/admin-analytics-service";
 import { ApiRequestError } from "../services/api-client";
 import {
   requestControlDashboard,
-  requestCreateIdeaInboxItem,
-  requestCreatePipelineItem,
   requestDeletePipelineItem,
   requestDuplicatePipelineItem,
 } from "../services/control-dashboard-service";
-import { requestRepurposeContent } from "../services/generation-service";
 import {
   requestLinkedInSocialAuthStart,
   requestRecommendedPostTimes,
@@ -78,11 +75,6 @@ const COMMON_AUDIENCE_TIMEZONES = [
   "Asia/Singapore",
   "Australia/Sydney",
 ] as const;
-const plannerToneOptions = [
-  { label: "Founder", value: "storytelling" },
-  { label: "Direct", value: "direct" },
-  { label: "Structured", value: "professional" },
-] as const;
 
 const businesses = ref<BusinessMembership[]>([]);
 const dashboard = ref<ControlDashboardResponse | null>(null);
@@ -92,7 +84,6 @@ const recommendedTimezone = ref("UTC");
 const isLoading = ref(true);
 const isScheduling = ref(false);
 const isUpdatingScheduledPost = ref(false);
-const isSavingIdea = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const selectedGridDateKey = ref("");
@@ -100,12 +91,8 @@ const selectedAudienceDateKey = ref("");
 const selectedWeekStartKey = ref("");
 const selectedScheduledPostId = ref("");
 const selectedBacklogAssetId = ref("");
-const quickIdeaText = ref("");
-const quickDraftTone = ref<(typeof plannerToneOptions)[number]["value"]>("storytelling");
 const scheduleTime = ref("09:00");
 const audienceTimezone = ref("");
-const isCreatingDraft = ref(false);
-const isGeneratingDraft = ref(false);
 const isConnectingLinkedIn = ref(false);
 const draftActionAssetId = ref("");
 const draftActionKind = ref<"duplicate" | "delete" | "">("");
@@ -224,8 +211,6 @@ const selectedDay = computed(
   () => weekDays.value.find((day) => day.key === selectedGridDateKey.value) ?? weekDays.value[0] ?? null,
 );
 
-const selectedDayPosts = computed(() => selectedDay.value?.posts ?? []);
-
 const gapDays = computed(() => weekDays.value.filter((day) => day.isGap));
 
 const weekRangeLabel = computed(() => {
@@ -281,14 +266,14 @@ const bestSlot = computed(() => recommendedSlots.value[0] ?? null);
 
 const selectedDayFocusMessage = computed(() => {
   if (!selectedDay.value) {
-    return "Choose a day to create, review, and move work into a real publishing slot.";
+    return "Choose a day to review execution slots and close gaps before momentum fades.";
   }
 
   if (selectedDay.value.isGap) {
-    return "This day is empty. Close the gap with a saved draft or generate something new without leaving the planner.";
+    return "This day is empty. Pull a draft from the backlog and close the gap before the week loses momentum.";
   }
 
-  return "This day already has momentum. Review the live mix, tighten the slot, or add another post if it earns the space.";
+  return "This day already has coverage. Open a post, adjust timing, or queue another one only if it clearly earns the space.";
 });
 
 const backlogTitle = computed(() => {
@@ -345,6 +330,9 @@ const selectedScheduledPostCanMoveToDraft = computed(() => {
 const selectedBacklogAsset = computed(
   () => unscheduledBacklog.value.find((asset) => asset.id === selectedBacklogAssetId.value) ?? null,
 );
+const isPlannerDetailModalOpen = computed(
+  () => Boolean(selectedScheduledPost.value || selectedBacklogAsset.value),
+);
 
 const activeDraftActionLabel = computed(() => {
   if (draftActionKind.value === "duplicate") {
@@ -384,6 +372,17 @@ const selectedAudienceTimeLabel = computed(() => {
   );
 
   return formatTimeWithZone(scheduledAt, audienceTimezone.value);
+});
+const selectedAudienceDateLabel = computed(() => {
+  if (!selectedAudienceDateKey.value) {
+    return "";
+  }
+
+  return formatDateInTimezone(`${selectedAudienceDateKey.value}T12:00:00.000Z`, "UTC", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
 });
 
 const selectedScheduledPostNeedsReconnect = computed(() => {
@@ -511,11 +510,6 @@ function buildExcerpt(value: string, maxLength = 140): string {
   }
 
   return `${normalized.slice(0, maxLength).trimEnd()}...`;
-}
-
-function buildDraftTitle(value: string): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.slice(0, 80) || "Untitled draft";
 }
 
 function initializeWeekState(): void {
@@ -733,11 +727,6 @@ function selectBacklogAsset(assetId: string, dayKey?: string): void {
   feedbackMessage.value = "";
 }
 
-function clearSelectedScheduledPost(): void {
-  selectedScheduledPostId.value = "";
-  feedbackMessage.value = "";
-}
-
 function isDraftActionPending(assetId: string, kind?: "duplicate" | "delete"): boolean {
   if (!assetId || assetId !== draftActionAssetId.value) {
     return false;
@@ -764,112 +753,6 @@ function applyRecommendedSlot(slot: RecommendedPostTimeSlot): void {
     audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
   );
   selectedScheduledPostId.value = "";
-}
-
-async function addIdeaToInbox(): Promise<void> {
-  if (!resolvedBusinessId.value || !quickIdeaText.value.trim()) {
-    errorMessage.value = "Add a quick idea before saving it to the inbox.";
-    return;
-  }
-
-  isSavingIdea.value = true;
-  errorMessage.value = "";
-
-  try {
-    await requestCreateIdeaInboxItem({
-      businessId: resolvedBusinessId.value,
-      text: quickIdeaText.value.trim(),
-    });
-    quickIdeaText.value = "";
-    feedbackMessage.value = "Idea saved to the inbox.";
-    await loadPlannerData();
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Unable to save that idea.";
-  } finally {
-    isSavingIdea.value = false;
-  }
-}
-
-async function selectCreatedDraft(assetId: string, message: string): Promise<void> {
-  await loadPlannerData();
-  selectBacklogAsset(assetId, selectedGridDateKey.value);
-  syncSelection();
-  feedbackMessage.value = message;
-  quickIdeaText.value = "";
-}
-
-async function saveDraftForSelectedDay(): Promise<void> {
-  if (!resolvedBusinessId.value || !quickIdeaText.value.trim()) {
-    errorMessage.value = "Add one idea before saving a draft.";
-    return;
-  }
-
-  isCreatingDraft.value = true;
-  errorMessage.value = "";
-  feedbackMessage.value = "";
-
-  try {
-    const text = quickIdeaText.value.trim();
-    const response = await requestCreatePipelineItem({
-      businessId: resolvedBusinessId.value,
-      title: buildDraftTitle(text),
-      textContent: text,
-      contentBody: { content: text },
-      sourceKind: "idea",
-    });
-
-    await selectCreatedDraft(response.asset.id, "Draft created in the planner. Pick a time and schedule it.");
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Unable to save this draft right now.";
-  } finally {
-    isCreatingDraft.value = false;
-  }
-}
-
-async function generateDraftForSelectedDay(): Promise<void> {
-  if (!resolvedBusinessId.value || !quickIdeaText.value.trim()) {
-    errorMessage.value = "Add one idea before generating a draft.";
-    return;
-  }
-
-  isGeneratingDraft.value = true;
-  errorMessage.value = "";
-  feedbackMessage.value = "";
-
-  try {
-    const ideaInput = quickIdeaText.value.trim();
-    const response = await requestRepurposeContent({
-      inputType: "text",
-      intent: "capture",
-      text: ideaInput,
-      tone: quickDraftTone.value,
-      businessId: resolvedBusinessId.value,
-    });
-    const generatedPost = response.variations[0]?.content?.trim() || response.post.trim();
-
-    if (!generatedPost) {
-      throw new Error("The generator returned an empty draft.");
-    }
-
-    const assetId =
-      response.asset?.id ??
-      (
-        await requestCreatePipelineItem({
-          businessId: resolvedBusinessId.value,
-          title: response.idea.title || buildDraftTitle(ideaInput),
-          textContent: generatedPost,
-          contentBody: response as unknown as Record<string, unknown>,
-          sourceKind: "generated",
-        })
-      ).asset.id;
-
-    await selectCreatedDraft(assetId, "Draft generated in the planner. Pick a time and schedule it.");
-  } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to generate a planner draft right now.";
-  } finally {
-    isGeneratingDraft.value = false;
-  }
 }
 
 async function scheduleSelectedAsset(): Promise<void> {
@@ -923,7 +806,7 @@ async function scheduleSelectedAsset(): Promise<void> {
     }
 
     if (!feedbackMessage.value) {
-      feedbackMessage.value = "Draft scheduled and added to the grid.";
+      feedbackMessage.value = `Added to ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}.`;
     }
     selectedBacklogAssetId.value = "";
     selectedScheduledPostId.value = response.scheduledPost.id;
@@ -953,7 +836,10 @@ async function duplicateBacklogAsset(assetId: string): Promise<void> {
       businessId: resolvedBusinessId.value,
       assetId,
     });
-    await selectCreatedDraft(response.asset.id, "Draft duplicated. The copy is ready to schedule.");
+    await loadPlannerData();
+    selectBacklogAsset(response.asset.id, selectedGridDateKey.value);
+    syncSelection();
+    feedbackMessage.value = "Draft duplicated. The copy is ready to schedule.";
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to duplicate that draft.";
   } finally {
@@ -1108,16 +994,8 @@ async function rescheduleSelectedPost(): Promise<void> {
   }
 }
 
-function openCreatePage(): void {
-  const targetDayKey = selectedGridDateKey.value || toDateKeyInTimezone(new Date(), userTimezone);
-  selectDay(targetDayKey);
-
-  if (typeof document !== "undefined") {
-    document.getElementById("planner-composer-panel")?.scrollIntoView({
-      behavior: "smooth",
-      block: "start",
-    });
-  }
+function openNewPostFlow(): void {
+  void router.push({ path: appRoutes.dashboard });
 }
 
 function openDraftEditor(assetId?: string): void {
@@ -1141,6 +1019,24 @@ function focusFirstGap(): void {
   }
 
   selectDay(gap.key);
+}
+
+function focusBacklog(dayKey?: string): void {
+  if (dayKey) {
+    selectDay(dayKey);
+  }
+
+  if (typeof document !== "undefined") {
+    document.getElementById("planner-backlog-panel")?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }
+}
+
+function closePlannerDetailModal(): void {
+  selectedScheduledPostId.value = "";
+  selectedBacklogAssetId.value = "";
 }
 
 watch(
@@ -1217,10 +1113,10 @@ onMounted(() => {
           :disabled="gapDays.length === 0"
           @click="focusFirstGap"
         >
-          Fill gaps
+          Fill next gap
         </button>
-        <button type="button" class="workspace-primary-button" @click="openCreatePage">
-          Create in planner
+        <button type="button" class="workspace-primary-button" @click="openNewPostFlow">
+          New post
         </button>
       </div>
     </section>
@@ -1300,10 +1196,10 @@ onMounted(() => {
               :disabled="gapDays.length === 0"
               @click="focusFirstGap"
             >
-              Fill first gap
+              Fill next gap
             </button>
-            <button type="button" class="workspace-primary-button compact" @click="openCreatePage">
-              Create in planner
+            <button type="button" class="workspace-primary-button compact" @click="openNewPostFlow">
+              New post
             </button>
           </div>
         </div>
@@ -1403,404 +1299,17 @@ onMounted(() => {
               <button
                 type="button"
                 class="planner-day-add-button"
-                @click.stop="selectDay(day.key)"
+                @click.stop="focusBacklog(day.key)"
               >
-                {{ day.posts.length === 0 ? "Plan this day" : "Add another slot" }}
+                {{ day.posts.length === 0 ? "Fill this day" : "+ Add post" }}
               </button>
             </div>
           </button>
         </div>
       </article>
-
-      <aside id="planner-composer-panel" class="workspace-card planner-sidebar">
-        <template v-if="selectedScheduledPost">
-          <p class="workspace-eyebrow">Action hub</p>
-          <h2>Review this slot</h2>
-          <p class="workspace-description compact">
-            {{ formatDateInTimezone(selectedScheduledPost.scheduledAt, selectedScheduledPost.audienceTimezone, {
-              weekday: "long",
-              month: "short",
-              day: "numeric",
-              hour: "numeric",
-              minute: "2-digit",
-            }) }}
-            in {{ selectedScheduledPost.audienceTimezone }}
-          </p>
-          <p v-if="selectedScheduledPost.audienceTimezone !== userTimezone" class="workspace-description compact">
-            Your time: {{ formatTimeWithZone(selectedScheduledPost.scheduledAt, userTimezone) }}
-          </p>
-          <p class="workspace-description compact">
-            Dispatch window: {{ formatScheduledPostDispatchWindow(selectedScheduledPost) }}
-          </p>
-          <p class="workspace-description compact">
-            Publishing as {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
-          </p>
-          <p class="workspace-description compact">
-            {{ resolveScheduledPostStatusSummary(selectedScheduledPost) }}
-          </p>
-          <p class="workspace-description compact">
-            {{ selectedDayPosts.length }} scheduled item{{ selectedDayPosts.length === 1 ? "" : "s" }} on
-            {{ selectedDay?.longLabel || "this day" }}.
-          </p>
-
-          <article class="planner-preview-card">
-            <div class="planner-preview-chip-row">
-              <p class="workspace-chip">{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</p>
-              <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
-                {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
-              </p>
-              <p v-if="getMediaCount(selectedScheduledPost) > 0" class="workspace-chip">
-                📎 {{ getMediaCount(selectedScheduledPost) }} image{{ getMediaCount(selectedScheduledPost) === 1 ? "" : "s" }}
-              </p>
-            </div>
-            <p>{{ selectedScheduledPost.contentText }}</p>
-          </article>
-
-          <div
-            v-if="selectedScheduledPost.errorMessage"
-            class="planner-feedback danger"
-          >
-            {{ selectedScheduledPost.errorMessage }}
-          </div>
-
-          <div
-            v-if="selectedScheduledPostCanReschedule"
-            class="planner-inline-section"
-          >
-            <label class="planner-inline-label">Reschedule slot</label>
-            <div class="planner-schedule-grid">
-              <label>
-                <span>Audience timezone</span>
-                <select v-model="audienceTimezone">
-                  <option
-                    v-for="option in audienceTimezoneOptions"
-                    :key="option.value"
-                    :value="option.value"
-                  >
-                    {{ option.label }}
-                  </option>
-                </select>
-              </label>
-              <label>
-                <span>Audience date</span>
-                <input v-model="selectedAudienceDateKey" type="date" />
-              </label>
-              <label>
-                <span>Time</span>
-                <input v-model="scheduleTime" type="time" />
-              </label>
-            </div>
-
-            <p class="workspace-description compact">
-              Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
-            </p>
-          </div>
-
-          <div class="planner-sidebar-actions">
-            <button
-              v-if="selectedDayPosts.length > 0"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="clearSelectedScheduledPost"
-            >
-              View day schedule
-            </button>
-            <button
-              v-if="selectedScheduledPost.assetGroupId"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="openDraftEditor(selectedScheduledPost.assetGroupId)"
-            >
-              Edit draft
-            </button>
-            <button
-              v-if="selectedScheduledPostCanPublishNow"
-              type="button"
-              class="workspace-primary-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="updateSelectedScheduledPost('publish_now')"
-            >
-              {{ isUpdatingScheduledPost ? "Updating..." : "Publish now" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanRetry"
-              type="button"
-              class="workspace-primary-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="updateSelectedScheduledPost('retry')"
-            >
-              {{ isUpdatingScheduledPost ? "Updating..." : "Retry now" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanPause"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="updateSelectedScheduledPost('pause')"
-            >
-              {{ isUpdatingScheduledPost ? "Updating..." : "Pause" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanResume"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="updateSelectedScheduledPost('resume')"
-            >
-              {{ isUpdatingScheduledPost ? "Updating..." : "Resume" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostNeedsReconnect"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isConnectingLinkedIn"
-              @click="reconnectLinkedIn"
-            >
-              {{ isConnectingLinkedIn ? "Redirecting..." : "Reconnect LinkedIn" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanReschedule"
-              type="button"
-              class="workspace-primary-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="rescheduleSelectedPost"
-            >
-              {{ isUpdatingScheduledPost ? "Updating..." : "Reschedule" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanMoveToDraft"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="updateSelectedScheduledPost('move_to_draft')"
-            >
-              {{ isUpdatingScheduledPost ? "Updating..." : "Move to draft" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanCancel"
-              type="button"
-              class="workspace-secondary-button planner-danger-button"
-              :disabled="isUpdatingScheduledPost"
-              @click="updateSelectedScheduledPost('cancel')"
-            >
-              {{ isUpdatingScheduledPost ? "Updating..." : "Cancel" }}
-            </button>
-            <a
-              v-if="selectedScheduledPost.externalPostUrl"
-              class="workspace-primary-button link-button"
-              :href="selectedScheduledPost.externalPostUrl"
-              target="_blank"
-              rel="noreferrer"
-            >
-              View on LinkedIn
-            </a>
-          </div>
-        </template>
-
-        <template v-else>
-          <p class="workspace-eyebrow">Action hub</p>
-          <h2>{{ selectedDay?.longLabel || "Choose a day" }}</h2>
-          <p class="workspace-description compact">
-            {{ selectedDayFocusMessage }}
-          </p>
-
-          <div v-if="selectedDayPosts.length > 0" class="planner-inline-section">
-            <div class="planner-day-schedule-header">
-              <div>
-                <label class="planner-inline-label">Scheduled on this day</label>
-                <p class="workspace-description compact">
-                  Open any slot to edit, move, retry, or push it live now.
-                </p>
-              </div>
-              <span class="workspace-chip">
-                {{ selectedDayPosts.length }} item{{ selectedDayPosts.length === 1 ? "" : "s" }}
-              </span>
-            </div>
-
-            <div class="planner-day-schedule-list">
-              <article
-                v-for="post in selectedDayPosts"
-                :key="post.id"
-                class="planner-day-schedule-card"
-                :data-tone="resolveStatusTone(post.status)"
-              >
-                <div class="planner-day-schedule-card-header">
-                  <div class="planner-pill-stack">
-                    <span class="planner-platform-pill">LinkedIn</span>
-                    <span class="planner-status-pill">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
-                    <span v-if="post.selectedIdentityDisplayName" class="planner-status-pill subtle">
-                      {{ resolveSelectedIdentityLabel(post) }}
-                    </span>
-                    <span v-if="getMediaCount(post) > 0" class="planner-status-pill subtle">
-                      📎 {{ getMediaCount(post) }}
-                    </span>
-                  </div>
-                  <strong>{{ formatTimeWithZone(post.scheduledAt, post.audienceTimezone) }}</strong>
-                </div>
-
-                <p>{{ buildExcerpt(post.contentText, 140) }}</p>
-                <p class="planner-post-time secondary">
-                  Your time: {{ formatTimeWithZone(post.scheduledAt, userTimezone) }}
-                </p>
-
-                <div class="planner-sidebar-actions">
-                  <button
-                    type="button"
-                    class="workspace-secondary-button compact"
-                    @click="selectScheduledPost(post.id, selectedDay?.key || '')"
-                  >
-                    Edit / move
-                  </button>
-                  <button
-                    v-if="post.assetGroupId"
-                    type="button"
-                    class="workspace-secondary-button compact"
-                    @click="openDraftEditor(post.assetGroupId)"
-                  >
-                    Edit draft
-                  </button>
-                </div>
-              </article>
-            </div>
-          </div>
-
-          <div class="planner-inline-section">
-            <label class="planner-inline-label" for="planner-idea-input">
-              Create for {{ selectedDay?.longLabel || "this day" }}
-            </label>
-            <p class="workspace-description compact planner-composer-copy">
-              Drop one raw idea here. Generate turns it into a usable draft. Save draft keeps your thought intact without leaving the planner.
-            </p>
-            <textarea
-              id="planner-idea-input"
-              v-model="quickIdeaText"
-              rows="4"
-              placeholder="Drop the seed for this post. Example: tell the story of why customer proof matters more than feature lists."
-            />
-            <div class="planner-tone-row">
-              <button
-                v-for="option in plannerToneOptions"
-                :key="option.value"
-                type="button"
-                class="planner-tone-chip"
-                :class="{ active: quickDraftTone === option.value }"
-                @click="quickDraftTone = option.value"
-              >
-                {{ option.label }}
-              </button>
-            </div>
-            <div class="planner-sidebar-actions">
-              <button
-                type="button"
-                class="workspace-secondary-button"
-                :disabled="isSavingIdea || !quickIdeaText.trim()"
-                @click="addIdeaToInbox"
-              >
-                {{ isSavingIdea ? "Saving..." : "Save idea" }}
-              </button>
-              <button
-                type="button"
-                class="workspace-secondary-button"
-                :disabled="isCreatingDraft || !quickIdeaText.trim()"
-                @click="saveDraftForSelectedDay"
-              >
-                {{ isCreatingDraft ? "Saving..." : "Save draft" }}
-              </button>
-              <button
-                type="button"
-                class="workspace-primary-button"
-                :disabled="isGeneratingDraft || !quickIdeaText.trim()"
-                @click="generateDraftForSelectedDay"
-              >
-                {{ isGeneratingDraft ? "Generating..." : "Generate draft" }}
-              </button>
-            </div>
-          </div>
-
-          <template v-if="selectedBacklogAsset">
-            <div class="planner-inline-section">
-              <label class="planner-inline-label">Schedule selected draft</label>
-              <article class="planner-preview-card">
-                <p class="workspace-chip">{{ selectedBacklogAsset.pipelineStage === "review" ? "Ready" : "Draft" }}</p>
-                <strong>{{ selectedBacklogAsset.title || "Untitled draft" }}</strong>
-                <p>{{ buildExcerpt(selectedBacklogAsset.textContent || "", 180) }}</p>
-              </article>
-
-              <div class="planner-schedule-grid">
-                <label>
-                  <span>Audience timezone</span>
-                  <select v-model="audienceTimezone">
-                    <option
-                      v-for="option in audienceTimezoneOptions"
-                      :key="option.value"
-                      :value="option.value"
-                    >
-                      {{ option.label }}
-                    </option>
-                  </select>
-                </label>
-                <label>
-                  <span>Audience date</span>
-                  <input v-model="selectedAudienceDateKey" type="date" />
-                </label>
-                <label>
-                  <span>Time</span>
-                  <input v-model="scheduleTime" type="time" />
-                </label>
-              </div>
-
-              <p class="workspace-description compact">
-                Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
-              </p>
-
-              <div class="planner-sidebar-actions">
-                <button type="button" class="workspace-secondary-button" @click="openDraftEditor(selectedBacklogAsset.id)">
-                  Edit draft
-                </button>
-                <button
-                  type="button"
-                  class="workspace-secondary-button"
-                  :disabled="isDraftActionPending(selectedBacklogAsset.id)"
-                  @click="duplicateBacklogAsset(selectedBacklogAsset.id)"
-                >
-                  {{
-                    isDraftActionPending(selectedBacklogAsset.id, "duplicate")
-                      ? activeDraftActionLabel
-                      : "Duplicate"
-                  }}
-                </button>
-                <button
-                  type="button"
-                  class="workspace-secondary-button planner-danger-button"
-                  :disabled="isDraftActionPending(selectedBacklogAsset.id)"
-                  @click="deleteBacklogAsset(selectedBacklogAsset.id)"
-                >
-                  {{
-                    isDraftActionPending(selectedBacklogAsset.id, "delete")
-                      ? activeDraftActionLabel
-                      : "Delete"
-                  }}
-                </button>
-                <button
-                  type="button"
-                  class="workspace-primary-button"
-                  :disabled="isScheduling"
-                  @click="scheduleSelectedAsset"
-                >
-                  {{ isScheduling ? "Scheduling..." : "Schedule draft" }}
-                </button>
-              </div>
-            </div>
-          </template>
-        </template>
-
-        <p v-if="feedbackMessage" class="planner-feedback success">{{ feedbackMessage }}</p>
-          </aside>
         </section>
 
-        <section class="workspace-card planner-backlog-panel">
+        <section id="planner-backlog-panel" class="workspace-card planner-backlog-panel">
       <div class="planner-backlog-header">
         <div>
           <p class="workspace-eyebrow">Draft backlog</p>
@@ -1881,6 +1390,288 @@ onMounted(() => {
           </div>
         </article>
       </div>
+        </section>
+
+        <p v-if="feedbackMessage" class="planner-feedback success">{{ feedbackMessage }}</p>
+
+        <section
+          v-if="isPlannerDetailModalOpen"
+          class="planner-detail-overlay"
+          @click.self="closePlannerDetailModal"
+        >
+          <article class="workspace-card planner-detail-modal">
+            <div class="planner-detail-header">
+              <div>
+                <p class="workspace-eyebrow">
+                  {{ selectedScheduledPost ? "Scheduled slot" : "Draft details" }}
+                </p>
+                <h2>
+                  {{ selectedScheduledPost ? "Review execution slot" : "Queue this draft" }}
+                </h2>
+                <p class="workspace-description compact">
+                  {{
+                    selectedScheduledPost
+                      ? "Review timing, status, and execution actions without leaving the planner."
+                      : "Preview the draft, pick a time, and add it to the queue when the slot makes sense."
+                  }}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                class="workspace-secondary-button compact"
+                @click="closePlannerDetailModal"
+              >
+                Close
+              </button>
+            </div>
+
+            <template v-if="selectedScheduledPost">
+              <div class="planner-detail-meta-grid">
+                <article class="planner-detail-meta-card">
+                  <span>Status</span>
+                  <strong>{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</strong>
+                </article>
+                <article class="planner-detail-meta-card">
+                  <span>Audience time</span>
+                  <strong>{{ formatTimeWithZone(selectedScheduledPost.scheduledAt, selectedScheduledPost.audienceTimezone) }}</strong>
+                </article>
+                <article class="planner-detail-meta-card">
+                  <span>Dispatch window</span>
+                  <strong>{{ formatScheduledPostDispatchWindow(selectedScheduledPost) }}</strong>
+                </article>
+                <article class="planner-detail-meta-card">
+                  <span>Identity</span>
+                  <strong>{{ resolveSelectedIdentityLabel(selectedScheduledPost) }}</strong>
+                </article>
+              </div>
+
+              <article class="planner-preview-card">
+                <div class="planner-preview-chip-row">
+                  <p class="workspace-chip">{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</p>
+                  <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
+                    {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
+                  </p>
+                  <p v-if="getMediaCount(selectedScheduledPost) > 0" class="workspace-chip">
+                    📎 {{ getMediaCount(selectedScheduledPost) }} image{{ getMediaCount(selectedScheduledPost) === 1 ? "" : "s" }}
+                  </p>
+                </div>
+                <p>{{ selectedScheduledPost.contentText }}</p>
+              </article>
+
+              <p
+                v-if="selectedScheduledPost.errorMessage"
+                class="planner-feedback danger"
+              >
+                {{ selectedScheduledPost.errorMessage }}
+              </p>
+
+              <div
+                v-if="selectedScheduledPostCanReschedule"
+                class="planner-inline-section"
+              >
+                <label class="planner-inline-label">Reschedule slot</label>
+                <div class="planner-schedule-grid">
+                  <label>
+                    <span>Audience timezone</span>
+                    <select v-model="audienceTimezone">
+                      <option
+                        v-for="option in audienceTimezoneOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Audience date</span>
+                    <input v-model="selectedAudienceDateKey" type="date" />
+                  </label>
+                  <label>
+                    <span>Time</span>
+                    <input v-model="scheduleTime" type="time" />
+                  </label>
+                </div>
+
+                <p class="workspace-description compact">
+                  Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
+                </p>
+              </div>
+
+              <div class="planner-sidebar-actions">
+                <button
+                  v-if="selectedScheduledPost.assetGroupId"
+                  type="button"
+                  class="workspace-secondary-button"
+                  :disabled="isUpdatingScheduledPost"
+                  @click="openDraftEditor(selectedScheduledPost.assetGroupId)"
+                >
+                  Edit draft
+                </button>
+                <button
+                  v-if="selectedScheduledPostCanPublishNow"
+                  type="button"
+                  class="workspace-primary-button"
+                  :disabled="isUpdatingScheduledPost"
+                  @click="updateSelectedScheduledPost('publish_now')"
+                >
+                  {{ isUpdatingScheduledPost ? "Updating..." : "Publish now" }}
+                </button>
+                <button
+                  v-if="selectedScheduledPostCanRetry"
+                  type="button"
+                  class="workspace-primary-button"
+                  :disabled="isUpdatingScheduledPost"
+                  @click="updateSelectedScheduledPost('retry')"
+                >
+                  {{ isUpdatingScheduledPost ? "Updating..." : "Retry now" }}
+                </button>
+                <button
+                  v-if="selectedScheduledPostCanPause"
+                  type="button"
+                  class="workspace-secondary-button"
+                  :disabled="isUpdatingScheduledPost"
+                  @click="updateSelectedScheduledPost('pause')"
+                >
+                  {{ isUpdatingScheduledPost ? "Updating..." : "Pause" }}
+                </button>
+                <button
+                  v-if="selectedScheduledPostCanResume"
+                  type="button"
+                  class="workspace-secondary-button"
+                  :disabled="isUpdatingScheduledPost"
+                  @click="updateSelectedScheduledPost('resume')"
+                >
+                  {{ isUpdatingScheduledPost ? "Updating..." : "Resume" }}
+                </button>
+                <button
+                  v-if="selectedScheduledPostNeedsReconnect"
+                  type="button"
+                  class="workspace-secondary-button"
+                  :disabled="isConnectingLinkedIn"
+                  @click="reconnectLinkedIn"
+                >
+                  {{ isConnectingLinkedIn ? "Redirecting..." : "Reconnect LinkedIn" }}
+                </button>
+                <button
+                  v-if="selectedScheduledPostCanReschedule"
+                  type="button"
+                  class="workspace-primary-button"
+                  :disabled="isUpdatingScheduledPost"
+                  @click="rescheduleSelectedPost"
+                >
+                  {{ isUpdatingScheduledPost ? "Updating..." : "Reschedule" }}
+                </button>
+                <button
+                  v-if="selectedScheduledPostCanMoveToDraft"
+                  type="button"
+                  class="workspace-secondary-button"
+                  :disabled="isUpdatingScheduledPost"
+                  @click="updateSelectedScheduledPost('move_to_draft')"
+                >
+                  {{ isUpdatingScheduledPost ? "Updating..." : "Move to draft" }}
+                </button>
+                <button
+                  v-if="selectedScheduledPostCanCancel"
+                  type="button"
+                  class="workspace-secondary-button planner-danger-button"
+                  :disabled="isUpdatingScheduledPost"
+                  @click="updateSelectedScheduledPost('cancel')"
+                >
+                  {{ isUpdatingScheduledPost ? "Updating..." : "Cancel" }}
+                </button>
+                <a
+                  v-if="selectedScheduledPost.externalPostUrl"
+                  class="workspace-primary-button link-button"
+                  :href="selectedScheduledPost.externalPostUrl"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  View on LinkedIn
+                </a>
+              </div>
+            </template>
+
+            <template v-else-if="selectedBacklogAsset">
+              <article class="planner-preview-card">
+                <div class="planner-preview-chip-row">
+                  <p class="workspace-chip">{{ selectedBacklogAsset.pipelineStage === "review" ? "Ready" : "Draft" }}</p>
+                  <p class="workspace-chip">{{ selectedDay?.longLabel || "Selected day" }}</p>
+                </div>
+                <strong>{{ selectedBacklogAsset.title || "Untitled draft" }}</strong>
+                <p>{{ buildExcerpt(selectedBacklogAsset.textContent || "", 280) }}</p>
+              </article>
+
+              <div class="planner-inline-section">
+                <label class="planner-inline-label">Choose queue time</label>
+                <div class="planner-schedule-grid">
+                  <label>
+                    <span>Audience timezone</span>
+                    <select v-model="audienceTimezone">
+                      <option
+                        v-for="option in audienceTimezoneOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Audience date</span>
+                    <input v-model="selectedAudienceDateKey" type="date" />
+                  </label>
+                  <label>
+                    <span>Time</span>
+                    <input v-model="scheduleTime" type="time" />
+                  </label>
+                </div>
+
+                <p class="workspace-description compact">
+                  Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
+                </p>
+              </div>
+
+              <div class="planner-sidebar-actions">
+                <button type="button" class="workspace-secondary-button" @click="openDraftEditor(selectedBacklogAsset.id)">
+                  Edit draft
+                </button>
+                <button
+                  type="button"
+                  class="workspace-secondary-button"
+                  :disabled="isDraftActionPending(selectedBacklogAsset.id)"
+                  @click="duplicateBacklogAsset(selectedBacklogAsset.id)"
+                >
+                  {{
+                    isDraftActionPending(selectedBacklogAsset.id, "duplicate")
+                      ? activeDraftActionLabel
+                      : "Duplicate"
+                  }}
+                </button>
+                <button
+                  type="button"
+                  class="workspace-secondary-button planner-danger-button"
+                  :disabled="isDraftActionPending(selectedBacklogAsset.id)"
+                  @click="deleteBacklogAsset(selectedBacklogAsset.id)"
+                >
+                  {{
+                    isDraftActionPending(selectedBacklogAsset.id, "delete")
+                      ? activeDraftActionLabel
+                      : "Delete"
+                  }}
+                </button>
+                <button
+                  type="button"
+                  class="workspace-primary-button"
+                  :disabled="isScheduling"
+                  @click="scheduleSelectedAsset"
+                >
+                  {{ isScheduling ? "Scheduling..." : "Add to queue" }}
+                </button>
+              </div>
+            </template>
+          </article>
         </section>
       </template>
     </template>
@@ -2022,23 +1813,14 @@ onMounted(() => {
 }
 
 .planner-main-grid {
-  grid-template-columns: minmax(0, 1.5fr) minmax(300px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
 
 .planner-grid-panel,
-.planner-sidebar,
-.planner-backlog-panel {
+.planner-backlog-panel,
+.planner-detail-modal {
   padding: 1.45rem;
-}
-
-.planner-sidebar {
-  position: sticky;
-  top: 1.2rem;
-  border: 1px solid rgba(60, 41, 30, 0.08);
-  background:
-    linear-gradient(180deg, rgba(255, 252, 247, 0.98), rgba(255, 248, 241, 0.96));
-  box-shadow: 0 22px 52px rgba(145, 84, 39, 0.08);
 }
 
 .workspace-description.compact {
@@ -2402,6 +2184,68 @@ onMounted(() => {
   background: rgba(255, 243, 242, 0.94);
 }
 
+.planner-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(33, 18, 11, 0.3);
+  backdrop-filter: blur(10px);
+}
+
+.planner-detail-modal {
+  width: min(100%, 56rem);
+  max-height: min(88vh, 58rem);
+  overflow: auto;
+  border: 1px solid rgba(60, 41, 30, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 252, 247, 0.99), rgba(255, 248, 241, 0.97));
+  box-shadow: 0 34px 80px rgba(33, 18, 11, 0.22);
+}
+
+.planner-detail-header {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.planner-detail-header h2 {
+  margin: 0;
+  font-size: clamp(1.45rem, 2vw, 1.9rem);
+  line-height: 1.05;
+}
+
+.planner-detail-meta-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 1rem;
+}
+
+.planner-detail-meta-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(60, 41, 30, 0.1);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.planner-detail-meta-card span {
+  color: rgba(64, 42, 28, 0.64);
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.planner-detail-meta-card strong {
+  line-height: 1.35;
+}
+
 .planner-inline-section {
   border-top: 1px solid rgba(60, 41, 30, 0.1);
   padding-top: 1rem;
@@ -2533,12 +2377,9 @@ onMounted(() => {
 
 @media (max-width: 1180px) {
   .planner-command-bar,
-  .planner-main-grid {
+  .planner-main-grid,
+  .planner-detail-meta-grid {
     grid-template-columns: 1fr;
-  }
-
-  .planner-sidebar {
-    position: static;
   }
 }
 
@@ -2553,6 +2394,7 @@ onMounted(() => {
   .workspace-hero,
   .planner-command-bar,
   .planner-grid-header,
+  .planner-detail-header,
   .planner-day-header,
   .planner-backlog-card-footer {
     flex-direction: column;

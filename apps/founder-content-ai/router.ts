@@ -12,6 +12,7 @@ import AppEmailPage from "./pages/app-email.vue";
 import AppGeneratePage from "./pages/app-generate.vue";
 import AppGrowthPage from "./pages/app-growth.vue";
 import AppHistoryPage from "./pages/app-history.vue";
+import AppIdeasPage from "./pages/app-ideas.vue";
 import AppOutreachPage from "./pages/app-outreach.vue";
 import AppPlannerPage from "./pages/app-planner.vue";
 import AppResultPage from "./pages/app-result.vue";
@@ -73,6 +74,14 @@ const router = createRouter({
       path: "/app/growth",
       name: "app-growth",
       component: AppGrowthPage,
+      meta: {
+        requiresAuth: true,
+      },
+    },
+    {
+      path: "/app/ideas",
+      name: "app-ideas",
+      component: AppIdeasPage,
       meta: {
         requiresAuth: true,
       },
