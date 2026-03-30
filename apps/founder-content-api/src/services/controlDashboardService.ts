@@ -1,5 +1,6 @@
 import type { QueryResultRow } from "pg";
 import type {
+  ContentAiEditPreview,
   ContentAsset,
   ContentAssetStatus,
   ControlDashboardResponse,
@@ -9,6 +10,7 @@ import type {
   CreateIdeaInboxResponse,
   DashboardSuggestion,
   IdeaInboxItem,
+  PreviewContentAiEditRequest,
   UpdateContentPipelineItemRequest,
   UpdateContentPipelineItemResponse,
 } from "../../../../packages/shared-types/index.ts";
@@ -24,6 +26,7 @@ import {
   enforceWorkspaceReadAccess,
   enforceWorkspaceWriteAccess,
 } from "./governanceService.ts";
+import { generateContentAiEditPreview } from "./aiEditService.ts";
 import { recordStyleSignal } from "./styleProfileService.ts";
 import { HttpError } from "../utils/http.ts";
 
@@ -174,6 +177,36 @@ async function loadPipelineItems(businessId: string): Promise<ContentAsset[]> {
   );
 
   return result.rows.map(mapContentAsset);
+}
+
+async function loadPipelineAssetRow(
+  businessId: string,
+  assetId: string,
+): Promise<ContentAssetRow | null> {
+  const result = await queryDb<ContentAssetRow>(
+    `
+      select
+        id,
+        business_id,
+        user_id,
+        content_type,
+        title,
+        content_body,
+        status,
+        pipeline_stage,
+        source_kind,
+        source_idea_id,
+        created_at,
+        updated_at
+      from content_assets
+      where id = $1
+        and business_id = $2
+      limit 1
+    `,
+    [assetId, businessId],
+  );
+
+  return result.rows[0] ?? null;
 }
 
 async function loadIdeaInbox(businessId: string): Promise<IdeaInboxItem[]> {
@@ -386,6 +419,48 @@ export async function getControlDashboard(
       lastActivityAt,
       bestTimeSlots: recommendation.slots,
     }),
+  };
+}
+
+export async function getContentPipelineItem(
+  principal: AuthenticatedPrincipal,
+  businessId: string,
+  assetId: string,
+): Promise<{ asset: ContentAsset }> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  await requireBusinessMembership(principal, businessId);
+
+  const result = await queryDb<ContentAssetRow>(
+    `
+      select
+        id,
+        business_id,
+        user_id,
+        content_type,
+        title,
+        content_body,
+        status,
+        pipeline_stage,
+        source_kind,
+        source_idea_id,
+        created_at,
+        updated_at
+      from content_assets
+      where id = $1
+        and business_id = $2
+      limit 1
+    `,
+    [assetId, businessId],
+  );
+
+  const row = result.rows[0];
+
+  if (!row) {
+    throw new HttpError(404, "content_asset_not_found", "Pipeline item was not found.");
+  }
+
+  return {
+    asset: mapContentAsset(row),
   };
 }
 
@@ -602,30 +677,7 @@ export async function updateContentPipelineItem(
   });
   await requireBusinessMembership(principal, businessId);
 
-  const existingResult = await queryDb<ContentAssetRow>(
-    `
-      select
-        id,
-        business_id,
-        user_id,
-        content_type,
-        title,
-        content_body,
-        status,
-        pipeline_stage,
-        source_kind,
-        source_idea_id,
-        created_at,
-        updated_at
-      from content_assets
-      where id = $1
-        and business_id = $2
-      limit 1
-    `,
-    [assetId, businessId],
-  );
-
-  const existing = existingResult.rows[0];
+  const existing = await loadPipelineAssetRow(businessId, assetId);
 
   if (!existing) {
     throw new HttpError(404, "content_asset_not_found", "Pipeline item was not found.");
@@ -701,5 +753,46 @@ export async function updateContentPipelineItem(
 
   return {
     asset: mapContentAsset(result.rows[0]),
+  };
+}
+
+export async function previewContentPipelineAiEdit(
+  principal: AuthenticatedPrincipal,
+  input: PreviewContentAiEditRequest,
+): Promise<{ preview: ContentAiEditPreview }> {
+  const businessId = input.businessId.trim();
+  const assetId = input.assetId?.trim();
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "content_generation",
+    usageMetric: "posts",
+  });
+  await requireBusinessMembership(principal, businessId);
+
+  let textContent = normalizeText(input.textContent);
+
+  if (assetId) {
+    const assetRow = await loadPipelineAssetRow(businessId, assetId);
+
+    if (!assetRow) {
+      throw new HttpError(404, "content_asset_not_found", "Pipeline item was not found.");
+    }
+
+    textContent ||= extractTextContent(assetRow.content_body);
+  }
+
+  if (!textContent) {
+    throw new HttpError(400, "bad_request", "textContent is required.");
+  }
+
+  return {
+    preview: await generateContentAiEditPreview({
+      businessId,
+      assetId,
+      instruction: input.instruction,
+      textContent,
+    }),
   };
 }

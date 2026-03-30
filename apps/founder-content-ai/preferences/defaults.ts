@@ -9,6 +9,7 @@ export const DEFAULT_USER_PREFERENCES: UserPreferences = {
   density: "comfortable",
   layoutMode: "dashboard",
   aiAssistLevel: "balanced",
+  notifyPostPublished: true,
   createdAt: new Date(0).toISOString(),
   updatedAt: new Date(0).toISOString(),
 };

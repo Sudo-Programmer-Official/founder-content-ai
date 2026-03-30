@@ -3,6 +3,8 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
   AiAssistLevel,
+  BrandProfile,
+  BrandSignalSummary,
   ProductAccessLimits,
   SocialAccount,
   SocialAccountIdentity,
@@ -16,6 +18,10 @@ import { useProductAccessContext } from "../access/product-access-context";
 import AiAssistPanel from "../components/AiAssistPanel.vue";
 import { useAiAssistSuggestions } from "../composables/use-ai-assist";
 import { usePreferenceContext } from "../preferences/preference-context";
+import {
+  requestBrandProfile,
+  requestUpdateBrandProfile,
+} from "../services/brand-profile-service";
 import {
   requestDisconnectSocialAccount,
   requestLinkedInSocialAuthStart,
@@ -45,6 +51,17 @@ const disconnectingAccountId = ref("");
 const selectingIdentityAccountId = ref("");
 const channelFeedback = ref("");
 const channelError = ref("");
+const brandProfile = ref<BrandProfile | null>(null);
+const brandSignalSummary = ref<BrandSignalSummary | null>(null);
+const toneInput = ref("");
+const writingStyleInput = ref("");
+const visualStyleInput = ref("");
+const topicsInput = ref("");
+const patternsInput = ref("");
+const isLoadingBrandContext = ref(false);
+const isSavingBrandContext = ref(false);
+const brandContextFeedback = ref("");
+const brandContextError = ref("");
 
 const workspaceChannelDefinitions: WorkspaceChannelDefinition[] = [
   {
@@ -99,6 +116,13 @@ const aiAssistLevelModel = computed<AiAssistLevel>({
   get: () => preferences.value.aiAssistLevel,
   set: (value) => {
     void updatePreference("aiAssistLevel", value);
+  },
+});
+
+const notifyPostPublishedModel = computed<boolean>({
+  get: () => preferences.value.notifyPostPublished,
+  set: (value) => {
+    void updatePreference("notifyPostPublished", value);
   },
 });
 
@@ -195,11 +219,125 @@ const workspaceChannels = computed(() =>
     };
   }),
 );
+const hasBrandProfile = computed(() => {
+  const profile = brandProfile.value;
+
+  return Boolean(
+    profile &&
+      (
+        profile.tone ||
+        profile.writingStyle ||
+        profile.visualStyle ||
+        profile.topics.length > 0 ||
+        profile.patterns.length > 0
+      ),
+  );
+});
+const brandContextChips = computed(() =>
+  [
+    toneInput.value ? `Tone: ${toneInput.value}` : "",
+    writingStyleInput.value ? `Style: ${writingStyleInput.value}` : "",
+    visualStyleInput.value ? `Visuals: ${visualStyleInput.value}` : "",
+  ].filter((value) => value !== ""),
+);
+
+function joinList(values: string[]): string {
+  return values.join(", ");
+}
+
+function parseList(value: string): string[] {
+  return value
+    .split(/[\n,]/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+}
+
+function hydrateBrandContextForm(profile: BrandProfile | null): void {
+  toneInput.value = profile?.tone ?? "";
+  writingStyleInput.value = profile?.writingStyle ?? "";
+  visualStyleInput.value = profile?.visualStyle ?? "";
+  topicsInput.value = joinList(profile?.topics ?? []);
+  patternsInput.value = joinList(profile?.patterns ?? []);
+}
 
 function formatIdentityOption(identity: SocialAccountIdentity): string {
   return identity.type === "organization"
     ? `${identity.displayName} · Page`
     : `${identity.displayName} · Personal`;
+}
+
+async function loadBrandContext(refreshFromSignals = false): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    brandProfile.value = null;
+    brandSignalSummary.value = null;
+    hydrateBrandContextForm(null);
+    return;
+  }
+
+  isLoadingBrandContext.value = true;
+  brandContextFeedback.value = "";
+  brandContextError.value = "";
+
+  try {
+    const response = await requestBrandProfile(businessId, {
+      refreshFromSignals,
+    });
+    brandProfile.value = response.brandProfile;
+    brandSignalSummary.value = response.signalSummary;
+    hydrateBrandContextForm(response.brandProfile);
+  } catch (error) {
+    brandProfile.value = null;
+    brandSignalSummary.value = null;
+    hydrateBrandContextForm(null);
+    brandContextError.value =
+      error instanceof Error ? error.message : "Unable to load brand context.";
+  } finally {
+    isLoadingBrandContext.value = false;
+  }
+}
+
+async function handleBrandContextSave(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    return;
+  }
+
+  isSavingBrandContext.value = true;
+  brandContextFeedback.value = "";
+  brandContextError.value = "";
+
+  try {
+    const response = await requestUpdateBrandProfile({
+      businessId,
+      tone: toneInput.value.trim(),
+      writingStyle: writingStyleInput.value.trim(),
+      visualStyle: visualStyleInput.value.trim(),
+      topics: parseList(topicsInput.value),
+      patterns: parseList(patternsInput.value),
+      refreshFromSignals: false,
+    });
+    brandProfile.value = response.brandProfile;
+    brandSignalSummary.value = response.signalSummary;
+    hydrateBrandContextForm(response.brandProfile);
+    brandContextFeedback.value = "Brand context saved for this workspace.";
+  } catch (error) {
+    brandContextError.value =
+      error instanceof Error ? error.message : "Unable to save brand context.";
+  } finally {
+    isSavingBrandContext.value = false;
+  }
+}
+
+async function handleBrandContextRefresh(): Promise<void> {
+  brandContextFeedback.value = "";
+  await loadBrandContext(true);
+
+  if (!brandContextError.value) {
+    brandContextFeedback.value = "Brand context refreshed from workspace signals.";
+  }
 }
 
 async function loadWorkspaceChannels(): Promise<void> {
@@ -301,7 +439,10 @@ async function handleChannelIdentitySelect(
 watch(
   activeBusinessId,
   () => {
+    channelFeedback.value = "";
+    brandContextFeedback.value = "";
     void loadWorkspaceChannels();
+    void loadBrandContext();
   },
   { immediate: true },
 );
@@ -402,6 +543,27 @@ watch(
           </label>
         </div>
       </article>
+    </section>
+
+    <section class="dashboard-panel notification-panel">
+      <p class="panel-meta">Notifications</p>
+      <div class="notification-preference-row">
+        <div>
+          <h2>Momentum emails</h2>
+          <p class="dashboard-description">
+            Get one email when a scheduled LinkedIn post goes live, plus a reminder of the next post already lined up.
+          </p>
+        </div>
+
+        <label class="notification-toggle">
+          <input
+            v-model="notifyPostPublishedModel"
+            type="checkbox"
+            :disabled="isSaving"
+          />
+          <span>Notify me when posts are published</span>
+        </label>
+      </div>
     </section>
 
     <section class="dashboard-panel channels-panel">
@@ -538,6 +700,166 @@ watch(
       </div>
     </section>
 
+    <section class="dashboard-panel brand-context-panel">
+      <div class="brand-context-panel-header">
+        <div>
+          <p class="panel-meta">Brand Context</p>
+          <h2>Shape every draft around the current workspace identity.</h2>
+        </div>
+        <span class="usage-badge">
+          {{ activeBusinessId ? "Applied in create + repurpose" : "Select a workspace first" }}
+        </span>
+      </div>
+
+      <p class="dashboard-description">
+        This is the voice, positioning, and topic memory that generation uses automatically. Repurpose also layers this context on top of any previewed sources so users do not have to restate the brand every time.
+      </p>
+
+      <p v-if="brandContextFeedback" class="dashboard-feedback">{{ brandContextFeedback }}</p>
+      <p v-if="brandContextError" class="dashboard-feedback error">{{ brandContextError }}</p>
+
+      <div class="brand-context-layout">
+        <div class="brand-context-form">
+          <div class="settings-grid brand-context-grid">
+            <label class="dashboard-field">
+              <span>Brand tone</span>
+              <input
+                v-model="toneInput"
+                type="text"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                placeholder="Founder-led, sharp, practical"
+              />
+            </label>
+
+            <label class="dashboard-field">
+              <span>Writing style</span>
+              <input
+                v-model="writingStyleInput"
+                type="text"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                placeholder="Short paragraphs with punchy takeaways"
+              />
+            </label>
+
+            <label class="dashboard-field">
+              <span>Visual style</span>
+              <input
+                v-model="visualStyleInput"
+                type="text"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                placeholder="Editorial minimal with bold contrast"
+              />
+            </label>
+
+            <label class="dashboard-field brand-context-field-wide">
+              <span>Topics</span>
+              <textarea
+                v-model="topicsInput"
+                rows="3"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                placeholder="AI tools, founder workflows, product systems"
+              />
+            </label>
+
+            <label class="dashboard-field brand-context-field-wide">
+              <span>Messaging patterns</span>
+              <textarea
+                v-model="patternsInput"
+                rows="3"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                placeholder="Contrarian hook, practical lesson, direct takeaway"
+              />
+            </label>
+          </div>
+
+          <div class="channel-actions">
+            <button
+              type="button"
+              class="dashboard-button"
+              :disabled="isSavingBrandContext || isLoadingBrandContext || !activeBusinessId || isReadOnly"
+              @click="void handleBrandContextSave()"
+            >
+              {{ isSavingBrandContext ? "Saving..." : "Save brand context" }}
+            </button>
+
+            <button
+              type="button"
+              class="dashboard-button secondary"
+              :disabled="isSavingBrandContext || isLoadingBrandContext || !activeBusinessId"
+              @click="void handleBrandContextRefresh()"
+            >
+              {{ isLoadingBrandContext ? "Refreshing..." : "Refresh from workspace signals" }}
+            </button>
+          </div>
+        </div>
+
+        <aside class="brand-context-preview">
+          <div>
+            <p class="panel-meta">Generation preview</p>
+            <h3>
+              {{
+                hasBrandProfile
+                  ? "Create and repurpose already use this context"
+                  : "Brand context has not been defined yet"
+              }}
+            </h3>
+            <p class="dashboard-description">
+              {{
+                hasBrandProfile
+                  ? "The create flow automatically blends this profile with saved sources and any previewed repurpose inputs."
+                  : "Save a tone, style, and a few topics here so the workspace stops feeling blank."
+              }}
+            </p>
+          </div>
+
+          <div v-if="brandContextChips.length > 0" class="saved-source-list">
+            <span
+              v-for="chip in brandContextChips"
+              :key="chip"
+              class="saved-source-chip"
+            >
+              {{ chip }}
+            </span>
+          </div>
+
+          <div v-if="brandProfile?.topics?.length" class="brand-preview-block">
+            <p class="panel-meta">Topics in rotation</p>
+            <div class="saved-source-list">
+              <span
+                v-for="topic in brandProfile.topics"
+                :key="topic"
+                class="saved-source-chip"
+              >
+                {{ topic }}
+              </span>
+            </div>
+          </div>
+
+          <div v-if="brandProfile?.patterns?.length" class="brand-preview-block">
+            <p class="panel-meta">Messaging cues</p>
+            <ul class="brand-preview-list">
+              <li v-for="pattern in brandProfile.patterns" :key="pattern">{{ pattern }}</li>
+            </ul>
+          </div>
+
+          <div v-if="brandSignalSummary" class="brand-signal-grid">
+            <article class="usage-card">
+              <p class="dashboard-card-label">Competitor analyses</p>
+              <strong>{{ brandSignalSummary.competitorAnalyses }}</strong>
+            </article>
+            <article class="usage-card">
+              <p class="dashboard-card-label">Trend signals</p>
+              <strong>{{ brandSignalSummary.trendSignals }}</strong>
+            </article>
+            <article class="usage-card">
+              <p class="dashboard-card-label">Content assets</p>
+              <strong>{{ brandSignalSummary.contentAssets }}</strong>
+            </article>
+          </div>
+        </aside>
+      </div>
+    </section>
+
     <section class="dashboard-panel usage-panel">
       <div class="usage-panel-header">
         <div>
@@ -607,6 +929,47 @@ watch(
   display: grid;
   gap: 18px;
   margin-top: 18px;
+}
+
+.brand-context-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.notification-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.notification-preference-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.notification-preference-row h2 {
+  margin: 0;
+}
+
+.notification-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 84%, var(--fc-surface-muted));
+  color: var(--fc-text);
+  font-weight: 600;
+}
+
+.notification-toggle input {
+  width: 18px;
+  height: 18px;
 }
 
 .channels-panel-header {
@@ -715,6 +1078,106 @@ watch(
   width: 100%;
 }
 
+.brand-context-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brand-context-panel-header h2 {
+  margin: 0;
+}
+
+.brand-context-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.95fr);
+  gap: 18px;
+}
+
+.brand-context-form,
+.brand-context-preview {
+  display: grid;
+  gap: 16px;
+}
+
+.brand-context-preview {
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-surface-subtle) 88%, var(--fc-panel-bg));
+}
+
+.brand-context-preview h3 {
+  margin: 0;
+}
+
+.brand-context-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.brand-context-field-wide {
+  grid-column: 1 / -1;
+}
+
+.dashboard-field input,
+.dashboard-field textarea,
+.dashboard-field select {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--fc-surface) 92%, white 8%);
+  color: var(--fc-text);
+  font: inherit;
+}
+
+.dashboard-field textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+.saved-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.saved-source-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: var(--fc-surface);
+  color: var(--fc-text);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.brand-preview-block {
+  display: grid;
+  gap: 10px;
+}
+
+.brand-preview-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+}
+
+.brand-signal-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .usage-panel-header {
   display: flex;
   flex-wrap: wrap;
@@ -776,8 +1239,14 @@ watch(
 }
 
 @media (max-width: 920px) {
+  .brand-context-layout,
   .channel-grid,
   .usage-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .brand-context-grid,
+  .brand-signal-grid {
     grid-template-columns: 1fr;
   }
 }

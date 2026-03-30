@@ -78,3 +78,12 @@ export function getActivationDraft(draftId: string): ActivationDraftRecord | nul
 export function getLatestActivationDraft(): ActivationDraftRecord | null {
   return readDrafts()[0] ?? null;
 }
+
+export function replaceActivationDraft(draft: ActivationDraftRecord): ActivationDraftRecord {
+  const nextDrafts = [draft, ...readDrafts().filter((entry) => entry.id !== draft.id)].slice(
+    0,
+    MAX_STORED_DRAFTS,
+  );
+  writeDrafts(nextDrafts);
+  return draft;
+}

@@ -19,6 +19,7 @@ interface UserPreferencesRow extends QueryResultRow {
   density: UserPreferences["density"];
   layout_mode: UserPreferences["layoutMode"];
   ai_assist_level: UserPreferences["aiAssistLevel"];
+  notify_post_published: boolean;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -29,9 +30,10 @@ const DEFAULT_PREFERENCES = {
   density: "comfortable",
   layoutMode: "dashboard",
   aiAssistLevel: "balanced",
+  notifyPostPublished: true,
 } as const satisfies Pick<
   UserPreferences,
-  "theme" | "fontSize" | "density" | "layoutMode" | "aiAssistLevel"
+  "theme" | "fontSize" | "density" | "layoutMode" | "aiAssistLevel" | "notifyPostPublished"
 >;
 
 const VALID_THEMES = new Set<UserPreferences["theme"]>(["light", "dark", "focus"]);
@@ -57,6 +59,7 @@ function mapRow(row: UserPreferencesRow): UserPreferences {
     density: row.density,
     layoutMode: row.layout_mode,
     aiAssistLevel: row.ai_assist_level,
+    notifyPostPublished: row.notify_post_published,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -91,6 +94,13 @@ function validatePreferences(input: UpdateUserPreferencesRequest): void {
   if (input.aiAssistLevel && !VALID_AI_ASSIST_LEVELS.has(input.aiAssistLevel)) {
     throw new HttpError(400, "bad_request", "aiAssistLevel is invalid.");
   }
+
+  if (
+    typeof input.notifyPostPublished !== "undefined" &&
+    typeof input.notifyPostPublished !== "boolean"
+  ) {
+    throw new HttpError(400, "bad_request", "notifyPostPublished is invalid.");
+  }
 }
 
 async function ensurePreferenceRow(userId: string): Promise<void> {
@@ -102,14 +112,16 @@ async function ensurePreferenceRow(userId: string): Promise<void> {
         font_size,
         density,
         layout_mode,
-        ai_assist_level
+        ai_assist_level,
+        notify_post_published
       ) values (
         $1,
         $2,
         $3,
         $4,
         $5,
-        $6
+        $6,
+        $7
       )
       on conflict (user_id) do nothing
     `,
@@ -120,6 +132,7 @@ async function ensurePreferenceRow(userId: string): Promise<void> {
       DEFAULT_PREFERENCES.density,
       DEFAULT_PREFERENCES.layoutMode,
       DEFAULT_PREFERENCES.aiAssistLevel,
+      DEFAULT_PREFERENCES.notifyPostPublished,
     ],
   );
 }
@@ -134,6 +147,7 @@ async function loadPreferencesRow(userId: string): Promise<UserPreferencesRow | 
         density,
         layout_mode,
         ai_assist_level,
+        notify_post_published,
         created_at,
         updated_at
       from user_preferences
@@ -183,14 +197,16 @@ export async function updateUserPreferences(
         font_size,
         density,
         layout_mode,
-        ai_assist_level
+        ai_assist_level,
+        notify_post_published
       ) values (
         $1,
         $2,
         $3,
         $4,
         $5,
-        $6
+        $6,
+        $7
       )
       on conflict (user_id)
       do update set
@@ -199,6 +215,7 @@ export async function updateUserPreferences(
         density = coalesce($4, user_preferences.density),
         layout_mode = coalesce($5, user_preferences.layout_mode),
         ai_assist_level = coalesce($6, user_preferences.ai_assist_level),
+        notify_post_published = coalesce($7, user_preferences.notify_post_published),
         updated_at = now()
       returning
         user_id,
@@ -207,6 +224,7 @@ export async function updateUserPreferences(
         density,
         layout_mode,
         ai_assist_level,
+        notify_post_published,
         created_at,
         updated_at
     `,
@@ -217,6 +235,7 @@ export async function updateUserPreferences(
       input.density ?? null,
       input.layoutMode ?? null,
       input.aiAssistLevel ?? null,
+      typeof input.notifyPostPublished === "boolean" ? input.notifyPostPublished : null,
     ],
   );
 
@@ -228,6 +247,7 @@ export async function updateUserPreferences(
     density: preferences.density,
     layoutMode: preferences.layoutMode,
     aiAssistLevel: preferences.aiAssistLevel,
+    notifyPostPublished: preferences.notifyPostPublished,
   });
 
   return {

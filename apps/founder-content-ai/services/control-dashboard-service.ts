@@ -1,7 +1,9 @@
 import type {
+  PreviewContentAiEditResponse,
   ControlDashboardResponse,
   ConvertIdeaToContentResponse,
   CreateIdeaInboxResponse,
+  GetContentPipelineItemResponse,
   UpdateContentPipelineItemResponse,
 } from "../../../packages/shared-types";
 import { apiGet, apiPatch, apiPost } from "./api-client";
@@ -56,5 +58,27 @@ export async function requestUpdatePipelineItem(input: {
     title: input.title,
     textContent: input.textContent,
     status: input.status,
+  });
+}
+
+export async function requestPipelineItem(
+  businessId: string,
+  assetId: string,
+): Promise<GetContentPipelineItemResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedAssetId = encodeURIComponent(assetId);
+  return apiGet<GetContentPipelineItemResponse>(
+    `/content-pipeline/${encodedAssetId}?businessId=${encodedBusinessId}`,
+  );
+}
+
+export async function requestContentAiEditPreview(input: {
+  businessId: string;
+  assetId?: string;
+  textContent?: string;
+  instruction: string;
+}): Promise<PreviewContentAiEditResponse> {
+  return apiPost<typeof input, PreviewContentAiEditResponse>("/content-ai-edit-preview", input, {
+    timeoutMs: 30000,
   });
 }

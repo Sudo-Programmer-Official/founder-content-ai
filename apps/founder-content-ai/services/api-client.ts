@@ -101,7 +101,7 @@ function createRequestTimeout(timeoutMs: number | undefined): {
 }
 
 async function requestJson<TResponse>(
-  method: "GET" | "POST" | "PATCH",
+  method: "GET" | "POST" | "PATCH" | "DELETE",
   endpoint: string,
   payload?: unknown,
   options?: ApiRequestOptions,
@@ -118,7 +118,7 @@ async function requestJson<TResponse>(
       response = await fetch(requestUrl, {
         method,
         headers,
-        body: method === "GET" ? undefined : JSON.stringify(payload ?? {}),
+        body: method === "GET" || method === "DELETE" ? undefined : JSON.stringify(payload ?? {}),
         signal: timeout.signal,
       });
     } catch (error) {
@@ -177,4 +177,11 @@ export async function apiPatch<TRequest, TResponse>(
   options?: ApiRequestOptions,
 ): Promise<TResponse> {
   return requestJson<TResponse>("PATCH", endpoint, payload, options);
+}
+
+export async function apiDelete<TResponse>(
+  endpoint: string,
+  options?: ApiRequestOptions,
+): Promise<TResponse> {
+  return requestJson<TResponse>("DELETE", endpoint, undefined, options);
 }

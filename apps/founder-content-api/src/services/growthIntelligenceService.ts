@@ -189,6 +189,21 @@ function resolveContentType(value: string | undefined): RecommendPostTimeContent
   return value === "image" || value === "text" || value === "carousel" ? value : "carousel";
 }
 
+function normalizeTimezone(value: string | undefined | null): string | null {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: normalized });
+    return normalized;
+  } catch {
+    throw new HttpError(400, "bad_request", "audienceTimezone must be a valid IANA timezone.");
+  }
+}
+
 function toHashtag(value: string): string {
   const words = value
     .split(/[^a-zA-Z0-9]+/)
@@ -427,9 +442,11 @@ export async function recommendPostTimes(input: {
   businessId: string;
   userId: string;
   contentType?: string;
+  audienceTimezone?: string;
 }): Promise<RecommendPostTimeResponse> {
   const contentType = resolveContentType(input.contentType);
-  const timezone = await resolveBusinessTimezone(input.businessId);
+  const timezone =
+    normalizeTimezone(input.audienceTimezone) ?? (await resolveBusinessTimezone(input.businessId));
   const history = await loadUserSchedulingHistory(input.businessId, input.userId);
   const historyBlueprint = deriveHistoryBlueprint(history, timezone, contentType);
   const blueprints = [...GLOBAL_SLOT_BLUEPRINTS[contentType]];

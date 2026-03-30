@@ -104,13 +104,17 @@ export async function generateCapturedContentWithAI(
 export async function generateRemixedContentWithAI(
   input: StructuredContentGenerationRequest,
 ): Promise<RemixContentResponse> {
-  const [brandContext, platformContext] = await Promise.all([
+  const [brandContext, savedSourceContext, platformContext] = await Promise.all([
     getBrandPromptContextForBusiness(input.businessId),
+    buildSavedSourceMemoryContext(input.businessId),
     getLinkedInGenerationContextForBusiness(input.businessId),
   ]);
 
   return generateContent({
-    input,
+    input: {
+      ...input,
+      rawInputText: appendSavedSourceContext(input.rawInputText, savedSourceContext),
+    },
     channel: "linkedin",
     tone: input.tone,
     brandContext,

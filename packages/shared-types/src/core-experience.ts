@@ -84,3 +84,33 @@ export interface UpdateContentPipelineItemRequest {
 export interface UpdateContentPipelineItemResponse {
   asset: ContentAsset;
 }
+
+export interface PreviewContentAiEditRequest {
+  businessId: string;
+  assetId?: string;
+  textContent?: string;
+  instruction: string;
+}
+
+export interface ContentAiEditPreview {
+  instruction: string;
+  interpretedActions: string[];
+  summary: string;
+  scopeHint: string;
+  originalText: string;
+  suggestedText: string;
+  beforeExcerpt: string;
+  afterExcerpt: string;
+}
+
+export interface PreviewContentAiEditResponse {
+  preview: ContentAiEditPreview;
+}
+
+export interface GetContentPipelineItemQuery {
+  businessId: string;
+}
+
+export interface GetContentPipelineItemResponse {
+  asset: ContentAsset;
+}

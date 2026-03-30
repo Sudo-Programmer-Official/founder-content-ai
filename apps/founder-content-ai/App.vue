@@ -20,12 +20,15 @@ const usesWorkspaceShell = computed(
 const visibleAppLinks = computed(() => {
   const currentBusinessId = bootstrap.value?.activeBusinessId;
   const hasWorkspaceContext = Boolean(currentBusinessId);
+  const canUsePlanner = hasWorkspaceContext && isFeatureEnabled("scheduler");
   const canUseDashboard = hasWorkspaceContext && isFeatureEnabled("control_dashboard");
   const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
   const canUseEmail = hasWorkspaceContext && isFeatureEnabled("email_campaigns");
 
   return [
     { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
+    { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", visible: canUsePlanner },
+    { to: appRoutes.appHistory, label: "History", shortLabel: "H", visible: canUsePlanner },
     { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
     { to: appRoutes.appOutreach, label: "Outreach", shortLabel: "O", visible: canUseOutreach },
     { to: appRoutes.appEmail, label: "Email", shortLabel: "E", visible: canUseEmail },
@@ -44,8 +47,10 @@ const pageTitleMap: Record<string, string> = {
   "admin-workspaces": "Admin workspaces",
   "app-dashboard": "Dashboard",
   "app-email": "Email",
-  "app-generate": "Create new post",
+  "app-create": "Create new post",
   "app-growth": "Growth",
+  "app-history": "History",
+  "app-planner": "Planner",
   "app-outreach": "Outreach",
   "app-result": "Generated content",
   "dashboard-analytics": "Analytics",
@@ -65,6 +70,14 @@ const currentPageSubtitle = computed(() => {
 
   if (route.name === "app-growth") {
     return "Capture leads, run the nurture flow, and see what the engine is doing.";
+  }
+
+  if (route.name === "app-planner") {
+    return "See the week, fill the gaps, and move saved drafts into real execution slots.";
+  }
+
+  if (route.name === "app-history") {
+    return "Verify what shipped, recover failures, and keep the publishing loop trustworthy.";
   }
 
   return "Keep navigation persistent, content focused, and actions obvious.";

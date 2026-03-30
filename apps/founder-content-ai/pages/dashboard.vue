@@ -26,9 +26,10 @@ import {
   requestCreateIdeaInboxItem,
   requestUpdatePipelineItem,
 } from "../services/control-dashboard-service";
-import { requestIdeaGeneration } from "../services/generation-service";
+import { requestHookGeneration, requestIdeaGeneration } from "../services/generation-service";
 import { appRoutes } from "../utils/routes";
 import type {
+  AISuggestion,
   MissionState,
   PipelineColumnModel,
   PipelineDraftState,
@@ -36,6 +37,25 @@ import type {
 } from "../components/dashboard/dashboard-types";
 
 type EditablePipelineStage = ContentPipelineStage;
+
+interface DashboardActionOption {
+  id: string;
+  label: string;
+  description: string;
+  previewText: string;
+  nextPostText: string;
+}
+
+interface DashboardActionPreview {
+  kind: "hook" | "cta";
+  assetId: string;
+  title: string;
+  description: string;
+  scopeHint: string;
+  originalText: string;
+  options: DashboardActionOption[];
+  selectedOptionId: string;
+}
 
 const router = useRouter();
 const {
@@ -57,6 +77,10 @@ const convertingIdeaId = ref("");
 const editingAssetId = ref("");
 const savingAssetId = ref("");
 const assetDrafts = ref<Record<string, PipelineDraftState>>({});
+const actionPreview = ref<DashboardActionPreview | null>(null);
+const actionPreviewError = ref("");
+const isPreviewingAction = ref(false);
+const isApplyingActionPreview = ref(false);
 const dailyIdea = ref<IdeaOption | null>(null);
 const isGeneratingDailyIdea = ref(false);
 const nowMs = ref(Date.now());
@@ -289,6 +313,9 @@ const weeklyReportLines = computed(() => {
       : "Capture one more idea to create your first top-performing asset.",
   ];
 });
+const selectedActionPreviewOption = computed(() =>
+  actionPreview.value?.options.find((option) => option.id === actionPreview.value?.selectedOptionId) ?? null,
+);
 
 function getPipelineDraft(asset: ContentAsset): PipelineDraftState {
   const existing = assetDrafts.value[asset.id];
@@ -308,6 +335,221 @@ function resetEditingState() {
   editingAssetId.value = "";
   assetDrafts.value = {};
   savingAssetId.value = "";
+}
+
+function normalizeParagraphs(text: string): string[] {
+  return text
+    .split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
+}
+
+function getEditableAssetText(asset: ContentAsset): string {
+  return getPipelineDraft(asset).textContent.trim() || asset.textContent?.trim() || "";
+}
+
+function getOpeningParagraph(text: string): string {
+  return normalizeParagraphs(text)[0] ?? "";
+}
+
+function getClosingParagraph(text: string): string {
+  const paragraphs = normalizeParagraphs(text);
+  return paragraphs[paragraphs.length - 1] ?? "";
+}
+
+function replaceOpeningParagraph(text: string, nextOpening: string): string {
+  const paragraphs = normalizeParagraphs(text);
+
+  if (paragraphs.length === 0) {
+    return nextOpening.trim();
+  }
+
+  return [nextOpening.trim(), ...paragraphs.slice(1)].join("\n\n");
+}
+
+function replaceClosingParagraph(text: string, nextClosing: string): string {
+  const paragraphs = normalizeParagraphs(text);
+
+  if (paragraphs.length === 0) {
+    return nextClosing.trim();
+  }
+
+  if (paragraphs.length === 1) {
+    return `${paragraphs[0]}\n\n${nextClosing.trim()}`;
+  }
+
+  const lastParagraph = paragraphs[paragraphs.length - 1] ?? "";
+  const shouldReplace =
+    lastParagraph.length <= 120 ||
+    lastParagraph.endsWith("?") ||
+    /^curious|^what |^if you|^reply /i.test(lastParagraph);
+
+  if (shouldReplace) {
+    return [...paragraphs.slice(0, -1), nextClosing.trim()].join("\n\n");
+  }
+
+  return [...paragraphs, nextClosing.trim()].join("\n\n");
+}
+
+function buildCtaSuggestions(asset: ContentAsset, baseText: string): DashboardActionOption[] {
+  const title = (asset.title ?? "this").trim();
+  const slug =
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 3)
+      .join(" ") || "this";
+  const suggestions = [
+    {
+      id: "cta-question",
+      label: "Ask a question",
+      description: "Invite replies instead of ending on a generic takeaway.",
+      previewText: `Curious — what changed your approach to ${slug}?`,
+    },
+    {
+      id: "cta-experience",
+      label: "Invite experience",
+      description: "Prompt readers to add what worked for them.",
+      previewText: "What would you add to this from your own experience?",
+    },
+    {
+      id: "cta-builders",
+      label: "Call in builders",
+      description: "Make the ending feel founder-to-founder.",
+      previewText: "If you're building through something similar, I'd love to hear what you're seeing.",
+    },
+  ];
+
+  return suggestions.map((option) => ({
+    ...option,
+    nextPostText: replaceClosingParagraph(baseText, option.previewText),
+  }));
+}
+
+function dismissActionPreview(): void {
+  actionPreview.value = null;
+  actionPreviewError.value = "";
+}
+
+async function previewHookFix(asset: ContentAsset): Promise<void> {
+  if (!selectedBusinessId.value) {
+    return;
+  }
+
+  const baseText = getEditableAssetText(asset);
+  const originalOpening = getOpeningParagraph(baseText);
+
+  if (!baseText || !originalOpening) {
+    ideaFeedback.value = "This draft needs content before the hook can be improved.";
+    return;
+  }
+
+  isPreviewingAction.value = true;
+  actionPreviewError.value = "";
+
+  try {
+    const response = await requestHookGeneration({
+      businessId: selectedBusinessId.value,
+      topic: asset.title?.trim() || originalOpening,
+    });
+    const options = response.hooks
+      .map((hook, index) => hook.trim())
+      .filter((hook, index, hooks) => hook !== "" && hook.toLowerCase() !== originalOpening.toLowerCase() && hooks.indexOf(hook) === index)
+      .slice(0, 3)
+      .map((hook, index) => ({
+        id: `hook-${index}`,
+        label: `Option ${index + 1}`,
+        description: "Only the opening changes. The rest of the post stays intact.",
+        previewText: hook,
+        nextPostText: replaceOpeningParagraph(baseText, hook),
+      }));
+
+    if (options.length === 0) {
+      actionPreviewError.value = "No stronger hook suggestion came back for this draft.";
+      return;
+    }
+
+    actionPreview.value = {
+      kind: "hook",
+      assetId: asset.id,
+      title: "Preview hook improvement",
+      description: "Review the opening change before it touches the saved draft.",
+      scopeHint: "Only the first paragraph changes. Everything after the hook stays the same.",
+      originalText: originalOpening,
+      options,
+      selectedOptionId: options[0].id,
+    };
+  } catch (error) {
+    actionPreviewError.value =
+      error instanceof Error ? error.message : "Unable to preview a hook improvement right now.";
+  } finally {
+    isPreviewingAction.value = false;
+  }
+}
+
+function previewCtaAddition(asset: ContentAsset): void {
+  const baseText = getEditableAssetText(asset);
+  const originalClosing = getClosingParagraph(baseText);
+
+  if (!baseText || !originalClosing) {
+    ideaFeedback.value = "This draft needs a body before a CTA can be added.";
+    return;
+  }
+
+  const options = buildCtaSuggestions(asset, baseText);
+
+  actionPreview.value = {
+    kind: "cta",
+    assetId: asset.id,
+    title: "Preview CTA improvement",
+    description: "Choose the ending you want before the saved draft is updated.",
+    scopeHint: "Only the closing CTA changes. The rest of the post stays untouched.",
+    originalText: originalClosing,
+    options,
+    selectedOptionId: options[0].id,
+  };
+  actionPreviewError.value = "";
+}
+
+async function applyActionPreview(): Promise<void> {
+  if (!selectedBusinessId.value || !actionPreview.value || !selectedActionPreviewOption.value) {
+    return;
+  }
+
+  const targetAsset = flatPipelineItems.value.find((asset) => asset.id === actionPreview.value?.assetId);
+
+  if (!targetAsset) {
+    actionPreviewError.value = "That draft is no longer available on this dashboard.";
+    return;
+  }
+
+  const draftState = getPipelineDraft(targetAsset);
+  isApplyingActionPreview.value = true;
+  actionPreviewError.value = "";
+
+  try {
+    await requestUpdatePipelineItem({
+      businessId: selectedBusinessId.value,
+      assetId: targetAsset.id,
+      title: draftState.title,
+      textContent: selectedActionPreviewOption.value.nextPostText,
+      status: draftState.status,
+    });
+    ideaFeedback.value =
+      actionPreview.value.kind === "hook"
+        ? "Hook updated. Review the new opening and move it forward when it feels right."
+        : "CTA updated. The saved draft now ends with a clearer next step.";
+    dismissActionPreview();
+    await loadDashboard(selectedBusinessId.value);
+    focusAsset(targetAsset.id);
+  } catch (error) {
+    actionPreviewError.value =
+      error instanceof Error ? error.message : "Unable to apply this change right now.";
+  } finally {
+    isApplyingActionPreview.value = false;
+  }
 }
 
 async function loadDashboard(businessId: string) {
@@ -554,11 +796,17 @@ function focusAsset(assetId: string | undefined) {
   });
 }
 
-function openCreator(hash?: string) {
+function openCreator(target?: ContentAsset | string) {
+  dismissActionPreview();
+  const hash = typeof target === "string" ? target : undefined;
+  const asset = typeof target === "string" ? undefined : target;
   const repurposeMode = hash === "#repurpose-panel";
   void router.push({
     path: appRoutes.appCreate,
-    query: repurposeMode ? { mode: "repurpose" } : {},
+    query: {
+      ...(repurposeMode ? { mode: "repurpose" } : {}),
+      ...(asset ? { postId: asset.id } : {}),
+    },
     hash,
   });
 }
@@ -618,11 +866,11 @@ function getStageActionLabel(asset: ContentAsset): string | null {
   }
 
   if (nextStage === "review") {
-    return "Send to review";
+    return "Mark ready";
   }
 
   if (nextStage === "scheduled") {
-    return "Schedule";
+    return "Mark scheduled";
   }
 
   return "Mark posted";
@@ -668,6 +916,8 @@ function updateDraftState(assetId: string, draft: PipelineDraftState) {
 }
 
 function handleMissionTaskAction(task: MissionState["primaryAction"]) {
+  const missionAsset = mission.value?.missionAsset;
+
   if (!task) {
     return;
   }
@@ -683,13 +933,34 @@ function handleMissionTaskAction(task: MissionState["primaryAction"]) {
   }
 
   if (task.action === "schedule") {
-    openCreator();
+    if (missionAsset) {
+      void advancePipelineItem(missionAsset);
+    } else {
+      openCreator();
+    }
     return;
   }
 
-  if (mission.value?.missionAsset) {
-    focusAsset(mission.value.missionAsset.id);
+  if (!missionAsset) {
+    return;
   }
+
+  if (task.action === "improve_hook") {
+    void previewHookFix(missionAsset);
+    return;
+  }
+
+  if (task.action === "add_cta") {
+    previewCtaAddition(missionAsset);
+    return;
+  }
+
+  if (task.action === "move_to_review") {
+    void advancePipelineItem(missionAsset);
+    return;
+  }
+
+  focusAsset(missionAsset.id);
 }
 
 async function generateDailyIdea() {
@@ -739,7 +1010,16 @@ async function generateDailyIdea() {
   }
 }
 
-function handleAISuggestionAction(suggestion: { action: QuickCreateAction | "focus_asset"; assetId?: string }) {
+function handleAISuggestionAction(suggestion: AISuggestion) {
+  if (suggestion.action === "focus_asset" && suggestion.assetId) {
+    const targetAsset = flatPipelineItems.value.find((asset) => asset.id === suggestion.assetId);
+
+    if (targetAsset && suggestion.type === "fix") {
+      void previewHookFix(targetAsset);
+      return;
+    }
+  }
+
   if (suggestion.action === "focus_asset") {
     focusAsset(suggestion.assetId);
     return;
@@ -757,6 +1037,7 @@ watch(
 
     selectedBusinessId.value = businessId;
     resetEditingState();
+    dismissActionPreview();
 
     try {
       const response = await requestMyBusinesses();
@@ -922,6 +1203,98 @@ onBeforeUnmount(() => {
                     <strong>{{ dashboard.today.ideaInboxCount }}</strong>
                   </article>
                 </div>
+              </section>
+
+              <section
+                v-if="actionPreview || actionPreviewError || isPreviewingAction"
+                class="dashboard-panel action-preview-panel"
+              >
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-meta">
+                      {{
+                        actionPreview?.kind === "cta"
+                          ? "CTA Preview"
+                          : "Hook Preview"
+                      }}
+                    </p>
+                    <h2>
+                      {{ actionPreview?.title ?? "Preparing suggestion..." }}
+                    </h2>
+                    <p class="dashboard-description">
+                      {{
+                        actionPreview?.description
+                          ?? "Generating a scoped suggestion for this saved draft."
+                      }}
+                    </p>
+                  </div>
+
+                  <button
+                    v-if="actionPreview || actionPreviewError"
+                    type="button"
+                    class="dashboard-button secondary small-button"
+                    @click="dismissActionPreview"
+                  >
+                    Keep current draft
+                  </button>
+                </div>
+
+                <p v-if="isPreviewingAction" class="dashboard-feedback">
+                  Generating a scoped improvement preview...
+                </p>
+                <p v-else-if="actionPreviewError" class="dashboard-feedback error">
+                  {{ actionPreviewError }}
+                </p>
+
+                <template v-else-if="actionPreview && selectedActionPreviewOption">
+                  <div class="action-preview-options">
+                    <button
+                      v-for="option in actionPreview.options"
+                      :key="option.id"
+                      type="button"
+                      class="action-preview-option"
+                      :class="{ active: actionPreview.selectedOptionId === option.id }"
+                      @click="actionPreview.selectedOptionId = option.id"
+                    >
+                      {{ option.label }}
+                    </button>
+                  </div>
+
+                  <div class="action-preview-diff">
+                    <article class="action-preview-card">
+                      <p class="panel-meta">Before</p>
+                      <strong>{{ actionPreview.kind === "cta" ? "Current ending" : "Current opening" }}</strong>
+                      <pre class="action-preview-copy">{{ actionPreview.originalText }}</pre>
+                    </article>
+
+                    <article class="action-preview-card updated">
+                      <p class="panel-meta">After</p>
+                      <strong>{{ selectedActionPreviewOption.label }}</strong>
+                      <pre class="action-preview-copy">{{ selectedActionPreviewOption.previewText }}</pre>
+                      <p class="action-preview-note">{{ selectedActionPreviewOption.description }}</p>
+                    </article>
+                  </div>
+
+                  <p class="action-preview-scope">{{ actionPreview.scopeHint }}</p>
+
+                  <div class="action-row">
+                    <button
+                      type="button"
+                      class="dashboard-button"
+                      :disabled="isApplyingActionPreview"
+                      @click="applyActionPreview"
+                    >
+                      {{ isApplyingActionPreview ? "Applying..." : "Apply changes" }}
+                    </button>
+                    <button
+                      type="button"
+                      class="dashboard-button secondary small-button"
+                      @click="dismissActionPreview"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </template>
               </section>
 
               <PipelineBoard
@@ -1262,6 +1635,75 @@ onBeforeUnmount(() => {
 .dashboard-grid-two {
   gap: 24px;
   margin-bottom: 0;
+}
+
+.action-preview-panel {
+  display: grid;
+  gap: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--fc-accent-soft) 24%, var(--fc-panel-bg)) 0%, var(--fc-panel-bg) 100%);
+}
+
+.action-preview-options,
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.action-preview-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: var(--fc-input-bg);
+  color: var(--fc-text);
+  font-weight: 600;
+}
+
+.action-preview-option.active {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+  color: var(--fc-accent-contrast);
+}
+
+.action-preview-diff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.action-preview-card {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 88%, white 12%);
+}
+
+.action-preview-card.updated {
+  border-color: color-mix(in srgb, var(--fc-success-text) 16%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg) 30%, var(--fc-panel-bg));
+}
+
+.action-preview-copy {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  line-height: 1.7;
+  color: var(--fc-text);
+}
+
+.action-preview-note,
+.action-preview-scope {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
 }
 
 .panel-header {
@@ -1641,6 +2083,7 @@ onBeforeUnmount(() => {
   }
 
   .pipeline-grid,
+  .action-preview-diff,
   .dashboard-grid-two {
     grid-template-columns: 1fr;
   }

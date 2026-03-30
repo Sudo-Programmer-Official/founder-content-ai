@@ -42,7 +42,7 @@ function buildMissionTasks(asset: ContentAsset | undefined, bestTimeLabel: strin
     tasks.push({
       label: "Improve hook",
       action: "improve_hook",
-      actionLabel: "Fix hook",
+      actionLabel: "Preview fix",
       hint: "Add tension, contradiction, or curiosity to the first line.",
     });
   }
@@ -51,7 +51,7 @@ function buildMissionTasks(asset: ContentAsset | undefined, bestTimeLabel: strin
     tasks.push({
       label: "Add CTA",
       action: "add_cta",
-      actionLabel: "Add CTA",
+      actionLabel: "Preview CTA",
       hint: "Tell the reader what to do, think, or reply with.",
     });
   }

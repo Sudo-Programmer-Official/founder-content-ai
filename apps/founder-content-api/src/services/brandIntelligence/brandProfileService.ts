@@ -820,16 +820,21 @@ export async function updateBrandProfile(
   const updatedProfile = await upsertBrandProfile({
     businessId: input.businessId,
     existingProfile: baseResult.brandProfile,
-    tone: normalizeOptionalString(input.tone) ?? baseResult.brandProfile?.tone,
+    tone:
+      input.tone !== undefined
+        ? normalizeOptionalString(input.tone)
+        : baseResult.brandProfile?.tone,
     writingStyle:
-      normalizeOptionalString(input.writingStyle) ?? baseResult.brandProfile?.writingStyle,
-    visualStyle: normalizeOptionalString(input.visualStyle) ?? baseResult.brandProfile?.visualStyle,
-    topics:
-      input.topics && input.topics.length > 0
-        ? uniqueValues(input.topics)
-        : baseResult.brandProfile?.topics,
+      input.writingStyle !== undefined
+        ? normalizeOptionalString(input.writingStyle)
+        : baseResult.brandProfile?.writingStyle,
+    visualStyle:
+      input.visualStyle !== undefined
+        ? normalizeOptionalString(input.visualStyle)
+        : baseResult.brandProfile?.visualStyle,
+    topics: input.topics !== undefined ? uniqueValues(input.topics) : baseResult.brandProfile?.topics,
     patterns:
-      input.patterns && input.patterns.length > 0
+      input.patterns !== undefined
         ? uniqueValues(input.patterns)
         : baseResult.brandProfile?.patterns,
   });

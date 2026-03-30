@@ -11,6 +11,7 @@ export interface UserPreferences {
   density: UiDensity;
   layoutMode: UiLayoutMode;
   aiAssistLevel: AiAssistLevel;
+  notifyPostPublished: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -26,6 +27,7 @@ export interface UpdateUserPreferencesRequest {
   density?: UiDensity;
   layoutMode?: UiLayoutMode;
   aiAssistLevel?: AiAssistLevel;
+  notifyPostPublished?: boolean;
 }
 
 export interface UpdateUserPreferencesResponse {

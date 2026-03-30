@@ -14,7 +14,7 @@ const emit = defineEmits<{
   (event: "advance", asset: ContentAsset): void;
   (event: "save", asset: ContentAsset): void;
   (event: "close"): void;
-  (event: "open-creator"): void;
+  (event: "open-creator", asset?: ContentAsset): void;
   (event: "update-draft", assetId: string, draft: PipelineDraftState): void;
   (event: "speak-now"): void;
 }>();
@@ -111,7 +111,7 @@ watch(
           @advance="emit('advance', $event)"
           @save="emit('save', $event)"
           @close="emit('close')"
-          @open-creator="emit('open-creator')"
+          @open-creator="emit('open-creator', $event)"
           @update-draft="(assetId, draft) => emit('update-draft', assetId, draft)"
         />
       </div>

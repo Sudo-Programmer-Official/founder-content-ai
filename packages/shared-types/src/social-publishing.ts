@@ -1,7 +1,17 @@
 export type SocialPlatform = "linkedin";
 export type SocialAccountStatus = "connected" | "expired" | "revoked" | "error";
-export type ScheduledPostStatus = "scheduled" | "processing" | "published" | "failed";
+export type PostAssetType = "image";
+export type PostAssetSource = "upload" | "generated";
+export type PostAssetStatus = "uploaded" | "processing" | "ready" | "failed";
+export type ScheduledPostStatus =
+  | "scheduled"
+  | "processing"
+  | "published"
+  | "failed"
+  | "paused"
+  | "canceled";
 export type SocialAccountIdentityType = "person" | "organization";
+export type ScheduledPostMutationAction = "pause" | "resume" | "cancel" | "reschedule" | "retry";
 
 export interface SocialAccountIdentity {
   id: string;
@@ -43,6 +53,23 @@ export interface PublicationEvent {
   createdAt: string;
 }
 
+export interface PostAsset {
+  id: string;
+  businessId: string;
+  postId: string;
+  type: PostAssetType;
+  source: PostAssetSource;
+  storageKey: string;
+  storageUrl: string;
+  mimeType: string;
+  sizeBytes: number;
+  orderIndex: number;
+  status: PostAssetStatus;
+  previewUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ScheduledPostSlide {
   imageDataUrl: string;
   altText?: string;
@@ -57,7 +84,9 @@ export interface ScheduledPost {
   contentText: string;
   assetGroupId?: string;
   slides: ScheduledPostSlide[];
+  assets: PostAsset[];
   scheduledAt: string;
+  audienceTimezone: string;
   status: ScheduledPostStatus;
   externalPostId?: string;
   externalPostUrl?: string;
@@ -81,6 +110,7 @@ export interface RecommendedPostTimeSlot {
 export interface RecommendPostTimeQuery {
   businessId: string;
   contentType?: RecommendPostTimeContentType;
+  audienceTimezone?: string;
 }
 
 export interface RecommendPostTimeResponse {
@@ -143,6 +173,7 @@ export interface SchedulePostRequest {
   assetGroupId?: string;
   slides: ScheduledPostSlide[];
   scheduledAt: string;
+  audienceTimezone?: string;
 }
 
 export interface SchedulePostResponse {
@@ -172,4 +203,63 @@ export interface ScheduledPostsQuery {
 
 export interface ScheduledPostsResponse {
   scheduledPosts: ScheduledPost[];
+}
+
+export interface UpdateScheduledPostRequest {
+  businessId: string;
+  action: ScheduledPostMutationAction;
+  scheduledAt?: string;
+  audienceTimezone?: string;
+}
+
+export interface UpdateScheduledPostResponse {
+  scheduledPost: ScheduledPost;
+}
+
+export interface CreateMediaUploadUrlRequest {
+  businessId: string;
+  postId: string;
+  fileType: string;
+  fileName?: string;
+  sizeBytes?: number;
+}
+
+export interface CreateMediaUploadUrlResponse {
+  uploadUrl: string;
+  storageKey: string;
+  storageUrl: string;
+  expiresAt: string;
+}
+
+export interface CreatePostAssetRequest {
+  businessId: string;
+  postId: string;
+  storageKey: string;
+  storageUrl: string;
+  mimeType: string;
+  sizeBytes: number;
+  type?: PostAssetType;
+  source?: PostAssetSource;
+  orderIndex?: number;
+}
+
+export interface CreatePostAssetResponse {
+  asset: PostAsset;
+}
+
+export interface ListPostAssetsQuery {
+  businessId: string;
+  postId: string;
+}
+
+export interface ListPostAssetsResponse {
+  assets: PostAsset[];
+}
+
+export interface DeletePostAssetRequest {
+  businessId: string;
+}
+
+export interface DeletePostAssetResponse {
+  deletedAssetId: string;
 }

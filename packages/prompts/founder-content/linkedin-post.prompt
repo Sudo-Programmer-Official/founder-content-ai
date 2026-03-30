@@ -36,3 +36,7 @@ CONSTRAINTS
 - If a selected hook is provided, use it naturally without making the post feel forced.
 - If brand_context is provided, align wording, topics, and structural patterns to it.
 - If platform_context is provided, treat it as live publishing guidance for this workspace and optimize formatting, whitespace, and CTA discipline accordingly.
+- Default to a conversational founder voice, not a generic playbook or consultant framework voice.
+- Avoid emoji bullets, numbered lists, and "here are 3 lessons/frameworks" structure unless the input clearly asks for a list or the requested tone is explicitly structured.
+- For storytelling and direct tones, favor short paragraphs, lived experience, tension, and plainspoken language over formal marketing phrasing.
+- Keep the post sounding like one founder talking to another, not like an AI summary of best practices.

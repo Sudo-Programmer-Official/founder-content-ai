@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
-import type { ScheduledPostSlide } from "../../../../packages/shared-types/index.ts";
+import type { PostAsset, ScheduledPostSlide } from "../../../../packages/shared-types/index.ts";
 import { HttpError } from "../utils/http.ts";
+import { downloadPostAssetBytes } from "./postAssetService.ts";
 import { getLinkedInPublishingCredentialsForBusiness } from "./socialAuthService.ts";
 
 const LINKEDIN_IMAGES_API_URL = "https://api.linkedin.com/rest/images";
@@ -157,14 +158,27 @@ async function uploadSlideToLinkedIn(
 ): Promise<{ imageUrn: string; altText?: string }> {
   const parsed = parseDataUrl(slide.imageDataUrl);
   ensureSupportedLinkedInImageType(parsed.mimeType);
+  return uploadImageBytesToLinkedIn(accessToken, ownerUrn, {
+    bytes: parsed.bytes,
+    mimeType: slide.mimeType?.trim() || parsed.mimeType,
+    altText: slide.altText?.trim() || undefined,
+  });
+}
+
+async function uploadImageBytesToLinkedIn(
+  accessToken: string,
+  ownerUrn: string,
+  input: { bytes: Buffer; mimeType: string; altText?: string },
+): Promise<{ imageUrn: string; altText?: string }> {
+  ensureSupportedLinkedInImageType(input.mimeType);
   const initialization = await initializeLinkedInImageUpload(accessToken, ownerUrn);
   const uploadResponse = await fetch(initialization.uploadUrl, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
-      "Content-Type": slide.mimeType?.trim() || parsed.mimeType,
+      "Content-Type": input.mimeType,
     },
-    body: parsed.bytes,
+    body: input.bytes,
   });
 
   if (!uploadResponse.ok) {
@@ -175,8 +189,21 @@ async function uploadSlideToLinkedIn(
 
   return {
     imageUrn: initialization.imageUrn,
-    altText: slide.altText?.trim() || undefined,
+    altText: input.altText,
   };
+}
+
+async function uploadPostAssetToLinkedIn(
+  accessToken: string,
+  ownerUrn: string,
+  asset: PostAsset,
+): Promise<{ imageUrn: string; altText?: string }> {
+  const bytes = await downloadPostAssetBytes(asset);
+
+  return uploadImageBytesToLinkedIn(accessToken, ownerUrn, {
+    bytes,
+    mimeType: asset.mimeType,
+  });
 }
 
 export async function publishLinkedInMultiImagePost(input: {
@@ -228,6 +255,74 @@ export async function publishLinkedInMultiImagePost(input: {
     response: {
       ...postCreation.response,
       uploadedImageCount: uploadedSlides.length,
+    },
+  };
+}
+
+export async function publishLinkedInImagePost(input: {
+  businessId: string;
+  contentText: string;
+  assets: PostAsset[];
+  socialAccountId?: string | null;
+  socialAccountIdentityId?: string | null;
+}): Promise<{ externalPostId: string; response: Record<string, unknown> }> {
+  if (input.assets.length === 0) {
+    throw new HttpError(400, "missing_post_assets", "At least one image asset is required.");
+  }
+
+  if (input.assets.length > 20) {
+    throw new HttpError(
+      400,
+      "invalid_image_count",
+      "LinkedIn image posts support at most 20 images.",
+    );
+  }
+
+  const credentials = await getLinkedInPublishingCredentialsForBusiness({
+    businessId: input.businessId,
+    socialAccountId: input.socialAccountId,
+    socialAccountIdentityId: input.socialAccountIdentityId,
+  });
+  const uploadedAssets = [];
+
+  for (const asset of input.assets) {
+    uploadedAssets.push(
+      await uploadPostAssetToLinkedIn(
+        credentials.accessToken,
+        credentials.selectedIdentityUrn,
+        asset,
+      ),
+    );
+  }
+
+  const content =
+    uploadedAssets.length === 1
+      ? {
+          media: {
+            id: uploadedAssets[0].imageUrn,
+            ...(uploadedAssets[0].altText ? { altText: uploadedAssets[0].altText } : {}),
+          },
+        }
+      : {
+          multiImage: {
+            images: uploadedAssets.map((asset) => ({
+              id: asset.imageUrn,
+              ...(asset.altText ? { altText: asset.altText.slice(0, 4086) } : {}),
+              taggedEntities: [],
+            })),
+          },
+        };
+
+  const postCreation = await createLinkedInPost(credentials.accessToken, {
+    ...buildBaseLinkedInPostPayload(credentials.selectedIdentityUrn, input.contentText),
+    content,
+  });
+
+  return {
+    externalPostId: postCreation.externalPostId,
+    response: {
+      ...postCreation.response,
+      uploadedImageCount: uploadedAssets.length,
     },
   };
 }

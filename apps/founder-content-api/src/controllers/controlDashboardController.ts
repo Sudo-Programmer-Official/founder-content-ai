@@ -6,6 +6,10 @@ import type {
   ConvertIdeaToContentResponse,
   CreateIdeaInboxRequest,
   CreateIdeaInboxResponse,
+  GetContentPipelineItemQuery,
+  GetContentPipelineItemResponse,
+  PreviewContentAiEditRequest,
+  PreviewContentAiEditResponse,
   UpdateContentPipelineItemRequest,
   UpdateContentPipelineItemResponse,
 } from "../../../../packages/shared-types/index.ts";
@@ -13,7 +17,9 @@ import type { Request, Response } from "express";
 import {
   convertIdeaInboxItemToContent,
   createIdeaInboxItem,
+  getContentPipelineItem,
   getControlDashboard,
+  previewContentPipelineAiEdit,
   updateContentPipelineItem,
 } from "../services/controlDashboardService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
@@ -145,6 +151,71 @@ export async function updatePipelineItem(
       code: "pipeline_update_failed",
       message: "Unable to update the pipeline item.",
       logMessage: "Failed to update pipeline item.",
+    });
+  }
+}
+
+export async function getPipelineItem(
+  request: Request<{ assetId: string }, GetContentPipelineItemResponse | ApiError, unknown, Partial<GetContentPipelineItemQuery>>,
+  response: Response<GetContentPipelineItemResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+  const assetId = request.params.assetId?.trim();
+
+  if (!businessId || !assetId) {
+    sendApiError(response, 400, "bad_request", "businessId and assetId are required.");
+    return;
+  }
+
+  try {
+    response.json(await getContentPipelineItem(request.auth, businessId, assetId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "pipeline_item_lookup_failed",
+      message: "Unable to load the pipeline item.",
+      logMessage: "Failed to load pipeline item.",
+    });
+  }
+}
+
+export async function previewPipelineAiEdit(
+  request: Request<unknown, PreviewContentAiEditResponse | ApiError, Partial<PreviewContentAiEditRequest>>,
+  response: Response<PreviewContentAiEditResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const instruction = request.body?.instruction?.trim();
+
+  if (!businessId || !instruction) {
+    sendApiError(response, 400, "bad_request", "businessId and instruction are required.");
+    return;
+  }
+
+  try {
+    response.json(
+      await previewContentPipelineAiEdit(request.auth, {
+        businessId,
+        assetId: request.body?.assetId,
+        textContent: request.body?.textContent,
+        instruction,
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "pipeline_ai_edit_preview_failed",
+      message: "Unable to preview AI edits right now.",
+      logMessage: "Failed to preview AI edit for pipeline content.",
     });
   }
 }

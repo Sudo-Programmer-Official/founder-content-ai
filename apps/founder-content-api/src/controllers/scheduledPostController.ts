@@ -4,6 +4,8 @@ import type {
   PublishPostResponse,
   SchedulePostRequest,
   SchedulePostResponse,
+  UpdateScheduledPostRequest,
+  UpdateScheduledPostResponse,
   ScheduledPostsQuery,
   ScheduledPostsResponse,
 } from "../../../../packages/shared-types/index.ts";
@@ -12,6 +14,7 @@ import {
   createScheduledPost,
   listScheduledPosts,
   publishPostNow,
+  updateScheduledPost,
 } from "../services/scheduledPostService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
@@ -45,6 +48,7 @@ export async function schedulePost(
         assetGroupId: request.body?.assetGroupId?.trim(),
         slides: request.body?.slides ?? [],
         scheduledAt: request.body?.scheduledAt?.trim() ?? "",
+        audienceTimezone: request.body?.audienceTimezone?.trim(),
       }),
     );
   } catch (error) {
@@ -127,6 +131,51 @@ export async function publishPost(
       code: "publish_post_failed",
       message: "Unable to publish to LinkedIn.",
       logMessage: "Failed to publish LinkedIn post.",
+    });
+  }
+}
+
+export async function patchScheduledPost(
+  request: Request<
+    { scheduledPostId: string },
+    UpdateScheduledPostResponse | ApiError,
+    Partial<UpdateScheduledPostRequest>
+  >,
+  response: Response<UpdateScheduledPostResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const scheduledPostId = request.params.scheduledPostId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  if (!scheduledPostId) {
+    sendApiError(response, 400, "bad_request", "scheduledPostId is required.");
+    return;
+  }
+
+  try {
+    response.json(
+      await updateScheduledPost(request.auth, scheduledPostId, {
+        businessId,
+        action: request.body?.action as UpdateScheduledPostRequest["action"],
+        scheduledAt: request.body?.scheduledAt?.trim(),
+        audienceTimezone: request.body?.audienceTimezone?.trim(),
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "scheduled_post_update_failed",
+      message: "Unable to update scheduled post.",
+      logMessage: "Failed to update scheduled post.",
     });
   }
 }

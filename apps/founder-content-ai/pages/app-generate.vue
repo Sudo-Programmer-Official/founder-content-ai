@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
+  BrandProfile,
   ContentIngestionItem,
   RepurposeSourceUrlInput,
   SavedContentSource,
@@ -14,10 +15,12 @@ import {
   requestRepurposeContent,
   requestSavedContentSources,
 } from "../services/generation-service";
+import { requestBrandProfile } from "../services/brand-profile-service";
 import {
   getActivationDraft,
   saveActivationDraft,
 } from "../services/activation-flow-service";
+import { requestPipelineItem } from "../services/control-dashboard-service";
 import { requestSocialAccounts } from "../services/publishing-service";
 import { appRoutes } from "../utils/routes";
 
@@ -30,7 +33,7 @@ const exampleIdeas = [
 const toneOptions = [
   { label: "Founder", value: "storytelling" },
   { label: "Direct", value: "direct" },
-  { label: "Professional", value: "professional" },
+  { label: "Structured", value: "professional" },
 ] as const;
 
 const route = useRoute();
@@ -57,6 +60,8 @@ const isPreviewingFeed = ref(false);
 const isFeedPreviewDirty = ref(true);
 const savedSources = ref<SavedContentSource[]>([]);
 const isLoadingSavedSources = ref(false);
+const brandProfile = ref<BrandProfile | null>(null);
+const isLoadingBrandProfile = ref(false);
 const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingSocialAccounts = ref(false);
 
@@ -74,12 +79,42 @@ const sourceInputLabel = computed(() =>
 );
 const sourceInputPlaceholder = computed(() =>
   sourceMode.value === "feed"
-    ? "Example: turn these sources into a founder post about customer trust, product lessons, and practical proof."
+    ? "Example: turn these sources into a founder post about customer trust, product lessons, and practical proof. Your saved brand context will still shape the result."
     : "Paste your idea, tweet, thought, or rough note here...",
 );
 const hasFeedSources = computed(() => buildFeedSourceUrls().length > 0);
 const isFeedPreviewReady = computed(() => feedPreviewText.value.trim() !== "" && !isFeedPreviewDirty.value);
+const hasActiveWorkspace = computed(() => Boolean(bootstrap.value?.activeBusinessId));
 const hasSavedSources = computed(() => savedSources.value.length > 0);
+const hasBrandContext = computed(() => {
+  const profile = brandProfile.value;
+
+  return Boolean(
+    profile &&
+      (
+        profile.tone ||
+        profile.writingStyle ||
+        profile.visualStyle ||
+        profile.topics.length > 0 ||
+        profile.patterns.length > 0
+      ),
+  );
+});
+const brandContextChips = computed(() => {
+  const profile = brandProfile.value;
+
+  if (!profile) {
+    return [];
+  }
+
+  return [
+    profile.tone ? `Tone: ${profile.tone}` : "",
+    profile.writingStyle ? `Style: ${profile.writingStyle}` : "",
+    profile.visualStyle ? `Visuals: ${profile.visualStyle}` : "",
+  ].filter((value) => value !== "");
+});
+const brandContextTopics = computed(() => brandProfile.value?.topics.slice(0, 4) ?? []);
+const brandContextPatterns = computed(() => brandProfile.value?.patterns.slice(0, 2) ?? []);
 const connectedLinkedInAccount = computed(() =>
   socialAccounts.value.find((account) => account.platform === "linkedin" && account.status === "connected"),
 );
@@ -108,6 +143,18 @@ function resolveSourceModeFromRoute(): GenerationSourceMode {
   return route.query.mode === "repurpose" ? "feed" : "fresh";
 }
 
+function resolveActivePostIdFromRoute(): string {
+  if (typeof route.query.postId === "string" && route.query.postId.trim() !== "") {
+    return route.query.postId.trim();
+  }
+
+  if (typeof route.query.improve === "string" && route.query.improve.trim() !== "") {
+    return route.query.improve.trim();
+  }
+
+  return "";
+}
+
 async function loadSavedSources(): Promise<void> {
   const businessId = bootstrap.value?.activeBusinessId;
 
@@ -125,6 +172,26 @@ async function loadSavedSources(): Promise<void> {
     savedSources.value = [];
   } finally {
     isLoadingSavedSources.value = false;
+  }
+}
+
+async function loadBrandProfile(): Promise<void> {
+  const businessId = bootstrap.value?.activeBusinessId;
+
+  if (!businessId) {
+    brandProfile.value = null;
+    return;
+  }
+
+  isLoadingBrandProfile.value = true;
+
+  try {
+    const response = await requestBrandProfile(businessId);
+    brandProfile.value = response.brandProfile;
+  } catch {
+    brandProfile.value = null;
+  } finally {
+    isLoadingBrandProfile.value = false;
   }
 }
 
@@ -149,29 +216,41 @@ async function loadSocialAccounts(): Promise<void> {
 }
 
 async function hydrateImprovementState(): Promise<void> {
-  const improveId = typeof route.query.improve === "string" ? route.query.improve : "";
+  const improveId = resolveActivePostIdFromRoute();
 
   if (!improveId) {
     improvementSourceId.value = "";
     sourceMode.value = resolveSourceModeFromRoute();
+    input.value = typeof route.query.prefill === "string" ? route.query.prefill : "";
     if (!route.query.prefill && helperMessage.value.includes("improving")) {
       helperMessage.value = "Paste a thought, saved post, or rough idea. Voice works too.";
     }
     return;
   }
 
+  improvementSourceId.value = improveId;
+  sourceMode.value = "fresh";
+
+  if (bootstrap.value?.activeBusinessId) {
+    try {
+      const response = await requestPipelineItem(bootstrap.value.activeBusinessId, improveId);
+      input.value = response.asset.textContent ?? "";
+      helperMessage.value = "You are editing a saved post. Regenerating will update this same draft.";
+      return;
+    } catch {
+      // Fall through to session draft recovery.
+    }
+  }
+
   const storedDraft = getActivationDraft(improveId);
 
   if (!storedDraft) {
-    improvementSourceId.value = "";
-    helperMessage.value = "We could not load that previous draft. Paste the post you want to improve.";
+    helperMessage.value = "We could not load that saved post. Paste the post you want to improve.";
     return;
   }
 
-  improvementSourceId.value = storedDraft.id;
   input.value = storedDraft.result.post;
-  sourceMode.value = "fresh";
-  helperMessage.value = "You are improving a previous draft. Adjust the input before regenerating if needed.";
+  helperMessage.value = "You are improving a saved draft. Regenerating will update this same post.";
 }
 
 function setSourceMode(nextMode: GenerationSourceMode): void {
@@ -270,6 +349,7 @@ async function generatePost(): Promise<void> {
     const response = await requestRepurposeContent({
       inputType: "text",
       intent: improvementSourceId.value || usingFeedSources ? "reference" : "capture",
+      assetId: improvementSourceId.value || undefined,
       text: usingFeedSources ? feedPreviewText.value.trim() : input.value.trim() || undefined,
       tone: tone.value,
       businessId: bootstrap.value?.activeBusinessId ?? undefined,
@@ -324,7 +404,7 @@ function handleKeydown(event: KeyboardEvent): void {
 }
 
 watch(
-  () => [route.query.improve, route.query.mode],
+  () => [route.query.improve, route.query.postId, route.query.mode, bootstrap.value?.activeBusinessId],
   () => {
     void hydrateImprovementState();
   },
@@ -341,6 +421,7 @@ watch(
   () => bootstrap.value?.activeBusinessId,
   () => {
     void loadSavedSources();
+    void loadBrandProfile();
     void loadSocialAccounts();
   },
   { immediate: true },
@@ -402,6 +483,75 @@ onBeforeUnmount(() => {
           </router-link>
         </div>
       </div>
+
+      <div
+        v-if="!improvementSourceId && hasActiveWorkspace"
+        class="brand-context-panel"
+      >
+        <div class="brand-context-header">
+          <div>
+            <p class="panel-meta">Brand context</p>
+            <h2>
+              {{
+                hasBrandContext
+                  ? "This workspace already shapes the draft"
+                  : "Add brand context in settings to steer every draft"
+              }}
+            </h2>
+            <p class="activation-helper">
+              {{
+                sourceMode === "fresh"
+                  ? "Write-from-scratch mode still uses the saved voice, themes, and brand sources attached to this workspace."
+                  : "Repurpose starts from the previewed source text, then layers this workspace’s voice and saved brand sources on top."
+              }}
+            </p>
+          </div>
+          <div class="brand-context-actions">
+            <span v-if="isLoadingBrandProfile" class="activation-chip">Loading profile...</span>
+            <span v-else-if="hasSavedSources" class="activation-chip">
+              {{ savedSources.length }} saved source{{ savedSources.length === 1 ? "" : "s" }}
+            </span>
+            <router-link class="secondary-action inline-link" :to="appRoutes.settingsPreferences">
+              Edit brand context
+            </router-link>
+          </div>
+        </div>
+
+        <div class="brand-context-grid">
+          <div v-if="brandContextChips.length > 0" class="brand-context-block">
+            <p class="panel-meta">Voice + style</p>
+            <div class="saved-source-list">
+              <span
+                v-for="chip in brandContextChips"
+                :key="chip"
+                class="saved-source-chip"
+              >
+                {{ chip }}
+              </span>
+            </div>
+          </div>
+
+          <div v-if="brandContextTopics.length > 0" class="brand-context-block">
+            <p class="panel-meta">Topics in rotation</p>
+            <div class="saved-source-list">
+              <span
+                v-for="topic in brandContextTopics"
+                :key="topic"
+                class="saved-source-chip"
+              >
+                {{ topic }}
+              </span>
+            </div>
+          </div>
+
+          <div v-if="brandContextPatterns.length > 0" class="brand-context-block brand-context-patterns">
+            <p class="panel-meta">Messaging patterns</p>
+            <ul class="brand-pattern-list">
+              <li v-for="pattern in brandContextPatterns" :key="pattern">{{ pattern }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="activation-panel">
@@ -412,7 +562,7 @@ onBeforeUnmount(() => {
           :class="{ active: sourceMode === 'fresh' }"
           @click="setSourceMode('fresh')"
         >
-          Write
+          Write from scratch
         </button>
         <button
           type="button"
@@ -420,7 +570,7 @@ onBeforeUnmount(() => {
           :class="{ active: sourceMode === 'feed' }"
           @click="setSourceMode('feed')"
         >
-          Repurpose
+          Repurpose from content
         </button>
       </div>
 
@@ -449,8 +599,8 @@ onBeforeUnmount(() => {
       >
         <div class="saved-sources-header">
           <div>
-            <p class="panel-meta">Saved sources</p>
-            <h3>Brand memory follows this workspace</h3>
+            <p class="panel-meta">Brand sources</p>
+            <h3>Saved sources are reused automatically</h3>
           </div>
           <span v-if="isLoadingSavedSources" class="activation-chip">Loading sources...</span>
         </div>
@@ -468,8 +618,8 @@ onBeforeUnmount(() => {
         <p class="activation-helper">
           {{
             sourceMode === "fresh"
-              ? "Fresh generation automatically blends these saved sources with your idea."
-              : "Feed mode uses the previewed source text. Saved sources stay attached to the workspace."
+              ? "Fresh generation automatically blends these saved sources with your idea and brand context."
+              : "Repurpose starts from the reviewed source preview, then layers these saved sources and brand context on top."
           }}
         </p>
       </div>
@@ -486,7 +636,7 @@ onBeforeUnmount(() => {
         class="feed-ingest-panel"
       >
         <p class="activation-helper">
-          Use public page, post, or article URLs. Private feeds and login-only pages will not ingest.
+          Use public page, post, or article URLs. Private feeds and login-only pages will not ingest. Your workspace brand memory is applied automatically after preview.
         </p>
         <div class="source-grid">
           <label>
@@ -591,7 +741,7 @@ onBeforeUnmount(() => {
       <p v-else-if="sourceMode === 'feed' && !improvementSourceId" class="activation-feedback">
         {{
           isFeedPreviewReady
-            ? "Preview ready. Generation will use the reviewed source text."
+            ? "Preview ready. Generation will use the reviewed source text plus your workspace brand context."
             : hasFeedSources
               ? "Preview the public sources before generating."
               : "Add at least one public source URL, or switch back to Start fresh."
@@ -680,6 +830,65 @@ onBeforeUnmount(() => {
     color-mix(in srgb, var(--fc-surface) 92%, var(--fc-accent) 8%) 0%,
     color-mix(in srgb, var(--fc-surface-subtle) 88%, var(--fc-accent) 12%) 100%
   );
+}
+
+.brand-context-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid var(--fc-border);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 84%, var(--fc-surface-subtle));
+}
+
+.brand-context-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand-context-header h2 {
+  margin: 0;
+  font-size: clamp(1.1rem, 2.2vw, 1.45rem);
+  line-height: 1.1;
+}
+
+.brand-context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.brand-context-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.brand-context-block {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-surface) 88%, white 12%);
+}
+
+.brand-context-patterns {
+  grid-column: 1 / -1;
+}
+
+.brand-pattern-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
 }
 
 .channel-context-copy {
@@ -954,10 +1163,12 @@ onBeforeUnmount(() => {
 
 @media (max-width: 720px) {
   .channel-context-panel,
+  .brand-context-header,
   .activation-helper-row {
     flex-direction: column;
   }
 
+  .brand-context-actions,
   .channel-context-actions {
     width: 100%;
     justify-content: flex-start;
@@ -968,6 +1179,7 @@ onBeforeUnmount(() => {
     align-items: stretch;
   }
 
+  .brand-context-grid,
   .source-grid {
     grid-template-columns: 1fr;
   }

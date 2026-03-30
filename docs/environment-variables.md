@@ -177,6 +177,56 @@ Purpose:
 
 - default AWS region for SES and future AWS-connected services
 
+### `S3_MEDIA_BUCKET`
+
+Purpose:
+
+- S3 bucket used for uploaded post media
+
+Usage:
+
+- stores original and processed post assets before publish-time upload to LinkedIn
+
+### `S3_MEDIA_PREFIX`
+
+Purpose:
+
+- optional top-level key prefix inside the media bucket
+
+Recommended default:
+
+- `workspaces`
+
+### `S3_PRESIGNED_UPLOAD_TTL_SECONDS`
+
+Purpose:
+
+- TTL for S3 presigned upload URLs
+
+Recommended default:
+
+- `900`
+
+### `S3_MAX_IMAGE_BYTES`
+
+Purpose:
+
+- maximum allowed uploaded image size in bytes
+
+Recommended default:
+
+- `5242880`
+
+### `S3_MAX_VIDEO_BYTES`
+
+Purpose:
+
+- maximum allowed uploaded video size in bytes
+
+Recommended default:
+
+- `104857600`
+
 ### `SES_CONFIGURATION_SET`
 
 Purpose:

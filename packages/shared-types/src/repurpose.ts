@@ -29,6 +29,7 @@ export interface RepurposeQuickSignals {
 export interface RepurposeContentRequest {
   inputType: RepurposeInputType;
   intent?: RepurposeIntent;
+  assetId?: string;
   text?: string;
   voiceTranscript?: string;
   url?: string;

@@ -1,15 +1,36 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { ContentAsset, SocialAccount } from "../../../packages/shared-types";
+import type {
+  ContentAiEditPreview,
+  ContentAsset,
+  PostAsset,
+  RepurposeContentResponse,
+  SocialAccount,
+} from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import { calculateContentScore } from "../composables/useContentScore";
-import { getActivationDraft, type ActivationDraftRecord } from "../services/activation-flow-service";
+import {
+  getActivationDraft,
+  replaceActivationDraft,
+  type ActivationDraftRecord,
+} from "../services/activation-flow-service";
+import {
+  requestContentAiEditPreview,
+  requestPipelineItem,
+  requestUpdatePipelineItem,
+} from "../services/control-dashboard-service";
 import {
   requestLinkedInSocialAuthStart,
   requestPublishPost,
   requestSocialAccounts,
 } from "../services/publishing-service";
+import {
+  requestCreatePostAsset,
+  requestDeletePostAsset,
+  requestMediaUploadUrl,
+  requestPostAssets,
+} from "../services/post-assets-service";
 import { appRoutes } from "../utils/routes";
 
 const route = useRoute();
@@ -22,6 +43,24 @@ const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingChannels = ref(false);
 const isConnectingLinkedIn = ref(false);
 const isPublishingToLinkedIn = ref(false);
+const isLoadingPostAssets = ref(false);
+const isUploadingPostAssets = ref(false);
+const removingPostAssetId = ref("");
+const mediaFeedback = ref("");
+const postAssets = ref<PostAsset[]>([]);
+const aiEditInstruction = ref("");
+const aiEditPreview = ref<ContentAiEditPreview | null>(null);
+const aiEditFeedback = ref("");
+const isPreviewingAiEdit = ref(false);
+const isApplyingAiEdit = ref(false);
+
+const AI_QUICK_COMMANDS = [
+  { label: "Make sharper", value: "Make this sharper and more punchy." },
+  { label: "Remove AI tone", value: "Remove AI-sounding phrasing and make it sound more human." },
+  { label: "Shorten", value: "Shorten this without changing the core message." },
+  { label: "Founder voice", value: "Make this sound more like a founder talking to another founder." },
+  { label: "Remove emojis", value: "Remove emojis and keep the tone clean and direct." },
+] as const;
 
 const postScore = computed(() =>
   draft.value
@@ -41,6 +80,8 @@ const postScore = computed(() =>
 const quickSignals = computed(() => draft.value?.result.quickSignals);
 const postContent = computed(() => draft.value?.result.post ?? "");
 const hooks = computed(() => draft.value?.result.hooks ?? []);
+const hasPersistedAsset = computed(() => Boolean(draft.value?.result.asset?.id));
+const persistedPostId = computed(() => draft.value?.result.asset?.id ?? "");
 const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? "");
 const connectedLinkedInAccount = computed(() =>
   socialAccounts.value.find(
@@ -90,9 +131,94 @@ function getPublishFailureMessage(error: unknown): string {
   return rawMessage;
 }
 
-function loadDraft(): void {
+function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null {
+  if (!asset.contentBody || typeof asset.contentBody !== "object") {
+    return null;
+  }
+
+  const body = asset.contentBody as Partial<RepurposeContentResponse> & {
+    idea?: { title?: string; angle?: string };
+    quickSignals?: RepurposeContentResponse["quickSignals"];
+  };
+  const post =
+    typeof body.post === "string" && body.post.trim() !== ""
+      ? body.post.trim()
+      : asset.textContent?.trim() || "";
+
+  if (!post) {
+    return null;
+  }
+
+  return {
+    id: asset.id,
+    input: post,
+    mode: asset.sourceKind === "remix" ? "improve" : "generate",
+    createdAt: asset.updatedAt ?? asset.createdAt,
+    result: {
+      inputType: body.inputType ?? "text",
+      intent: body.intent ?? (asset.sourceKind === "remix" ? "reference" : "capture"),
+      sourceText: typeof body.sourceText === "string" ? body.sourceText : post,
+      idea: {
+        title:
+          typeof body.idea?.title === "string" && body.idea.title.trim() !== ""
+            ? body.idea.title
+            : asset.title || "Saved draft",
+        angle:
+          typeof body.idea?.angle === "string" && body.idea.angle.trim() !== ""
+            ? body.idea.angle
+            : "Refine and publish this workspace draft.",
+      },
+      hooks: Array.isArray(body.hooks) ? body.hooks.filter((hook): hook is string => typeof hook === "string") : [],
+      post,
+      variations: Array.isArray(body.variations) ? body.variations : [],
+      carouselDraft:
+        body.carouselDraft && typeof body.carouselDraft === "object"
+          ? body.carouselDraft
+          : {
+              title: asset.title || "Saved draft",
+              subtitle: "Refine and publish this workspace draft.",
+              slides: [],
+            },
+      quickSignals:
+        body.quickSignals && typeof body.quickSignals === "object"
+          ? body.quickSignals
+          : {
+              readyLabel: "Saved as draft",
+              formatLabel: "This post is persisted and ready for the next action.",
+            },
+      captionFooterCredit:
+        typeof body.captionFooterCredit === "string" ? body.captionFooterCredit : "",
+      asset,
+    },
+  };
+}
+
+async function loadDraft(): Promise<void> {
   const draftId = typeof route.query.id === "string" ? route.query.id : "";
-  draft.value = draftId ? getActivationDraft(draftId) : null;
+
+  if (!draftId) {
+    draft.value = null;
+    return;
+  }
+
+  const storedDraft = getActivationDraft(draftId);
+
+  if (storedDraft) {
+    draft.value = storedDraft;
+    return;
+  }
+
+  if (!activeBusinessId.value) {
+    draft.value = null;
+    return;
+  }
+
+  try {
+    const response = await requestPipelineItem(activeBusinessId.value, draftId);
+    draft.value = buildDraftFromAsset(response.asset);
+  } catch {
+    draft.value = null;
+  }
 }
 
 async function copyPost(options?: { silent?: boolean }): Promise<boolean> {
@@ -117,6 +243,98 @@ async function copyPost(options?: { silent?: boolean }): Promise<boolean> {
   }
 }
 
+function clearAiEditPreview(): void {
+  aiEditPreview.value = null;
+  aiEditFeedback.value = "";
+}
+
+async function previewAiEdit(commandOverride?: string): Promise<void> {
+  if (!draft.value) {
+    return;
+  }
+
+  if (!activeBusinessId.value) {
+    aiEditFeedback.value = "Select a workspace before requesting AI edits.";
+    return;
+  }
+
+  const instruction = (commandOverride ?? aiEditInstruction.value).trim();
+
+  if (!instruction) {
+    aiEditFeedback.value = "Describe the change you want first.";
+    return;
+  }
+
+  aiEditInstruction.value = instruction;
+  aiEditFeedback.value = "";
+  aiEditPreview.value = null;
+  isPreviewingAiEdit.value = true;
+
+  try {
+    const response = await requestContentAiEditPreview({
+      businessId: activeBusinessId.value,
+      assetId: draft.value.result.asset?.id,
+      textContent: postContent.value,
+      instruction,
+    });
+
+    aiEditPreview.value = response.preview;
+  } catch (error) {
+    aiEditFeedback.value =
+      error instanceof Error ? error.message : "Unable to preview AI edits right now.";
+  } finally {
+    isPreviewingAiEdit.value = false;
+  }
+}
+
+async function applyAiEditPreview(): Promise<void> {
+  if (!draft.value || !aiEditPreview.value) {
+    return;
+  }
+
+  const suggestedText = aiEditPreview.value.suggestedText.trim();
+
+  if (!suggestedText) {
+    aiEditFeedback.value = "The suggested edit did not contain usable content.";
+    return;
+  }
+
+  isApplyingAiEdit.value = true;
+  aiEditFeedback.value = "";
+
+  try {
+    let nextAsset = draft.value.result.asset;
+
+    if (activeBusinessId.value && draft.value.result.asset?.id) {
+      const response = await requestUpdatePipelineItem({
+        businessId: activeBusinessId.value,
+        assetId: draft.value.result.asset.id,
+        textContent: suggestedText,
+      });
+
+      nextAsset = response.asset;
+    }
+
+    const nextDraft = replaceActivationDraft({
+      ...draft.value,
+      result: {
+        ...draft.value.result,
+        post: suggestedText,
+        asset: nextAsset,
+      },
+    });
+
+    draft.value = nextDraft;
+    aiEditPreview.value = null;
+    feedbackMessage.value = "Changes applied and saved to this draft.";
+  } catch (error) {
+    aiEditFeedback.value =
+      error instanceof Error ? error.message : "Unable to apply AI changes right now.";
+  } finally {
+    isApplyingAiEdit.value = false;
+  }
+}
+
 async function loadWorkspaceChannels(): Promise<void> {
   if (!activeBusinessId.value) {
     socialAccounts.value = [];
@@ -135,6 +353,107 @@ async function loadWorkspaceChannels(): Promise<void> {
   }
 }
 
+async function loadPostAssets(): Promise<void> {
+  if (!activeBusinessId.value || !persistedPostId.value) {
+    postAssets.value = [];
+    return;
+  }
+
+  isLoadingPostAssets.value = true;
+
+  try {
+    const response = await requestPostAssets(activeBusinessId.value, persistedPostId.value);
+    postAssets.value = response.assets;
+  } catch (error) {
+    postAssets.value = [];
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to load attached media.";
+  } finally {
+    isLoadingPostAssets.value = false;
+  }
+}
+
+async function handleMediaSelection(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+
+  if (!files.length) {
+    return;
+  }
+
+  if (!activeBusinessId.value || !persistedPostId.value) {
+    mediaFeedback.value = "Save this draft first, then attach media.";
+    input.value = "";
+    return;
+  }
+
+  isUploadingPostAssets.value = true;
+  mediaFeedback.value = "";
+
+  try {
+    for (const file of files) {
+      const uploadTarget = await requestMediaUploadUrl({
+        businessId: activeBusinessId.value,
+        postId: persistedPostId.value,
+        fileType: file.type,
+        fileName: file.name,
+        sizeBytes: file.size,
+      });
+
+      const uploadResponse = await fetch(uploadTarget.uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": file.type,
+        },
+        body: file,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Upload to storage failed. Check bucket CORS and try again.");
+      }
+
+      await requestCreatePostAsset({
+        businessId: activeBusinessId.value,
+        postId: persistedPostId.value,
+        storageKey: uploadTarget.storageKey,
+        storageUrl: uploadTarget.storageUrl,
+        mimeType: file.type,
+        sizeBytes: file.size,
+        source: "upload",
+      });
+    }
+
+    await loadPostAssets();
+    mediaFeedback.value = `${files.length} image${files.length === 1 ? "" : "s"} attached to this draft.`;
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to attach media right now.";
+  } finally {
+    isUploadingPostAssets.value = false;
+    input.value = "";
+  }
+}
+
+async function removePostAsset(assetId: string): Promise<void> {
+  if (!activeBusinessId.value) {
+    return;
+  }
+
+  removingPostAssetId.value = assetId;
+  mediaFeedback.value = "";
+
+  try {
+    await requestDeletePostAsset(activeBusinessId.value, assetId);
+    postAssets.value = postAssets.value.filter((asset) => asset.id !== assetId);
+    mediaFeedback.value = "Media removed from this draft.";
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to remove this asset.";
+  } finally {
+    removingPostAssetId.value = "";
+  }
+}
+
 async function goToImprove(): Promise<void> {
   if (!draft.value) {
     return;
@@ -143,7 +462,7 @@ async function goToImprove(): Promise<void> {
   await router.push({
     path: appRoutes.appGenerate,
     query: {
-      improve: draft.value.id,
+      postId: draft.value.id,
     },
   });
 }
@@ -157,6 +476,7 @@ async function goToOutreach(): Promise<void> {
     path: appRoutes.appOutreach,
     query: {
       draftId: draft.value.id,
+      prefill: postContent.value,
     },
   });
 }
@@ -170,6 +490,7 @@ async function goToEmail(): Promise<void> {
     path: appRoutes.appEmail,
     query: {
       draftId: draft.value.id,
+      prefill: postContent.value,
     },
   });
 }
@@ -256,9 +577,9 @@ function handleKeydown(event: KeyboardEvent): void {
 }
 
 watch(
-  () => route.query.id,
+  () => [route.query.id, activeBusinessId.value],
   () => {
-    loadDraft();
+    void loadDraft();
   },
   { immediate: true },
 );
@@ -267,6 +588,14 @@ watch(
   () => activeBusinessId.value,
   () => {
     void loadWorkspaceChannels();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [activeBusinessId.value, persistedPostId.value],
+  () => {
+    void loadPostAssets();
   },
   { immediate: true },
 );
@@ -316,6 +645,10 @@ onBeforeUnmount(() => {
           This is the activation moment: improve the draft, send it into outreach, or turn it into
           an email without rewriting from scratch.
         </p>
+        <p v-if="hasPersistedAsset" class="result-persistence-note">
+          Saved as a draft in this workspace. Improve it, send it, or publish it without creating a
+          duplicate post.
+        </p>
       </section>
 
       <section class="result-grid">
@@ -351,6 +684,138 @@ onBeforeUnmount(() => {
 
           <pre class="post-preview">{{ postContent }}</pre>
 
+          <section v-if="hasPersistedAsset" class="media-panel">
+            <div class="media-panel-header">
+              <div>
+                <p class="panel-meta">Media</p>
+                <strong>Attach images for LinkedIn</strong>
+                <p class="ai-command-copy">
+                  Keep the workflow text-first. Add up to 10 images only when the post needs visual support.
+                </p>
+              </div>
+
+              <label class="media-upload-button">
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/gif"
+                  multiple
+                  :disabled="isUploadingPostAssets"
+                  @change="void handleMediaSelection($event)"
+                />
+                {{ isUploadingPostAssets ? "Uploading..." : "Add media" }}
+              </label>
+            </div>
+
+            <p v-if="mediaFeedback" class="result-feedback">{{ mediaFeedback }}</p>
+            <p v-else-if="isLoadingPostAssets" class="result-feedback">Loading attached media...</p>
+
+            <div v-if="postAssets.length > 0" class="media-grid">
+              <article v-for="asset in postAssets" :key="asset.id" class="media-card">
+                <img
+                  v-if="asset.previewUrl"
+                  :src="asset.previewUrl"
+                  :alt="`Attached media ${asset.orderIndex + 1}`"
+                  class="media-preview"
+                />
+                <div class="media-meta">
+                  <span>{{ asset.mimeType }}</span>
+                  <strong>{{ Math.max(1, Math.round(asset.sizeBytes / 1024)) }} KB</strong>
+                </div>
+                <button
+                  type="button"
+                  class="secondary-action media-remove-button"
+                  :disabled="removingPostAssetId === asset.id"
+                  @click="void removePostAsset(asset.id)"
+                >
+                  {{ removingPostAssetId === asset.id ? "Removing..." : "Remove" }}
+                </button>
+              </article>
+            </div>
+
+            <p v-else class="result-feedback subtle">
+              No media attached yet. This post will publish as text until you add images.
+            </p>
+          </section>
+
+          <section class="ai-command-panel">
+            <div class="ai-command-header">
+              <div>
+                <p class="panel-meta">AI editor</p>
+                <strong>Ask AI to improve this draft</strong>
+                <p class="ai-command-copy">
+                  Preview the change first. Nothing overwrites the post until you apply it.
+                </p>
+              </div>
+            </div>
+
+            <div class="ai-command-row">
+              <input
+                v-model="aiEditInstruction"
+                type="text"
+                class="ai-command-input"
+                placeholder="Try: make this sharper, remove emojis, or shorten the ending"
+                @keydown.enter.prevent="void previewAiEdit()"
+              />
+              <button
+                type="button"
+                class="secondary-action ai-command-submit"
+                :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                @click="void previewAiEdit()"
+              >
+                {{ isPreviewingAiEdit ? "Thinking..." : "Preview change" }}
+              </button>
+            </div>
+
+            <div class="ai-command-chips">
+              <button
+                v-for="command in AI_QUICK_COMMANDS"
+                :key="command.value"
+                type="button"
+                class="ai-command-chip"
+                :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                @click="void previewAiEdit(command.value)"
+              >
+                {{ command.label }}
+              </button>
+            </div>
+
+            <p v-if="aiEditFeedback" class="result-feedback">{{ aiEditFeedback }}</p>
+
+            <div v-if="isPreviewingAiEdit" class="ai-edit-preview-card loading">
+              Generating a scoped suggestion...
+            </div>
+
+            <div v-else-if="aiEditPreview" class="ai-edit-preview-card">
+              <p class="ai-edit-summary">{{ aiEditPreview.summary }}</p>
+              <p class="ai-edit-scope">{{ aiEditPreview.scopeHint }}</p>
+
+              <div class="ai-edit-diff">
+                <article class="ai-edit-diff-card">
+                  <p class="panel-meta">Before</p>
+                  <pre>{{ aiEditPreview.beforeExcerpt }}</pre>
+                </article>
+                <article class="ai-edit-diff-card updated">
+                  <p class="panel-meta">After</p>
+                  <pre>{{ aiEditPreview.afterExcerpt }}</pre>
+                </article>
+              </div>
+
+              <div class="ai-edit-actions">
+                <button
+                  type="button"
+                  class="primary-action"
+                  :disabled="isApplyingAiEdit"
+                  @click="void applyAiEditPreview()"
+                >
+                  {{ isApplyingAiEdit ? "Applying..." : "Apply changes" }}
+                </button>
+                <button type="button" class="secondary-action" @click="clearAiEditPreview">
+                  Keep original
+                </button>
+              </div>
+            </div>
+          </section>
+
           <div class="result-actions">
             <button type="button" class="primary-action" @click="goToImprove">Improve</button>
             <button type="button" class="secondary-action" @click="void copyPost()">
@@ -359,7 +824,12 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="secondary-action"
-              :disabled="isPublishingToLinkedIn || isConnectingLinkedIn || !activeBusinessId"
+              :disabled="
+                isPublishingToLinkedIn ||
+                isConnectingLinkedIn ||
+                isUploadingPostAssets ||
+                !activeBusinessId
+              "
               @click="connectedLinkedInAccount ? publishToLinkedIn() : connectLinkedIn()"
             >
               {{
@@ -424,6 +894,19 @@ onBeforeUnmount(() => {
 
 .result-hero {
   margin-bottom: 24px;
+}
+
+.result-persistence-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-accent-soft) 72%, white 28%);
+  color: var(--fc-text-muted);
+  font-size: 0.95rem;
 }
 
 .result-eyebrow,
@@ -558,6 +1041,191 @@ onBeforeUnmount(() => {
   line-height: 1.8;
 }
 
+.ai-command-panel {
+  margin-top: 20px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.ai-command-copy,
+.ai-edit-scope {
+  margin: 6px 0 0;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+}
+
+.ai-command-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.ai-command-input {
+  min-height: 48px;
+  width: 100%;
+  padding: 0 16px;
+  border-radius: 16px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+  color: var(--fc-text);
+  font: inherit;
+}
+
+.media-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.media-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.media-panel-header strong {
+  display: block;
+}
+
+.media-upload-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 42px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.media-upload-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+}
+
+.media-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+}
+
+.media-preview {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 90%, transparent);
+}
+
+.media-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.84rem;
+  color: var(--fc-text-muted);
+}
+
+.media-remove-button {
+  justify-self: start;
+}
+
+.ai-command-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.ai-command-chip {
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: transparent;
+  color: var(--fc-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ai-command-submit {
+  min-width: 160px;
+}
+
+.ai-edit-preview-card {
+  margin-top: 16px;
+  padding: 18px;
+  border-radius: 20px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface);
+}
+
+.ai-edit-preview-card.loading {
+  color: var(--fc-text-muted);
+}
+
+.ai-edit-summary {
+  margin: 0;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.ai-edit-diff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.ai-edit-diff-card {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface-subtle);
+}
+
+.ai-edit-diff-card.updated {
+  border-color: color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 44%, white 56%);
+}
+
+.ai-edit-diff-card pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font: inherit;
+  line-height: 1.7;
+}
+
+.ai-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+}
+
 .result-actions {
   display: flex;
   flex-wrap: wrap;
@@ -605,6 +1273,10 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.result-feedback.subtle {
+  margin-top: 0;
+}
+
 .result-side-rail {
   display: grid;
   gap: 20px;
@@ -622,6 +1294,11 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .result-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-command-row,
+  .ai-edit-diff {
     grid-template-columns: 1fr;
   }
 }

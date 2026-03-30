@@ -44,6 +44,7 @@ export async function getRecommendedPostTimes(
         businessId,
         userId: request.auth.userId,
         contentType: request.query.contentType,
+        audienceTimezone: request.query.audienceTimezone?.trim(),
       }),
     );
   } catch (error) {

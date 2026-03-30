@@ -12,7 +12,7 @@ const emit = defineEmits<{
   (event: "advance", asset: ContentAsset): void;
   (event: "save", asset: ContentAsset): void;
   (event: "close"): void;
-  (event: "open-creator"): void;
+  (event: "open-creator", asset: ContentAsset): void;
   (event: "update-draft", assetId: string, draft: PipelineDraftState): void;
 }>();
 
@@ -126,8 +126,12 @@ const excerptPreview = computed(() => {
       >
         {{ model.isSaving ? "Updating..." : model.stageActionLabel }}
       </button>
-      <button type="button" class="dashboard-button secondary small-button" @click="emit('open-creator')">
-        Open editor
+      <button
+        type="button"
+        class="dashboard-button secondary small-button"
+        @click="emit('open-creator', model.asset)"
+      >
+        Improve
       </button>
     </div>
 

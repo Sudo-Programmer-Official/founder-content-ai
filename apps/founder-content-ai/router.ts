@@ -11,7 +11,9 @@ import AdminWorkspacesPage from "./pages/admin-workspaces.vue";
 import AppEmailPage from "./pages/app-email.vue";
 import AppGeneratePage from "./pages/app-generate.vue";
 import AppGrowthPage from "./pages/app-growth.vue";
+import AppHistoryPage from "./pages/app-history.vue";
 import AppOutreachPage from "./pages/app-outreach.vue";
+import AppPlannerPage from "./pages/app-planner.vue";
 import AppResultPage from "./pages/app-result.vue";
 import DashboardPage from "./pages/dashboard.vue";
 import DashboardAnalyticsPage from "./pages/dashboard-analytics.vue";
@@ -71,6 +73,22 @@ const router = createRouter({
       path: "/app/growth",
       name: "app-growth",
       component: AppGrowthPage,
+      meta: {
+        requiresAuth: true,
+      },
+    },
+    {
+      path: "/app/history",
+      name: "app-history",
+      component: AppHistoryPage,
+      meta: {
+        requiresAuth: true,
+      },
+    },
+    {
+      path: "/app/planner",
+      name: "app-planner",
+      component: AppPlannerPage,
       meta: {
         requiresAuth: true,
       },

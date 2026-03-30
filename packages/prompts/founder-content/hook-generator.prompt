@@ -26,3 +26,5 @@ CONSTRAINTS
 - Do not generate the full post body.
 - If brand_context is provided, align the hooks to that brand tone and structure without becoming generic.
 - If platform_context is provided, bias toward hooks that read cleanly in a live LinkedIn feed and can open a directly publishable post.
+- Avoid generic "here are 3 lessons" framing, vague motivational openings, and anything that reads like a templated AI prompt.
+- Favor hooks that could plausibly be the first line of a real founder post, not a content-marketing headline.

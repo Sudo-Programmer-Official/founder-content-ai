@@ -9,13 +9,15 @@ import type {
   RecommendPostTimeResponse,
   SchedulePostRequest,
   SchedulePostResponse,
+  UpdateScheduledPostRequest,
+  UpdateScheduledPostResponse,
   ScheduledPostsResponse,
   SelectSocialAccountIdentityRequest,
   SelectSocialAccountIdentityResponse,
   SocialAccountsResponse,
   StartSocialAuthResponse,
 } from "../../../packages/shared-types";
-import { apiGet, apiPost } from "./api-client";
+import { apiGet, apiPatch, apiPost } from "./api-client";
 
 export async function requestSocialAccounts(businessId: string): Promise<SocialAccountsResponse> {
   const encodedBusinessId = encodeURIComponent(businessId);
@@ -85,15 +87,29 @@ export async function requestScheduledPosts(
   return apiGet<ScheduledPostsResponse>(`/scheduled-posts?businessId=${encodedBusinessId}`);
 }
 
+export async function requestUpdateScheduledPost(
+  scheduledPostId: string,
+  input: UpdateScheduledPostRequest,
+): Promise<UpdateScheduledPostResponse> {
+  return apiPatch<UpdateScheduledPostRequest, UpdateScheduledPostResponse>(
+    `/scheduled-posts/${encodeURIComponent(scheduledPostId)}`,
+    input,
+  );
+}
+
 export async function requestRecommendedPostTimes(
   businessId: string,
   contentType: RecommendPostTimeContentType = "carousel",
+  audienceTimezone?: string,
 ): Promise<RecommendPostTimeResponse> {
   const encodedBusinessId = encodeURIComponent(businessId);
   const encodedContentType = encodeURIComponent(contentType);
+  const audienceTimezoneQuery = audienceTimezone
+    ? `&audienceTimezone=${encodeURIComponent(audienceTimezone)}`
+    : "";
 
   return apiGet<RecommendPostTimeResponse>(
-    `/recommend-post-time?businessId=${encodedBusinessId}&contentType=${encodedContentType}`,
+    `/recommend-post-time?businessId=${encodedBusinessId}&contentType=${encodedContentType}${audienceTimezoneQuery}`,
   );
 }
 

@@ -26,6 +26,7 @@ This keeps UI, API, and shared AI logic separated while still allowing one repos
 - Node.js
 - Express
 - deployed on Render
+- AWS S3 for planned media object storage
 
 ### AI
 
@@ -114,6 +115,23 @@ This means:
 Canonical reference:
 
 - `docs/workspace-brand-model.md`
+
+## Media Execution Rule
+
+FounderContent AI is a text-first content execution system.
+
+Media is stored and processed as an attachment layer, not as the primary planning model.
+
+The rule is:
+
+- posts and lifecycle state live in Postgres
+- media binaries live in S3
+- media metadata lives in Postgres
+- destination-specific LinkedIn media URNs are created at publish time
+
+Canonical reference:
+
+- `docs/media-execution-architecture.md`
 
 ## App Responsibilities
 

@@ -1,6 +1,7 @@
 import type {
   CarouselDraft,
   CaptureContentResponse,
+  ContentAsset,
   LinkedInPostGenerationResponse,
   RepurposeContentRequest,
   RepurposeContentResponse,
@@ -16,10 +17,25 @@ import {
 } from "./analytics/eventLoggingService.ts";
 import { appendCaptionFooterCredit, resolveBrandingPolicy } from "./brandingService.ts";
 import { previewContentIngestion } from "./content/ingestionService.ts";
-import { isDatabaseConfigured } from "./db/client.ts";
+import { isDatabaseConfigured, queryDb } from "./db/client.ts";
 import { HttpError } from "../utils/http.ts";
 import { logError } from "../utils/logger.ts";
 import { recordStyleSignal } from "./styleProfileService.ts";
+
+interface ContentAssetRow {
+  id: string;
+  business_id: string | null;
+  user_id: string | null;
+  content_type: ContentAsset["contentType"];
+  title: string | null;
+  content_body: unknown;
+  status: ContentAsset["status"];
+  pipeline_stage: NonNullable<ContentAsset["pipelineStage"]> | null;
+  source_kind: NonNullable<ContentAsset["sourceKind"]> | null;
+  source_idea_id: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
@@ -148,6 +164,136 @@ function resolveQuickSignals(
   };
 }
 
+function toIsoString(value: Date | string): string {
+  return new Date(value).toISOString();
+}
+
+function extractTextContent(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim() !== "") {
+    return value.trim();
+  }
+
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  if (typeof candidate.content === "string" && candidate.content.trim() !== "") {
+    return candidate.content.trim();
+  }
+
+  if (typeof candidate.post === "string" && candidate.post.trim() !== "") {
+    return candidate.post.trim();
+  }
+
+  return undefined;
+}
+
+function mapContentAsset(row: ContentAssetRow): ContentAsset {
+  return {
+    id: row.id,
+    businessId: row.business_id ?? undefined,
+    userId: row.user_id ?? undefined,
+    contentType: row.content_type,
+    title: row.title ?? undefined,
+    contentBody: row.content_body,
+    status: row.status,
+    pipelineStage: row.pipeline_stage ?? undefined,
+    sourceKind: row.source_kind ?? undefined,
+    sourceIdeaId: row.source_idea_id ?? undefined,
+    textContent: extractTextContent(row.content_body),
+    createdAt: toIsoString(row.created_at),
+    updatedAt: toIsoString(row.updated_at),
+  };
+}
+
+async function persistRepurposedAsset(input: {
+  assetId?: string;
+  businessId: string;
+  userId: string;
+  title: string;
+  contentBody: Record<string, unknown>;
+  sourceKind: NonNullable<ContentAsset["sourceKind"]>;
+}): Promise<ContentAsset> {
+  const normalizedAssetId = input.assetId?.trim();
+
+  if (!normalizedAssetId) {
+    return createContentAssetRecord({
+      businessId: input.businessId,
+      userId: input.userId,
+      contentType: "post",
+      title: input.title,
+      contentBody: input.contentBody,
+      sourceKind: input.sourceKind,
+    });
+  }
+
+  const existingResult = await queryDb<ContentAssetRow>(
+    `
+      select
+        id,
+        business_id,
+        user_id,
+        content_type,
+        title,
+        content_body,
+        status,
+        pipeline_stage,
+        source_kind,
+        source_idea_id,
+        created_at,
+        updated_at
+      from content_assets
+      where id = $1
+        and business_id = $2
+      limit 1
+    `,
+    [normalizedAssetId, input.businessId],
+  );
+
+  const existing = existingResult.rows[0];
+
+  if (!existing) {
+    throw new HttpError(404, "content_asset_not_found", "Post was not found for this workspace.");
+  }
+
+  const updatedResult = await queryDb<ContentAssetRow>(
+    `
+      update content_assets
+      set
+        title = $3,
+        content_body = $4::jsonb,
+        source_kind = $5,
+        updated_at = now()
+      where id = $1
+        and business_id = $2
+      returning
+        id,
+        business_id,
+        user_id,
+        content_type,
+        title,
+        content_body,
+        status,
+        pipeline_stage,
+        source_kind,
+        source_idea_id,
+        created_at,
+        updated_at
+    `,
+    [
+      normalizedAssetId,
+      input.businessId,
+      input.title,
+      JSON.stringify(input.contentBody),
+      input.sourceKind,
+    ],
+  );
+
+  return mapContentAsset(updatedResult.rows[0]);
+}
+
 export async function repurposeContent(
   input: RepurposeContentRequest,
   principal?: AuthenticatedPrincipal,
@@ -235,6 +381,14 @@ export async function repurposeContent(
       tone,
       contentType: "post",
     }),
+    input.assetId?.trim()
+      ? safeLogEvent("content_edited", principal?.userId, businessId, {
+          route: "/api/repurpose",
+          assetId: input.assetId.trim(),
+          intent,
+          inputType,
+        })
+      : Promise.resolve(null),
   ]);
 
   if (!principal?.userId || !businessId || !isDatabaseConfigured()) {
@@ -242,10 +396,10 @@ export async function repurposeContent(
   }
 
   try {
-    const asset = await createContentAssetRecord({
+    const asset = await persistRepurposedAsset({
+      assetId: input.assetId,
       businessId,
       userId: principal.userId,
-      contentType: "post",
       title: structuredContent.idea.title,
       contentBody: {
         ...responseBase,

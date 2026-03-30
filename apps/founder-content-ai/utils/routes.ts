@@ -3,6 +3,8 @@ export const appRoutes = {
   appEmail: "/app/email",
   appGenerate: "/app/create",
   appGrowth: "/app/growth",
+  appHistory: "/app/history",
+  appPlanner: "/app/planner",
   appResult: "/app/result",
   appRoot: "/app",
   appOutreach: "/app/outreach",
