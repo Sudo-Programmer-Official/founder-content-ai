@@ -1863,11 +1863,12 @@ export async function updateScheduledPostPerformance(
 }
 
 export async function processDueScheduledPosts(limit: number): Promise<{
+  backfilled: number;
   claimed: number;
   published: number;
   failed: number;
 }> {
-  await backfillScheduledPostDispatchJobs(Math.max(limit * 2, 10));
+  const backfilled = await backfillScheduledPostDispatchJobs(Math.max(limit * 2, 10));
   const queuedJobs = await claimQueuedJobs<ScheduledPostPublishJobPayload>({
     types: ["post_publish"],
     batchSize: limit,
@@ -1988,6 +1989,7 @@ export async function processDueScheduledPosts(limit: number): Promise<{
   }
 
   return {
+    backfilled,
     claimed: queuedJobs.length,
     published,
     failed,

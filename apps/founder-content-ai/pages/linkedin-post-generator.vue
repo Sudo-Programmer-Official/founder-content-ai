@@ -45,6 +45,7 @@ const router = useRouter();
 const {
   bootstrap: productAccess,
   setActiveBusinessId,
+  isReady: isProductAccessReady,
   isFeatureEnabled,
 } = useProductAccessContext();
 
@@ -1319,7 +1320,7 @@ async function scheduleCarouselPost() {
 watch(
   selectedBusinessId,
   async (businessId, previousBusinessId) => {
-    if (!businessId || businessId === previousBusinessId) {
+    if (!isProductAccessReady.value || !businessId || businessId === previousBusinessId) {
       return;
     }
 
@@ -1331,6 +1332,23 @@ watch(
     }
 
     await Promise.all([loadPublishingContext(businessId), loadRecommendedPostTimes(businessId)]);
+    await loadHashtagSuggestions();
+  },
+);
+
+watch(
+  () => isProductAccessReady.value,
+  async (accessReady, previousReady) => {
+    if (!accessReady || accessReady === previousReady) {
+      return;
+    }
+
+    await initializePublishingContext();
+
+    if (selectedBusinessId.value && schedulerEnabled.value) {
+      await loadRecommendedPostTimes(selectedBusinessId.value);
+    }
+
     await loadHashtagSuggestions();
   },
 );
@@ -1348,6 +1366,11 @@ watch(
 
 onMounted(async () => {
   applyRepurposeSeed();
+
+  if (!isProductAccessReady.value) {
+    return;
+  }
+
   await initializePublishingContext();
 
   if (selectedBusinessId.value && schedulerEnabled.value) {

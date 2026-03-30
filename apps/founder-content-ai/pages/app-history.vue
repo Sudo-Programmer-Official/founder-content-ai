@@ -50,6 +50,7 @@ const {
   bootstrap: productAccess,
   activeBusinessId,
   setActiveBusinessId,
+  isReady: isProductAccessReady,
   isFeatureEnabled,
 } = useProductAccessContext();
 
@@ -501,6 +502,11 @@ async function loadHistoryData(): Promise<void> {
 }
 
 async function initializePage(): Promise<void> {
+  if (!isProductAccessReady.value) {
+    isLoading.value = true;
+    return;
+  }
+
   isLoading.value = true;
   errorMessage.value = "";
 
@@ -713,9 +719,9 @@ watch(
 );
 
 watch(
-  () => [resolvedBusinessId.value, schedulerEnabled.value] as const,
-  ([businessId]) => {
-    if (!businessId) {
+  () => [isProductAccessReady.value, resolvedBusinessId.value, schedulerEnabled.value] as const,
+  ([accessReady]) => {
+    if (!accessReady) {
       return;
     }
 
@@ -760,7 +766,9 @@ watch(
 );
 
 onMounted(() => {
-  void initializePage();
+  if (isProductAccessReady.value) {
+    void initializePage();
+  }
 });
 </script>
 

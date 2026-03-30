@@ -57,6 +57,14 @@ interface ClaimQueuedJobsInput {
   staleAfterMinutes?: number;
 }
 
+export interface JobQueueSnapshot {
+  dueCount: number;
+  futureCount: number;
+  processingCount: number;
+  failedCount: number;
+  nextRunAfter?: string;
+}
+
 function toIsoString(value: Date | string | null | undefined): string | undefined {
   return value ? new Date(value).toISOString() : undefined;
 }
@@ -228,6 +236,54 @@ export async function claimQueuedJobs<TPayload = Record<string, unknown>>(
 
     return result.rows.map((row) => mapJobRow<TPayload>(row));
   });
+}
+
+export async function inspectJobQueue(types: string[]): Promise<JobQueueSnapshot> {
+  const result = await queryDb<{
+    due_count: string | number;
+    future_count: string | number;
+    processing_count: string | number;
+    failed_count: string | number;
+    next_run_after: Date | string | null;
+  }>(
+    `
+      select
+        count(*) filter (
+          where status = 'queued'
+            and run_after <= now()
+            and attempts < max_attempts
+        )::int as due_count,
+        count(*) filter (
+          where status = 'queued'
+            and run_after > now()
+            and attempts < max_attempts
+        )::int as future_count,
+        count(*) filter (
+          where status = 'processing'
+            and attempts < max_attempts
+        )::int as processing_count,
+        count(*) filter (
+          where status = 'failed'
+        )::int as failed_count,
+        min(run_after) filter (
+          where status = 'queued'
+            and attempts < max_attempts
+        ) as next_run_after
+      from jobs
+      where type = any($1::text[])
+    `,
+    [types],
+  );
+
+  const row = result.rows[0];
+
+  return {
+    dueCount: toNumber(row?.due_count),
+    futureCount: toNumber(row?.future_count),
+    processingCount: toNumber(row?.processing_count),
+    failedCount: toNumber(row?.failed_count),
+    nextRunAfter: toIsoString(row?.next_run_after),
+  };
 }
 
 export async function markJobCompleted(jobId: string, client?: PoolClient): Promise<void> {

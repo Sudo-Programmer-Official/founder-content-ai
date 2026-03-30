@@ -56,6 +56,7 @@ const {
   bootstrap: productAccess,
   activeBusinessId,
   setActiveBusinessId,
+  isReady: isProductAccessReady,
   isFeatureEnabled,
 } = useProductAccessContext();
 
@@ -222,6 +223,36 @@ const selectedDayPosts = computed(() => selectedDay.value?.posts ?? []);
 
 const gapDays = computed(() => weekDays.value.filter((day) => day.isGap));
 
+const weekRangeLabel = computed(() => {
+  if (weekDays.value.length === 0) {
+    return "This week";
+  }
+
+  const firstDate = new Date(`${weekDays.value[0].key}T12:00:00.000Z`);
+  const lastDate = new Date(`${weekDays.value[weekDays.value.length - 1].key}T12:00:00.000Z`);
+
+  const firstMonth = formatDateInTimezone(firstDate, "UTC", { month: "short" });
+  const lastMonth = formatDateInTimezone(lastDate, "UTC", { month: "short" });
+  const firstDay = formatDateInTimezone(firstDate, "UTC", { day: "numeric" });
+  const lastDay = formatDateInTimezone(lastDate, "UTC", { day: "numeric" });
+
+  return firstMonth === lastMonth
+    ? `${firstMonth} ${firstDay}-${lastDay}`
+    : `${firstMonth} ${firstDay} - ${lastMonth} ${lastDay}`;
+});
+
+const plannerWeeklyFocus = computed(() => {
+  if (gapDays.value.length > 0) {
+    return `You have ${gapDays.value.length} open ${gapDays.value.length === 1 ? "slot" : "slots"} this week. Fill them before consistency breaks.`;
+  }
+
+  if (bestSlot.value) {
+    return `Your week has coverage. Tighten it around the strongest window: ${bestSlot.value.localLabel}.`;
+  }
+
+  return "Use this week view as the control center for every post that should go live.";
+});
+
 const plannerCards = computed(() => {
   const scheduledCount = weekDays.value.reduce(
     (total, day) => total + day.posts.filter((post) => post.status === "scheduled").length,
@@ -242,6 +273,23 @@ const plannerCards = computed(() => {
 });
 
 const bestSlot = computed(() => recommendedSlots.value[0] ?? null);
+
+const selectedDayFocusMessage = computed(() => {
+  if (!selectedDay.value) {
+    return "Choose a day to create, review, and move work into a real publishing slot.";
+  }
+
+  if (selectedDay.value.isGap) {
+    return "This day is empty. Close the gap with a saved draft or generate something new without leaving the planner.";
+  }
+
+  return "This day already has momentum. Review the live mix, tighten the slot, or add another post if it earns the space.";
+});
+
+const backlogTitle = computed(() => {
+  const count = unscheduledBacklog.value.length;
+  return `${count} saved draft${count === 1 ? "" : "s"} waiting for a slot`;
+});
 
 const selectedScheduledPost = computed(
   () => scheduledPosts.value.find((post) => post.id === selectedScheduledPostId.value) ?? null,
@@ -624,6 +672,11 @@ async function loadPlannerData(): Promise<void> {
 }
 
 async function initializePage(): Promise<void> {
+  if (!isProductAccessReady.value) {
+    isLoading.value = true;
+    return;
+  }
+
   isLoading.value = true;
   errorMessage.value = "";
 
@@ -1143,13 +1196,14 @@ watch(
 watch(
   () =>
     [
+      isProductAccessReady.value,
       resolvedBusinessId.value,
       schedulerEnabled.value,
       canReadDraftBacklog.value,
       audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
     ] as const,
-  ([businessId]) => {
-    if (!businessId) {
+  ([accessReady]) => {
+    if (!accessReady) {
       return;
     }
 
@@ -1158,7 +1212,9 @@ watch(
 );
 
 onMounted(() => {
-  void initializePage();
+  if (isProductAccessReady.value) {
+    void initializePage();
+  }
 });
 </script>
 
@@ -1191,16 +1247,40 @@ onMounted(() => {
     <PlannerSkeleton v-if="isLoading" />
 
     <template v-else>
-      <section class="planner-overview-grid">
-        <article
-          v-for="card in plannerCards"
-          :key="card.label"
-          class="workspace-card planner-overview-card"
-          :data-tone="card.tone"
-        >
-          <span>{{ card.label }}</span>
-          <strong>{{ card.value }}</strong>
-        </article>
+      <section class="workspace-card planner-command-bar">
+        <div class="planner-command-bar-copy">
+          <p class="workspace-eyebrow">Content command center</p>
+          <h2>{{ weekRangeLabel }}</h2>
+          <p class="workspace-description compact">
+            {{ plannerWeeklyFocus }}
+          </p>
+        </div>
+
+        <div class="planner-command-bar-actions">
+          <div class="planner-week-nav">
+            <button type="button" class="workspace-secondary-button compact planner-nav-button" @click="goToPreviousWeek">
+              &larr;
+            </button>
+            <button type="button" class="workspace-secondary-button compact planner-nav-button planner-nav-button-active" @click="goToCurrentWeek">
+              This week
+            </button>
+            <button type="button" class="workspace-secondary-button compact planner-nav-button" @click="goToNextWeek">
+              &rarr;
+            </button>
+          </div>
+
+          <div class="planner-command-summary">
+            <article
+              v-for="card in plannerCards"
+              :key="card.label"
+              class="planner-overview-card"
+              :data-tone="card.tone"
+            >
+              <span>{{ card.label }}</span>
+              <strong>{{ card.value }}</strong>
+            </article>
+          </div>
+        </div>
       </section>
 
       <section v-if="errorMessage" class="workspace-card empty-state">
@@ -1221,47 +1301,52 @@ onMounted(() => {
       <template v-else>
         <section class="planner-main-grid">
       <article class="workspace-card planner-grid-panel">
-        <div class="planner-toolbar">
-          <div class="planner-toolbar-copy">
+        <div class="planner-grid-header">
+          <div class="planner-grid-header-copy">
             <p class="workspace-chip planner-chip">
               Grid: {{ userTimezone }} · Audience default: {{ audienceTimezone || workspaceDefaultAudienceTimezone }}
             </p>
+            <h2>{{ selectedDay?.longLabel || weekRangeLabel }}</h2>
             <p class="workspace-description compact">
-              The grid stays in your local timezone. Each card still shows the audience-facing publish time.
+              {{ selectedDayFocusMessage }}
             </p>
           </div>
 
-          <div class="planner-toolbar-actions">
-            <button type="button" class="workspace-secondary-button compact" @click="goToPreviousWeek">
-              Previous
+          <div class="planner-grid-header-actions">
+            <button
+              type="button"
+              class="workspace-secondary-button compact"
+              :disabled="gapDays.length === 0"
+              @click="focusFirstGap"
+            >
+              Fill first gap
             </button>
-            <button type="button" class="workspace-secondary-button compact" @click="goToCurrentWeek">
-              This week
-            </button>
-            <button type="button" class="workspace-secondary-button compact" @click="goToNextWeek">
-              Next
+            <button type="button" class="workspace-primary-button compact" @click="openCreatePage">
+              Create in planner
             </button>
           </div>
         </div>
 
         <div class="planner-insight-row">
           <div class="planner-insight-card">
-            <strong v-if="gapDays.length > 0">{{ gapDays.length }} open day{{ gapDays.length === 1 ? "" : "s" }} this week</strong>
-            <strong v-else>Your week is covered</strong>
+            <span class="planner-insight-label">Coverage</span>
+            <strong v-if="gapDays.length > 0">{{ gapDays.length }} growth gap{{ gapDays.length === 1 ? "" : "s" }}</strong>
+            <strong v-else>Every day has coverage</strong>
             <p>
               {{
                 gapDays.length > 0
-                  ? "Uncovered days are where consistency breaks. Select one and move a saved draft into that slot."
-                  : "You have at least one planned execution moment on every day of this week."
+                  ? "Empty days are where momentum drops. Use the backlog to lock a real slot in."
+                  : "The week is protected. Review quality, not just quantity."
               }}
             </p>
           </div>
 
           <div class="planner-insight-card" v-if="bestSlot">
-            <strong>Best window</strong>
-            <p>{{ bestSlot.localLabel }} in {{ recommendedTimezone }}</p>
+            <span class="planner-insight-label">Best window</span>
+            <strong>{{ bestSlot.localLabel }}</strong>
+            <p>{{ recommendedTimezone }} is the strongest recommendation right now.</p>
             <button type="button" class="workspace-secondary-button compact" @click="applyRecommendedSlot(bestSlot)">
-              Use best time
+              Use this slot
             </button>
           </div>
         </div>
@@ -1285,12 +1370,23 @@ onMounted(() => {
                 <strong>{{ day.dayLabel }}</strong>
               </div>
               <span v-if="day.isGap" class="planner-day-badge gap">
-                {{ day.posts.length === 0 ? "No posts scheduled" : "Needs coverage" }}
+                {{ day.posts.length === 0 ? "Growth gap" : "Needs coverage" }}
               </span>
               <span v-else class="planner-day-badge">{{ day.posts.length }}</span>
             </div>
 
             <p class="planner-day-label">{{ day.longLabel }}</p>
+
+            <div v-if="day.posts.length === 0" class="planner-gap-state">
+              <strong>{{ day.isToday ? "Today is quiet." : "This slot is open." }}</strong>
+              <span>
+                {{
+                  day.isGap
+                    ? "Show up here or the week loses momentum."
+                    : "Use it only if another post clearly earns the space."
+                }}
+              </span>
+            </div>
 
             <ul v-if="day.posts.length > 0" class="planner-day-posts">
               <li
@@ -1302,7 +1398,7 @@ onMounted(() => {
               >
                 <div class="planner-post-pill-header">
                   <div class="planner-pill-stack">
-                    <span class="planner-platform-pill">LI</span>
+                    <span class="planner-platform-pill">LinkedIn</span>
                     <span v-if="getMediaCount(post) > 0" class="planner-status-pill subtle">
                       📎 {{ getMediaCount(post) }}
                     </span>
@@ -1328,7 +1424,7 @@ onMounted(() => {
                 class="planner-day-add-button"
                 @click.stop="selectDay(day.key)"
               >
-                + Add
+                {{ day.posts.length === 0 ? "Plan this day" : "Add another slot" }}
               </button>
             </div>
           </button>
@@ -1337,8 +1433,8 @@ onMounted(() => {
 
       <aside id="planner-composer-panel" class="workspace-card planner-sidebar">
         <template v-if="selectedScheduledPost">
-          <p class="workspace-eyebrow">Selected slot</p>
-          <h2>{{ resolveStatusLabel(selectedScheduledPost.status) }}</h2>
+          <p class="workspace-eyebrow">Action hub</p>
+          <h2>Review this slot</h2>
           <p class="workspace-description compact">
             {{ formatDateInTimezone(selectedScheduledPost.scheduledAt, selectedScheduledPost.audienceTimezone, {
               weekday: "long",
@@ -1520,14 +1616,10 @@ onMounted(() => {
         </template>
 
         <template v-else>
-          <p class="workspace-eyebrow">Selected day</p>
+          <p class="workspace-eyebrow">Action hub</p>
           <h2>{{ selectedDay?.longLabel || "Choose a day" }}</h2>
           <p class="workspace-description compact">
-            {{
-              selectedDay?.isGap
-                ? "This day does not have a live scheduled or published slot yet. Create something here or move a saved draft into the slot."
-                : "This day already has planned execution. You can still create another post here or adjust the existing mix."
-            }}
+            {{ selectedDayFocusMessage }}
           </p>
 
           <div v-if="selectedDayPosts.length > 0" class="planner-inline-section">
@@ -1535,7 +1627,7 @@ onMounted(() => {
               <div>
                 <label class="planner-inline-label">Scheduled on this day</label>
                 <p class="workspace-description compact">
-                  Sorted by time. Open any slot to edit, move, pause, or retry it.
+                  Open any slot to edit, move, retry, or push it live now.
                 </p>
               </div>
               <span class="workspace-chip">
@@ -1552,7 +1644,7 @@ onMounted(() => {
               >
                 <div class="planner-day-schedule-card-header">
                   <div class="planner-pill-stack">
-                    <span class="planner-platform-pill">LI</span>
+                    <span class="planner-platform-pill">LinkedIn</span>
                     <span class="planner-status-pill">{{ resolveStatusLabel(post.status) }}</span>
                     <span v-if="post.selectedIdentityDisplayName" class="planner-status-pill subtle">
                       {{ resolveSelectedIdentityLabel(post) }}
@@ -1595,7 +1687,7 @@ onMounted(() => {
               Create for {{ selectedDay?.longLabel || "this day" }}
             </label>
             <p class="workspace-description compact planner-composer-copy">
-              Write one raw idea here. Generate creates a usable draft in the backlog. Save draft keeps your raw copy without leaving the planner.
+              Drop one raw idea here. Generate turns it into a usable draft. Save draft keeps your thought intact without leaving the planner.
             </p>
             <textarea
               id="planner-idea-input"
@@ -1728,15 +1820,15 @@ onMounted(() => {
       <div class="planner-backlog-header">
         <div>
           <p class="workspace-eyebrow">Draft backlog</p>
-          <h2>Saved posts waiting for a slot</h2>
+          <h2>{{ backlogTitle }}</h2>
         </div>
         <p class="workspace-description compact">
-          Click a draft to preview it, then schedule it into the currently selected day.
+          These are the ideas already in motion. Pick one, preview it, and drop it into the day that needs coverage.
         </p>
       </div>
 
       <div v-if="unscheduledBacklog.length === 0" class="planner-empty-state">
-        No unscheduled drafts yet. Generate a post first, then bring it back here for execution planning.
+        No backlog yet. Generate a draft first, then bring it back here to turn ideas into a real publishing plan.
       </div>
 
       <div v-else class="planner-backlog-grid">
@@ -1814,16 +1906,19 @@ onMounted(() => {
 <style scoped>
 .planner-shell {
   display: grid;
-  gap: 1.5rem;
+  gap: 1.75rem;
 }
 
 .workspace-hero,
+.planner-command-bar,
 .planner-overview-grid,
 .planner-main-grid,
 .planner-backlog-grid,
 .planner-insight-row,
-.planner-toolbar,
-.planner-toolbar-actions,
+.planner-grid-header,
+.planner-week-nav,
+.planner-command-bar-actions,
+.planner-command-summary,
 .planner-day-header,
 .planner-post-pill-header,
 .planner-sidebar-actions,
@@ -1839,7 +1934,8 @@ onMounted(() => {
 }
 
 .workspace-hero,
-.planner-toolbar,
+.planner-command-bar,
+.planner-grid-header,
 .planner-day-header,
 .planner-post-pill-header,
 .planner-backlog-card-header,
@@ -1852,13 +1948,18 @@ onMounted(() => {
 }
 
 .planner-top-actions,
+.planner-command-bar,
+.planner-command-bar-copy,
+.planner-command-bar-actions,
+.planner-command-summary,
 .planner-overview-grid,
 .planner-insight-row,
 .planner-week-grid,
 .planner-main-grid,
 .planner-backlog-grid,
 .planner-inline-section,
-.planner-toolbar-copy,
+.planner-grid-header-copy,
+.planner-grid-header-actions,
 .planner-sidebar,
 .planner-day-posts,
 .planner-post-pill,
@@ -1873,8 +1974,46 @@ onMounted(() => {
   justify-items: end;
 }
 
+.planner-command-bar {
+  grid-template-columns: minmax(0, 1.1fr) minmax(22rem, 0.9fr);
+  align-items: stretch;
+  padding: 1.45rem 1.5rem;
+  border: 1px solid rgba(204, 102, 45, 0.12);
+  background:
+    radial-gradient(circle at top left, rgba(255, 187, 132, 0.2), transparent 42%),
+    linear-gradient(135deg, rgba(255, 252, 247, 0.98), rgba(255, 246, 237, 0.96));
+  box-shadow: 0 24px 60px rgba(145, 84, 39, 0.08);
+}
+
+.planner-command-bar-copy h2 {
+  margin: 0;
+  font-size: clamp(1.7rem, 2vw, 2.3rem);
+  line-height: 1.05;
+}
+
+.planner-command-bar-actions {
+  align-content: space-between;
+  justify-items: end;
+}
+
+.planner-command-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .planner-overview-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.planner-overview-card {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  padding: 1rem 1.05rem;
+  border: 1px solid rgba(60, 41, 30, 0.08);
+  border-radius: 1.1rem;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 16px 34px rgba(145, 84, 39, 0.06);
 }
 
 .planner-overview-card span {
@@ -1906,12 +2045,16 @@ onMounted(() => {
 .planner-grid-panel,
 .planner-sidebar,
 .planner-backlog-panel {
-  padding: 1.4rem;
+  padding: 1.45rem;
 }
 
 .planner-sidebar {
   position: sticky;
   top: 1.2rem;
+  border: 1px solid rgba(60, 41, 30, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 252, 247, 0.98), rgba(255, 248, 241, 0.96));
+  box-shadow: 0 22px 52px rgba(145, 84, 39, 0.08);
 }
 
 .workspace-description.compact {
@@ -1919,15 +2062,40 @@ onMounted(() => {
   font-size: 0.95rem;
 }
 
-.planner-toolbar-copy {
-  max-width: 32rem;
+.planner-grid-header {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(60, 41, 30, 0.08);
+}
+
+.planner-grid-header-copy {
+  max-width: 34rem;
+}
+
+.planner-grid-header-copy h2 {
+  margin: 0;
+  font-size: 1.55rem;
+  line-height: 1.1;
 }
 
 .planner-chip {
   width: fit-content;
 }
 
-.planner-toolbar-actions,
+.planner-week-nav {
+  align-items: center;
+}
+
+.planner-nav-button {
+  min-width: 3rem;
+}
+
+.planner-nav-button-active {
+  border-color: rgba(204, 102, 45, 0.24);
+  background: rgba(255, 243, 230, 0.94);
+  color: #c76528;
+}
+
 .planner-sidebar-actions,
 .planner-card-action-row {
   flex-wrap: wrap;
@@ -1971,20 +2139,30 @@ onMounted(() => {
 
 .planner-insight-card {
   flex: 1 1 16rem;
-  border: 1px solid rgba(60, 41, 30, 0.12);
-  border-radius: 1.1rem;
-  padding: 1rem 1.1rem;
-  background: rgba(255, 252, 247, 0.78);
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid rgba(60, 41, 30, 0.1);
+  border-radius: 1.15rem;
+  padding: 1.05rem 1.1rem;
+  background: rgba(255, 252, 247, 0.84);
 }
 
 .planner-insight-card strong {
   display: block;
-  margin-bottom: 0.4rem;
+  font-size: 1.1rem;
 }
 
 .planner-insight-card p {
   margin: 0;
   color: rgba(64, 42, 28, 0.72);
+}
+
+.planner-insight-label {
+  color: rgba(64, 42, 28, 0.58);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .planner-week-grid {
@@ -1995,32 +2173,37 @@ onMounted(() => {
   display: grid;
   gap: 0.8rem;
   align-content: start;
-  min-height: 15rem;
-  border: 1px solid rgba(60, 41, 30, 0.12);
-  border-radius: 1.15rem;
-  background: rgba(255, 252, 247, 0.84);
-  padding: 1rem;
+  min-height: 16.5rem;
+  border: 1px solid rgba(60, 41, 30, 0.1);
+  border-radius: 1.2rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 249, 243, 0.9));
+  padding: 1rem 1rem 1.05rem;
   text-align: left;
   color: inherit;
-  transition: border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+  box-shadow: 0 14px 30px rgba(145, 84, 39, 0.05);
+  transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
 }
 
 .planner-day-card:hover {
-  border-color: rgba(204, 102, 45, 0.28);
-  transform: translateY(-1px);
+  border-color: rgba(204, 102, 45, 0.34);
+  transform: translateY(-3px);
+  box-shadow: 0 22px 40px rgba(145, 84, 39, 0.11);
 }
 
 .planner-day-card.selected {
-  border-color: rgba(204, 102, 45, 0.45);
-  box-shadow: 0 18px 42px rgba(145, 84, 39, 0.12);
+  border-color: rgba(204, 102, 45, 0.42);
+  box-shadow: 0 24px 48px rgba(145, 84, 39, 0.14);
 }
 
 .planner-day-card.today {
-  background: rgba(255, 248, 240, 0.92);
+  background:
+    linear-gradient(180deg, rgba(255, 246, 235, 0.96), rgba(255, 250, 244, 0.92));
 }
 
 .planner-day-card.gap {
   border-style: dashed;
+  border-color: rgba(204, 102, 45, 0.24);
 }
 
 .planner-day-weekday,
@@ -2055,6 +2238,11 @@ onMounted(() => {
   background: rgba(243, 234, 222, 0.96);
 }
 
+.planner-platform-pill {
+  background: rgba(231, 239, 255, 0.96);
+  color: #3759b8;
+}
+
 .planner-status-pill.subtle {
   background: rgba(251, 245, 237, 0.96);
 }
@@ -2066,10 +2254,10 @@ onMounted(() => {
 
 .planner-gap-state {
   margin-top: auto;
-  border: 1px dashed rgba(60, 41, 30, 0.14);
+  border: 1px dashed rgba(204, 102, 45, 0.22);
   border-radius: 1rem;
-  padding: 0.9rem;
-  background: rgba(255, 249, 243, 0.76);
+  padding: 0.95rem;
+  background: rgba(255, 244, 232, 0.78);
 }
 
 .planner-gap-state strong {
@@ -2087,6 +2275,20 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.86);
   padding: 0.8rem;
   cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.planner-post-pill:hover {
+  transform: translateY(-2px);
+  border-color: rgba(60, 41, 30, 0.18);
+  box-shadow: 0 12px 24px rgba(145, 84, 39, 0.08);
+}
+
+.planner-post-pill strong,
+.planner-day-schedule-card p,
+.planner-backlog-card p,
+.planner-preview-card p {
+  line-height: 1.45;
 }
 
 .planner-post-time.secondary {
@@ -2112,16 +2314,17 @@ onMounted(() => {
   display: grid;
   gap: 0.8rem;
   border: 1px solid rgba(60, 41, 30, 0.1);
-  border-radius: 1.05rem;
-  background: rgba(255, 252, 247, 0.84);
+  border-radius: 1.1rem;
+  background: rgba(255, 255, 255, 0.82);
   padding: 1rem;
 }
 
 .planner-day-schedule-card {
   border: 1px solid rgba(60, 41, 30, 0.1);
-  border-radius: 1.05rem;
-  background: rgba(255, 252, 247, 0.84);
+  border-radius: 1.1rem;
+  background: rgba(255, 255, 255, 0.84);
   padding: 1rem;
+  box-shadow: 0 12px 24px rgba(145, 84, 39, 0.05);
 }
 
 .planner-day-schedule-card[data-tone="success"] {
@@ -2167,6 +2370,14 @@ onMounted(() => {
   font: inherit;
   color: inherit;
   background: rgba(255, 255, 255, 0.88);
+}
+
+.planner-inline-section textarea:focus,
+.planner-schedule-grid input:focus,
+.planner-schedule-grid select:focus {
+  outline: none;
+  border-color: rgba(204, 102, 45, 0.38);
+  box-shadow: 0 0 0 4px rgba(255, 187, 132, 0.16);
 }
 
 .planner-tone-row {
@@ -2217,14 +2428,22 @@ onMounted(() => {
 .planner-backlog-card {
   padding: 1rem;
   border: 1px solid rgba(60, 41, 30, 0.12);
-  border-radius: 1.05rem;
-  background: rgba(255, 252, 247, 0.82);
+  border-radius: 1.1rem;
+  background: rgba(255, 255, 255, 0.86);
   cursor: pointer;
+  box-shadow: 0 14px 28px rgba(145, 84, 39, 0.05);
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+}
+
+.planner-backlog-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(204, 102, 45, 0.26);
+  box-shadow: 0 18px 32px rgba(145, 84, 39, 0.09);
 }
 
 .planner-backlog-card.active {
   border-color: rgba(204, 102, 45, 0.45);
-  box-shadow: 0 16px 34px rgba(145, 84, 39, 0.1);
+  box-shadow: 0 22px 40px rgba(145, 84, 39, 0.12);
 }
 
 .planner-empty-state {
@@ -2253,6 +2472,7 @@ onMounted(() => {
 }
 
 @media (max-width: 1180px) {
+  .planner-command-bar,
   .planner-main-grid {
     grid-template-columns: 1fr;
   }
@@ -2263,7 +2483,7 @@ onMounted(() => {
 }
 
 @media (max-width: 960px) {
-  .planner-overview-grid,
+  .planner-command-summary,
   .planner-week-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2271,14 +2491,15 @@ onMounted(() => {
 
 @media (max-width: 720px) {
   .workspace-hero,
-  .planner-toolbar,
+  .planner-command-bar,
+  .planner-grid-header,
   .planner-day-header,
   .planner-backlog-card-footer {
     flex-direction: column;
     align-items: flex-start;
   }
 
-  .planner-overview-grid,
+  .planner-command-summary,
   .planner-week-grid,
   .planner-backlog-grid {
     grid-template-columns: 1fr;

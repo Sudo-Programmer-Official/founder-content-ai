@@ -2,12 +2,14 @@ import { recalculateAllEmailDomainReputations } from "../services/email/emailDel
 import { drainQueuedEmailCampaigns, processQueuedEmailContactImportJobs } from "../services/email/emailService.ts";
 import { processGrowthAutomationDueRuns } from "../services/growth/growthAutomationService.ts";
 import { processQueuedIdeaUnderstandingJobs } from "../services/controlDashboardService.ts";
+import { inspectJobQueue } from "../services/jobQueueService.ts";
 import { processDueScheduledPosts } from "../services/scheduledPostService.ts";
 import { recordWorkerFailure, recordWorkerHeartbeat } from "../services/workerRuntimeService.ts";
 import { toErrorContext } from "../utils/http.ts";
 import { logError, logInfo } from "../utils/logger.ts";
 
 interface ScheduledPostWorkerResult {
+  backfilled: number;
   claimed: number;
   published: number;
   failed: number;
@@ -48,6 +50,7 @@ interface IdeaUnderstandingWorkerResult {
 
 const DEFAULT_APP_WORKER_POLL_INTERVAL_MS = 5000;
 const DEFAULT_APP_WORKER_DELIVERABILITY_INTERVAL_MS = 15 * 60 * 1000;
+const DEFAULT_QUEUE_INSPECTION_INTERVAL_MS = 60 * 1000;
 const DEFAULT_SCHEDULED_POST_BATCH_SIZE = 3;
 const SHARED_APP_WORKER_TYPE = "shared_app_worker";
 
@@ -88,7 +91,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function hasScheduledPostWork(result: ScheduledPostWorkerResult): boolean {
-  return result.claimed > 0 || result.published > 0 || result.failed > 0;
+  return result.backfilled > 0 || result.claimed > 0 || result.published > 0 || result.failed > 0;
 }
 
 function hasEmailCampaignWork(result: EmailCampaignWorkerResult): boolean {
@@ -153,6 +156,21 @@ async function runScheduledPosts(): Promise<boolean> {
   }
 
   return false;
+}
+
+async function inspectScheduledPostQueue(): Promise<{
+  dueCount: number;
+  futureCount: number;
+  processingCount: number;
+  failedCount: number;
+  nextRunAfter?: string;
+} | null> {
+  try {
+    return await inspectJobQueue(["post_publish"]);
+  } catch (error) {
+    logError("Shared worker failed while inspecting scheduled post queue.", toErrorContext(error));
+    return null;
+  }
 }
 
 async function runEmailCampaigns(): Promise<boolean> {
@@ -236,6 +254,7 @@ export async function runAppWorker(): Promise<void> {
   const runOnce = resolveRunOnce();
   const serviceName = process.env.RENDER_SERVICE_NAME?.trim() || "shared-app-worker";
   let nextDeliverabilityAt = 0;
+  let nextQueueInspectionAt = 0;
 
   logInfo("Shared app worker started.", {
     pollIntervalMs,
@@ -252,6 +271,15 @@ export async function runAppWorker(): Promise<void> {
     const growthAutomationWork = await runGrowthAutomation();
 
     let deliverabilityWork = false;
+    let queueSnapshot:
+      | {
+          dueCount: number;
+          futureCount: number;
+          processingCount: number;
+          failedCount: number;
+          nextRunAfter?: string;
+        }
+      | null = null;
 
     if (passStartedAt >= nextDeliverabilityAt) {
       deliverabilityWork = await runDeliverabilityRollups();
@@ -266,6 +294,19 @@ export async function runAppWorker(): Promise<void> {
       growthAutomationWork ||
       deliverabilityWork;
 
+    if ((scheduledPostWork || passStartedAt >= nextQueueInspectionAt) && !shutdownRequested) {
+      queueSnapshot = await inspectScheduledPostQueue();
+      nextQueueInspectionAt = Date.now() + DEFAULT_QUEUE_INSPECTION_INTERVAL_MS;
+
+      if (queueSnapshot) {
+        if (queueSnapshot.dueCount > 0 || queueSnapshot.processingCount > 0) {
+          logInfo("Scheduled post queue snapshot.", queueSnapshot);
+        } else if (queueSnapshot.futureCount > 0) {
+          logInfo("No scheduled posts are due yet.", queueSnapshot);
+        }
+      }
+    }
+
     await recordWorkerHeartbeat({
       workerKey: serviceName,
       workerType: SHARED_APP_WORKER_TYPE,
@@ -276,6 +317,7 @@ export async function runAppWorker(): Promise<void> {
         deliverabilityIntervalMs,
         runOnce,
         scheduledPostWork,
+        scheduledPostQueue: queueSnapshot ?? undefined,
         emailCampaignWork,
         emailContactImportWork,
         ideaUnderstandingWork,
