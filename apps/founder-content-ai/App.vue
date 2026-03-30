@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "./access/product-access-context";
 import { useAuthContext } from "./auth/auth-context";
@@ -11,6 +11,7 @@ const router = useRouter();
 const { bootstrap, isFeatureEnabled } = useProductAccessContext();
 const auth = useAuthContext();
 const mobileMenuOpen = ref(false);
+const accountMenuOpen = ref(false);
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "founder-content:sidebar-collapsed";
 const sidebarCollapsed = ref(false);
 
@@ -96,6 +97,7 @@ watch(
   () => route.fullPath,
   () => {
     mobileMenuOpen.value = false;
+    accountMenuOpen.value = false;
   },
 );
 
@@ -105,6 +107,37 @@ watch(sidebarCollapsed, (value) => {
   }
 
   window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(value));
+  accountMenuOpen.value = false;
+});
+
+function handleDocumentClick(event: MouseEvent): void {
+  const target = event.target;
+
+  if (!(target instanceof Element)) {
+    return;
+  }
+
+  if (target.closest(".sidebar-account-shell")) {
+    return;
+  }
+
+  accountMenuOpen.value = false;
+}
+
+function handleEscape(event: KeyboardEvent): void {
+  if (event.key === "Escape") {
+    accountMenuOpen.value = false;
+  }
+}
+
+onMounted(() => {
+  document.addEventListener("click", handleDocumentClick);
+  document.addEventListener("keydown", handleEscape);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("click", handleDocumentClick);
+  document.removeEventListener("keydown", handleEscape);
 });
 
 async function handleLogout(): Promise<void> {
@@ -114,6 +147,10 @@ async function handleLogout(): Promise<void> {
 
 function toggleSidebar(): void {
   sidebarCollapsed.value = !sidebarCollapsed.value;
+}
+
+function toggleAccountMenu(): void {
+  accountMenuOpen.value = !accountMenuOpen.value;
 }
 </script>
 
@@ -214,12 +251,39 @@ function toggleSidebar(): void {
           <router-link class="sidebar-footer-link" :to="appRoutes.settingsPreferences">
             Usage & billing
           </router-link>
-          <div v-if="userLabel" class="sidebar-user-card">
-            <span class="sidebar-user-avatar">{{ userInitial }}</span>
-            <div>
-              <strong>{{ userLabel }}</strong>
-              <small>Account</small>
-            </div>
+          <div
+            v-if="userLabel"
+            class="sidebar-account-shell"
+            :class="{ compact: sidebarCollapsed, open: accountMenuOpen }"
+          >
+            <button
+              type="button"
+              class="sidebar-account-trigger"
+              :title="sidebarCollapsed ? userLabel : undefined"
+              aria-haspopup="menu"
+              :aria-expanded="accountMenuOpen"
+              @click.stop="toggleAccountMenu"
+            >
+              <span class="sidebar-user-avatar">{{ userInitial }}</span>
+              <div class="sidebar-account-copy">
+                <strong>{{ userLabel }}</strong>
+                <small>Account</small>
+              </div>
+              <span class="sidebar-account-dots" aria-hidden="true">⋯</span>
+            </button>
+
+            <transition name="sidebar-fade">
+              <div v-if="accountMenuOpen" class="sidebar-account-menu" role="menu">
+                <button
+                  type="button"
+                  class="sidebar-account-menu-item"
+                  role="menuitem"
+                  @click="accountMenuOpen = false; void handleLogout()"
+                >
+                  Logout
+                </button>
+              </div>
+            </transition>
           </div>
         </div>
       </aside>
@@ -327,14 +391,8 @@ function toggleSidebar(): void {
             </div>
           </div>
 
-            <div class="workspace-header-actions">
+          <div class="workspace-header-actions">
             <WorkspaceSwitcher class="workspace-header-switcher" />
-            <div class="workspace-header-session desktop-only">
-              <span v-if="userLabel" class="header-user-pill">{{ userLabel }}</span>
-              <button class="header-secondary-button" type="button" @click="handleLogout">
-                Logout
-              </button>
-            </div>
           </div>
         </header>
 
@@ -624,6 +682,91 @@ function toggleSidebar(): void {
   text-decoration: none;
 }
 
+.sidebar-account-shell {
+  position: relative;
+}
+
+.sidebar-account-trigger {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 84%, var(--fc-surface-muted));
+  color: var(--fc-text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sidebar-account-trigger:hover {
+  border-color: color-mix(in srgb, var(--fc-accent) 24%, var(--fc-border));
+}
+
+.sidebar-account-copy {
+  min-width: 0;
+}
+
+.sidebar-account-copy strong {
+  display: block;
+  font-size: 0.95rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-account-copy small {
+  color: var(--fc-text-muted);
+}
+
+.sidebar-account-dots {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--fc-text-muted);
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.sidebar-account-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  min-width: 180px;
+  padding: 8px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fc-surface) 94%, white 6%);
+  box-shadow: 0 24px 40px rgba(64, 44, 28, 0.14);
+}
+
+.sidebar-account-menu-item {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--fc-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sidebar-account-menu-item:hover {
+  background: color-mix(in srgb, var(--fc-panel-bg) 86%, var(--fc-surface-muted));
+}
+
 .sidebar-user-card {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
@@ -824,9 +967,33 @@ function toggleSidebar(): void {
   transform: translateY(-1px);
 }
 
-.sidebar-collapsed .sidebar-link-copy,
-.sidebar-collapsed .sidebar-footer {
+.sidebar-collapsed .sidebar-link-copy {
   display: none;
+}
+
+.sidebar-collapsed .sidebar-footer {
+  width: 100%;
+}
+
+.sidebar-collapsed .sidebar-footer-link {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar-account-trigger {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 10px;
+}
+
+.sidebar-collapsed .sidebar-account-copy,
+.sidebar-collapsed .sidebar-account-dots {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar-account-menu {
+  left: calc(100% + 12px);
+  right: auto;
+  bottom: 0;
 }
 
 .sidebar-collapsed .workspace-main-pane {

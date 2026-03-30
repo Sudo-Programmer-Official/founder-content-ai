@@ -1371,7 +1371,7 @@ onMounted(() => {
 
             <ul v-if="day.posts.length > 0" class="planner-day-posts">
               <li
-                v-for="post in day.posts.slice(0, 2)"
+                v-for="post in day.posts"
                 :key="post.id"
                 class="planner-post-pill"
                 :data-tone="resolveStatusTone(post.status)"
@@ -1386,7 +1386,7 @@ onMounted(() => {
                   </div>
                   <span class="planner-status-pill">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
                 </div>
-                <strong>{{ buildExcerpt(post.contentText, 44) }}</strong>
+                <strong>{{ buildExcerpt(post.contentText, 180) }}</strong>
                 <span class="planner-post-time">
                   {{ formatTimeWithZone(post.scheduledAt, post.audienceTimezone) }}
                 </span>
@@ -1396,9 +1396,6 @@ onMounted(() => {
                 >
                   Your time: {{ formatTimeWithZone(post.scheduledAt, userTimezone) }}
                 </span>
-              </li>
-              <li v-if="day.posts.length > 2" class="planner-post-overflow">
-                +{{ day.posts.length - 2 }} more in queue
               </li>
             </ul>
 
@@ -2161,6 +2158,7 @@ onMounted(() => {
   gap: 1rem;
   overflow-x: auto;
   padding: 0.25rem 0.1rem 0.7rem;
+  min-height: clamp(24rem, 58vh, 40rem);
   align-items: stretch;
   scrollbar-width: thin;
 }
@@ -2172,7 +2170,7 @@ onMounted(() => {
   grid-template-rows: auto auto 1fr auto;
   gap: 0.72rem;
   align-content: start;
-  min-height: 14.25rem;
+  min-height: clamp(18rem, 52vh, 34rem);
   border: 1px solid rgba(60, 41, 30, 0.1);
   border-radius: 1.35rem;
   background:
@@ -2314,6 +2312,7 @@ onMounted(() => {
   display: grid;
   gap: 0.7rem;
   align-content: start;
+  margin-top: 0.15rem;
 }
 
 .planner-post-pill {
@@ -2349,18 +2348,7 @@ onMounted(() => {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-}
-
-.planner-post-overflow {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px dashed rgba(60, 41, 30, 0.16);
-  border-radius: 0.95rem;
-  min-height: 2.8rem;
-  background: rgba(255, 252, 248, 0.8);
-  font-weight: 600;
+  -webkit-line-clamp: 6;
 }
 
 .planner-post-time.secondary {
