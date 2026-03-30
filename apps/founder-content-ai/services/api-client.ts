@@ -1,6 +1,6 @@
 import type { ApiError } from "../../../packages/shared-types";
 import { clearStoredAuthSession } from "./auth-session-store";
-import { ensureFreshStoredAuthSession } from "./firebase-auth-client";
+import { ensureFreshStoredAuthSession, refreshStoredAuthSession } from "./firebase-auth-client";
 
 declare global {
   interface Window {
@@ -108,7 +108,7 @@ async function requestJson<TResponse>(
 ): Promise<TResponse> {
   const apiBaseUrl = resolveApiBaseUrl();
 
-  async function send(requestBaseUrl: string): Promise<TResponse> {
+  async function send(requestBaseUrl: string, allowAuthRetry: boolean): Promise<TResponse> {
     const requestUrl = `${requestBaseUrl}${endpoint}`;
     let response: Response;
     const timeout = createRequestTimeout(options?.timeoutMs);
@@ -136,6 +136,14 @@ async function requestJson<TResponse>(
 
     if (!response.ok) {
       if (response.status === 401) {
+        if (allowAuthRetry) {
+          const refreshedSession = await refreshStoredAuthSession();
+
+          if (refreshedSession?.idToken) {
+            return send(requestBaseUrl, false);
+          }
+        }
+
         clearStoredAuthSession();
       }
 
@@ -153,7 +161,7 @@ async function requestJson<TResponse>(
     return responseBody as TResponse;
   }
 
-  return send(apiBaseUrl);
+  return send(apiBaseUrl, true);
 }
 
 export async function apiGet<TResponse>(

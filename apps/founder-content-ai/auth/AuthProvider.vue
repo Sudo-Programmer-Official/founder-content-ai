@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, provide, ref } from "vue";
+import { onBeforeUnmount, onMounted, provide, ref } from "vue";
 import type { MeResponse } from "../../../packages/shared-types";
 import { AuthContextKey } from "./auth-context";
 import {
@@ -9,7 +9,11 @@ import {
   restoreFrontendAuthSession,
   signupWithEmailPassword,
 } from "../services/auth-service";
-import type { StoredAuthSession } from "../services/auth-session-store";
+import {
+  AUTH_SESSION_CHANGED_EVENT,
+  loadStoredAuthSession,
+  type StoredAuthSession,
+} from "../services/auth-session-store";
 
 const authSession = ref<StoredAuthSession | null>(null);
 const appSession = ref<MeResponse | null>(null);
@@ -126,6 +130,20 @@ async function logout(): Promise<void> {
   sessionVersion.value += 1;
 }
 
+function handleStoredSessionChange(): void {
+  const storedSession = loadStoredAuthSession();
+
+  if (!storedSession) {
+    setAnonymousState();
+    errorMessage.value = "";
+    sessionVersion.value += 1;
+    isReady.value = true;
+    return;
+  }
+
+  authSession.value = storedSession;
+}
+
 provide(AuthContextKey, {
   authSession,
   appSession,
@@ -142,7 +160,12 @@ provide(AuthContextKey, {
 });
 
 onMounted(async () => {
+  window.addEventListener(AUTH_SESSION_CHANGED_EVENT, handleStoredSessionChange as EventListener);
   await refreshSession();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener(AUTH_SESSION_CHANGED_EVENT, handleStoredSessionChange as EventListener);
 });
 </script>
 
