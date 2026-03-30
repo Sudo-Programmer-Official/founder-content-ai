@@ -213,32 +213,57 @@ async function loadDomainOutcomeMetrics(
   domainName: string,
   client?: PoolClient,
 ): Promise<DomainOutcomeMetrics> {
-  const result = await executeQuery<EmailProviderEventMetricsRow>(
-    `
-      with message_rollup as (
+  let result;
+
+  try {
+    result = await executeQuery<EmailProviderEventMetricsRow>(
+      `
+        with message_rollup as (
+          select
+            provider_message_id,
+            bool_or(event_type = 'delivered') as delivered,
+            bool_or(event_type = 'bounce_hard') as hard_bounce,
+            bool_or(event_type = 'bounce_soft') as soft_bounce,
+            bool_or(event_type = 'complaint') as complaint
+          from email_provider_events
+          where business_id = $1::uuid
+            and lower(domain_name) = lower($2)
+            and occurred_at >= now() - interval '7 days'
+          group by provider_message_id
+        )
         select
-          provider_message_id,
-          bool_or(event_type = 'delivered') as delivered,
-          bool_or(event_type = 'bounce_hard') as hard_bounce,
-          bool_or(event_type = 'bounce_soft') as soft_bounce,
-          bool_or(event_type = 'complaint') as complaint
-        from email_provider_events
-        where business_id = $1::uuid
-          and lower(domain_name) = lower($2)
-          and occurred_at >= now() - interval '7 days'
-        group by provider_message_id
-      )
-      select
-        count(*)::int as total_messages,
-        count(*) filter (where delivered)::int as delivered_messages,
-        count(*) filter (where hard_bounce)::int as hard_bounce_messages,
-        count(*) filter (where soft_bounce)::int as soft_bounce_messages,
-        count(*) filter (where complaint)::int as complaint_messages
-      from message_rollup
-    `,
-    [businessId, domainName],
-    client,
-  );
+          count(*)::int as total_messages,
+          count(*) filter (where delivered)::int as delivered_messages,
+          count(*) filter (where hard_bounce)::int as hard_bounce_messages,
+          count(*) filter (where soft_bounce)::int as soft_bounce_messages,
+          count(*) filter (where complaint)::int as complaint_messages
+        from message_rollup
+      `,
+      [businessId, domainName],
+      client,
+    );
+  } catch (error) {
+    if (isMissingOptionalDeliverabilityRelation(error)) {
+      logWarn("Skipping email provider event metrics because deliverability feedback schema is not available.", {
+        businessId,
+        domainName,
+        code: (error as { code?: string }).code ?? "unknown",
+      });
+
+      return {
+        totalMessages: 0,
+        deliveryRate7d: 1,
+        bounceRate7d: 0,
+        complaintRate7d: 0,
+        recentDeliveries7d: 0,
+        recentHardBounces7d: 0,
+        recentSoftBounces7d: 0,
+        recentComplaints7d: 0,
+      };
+    }
+
+    throw error;
+  }
 
   const row = result.rows[0];
   const totalMessages = toNumber(row?.total_messages);
@@ -538,28 +563,44 @@ export async function recalculateEmailDomainReputation(input: {
   const score = calculateDeliverabilityScore({ state, metrics });
   const scoreBand = resolveScoreBand(score, blockers);
 
-  return upsertEmailDomainReputation(
-    state,
-    metrics,
-    {
-      score,
-      scoreBand,
-      blockers,
-      sesVerified: state.sesVerified,
-      dkimVerified: state.dkimVerified,
-      spfStatus: state.spfStatus,
-      dmarcStatus: state.dmarcStatus,
-      bounceRate7d: metrics.bounceRate7d,
-      complaintRate7d: metrics.complaintRate7d,
-      deliveryRate7d: metrics.deliveryRate7d,
-      recentDeliveries7d: metrics.recentDeliveries7d,
-      recentHardBounces7d: metrics.recentHardBounces7d,
-      recentSoftBounces7d: metrics.recentSoftBounces7d,
-      recentComplaints7d: metrics.recentComplaints7d,
-      sendingBlocked: scoreBand === "at_risk" || blockers.some((blocker) => blocker.severity === "error"),
-    },
-    input.client,
-  );
+  const snapshot: EmailDeliverabilitySnapshot = {
+    score,
+    scoreBand,
+    blockers,
+    sesVerified: state.sesVerified,
+    dkimVerified: state.dkimVerified,
+    spfStatus: state.spfStatus,
+    dmarcStatus: state.dmarcStatus,
+    bounceRate7d: metrics.bounceRate7d,
+    complaintRate7d: metrics.complaintRate7d,
+    deliveryRate7d: metrics.deliveryRate7d,
+    recentDeliveries7d: metrics.recentDeliveries7d,
+    recentHardBounces7d: metrics.recentHardBounces7d,
+    recentSoftBounces7d: metrics.recentSoftBounces7d,
+    recentComplaints7d: metrics.recentComplaints7d,
+    sendingBlocked: scoreBand === "at_risk" || blockers.some((blocker) => blocker.severity === "error"),
+    lastEvaluatedAt: new Date().toISOString(),
+  };
+
+  try {
+    return await upsertEmailDomainReputation(
+      state,
+      metrics,
+      snapshot,
+      input.client,
+    );
+  } catch (error) {
+    if (isMissingOptionalDeliverabilityRelation(error)) {
+      logWarn("Skipping email domain reputation persistence because deliverability schema is not available.", {
+        businessId: state.businessId,
+        domainName: state.domainName,
+        code: (error as { code?: string }).code ?? "unknown",
+      });
+      return snapshot;
+    }
+
+    throw error;
+  }
 }
 
 export async function listRiskyEmailDomains(limit = 6): Promise<AdminRiskyEmailDomain[]> {
