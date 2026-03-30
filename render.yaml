@@ -1,0 +1,204 @@
+services:
+  - type: web
+    name: foundercontent-api
+    runtime: node
+    rootDir: apps/founder-content-api
+    buildCommand: npm install
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: RENDER_SERVICE_NAME
+        value: foundercontent-api
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL_MODE
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: AUTH_MODE
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: OPENAI_TRANSCRIBE_MODEL
+        sync: false
+      - key: OPENAI_TRANSCRIBE_FALLBACKS
+        sync: false
+      - key: OPENAI_IMAGE_MODEL
+        sync: false
+      - key: LINKEDIN_API_VERSION
+        sync: false
+      - key: LINKEDIN_CLIENT_ID
+        sync: false
+      - key: LINKEDIN_CLIENT_SECRET
+        sync: false
+      - key: LINKEDIN_REDIRECT_URI
+        sync: false
+      - key: LINKEDIN_SCOPE
+        sync: false
+      - key: SOCIAL_ACCOUNT_ENCRYPTION_SECRET
+        sync: false
+      - key: SOCIAL_AUTH_STATE_SECRET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_SESSION_TOKEN
+        sync: false
+      - key: S3_MEDIA_BUCKET
+        sync: false
+      - key: S3_MEDIA_PREFIX
+        sync: false
+      - key: S3_PRESIGNED_UPLOAD_TTL_SECONDS
+        sync: false
+      - key: S3_MAX_IMAGE_BYTES
+        sync: false
+      - key: S3_MAX_VIDEO_BYTES
+        sync: false
+      - key: SES_CONFIGURATION_SET
+        sync: false
+      - key: SES_SNS_TOPIC_ARNS
+        sync: false
+      - key: SES_SNS_AUTO_CONFIRM
+        sync: false
+      - key: SYSTEM_FROM_EMAIL
+        sync: false
+      - key: SYSTEM_FROM_NAME
+        sync: false
+      - key: API_PUBLIC_BASE_URL
+        sync: false
+      - key: SUPER_ADMIN_EMAILS
+        sync: false
+      - key: ALLOW_VISUAL_SVG_FALLBACK
+        sync: false
+      - key: AI_ESTIMATED_COST_PER_1K_TOKENS_USD
+        sync: false
+
+  - type: worker
+    name: foundercontent-worker
+    runtime: node
+    rootDir: apps/founder-content-api
+    buildCommand: npm install
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: RENDER_SERVICE_NAME
+        value: foundercontent-worker
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL_MODE
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: AUTH_MODE
+        sync: false
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: FIREBASE_CLIENT_EMAIL
+        sync: false
+      - key: FIREBASE_PRIVATE_KEY
+        sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: OPENAI_TRANSCRIBE_MODEL
+        sync: false
+      - key: OPENAI_TRANSCRIBE_FALLBACKS
+        sync: false
+      - key: OPENAI_IMAGE_MODEL
+        sync: false
+      - key: LINKEDIN_API_VERSION
+        sync: false
+      - key: LINKEDIN_CLIENT_ID
+        sync: false
+      - key: LINKEDIN_CLIENT_SECRET
+        sync: false
+      - key: LINKEDIN_REDIRECT_URI
+        sync: false
+      - key: LINKEDIN_SCOPE
+        sync: false
+      - key: SOCIAL_ACCOUNT_ENCRYPTION_SECRET
+        sync: false
+      - key: SOCIAL_AUTH_STATE_SECRET
+        sync: false
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_SESSION_TOKEN
+        sync: false
+      - key: S3_MEDIA_BUCKET
+        sync: false
+      - key: S3_MEDIA_PREFIX
+        sync: false
+      - key: S3_PRESIGNED_UPLOAD_TTL_SECONDS
+        sync: false
+      - key: S3_MAX_IMAGE_BYTES
+        sync: false
+      - key: S3_MAX_VIDEO_BYTES
+        sync: false
+      - key: SES_CONFIGURATION_SET
+        sync: false
+      - key: SES_SNS_TOPIC_ARNS
+        sync: false
+      - key: SES_SNS_AUTO_CONFIRM
+        sync: false
+      - key: SYSTEM_FROM_EMAIL
+        sync: false
+      - key: SYSTEM_FROM_NAME
+        sync: false
+      - key: API_PUBLIC_BASE_URL
+        sync: false
+      - key: SUPER_ADMIN_EMAILS
+        sync: false
+      - key: ALLOW_VISUAL_SVG_FALLBACK
+        sync: false
+      - key: AI_ESTIMATED_COST_PER_1K_TOKENS_USD
+        sync: false
+      - key: APP_WORKER_POLL_INTERVAL_MS
+        value: 5000
+      - key: APP_WORKER_DELIVERABILITY_INTERVAL_MS
+        value: 900000
+      - key: APP_WORKER_RUN_ONCE
+        value: "false"
+      - key: SCHEDULED_POST_WORKER_BATCH_SIZE
+        value: 3
+      - key: IDEA_PROCESS_BATCH_SIZE
+        value: 5
+      - key: IDEA_PROCESS_JOB_PRIORITY
+        value: 60
+      - key: POST_PUBLISH_JOB_PRIORITY
+        value: 40
+      - key: SCHEDULED_POST_MAX_RETRIES
+        value: 2
+      - key: POST_SAFETY_DAILY_LIMIT
+        value: 2
+      - key: POST_SAFETY_MIN_GAP_MINUTES
+        value: 240
+      - key: POST_SAFETY_JITTER_MINUTES
+        value: 20
+      - key: EMAIL_CAMPAIGN_WORKER_BATCH_SIZE
+        value: 100
+      - key: EMAIL_CONTACT_IMPORT_WORKER_BATCH_SIZE
+        value: 2
+      - key: GROWTH_AUTOMATION_WORKER_BATCH_SIZE
+        value: 25

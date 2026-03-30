@@ -3,6 +3,7 @@ import { drainQueuedEmailCampaigns, processQueuedEmailContactImportJobs } from "
 import { processGrowthAutomationDueRuns } from "../services/growth/growthAutomationService.ts";
 import { processQueuedIdeaUnderstandingJobs } from "../services/controlDashboardService.ts";
 import { processDueScheduledPosts } from "../services/scheduledPostService.ts";
+import { recordWorkerFailure, recordWorkerHeartbeat } from "../services/workerRuntimeService.ts";
 import { toErrorContext } from "../utils/http.ts";
 import { logError, logInfo } from "../utils/logger.ts";
 
@@ -48,6 +49,7 @@ interface IdeaUnderstandingWorkerResult {
 const DEFAULT_APP_WORKER_POLL_INTERVAL_MS = 5000;
 const DEFAULT_APP_WORKER_DELIVERABILITY_INTERVAL_MS = 15 * 60 * 1000;
 const DEFAULT_SCHEDULED_POST_BATCH_SIZE = 3;
+const SHARED_APP_WORKER_TYPE = "shared_app_worker";
 
 function resolvePositiveIntegerEnv(envName: string, fallback: number): number {
   const rawValue = process.env[envName]?.trim();
@@ -232,6 +234,7 @@ export async function runAppWorker(): Promise<void> {
   const pollIntervalMs = resolvePollIntervalMs();
   const deliverabilityIntervalMs = resolveDeliverabilityIntervalMs();
   const runOnce = resolveRunOnce();
+  const serviceName = process.env.RENDER_SERVICE_NAME?.trim() || "shared-app-worker";
   let nextDeliverabilityAt = 0;
 
   logInfo("Shared app worker started.", {
@@ -255,18 +258,38 @@ export async function runAppWorker(): Promise<void> {
       nextDeliverabilityAt = Date.now() + deliverabilityIntervalMs;
     }
 
+    const hadWork =
+      scheduledPostWork ||
+      emailCampaignWork ||
+      emailContactImportWork ||
+      ideaUnderstandingWork ||
+      growthAutomationWork ||
+      deliverabilityWork;
+
+    await recordWorkerHeartbeat({
+      workerKey: serviceName,
+      workerType: SHARED_APP_WORKER_TYPE,
+      serviceName,
+      hadWork,
+      metadata: {
+        pollIntervalMs,
+        deliverabilityIntervalMs,
+        runOnce,
+        scheduledPostWork,
+        emailCampaignWork,
+        emailContactImportWork,
+        ideaUnderstandingWork,
+        growthAutomationWork,
+        deliverabilityWork,
+        pid: process.pid,
+      },
+    });
+
     if (runOnce || shutdownRequested) {
       break;
     }
 
-    if (
-      !scheduledPostWork &&
-      !emailCampaignWork &&
-      !emailContactImportWork &&
-      !ideaUnderstandingWork &&
-      !growthAutomationWork &&
-      !deliverabilityWork
-    ) {
+    if (!hadWork) {
       await sleep(pollIntervalMs);
     }
   } while (!shutdownRequested);
@@ -276,7 +299,17 @@ export async function runAppWorker(): Promise<void> {
 
 if (process.argv[1]?.includes("appWorker.ts")) {
   runAppWorker().catch((error) => {
+    const serviceName = process.env.RENDER_SERVICE_NAME?.trim() || "shared-app-worker";
     logError("Shared app worker failed.", toErrorContext(error));
+    void recordWorkerFailure({
+      workerKey: serviceName,
+      workerType: SHARED_APP_WORKER_TYPE,
+      serviceName,
+      errorMessage: error instanceof Error ? error.message : "Unknown shared worker failure.",
+      metadata: {
+        pid: process.pid,
+      },
+    });
     process.exitCode = 1;
   });
 }

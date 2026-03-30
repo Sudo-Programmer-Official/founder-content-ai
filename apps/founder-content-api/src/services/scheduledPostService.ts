@@ -669,6 +669,7 @@ async function updateScheduledPostDispatchState(
   const fingerprint = buildContentFingerprint(input.contentText);
   const queuedJob = await createJob<ScheduledPostPublishJobPayload>({
     businessId: input.businessId,
+    jobKey: `post_publish:${input.scheduledPostId}`,
     type: "post_publish",
     priority: resolveDispatchPriority(),
     payload: {

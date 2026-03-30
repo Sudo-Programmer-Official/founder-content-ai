@@ -249,6 +249,71 @@ export interface AdminOpsOverview {
   failuresToday: number;
   activeUsersToday: number;
   riskyEmailDomains: AdminRiskyEmailDomain[];
+  workerHealth: AdminWorkerHealth;
+  jobQueue: AdminJobQueueOverview;
+  postingReliability: AdminPostingReliabilityOverview;
+}
+
+export type AdminWorkerStatus = "healthy" | "stale" | "offline";
+
+export interface AdminWorkerHealth {
+  workerKey: string;
+  workerType: string;
+  serviceName?: string;
+  status: AdminWorkerStatus;
+  pollIntervalMs: number;
+  lastHeartbeatAt?: string;
+  lastSuccessfulPassAt?: string;
+  lastWorkDetectedAt?: string;
+  lastErrorAt?: string;
+  lastErrorMessage?: string;
+}
+
+export interface AdminJobQueueTypeOverview {
+  type: string;
+  queued: number;
+  processing: number;
+  failed: number;
+  paused: number;
+  stuckQueued: number;
+  staleProcessing: number;
+}
+
+export type AdminProblemJobKind = "failed" | "stuck_queued" | "stale_processing";
+
+export interface AdminProblemJob {
+  id: string;
+  businessId?: string;
+  type: string;
+  status: string;
+  problemKind: AdminProblemJobKind;
+  attempts: number;
+  maxAttempts: number;
+  runAfter: string;
+  lockedAt?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminJobQueueOverview {
+  queued: number;
+  processing: number;
+  failed: number;
+  paused: number;
+  stuckQueued: number;
+  staleProcessing: number;
+  byType: AdminJobQueueTypeOverview[];
+  problemJobs: AdminProblemJob[];
+}
+
+export interface AdminPostingReliabilityOverview {
+  scheduledLast7d: number;
+  publishedLast7d: number;
+  failedLast7d: number;
+  missedDueCount: number;
+  processingNow: number;
+  averagePublishDelayMinutes: number;
 }
 
 export interface AdminRiskyEmailDomain {

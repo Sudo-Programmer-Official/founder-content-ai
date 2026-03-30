@@ -4,6 +4,7 @@ import { queryDb, withDbTransaction } from "./db/client.ts";
 interface JobRow extends QueryResultRow {
   id: string;
   business_id: string | null;
+  job_key: string | null;
   type: string;
   status: string;
   priority: string | number;
@@ -22,6 +23,7 @@ interface JobRow extends QueryResultRow {
 export interface JobQueueRecord<TPayload = Record<string, unknown>> {
   id: string;
   businessId?: string;
+  jobKey?: string;
   type: string;
   status: string;
   priority: number;
@@ -39,6 +41,7 @@ export interface JobQueueRecord<TPayload = Record<string, unknown>> {
 
 interface CreateJobInput<TPayload> {
   businessId?: string;
+  jobKey?: string;
   type: string;
   priority?: number;
   payload?: TPayload;
@@ -75,6 +78,7 @@ function mapJobRow<TPayload>(row: JobRow): JobQueueRecord<TPayload> {
   return {
     id: row.id,
     businessId: row.business_id ?? undefined,
+    jobKey: row.job_key ?? undefined,
     type: row.type,
     status: row.status,
     priority: toNumber(row.priority),
@@ -110,6 +114,7 @@ export async function createJob<TPayload = Record<string, unknown>>(
     `
       insert into jobs (
         business_id,
+        job_key,
         type,
         status,
         priority,
@@ -119,15 +124,24 @@ export async function createJob<TPayload = Record<string, unknown>>(
       ) values (
         $1::uuid,
         $2,
+        $3,
         'queued',
-        $3::int,
-        $4::jsonb,
-        $5::int,
-        $6::timestamptz
+        $4::int,
+        $5::jsonb,
+        $6::int,
+        $7::timestamptz
       )
+      on conflict (job_key)
+      where job_key is not null
+        and status in ('queued', 'processing')
+      do update
+      set
+        updated_at = now(),
+        error_message = null
       returning
         id,
         business_id,
+        job_key,
         type,
         status,
         priority,
@@ -144,6 +158,7 @@ export async function createJob<TPayload = Record<string, unknown>>(
     `,
     [
       input.businessId ?? null,
+      input.jobKey ?? null,
       input.type,
       input.priority ?? 100,
       JSON.stringify(input.payload ?? {}),
@@ -192,6 +207,7 @@ export async function claimQueuedJobs<TPayload = Record<string, unknown>>(
         returning
           j.id,
           j.business_id,
+          j.job_key,
           j.type,
           j.status,
           j.priority,

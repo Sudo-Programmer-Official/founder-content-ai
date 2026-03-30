@@ -78,6 +78,8 @@ apps/founder-content-api/
 
 ## Background Workers
 
+FounderContent already uses a shared Postgres-backed jobs table and one shared worker runtime. Do not add a second Redis/BullMQ queue layer unless you are intentionally replacing the existing queue architecture end to end.
+
 FounderContent should run one shared Background Worker service for async execution:
 
 - `npm run worker`

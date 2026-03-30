@@ -1737,6 +1737,7 @@ export async function createIdeaInboxItem(
     const insertedIdea = insertResult.rows[0];
     const queuedJob = await createJob<IdeaProcessingJobPayload>({
       businessId: input.businessId,
+      jobKey: `idea_process:${insertedIdea.id}`,
       type: "idea_process",
       priority: resolveIdeaProcessingPriority(),
       payload: {
