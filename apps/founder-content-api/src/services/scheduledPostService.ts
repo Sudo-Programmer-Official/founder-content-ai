@@ -1454,10 +1454,6 @@ export async function createScheduledPost(
 ): Promise<SchedulePostResponse> {
   const businessId = input.businessId.trim();
 
-  if (!principal.userId) {
-    throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
-  }
-
   if (input.platform !== "linkedin") {
     throw new HttpError(400, "bad_request", "Only LinkedIn scheduling is supported right now.");
   }
@@ -1479,6 +1475,11 @@ export async function createScheduledPost(
     usageMetric: "posts",
   });
   await requireBusinessMembership(principal, businessId);
+
+  if (!principal.userId) {
+    throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
+  }
+
   const safetyWarnings = await collectSchedulingSafetyWarnings({
     businessId,
     scheduledAt,
