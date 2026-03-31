@@ -31,6 +31,7 @@ import {
 import { requestVisualGeneration } from "../services/generation-service";
 import { requestMediaRecommendations } from "../services/media-intelligence-service";
 import {
+  requestGeneratedHashtags,
   requestLinkedInSocialAuthStart,
   requestPublishPost,
   requestRecommendedPostTimes,
@@ -80,6 +81,11 @@ const aiEditPreview = ref<ContentAiEditPreview | null>(null);
 const aiEditFeedback = ref("");
 const isPreviewingAiEdit = ref(false);
 const isApplyingAiEdit = ref(false);
+const growthMechanicsFeedback = ref("");
+const hashtagFeedback = ref("");
+const isGeneratingHashtags = ref(false);
+const generatedHashtags = ref<string[]>([]);
+const captionWithHashtags = ref("");
 const isSchedulePanelOpen = ref(false);
 const isLoadingRecommendedSlots = ref(false);
 const isSchedulingDraft = ref(false);
@@ -500,6 +506,84 @@ const signalPills = computed(() => [
   `${hooks.value.length} alternate hook${hooks.value.length === 1 ? "" : "s"}`,
 ]);
 
+const growthMechanics = computed(() => [
+  {
+    id: "pattern-break",
+    label: "Pattern-break",
+    title: "Sharpen the opening",
+    copy: "Push the first lines toward contrast or curiosity so the post feels less familiar in-feed.",
+    actionLabel: "Preview sharper hook",
+    command:
+      "Rewrite the opening into a sharper, pattern-breaking LinkedIn hook. Use short punchy lines and keep the rest of the post grounded.",
+  },
+  {
+    id: "retention",
+    label: "Retention",
+    title: "Make the middle easier to skim",
+    copy: "Break dense paragraphs into smaller beats so readers keep going instead of bouncing.",
+    actionLabel: "Preview punchier format",
+    command:
+      "Reformat this LinkedIn post for retention: shorter paragraphs, punchier line breaks, same message, no emojis.",
+  },
+  {
+    id: "interaction",
+    label: "Interaction",
+    title: "Land on a stronger comment trigger",
+    copy: "Close with one direct question that makes founders want to answer from experience.",
+    actionLabel: "Preview better close",
+    command:
+      "Add a stronger engagement trigger at the end. Finish with one specific question that invites comments from founders.",
+  },
+] as const);
+
+function buildConversationPrompts(title: string, text: string): string[] {
+  const normalized = `${title} ${text}`.toLowerCase();
+
+  if (/(audience|users|user|customer|customers|community|feedback)/.test(normalized)) {
+    return [
+      "Are you building with users — or assumptions?",
+      "What is one thing you only learned after talking to users?",
+      "Most underrated founder habit: talk to five users before building one feature. Agree or disagree?",
+    ];
+  }
+
+  if (/(follower|followers|authentic|authenticity|audience growth|content)/.test(normalized)) {
+    return [
+      "Are you optimizing for attention — or trust?",
+      "What changed more for you: audience size or audience trust?",
+      "Most underrated content habit: reply before you broadcast. Agree or disagree?",
+    ];
+  }
+
+  if (/(startup|founder|saas|product|build|feature|mvp)/.test(normalized)) {
+    return [
+      "What is one feature you built that nobody actually used?",
+      "Are you building the product — or validating the problem?",
+      "Most underrated founder move: validate before you build. Agree or disagree?",
+    ];
+  }
+
+  return [
+    "What is one thing you learned the hard way here?",
+    "Agree or disagree?",
+    "What would you add to this from your own experience?",
+  ];
+}
+
+const conversationPrompts = computed(() =>
+  buildConversationPrompts(draft.value?.result.idea.title ?? "", postContent.value),
+);
+
+const suggestedFirstComment = computed(() => {
+  const strongestPrompt = conversationPrompts.value[2] ?? conversationPrompts.value[0] ?? "";
+
+  if (!strongestPrompt) {
+    return "";
+  }
+
+  return `Most underrated founder move:\n\n${strongestPrompt}`;
+});
+
 const feedbackTone = computed(() => {
   const message = feedbackMessage.value.trim().toLowerCase();
 
@@ -773,6 +857,43 @@ async function copyPost(options?: { silent?: boolean }): Promise<boolean> {
   }
 }
 
+async function copyCustomText(
+  value: string,
+  input: {
+    successMessage: string;
+    failureMessage: string;
+    target?: "main" | "growth" | "hashtags";
+  },
+): Promise<boolean> {
+  if (!value.trim() || typeof navigator === "undefined" || !navigator.clipboard) {
+    return false;
+  }
+
+  try {
+    await navigator.clipboard.writeText(value);
+
+    if (input.target === "growth") {
+      growthMechanicsFeedback.value = input.successMessage;
+    } else if (input.target === "hashtags") {
+      hashtagFeedback.value = input.successMessage;
+    } else {
+      feedbackMessage.value = input.successMessage;
+    }
+
+    return true;
+  } catch {
+    if (input.target === "growth") {
+      growthMechanicsFeedback.value = input.failureMessage;
+    } else if (input.target === "hashtags") {
+      hashtagFeedback.value = input.failureMessage;
+    } else {
+      feedbackMessage.value = input.failureMessage;
+    }
+
+    return false;
+  }
+}
+
 function clearAiEditPreview(): void {
   aiEditPreview.value = null;
   aiEditFeedback.value = "";
@@ -805,6 +926,42 @@ function buildPersistedDraftRecord(nextAsset: ContentAsset): ActivationDraftReco
       asset: nextAsset,
     },
   };
+}
+
+async function updateDraftPostContent(nextText: string, successMessage: string): Promise<void> {
+  if (!draft.value) {
+    return;
+  }
+
+  const trimmedText = nextText.trim();
+
+  if (!trimmedText) {
+    throw new Error("The updated post is empty.");
+  }
+
+  let nextAsset = draft.value.result.asset;
+
+  if (activeBusinessId.value && draft.value.result.asset?.id) {
+    const response = await requestUpdatePipelineItem({
+      businessId: activeBusinessId.value,
+      assetId: draft.value.result.asset.id,
+      textContent: trimmedText,
+    });
+
+    nextAsset = response.asset;
+  }
+
+  const nextDraft = replaceActivationDraft({
+    ...draft.value,
+    result: {
+      ...draft.value.result,
+      post: trimmedText,
+      asset: nextAsset,
+    },
+  });
+
+  draft.value = nextDraft;
+  feedbackMessage.value = successMessage;
 }
 
 async function ensurePersistedDraft(): Promise<string | null> {
@@ -903,30 +1060,8 @@ async function applyAiEditPreview(): Promise<void> {
   aiEditFeedback.value = "";
 
   try {
-    let nextAsset = draft.value.result.asset;
-
-    if (activeBusinessId.value && draft.value.result.asset?.id) {
-      const response = await requestUpdatePipelineItem({
-        businessId: activeBusinessId.value,
-        assetId: draft.value.result.asset.id,
-        textContent: suggestedText,
-      });
-
-      nextAsset = response.asset;
-    }
-
-    const nextDraft = replaceActivationDraft({
-      ...draft.value,
-      result: {
-        ...draft.value.result,
-        post: suggestedText,
-        asset: nextAsset,
-      },
-    });
-
-    draft.value = nextDraft;
+    await updateDraftPostContent(suggestedText, "Changes applied and saved to this draft.");
     aiEditPreview.value = null;
-    feedbackMessage.value = "Changes applied and saved to this draft.";
   } catch (error) {
     aiEditFeedback.value =
       error instanceof Error ? error.message : "Unable to apply AI changes right now.";
@@ -1552,6 +1687,83 @@ async function goToRepurpose(): Promise<void> {
       mode: "repurpose",
     },
     hash: "#repurpose-panel",
+  });
+}
+
+async function generateHashtags(): Promise<void> {
+  if (!postContent.value.trim()) {
+    hashtagFeedback.value = "Generate a post first.";
+    return;
+  }
+
+  isGeneratingHashtags.value = true;
+  hashtagFeedback.value = "";
+
+  try {
+    const response = await requestGeneratedHashtags({
+      businessId: activeBusinessId.value || undefined,
+      contentText: postContent.value,
+      contentType: "text",
+      targetCount: 4,
+    });
+
+    generatedHashtags.value = response.hashtags;
+    captionWithHashtags.value = response.captionWithHashtags;
+    hashtagFeedback.value = `Generated ${response.hashtags.length} hashtag${response.hashtags.length === 1 ? "" : "s"} for this post.`;
+  } catch (error) {
+    hashtagFeedback.value =
+      error instanceof Error ? error.message : "Unable to generate hashtags right now.";
+  } finally {
+    isGeneratingHashtags.value = false;
+  }
+}
+
+async function applyGeneratedHashtags(): Promise<void> {
+  const nextContent =
+    captionWithHashtags.value.trim() ||
+    `${postContent.value.trim()}\n\n${generatedHashtags.value.join(" ")}`.trim();
+
+  if (!nextContent) {
+    hashtagFeedback.value = "Generate hashtags first.";
+    return;
+  }
+
+  if (postContent.value.trim() === nextContent) {
+    hashtagFeedback.value = "These hashtags are already applied to the draft.";
+    return;
+  }
+
+  try {
+    await updateDraftPostContent(nextContent, "Hashtags added to this draft.");
+    hashtagFeedback.value = "Hashtags appended to the end of the post.";
+  } catch (error) {
+    hashtagFeedback.value =
+      error instanceof Error ? error.message : "Unable to apply hashtags right now.";
+  }
+}
+
+async function copyHashtagCaption(): Promise<void> {
+  const value =
+    captionWithHashtags.value.trim() ||
+    `${postContent.value.trim()}\n\n${generatedHashtags.value.join(" ")}`.trim();
+
+  if (!value) {
+    hashtagFeedback.value = "Generate hashtags first.";
+    return;
+  }
+
+  await copyCustomText(value, {
+    successMessage: "Copied the caption with hashtags.",
+    failureMessage: "Unable to copy the caption with hashtags.",
+    target: "hashtags",
+  });
+}
+
+async function copyConversationPrompt(prompt: string): Promise<void> {
+  await copyCustomText(prompt, {
+    successMessage: "Copied interaction prompt.",
+    failureMessage: "Unable to copy interaction prompt.",
+    target: "growth",
   });
 }
 
@@ -2277,6 +2489,116 @@ onBeforeUnmount(() => {
         </article>
 
         <aside class="result-side-rail">
+          <article class="side-card">
+            <p class="panel-meta">Growth mechanics</p>
+            <h3>Make this easier to react to</h3>
+            <p class="shortcut-note side-intro-copy">
+              Use these moves to sharpen hook tension, improve retention, and create a cleaner reason to comment.
+            </p>
+
+            <div class="growth-mechanics-grid">
+              <article
+                v-for="mechanic in growthMechanics"
+                :key="mechanic.id"
+                class="growth-mechanic-card"
+              >
+                <div>
+                  <p class="panel-meta">{{ mechanic.label }}</p>
+                  <strong>{{ mechanic.title }}</strong>
+                  <p>{{ mechanic.copy }}</p>
+                </div>
+                <button
+                  type="button"
+                  class="secondary-action side-action-button"
+                  :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                  @click="void previewAiEdit(mechanic.command)"
+                >
+                  {{ mechanic.actionLabel }}
+                </button>
+              </article>
+            </div>
+
+            <div class="growth-callout">
+              <p class="panel-meta">Comment prompts</p>
+              <strong>Give people a reason to respond</strong>
+              <p class="shortcut-note">
+                Add one direct question to the post, then use a stronger first comment to boost early conversation.
+              </p>
+            </div>
+
+            <div class="prompt-stack">
+              <article
+                v-for="prompt in conversationPrompts"
+                :key="prompt"
+                class="prompt-card"
+              >
+                <p>{{ prompt }}</p>
+                <button
+                  type="button"
+                  class="secondary-action side-action-button"
+                  @click="void copyConversationPrompt(prompt)"
+                >
+                  Copy prompt
+                </button>
+              </article>
+            </div>
+
+            <article v-if="suggestedFirstComment" class="first-comment-card">
+              <p class="panel-meta">First comment</p>
+              <strong>Use this as comment bait</strong>
+              <pre>{{ suggestedFirstComment }}</pre>
+              <button
+                type="button"
+                class="secondary-action side-action-button"
+                @click="void copyConversationPrompt(suggestedFirstComment)"
+              >
+                Copy first comment
+              </button>
+            </article>
+
+            <article class="hashtag-card">
+              <div class="hashtag-card-header">
+                <div>
+                  <p class="panel-meta">Discoverability</p>
+                  <strong>Add focused hashtags</strong>
+                </div>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="isGeneratingHashtags"
+                  @click="void generateHashtags()"
+                >
+                  {{ isGeneratingHashtags ? "Generating..." : "Generate hashtags" }}
+                </button>
+              </div>
+
+              <p class="shortcut-note">
+                Keep it tight. Three to five relevant tags is better than a stuffed footer.
+              </p>
+
+              <div v-if="generatedHashtags.length > 0" class="hashtag-chip-row">
+                <span v-for="tag in generatedHashtags" :key="tag">{{ tag }}</span>
+              </div>
+
+              <div v-if="generatedHashtags.length > 0" class="hashtag-actions">
+                <button type="button" class="primary-action hashtag-action" @click="void applyGeneratedHashtags()">
+                  Apply to post
+                </button>
+                <button type="button" class="secondary-action hashtag-action" @click="void copyHashtagCaption()">
+                  Copy caption
+                </button>
+              </div>
+
+              <p v-if="hashtagFeedback" class="result-feedback subtle hashtag-feedback">
+                {{ hashtagFeedback }}
+              </p>
+            </article>
+
+            <p v-if="growthMechanicsFeedback" class="result-feedback subtle growth-feedback">
+              {{ growthMechanicsFeedback }}
+            </p>
+          </article>
+
           <article class="side-card">
             <p class="panel-meta">Hook bank</p>
             <h3>Backup openings</h3>
@@ -3148,10 +3470,117 @@ onBeforeUnmount(() => {
   gap: 20px;
 }
 
+.side-intro-copy {
+  margin-top: 12px;
+}
+
 .side-card h3 {
   margin: 0;
   font-size: 1.15rem;
   line-height: 1.2;
+}
+
+.growth-mechanics-grid,
+.prompt-stack {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.growth-mechanic-card,
+.prompt-card,
+.first-comment-card,
+.hashtag-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.growth-mechanic-card strong,
+.first-comment-card strong,
+.hashtag-card strong {
+  display: block;
+  line-height: 1.25;
+}
+
+.growth-mechanic-card p,
+.prompt-card p {
+  margin: 8px 0 0;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+}
+
+.growth-callout {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 16%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 18%, white 82%);
+}
+
+.prompt-card p {
+  margin: 0;
+  color: var(--fc-text);
+}
+
+.first-comment-card {
+  margin-top: 16px;
+}
+
+.first-comment-card pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font: inherit;
+  line-height: 1.6;
+  color: var(--fc-text);
+}
+
+.hashtag-card {
+  margin-top: 16px;
+}
+
+.hashtag-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hashtag-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hashtag-chip-row span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-accent-soft) 32%, white 68%);
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 16%, var(--fc-border));
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.hashtag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.hashtag-action {
+  flex: 1 1 160px;
+}
+
+.growth-feedback,
+.hashtag-feedback {
+  margin-top: 14px;
 }
 
 .execution-fact-grid {
