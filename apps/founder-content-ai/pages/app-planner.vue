@@ -52,6 +52,11 @@ interface PlannerDayModel {
   posts: ScheduledPost[];
 }
 
+interface LinkedInPreviewModel {
+  visibleText: string;
+  truncated: boolean;
+}
+
 const route = useRoute();
 const router = useRouter();
 const {
@@ -285,6 +290,32 @@ const selectedScheduledPost = computed(
   () => scheduledPosts.value.find((post) => post.id === selectedScheduledPostId.value) ?? null,
 );
 
+const selectedScheduledPostPreview = computed<LinkedInPreviewModel | null>(() => {
+  if (!selectedScheduledPost.value) {
+    return null;
+  }
+
+  return buildLinkedInPreview(selectedScheduledPost.value.contentText);
+});
+
+const selectedScheduledPostPreviewImageUrl = computed(() => {
+  const post = selectedScheduledPost.value;
+
+  if (!post) {
+    return "";
+  }
+
+  const assetPreviewUrl =
+    post.assets.find((asset) => asset.previewUrl || asset.storageUrl)?.previewUrl
+    || post.assets.find((asset) => asset.previewUrl || asset.storageUrl)?.storageUrl;
+
+  if (assetPreviewUrl) {
+    return assetPreviewUrl;
+  }
+
+  return post.slides[0]?.imageDataUrl || "";
+});
+
 const selectedScheduledPostCanPause = computed(
   () => selectedScheduledPost.value?.status === "scheduled",
 );
@@ -510,6 +541,36 @@ function buildExcerpt(value: string, maxLength = 140): string {
   }
 
   return `${normalized.slice(0, maxLength).trimEnd()}...`;
+}
+
+function normalizePreviewParagraphs(value: string): string[] {
+  return value
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/[ \t]+\n/g, "\n").trim())
+    .filter((paragraph) => paragraph.length > 0);
+}
+
+function buildLinkedInPreview(value: string, visibleLimit = 230): LinkedInPreviewModel {
+  const normalizedParagraphs = normalizePreviewParagraphs(value);
+  const normalizedText = normalizedParagraphs.join("\n\n").trim();
+
+  if (normalizedText.length <= visibleLimit) {
+    return {
+      visibleText: normalizedText,
+      truncated: false,
+    };
+  }
+
+  const truncatedText = normalizedText.slice(0, visibleLimit).trimEnd();
+  const lastWhitespaceIndex = truncatedText.lastIndexOf(" ");
+  const safePreview = lastWhitespaceIndex > 120
+    ? truncatedText.slice(0, lastWhitespaceIndex).trimEnd()
+    : truncatedText;
+
+  return {
+    visibleText: `${safePreview}...`,
+    truncated: true,
+  };
 }
 
 function initializeWeekState(): void {
@@ -1447,7 +1508,54 @@ onMounted(() => {
               </div>
 
               <article class="planner-preview-card">
-                <div class="planner-preview-chip-row">
+                <div class="planner-preview-card-header">
+                  <div>
+                    <p class="workspace-eyebrow">Preview on LinkedIn</p>
+                    <h3>What people see first</h3>
+                  </div>
+                  <p class="workspace-chip planner-preview-attention">
+                    {{ selectedScheduledPostPreview?.truncated ? "Visible before click" : "Full post visible" }}
+                  </p>
+                </div>
+
+                <div class="planner-linkedin-preview">
+                  <div class="planner-linkedin-preview-header">
+                    <div class="planner-linkedin-avatar">
+                      {{ (selectedScheduledPost.selectedIdentityDisplayName || "LI").slice(0, 2).toUpperCase() }}
+                    </div>
+
+                    <div class="planner-linkedin-author">
+                      <strong>{{ selectedScheduledPost.selectedIdentityDisplayName || "Workspace LinkedIn identity" }}</strong>
+                      <span>
+                        {{ resolveIdentityTypeLabel(selectedScheduledPost) }} · {{ resolveScheduledPostStatusSummary(selectedScheduledPost) }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="planner-linkedin-preview-body">
+                    <p>{{ selectedScheduledPostPreview?.visibleText || selectedScheduledPost.contentText }}</p>
+                    <button
+                      v-if="selectedScheduledPostPreview?.truncated"
+                      type="button"
+                      class="planner-linkedin-see-more"
+                      disabled
+                    >
+                      ...see more
+                    </button>
+                  </div>
+
+                  <div
+                    v-if="selectedScheduledPostPreviewImageUrl"
+                    class="planner-linkedin-preview-media"
+                  >
+                    <img
+                      :src="selectedScheduledPostPreviewImageUrl"
+                      alt="Attached media preview"
+                    />
+                  </div>
+                </div>
+
+                <div class="planner-preview-meta-row">
                   <p class="workspace-chip">{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</p>
                   <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
                     {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
@@ -1456,7 +1564,11 @@ onMounted(() => {
                     📎 {{ getMediaCount(selectedScheduledPost) }} image{{ getMediaCount(selectedScheduledPost) === 1 ? "" : "s" }}
                   </p>
                 </div>
-                <p>{{ selectedScheduledPost.contentText }}</p>
+
+                <div class="planner-preview-full-copy">
+                  <span class="planner-inline-label">Full post copy</span>
+                  <p>{{ selectedScheduledPost.contentText }}</p>
+                </div>
               </article>
 
               <p
@@ -1737,6 +1849,8 @@ onMounted(() => {
 .planner-grid-header-actions,
 .planner-sidebar,
 .planner-day-posts,
+.planner-preview-card-header,
+.planner-preview-meta-row,
 .planner-post-pill,
 .planner-backlog-card,
 .planner-day-schedule-list,
@@ -1936,13 +2050,15 @@ onMounted(() => {
 }
 
 .planner-week-grid {
-  grid-template-columns: repeat(7, minmax(12.5rem, 1fr));
+  grid-template-columns: repeat(7, minmax(17rem, 18.5rem));
   gap: 1rem;
   overflow-x: auto;
   padding: 0.25rem 0.1rem 0.7rem;
   min-height: clamp(24rem, 58vh, 40rem);
   align-items: stretch;
+  justify-content: start;
   scrollbar-width: thin;
+  scroll-snap-type: x proximity;
 }
 
 .planner-day-card {
@@ -2154,11 +2270,116 @@ onMounted(() => {
 
 .planner-preview-card {
   display: grid;
-  gap: 0.8rem;
+  gap: 1rem;
   border: 1px solid rgba(60, 41, 30, 0.1);
   border-radius: 1.1rem;
   background: rgba(255, 255, 255, 0.82);
   padding: 1rem;
+}
+
+.planner-preview-card-header h3 {
+  margin: 0.2rem 0 0;
+  font-size: 1.1rem;
+}
+
+.planner-preview-attention {
+  align-self: start;
+}
+
+.planner-linkedin-preview {
+  display: grid;
+  gap: 0.9rem;
+  border: 1px solid rgba(60, 41, 30, 0.12);
+  border-radius: 1.2rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 244, 238, 0.94));
+  padding: 1rem;
+  box-shadow: 0 16px 28px rgba(145, 84, 39, 0.07);
+}
+
+.planner-linkedin-preview-header {
+  display: flex;
+  gap: 0.85rem;
+  align-items: center;
+}
+
+.planner-linkedin-avatar {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, rgba(232, 239, 255, 1), rgba(214, 226, 255, 0.96));
+  color: #3759b8;
+  font-weight: 800;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+}
+
+.planner-linkedin-author {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.planner-linkedin-author strong {
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.planner-linkedin-author span {
+  color: rgba(64, 42, 28, 0.66);
+  font-size: 0.88rem;
+}
+
+.planner-linkedin-preview-body {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.planner-linkedin-preview-body p {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
+.planner-linkedin-see-more {
+  width: fit-content;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: rgba(64, 42, 28, 0.66);
+  font: inherit;
+  font-weight: 700;
+  cursor: default;
+}
+
+.planner-linkedin-preview-media {
+  overflow: hidden;
+  border-radius: 1rem;
+  border: 1px solid rgba(60, 41, 30, 0.08);
+  background: rgba(245, 240, 233, 0.86);
+}
+
+.planner-linkedin-preview-media img {
+  width: 100%;
+  max-height: 22rem;
+  object-fit: cover;
+  display: block;
+}
+
+.planner-preview-meta-row {
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.planner-preview-full-copy {
+  display: grid;
+  gap: 0.45rem;
+  padding-top: 0.2rem;
+  border-top: 1px solid rgba(60, 41, 30, 0.08);
+}
+
+.planner-preview-full-copy p {
+  margin: 0;
+  white-space: pre-wrap;
 }
 
 .planner-day-schedule-card {
@@ -2396,7 +2617,8 @@ onMounted(() => {
   .planner-grid-header,
   .planner-detail-header,
   .planner-day-header,
-  .planner-backlog-card-footer {
+  .planner-backlog-card-footer,
+  .planner-preview-card-header {
     flex-direction: column;
     align-items: flex-start;
   }

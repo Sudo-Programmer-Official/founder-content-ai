@@ -133,6 +133,27 @@ Shared worker runtime envs:
 
 The web API should enqueue work and return quickly. The shared worker owns background execution and retries.
 
+## Media Upload Storage
+
+Post media, generated visuals, and workspace assets require S3-backed storage on the API service.
+
+Required envs:
+
+- `AWS_REGION`
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `S3_MEDIA_BUCKET`
+
+Optional envs:
+
+- `AWS_SESSION_TOKEN`
+- `S3_MEDIA_PREFIX`
+- `S3_PRESIGNED_UPLOAD_TTL_SECONDS`
+- `S3_MAX_IMAGE_BYTES`
+- `S3_MAX_VIDEO_BYTES`
+
+If these are missing, upload and generated-media attach flows will stay disabled and posts will remain text-only until storage is configured.
+
 ## Source Docs
 
 Use the canonical docs in `../../docs/` as the source of truth:

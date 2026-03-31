@@ -1597,14 +1597,6 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="workspace-shell">
-    <section class="email-page-header">
-      <p class="workspace-eyebrow">Email</p>
-      <h1>Run campaigns without mixing contacts, sending, and settings.</h1>
-      <p class="workspace-description compact">
-        Operational email dashboard for lists, campaigns, delivery, and sender health.
-      </p>
-    </section>
-
     <p v-if="errorMessage" class="workspace-feedback error">{{ errorMessage }}</p>
     <p v-else-if="feedbackMessage" class="workspace-feedback">{{ feedbackMessage }}</p>
 
@@ -1626,10 +1618,13 @@ onBeforeUnmount(() => {
         <section class="workspace-card email-tabs-card">
           <div class="email-tabs-header">
             <div>
-              <p class="panel-meta">Email workspace</p>
-              <h2>{{ businesses.find((membership) => membership.businessId === selectedBusinessId)?.business.name || "Workspace email" }}</h2>
-              <p class="panel-note">Lists, campaigns, delivery, and sender health in one place.</p>
+              <p class="panel-meta">Email campaigns</p>
+              <h1>Manage lists, campaigns, and delivery</h1>
+              <p class="panel-note">Operate email from one workspace without leaving the product flow.</p>
             </div>
+            <span class="workspace-chip email-workspace-chip">
+              {{ businesses.find((membership) => membership.businessId === selectedBusinessId)?.business.name || "Workspace" }}
+            </span>
           </div>
 
           <div class="email-tab-row" role="tablist" aria-label="Email sections">
@@ -2467,13 +2462,7 @@ onBeforeUnmount(() => {
 .workspace-shell {
   width: min(100%, 1120px);
   margin: 0 auto;
-  padding: 48px 20px 80px;
-}
-
-.email-page-header {
-  display: grid;
-  gap: 8px;
-  margin-bottom: 24px;
+  padding: 32px 20px 80px;
 }
 
 .workspace-eyebrow,
@@ -2484,12 +2473,6 @@ onBeforeUnmount(() => {
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-}
-
-.email-page-header h1 {
-  margin: 0;
-  font-size: clamp(1.9rem, 3.4vw, 2.8rem);
-  line-height: 1.08;
 }
 
 .workspace-description {
@@ -2573,6 +2556,17 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+}
+
+.email-tabs-header h1 {
+  margin: 0;
+  font-size: clamp(2rem, 3.2vw, 2.75rem);
+  line-height: 1.04;
+}
+
+.email-workspace-chip {
+  align-self: flex-start;
+  margin-top: 0.1rem;
 }
 
 .email-tab-row {

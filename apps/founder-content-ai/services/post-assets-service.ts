@@ -7,20 +7,29 @@ import type {
   ListPostAssetsResponse,
 } from "../../../packages/shared-types";
 import { apiDelete, apiGet, apiPost } from "./api-client";
+import { toFriendlyMediaStorageError } from "./media-storage-errors";
 
 export async function requestMediaUploadUrl(
   input: CreateMediaUploadUrlRequest,
 ): Promise<CreateMediaUploadUrlResponse> {
-  return apiPost<CreateMediaUploadUrlRequest, CreateMediaUploadUrlResponse>(
-    "/media/upload-url",
-    input,
-  );
+  try {
+    return await apiPost<CreateMediaUploadUrlRequest, CreateMediaUploadUrlResponse>(
+      "/media/upload-url",
+      input,
+    );
+  } catch (error) {
+    throw toFriendlyMediaStorageError(error, "Unable to start media upload right now.");
+  }
 }
 
 export async function requestCreatePostAsset(
   input: CreatePostAssetRequest,
 ): Promise<CreatePostAssetResponse> {
-  return apiPost<CreatePostAssetRequest, CreatePostAssetResponse>("/post-assets", input);
+  try {
+    return await apiPost<CreatePostAssetRequest, CreatePostAssetResponse>("/post-assets", input);
+  } catch (error) {
+    throw toFriendlyMediaStorageError(error, "Unable to attach media right now.");
+  }
 }
 
 export async function requestPostAssets(
