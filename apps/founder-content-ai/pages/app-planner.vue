@@ -426,6 +426,40 @@ const selectedScheduledPostFriendlyError = computed(() =>
   toFriendlyMediaStorageMessage(selectedScheduledPost.value?.errorMessage),
 );
 
+const selectedScheduledPostErrorContext = computed<{
+  title: string;
+  description: string;
+  tone: "danger" | "warning";
+} | null>(() => {
+  const post = selectedScheduledPost.value;
+
+  if (!post?.errorMessage) {
+    return null;
+  }
+
+  if (post.status === "failed") {
+    return {
+      title: "Last publish failure",
+      description: "This was the reason the most recent publish attempt failed. Fix it, then retry or publish now.",
+      tone: "danger",
+    };
+  }
+
+  if (post.status === "scheduled" && post.retryCount > 0) {
+    return {
+      title: "Retry queued",
+      description: "A previous attempt failed, but the worker is scheduled to try again automatically.",
+      tone: "warning",
+    };
+  }
+
+  return {
+    title: "Delivery note",
+    description: "This message came from the last delivery attempt.",
+    tone: "warning",
+  };
+});
+
 function resolveIdentityTypeLabel(post: ScheduledPost): string {
   if (post.selectedIdentityType === "organization") {
     return "Page";
@@ -1576,12 +1610,17 @@ onMounted(() => {
                 </div>
               </article>
 
-              <p
-                v-if="selectedScheduledPost.errorMessage"
-                class="planner-feedback danger"
+              <section
+                v-if="selectedScheduledPost.errorMessage && selectedScheduledPostErrorContext"
+                class="planner-status-note"
+                :data-tone="selectedScheduledPostErrorContext.tone"
               >
-                {{ selectedScheduledPostFriendlyError }}
-              </p>
+                <span class="planner-inline-label">{{ selectedScheduledPostErrorContext.title }}</span>
+                <p>{{ selectedScheduledPostFriendlyError }}</p>
+                <p class="planner-status-note-description">
+                  {{ selectedScheduledPostErrorContext.description }}
+                </p>
+              </section>
 
               <div
                 v-if="selectedScheduledPostCanReschedule"
@@ -2590,6 +2629,30 @@ onMounted(() => {
 
 .planner-feedback.danger {
   color: #a24430;
+}
+
+.planner-status-note {
+  display: grid;
+  gap: 0.45rem;
+  margin: 1rem 0 0;
+  padding: 0.95rem 1rem;
+  border: 1px solid rgba(180, 78, 60, 0.18);
+  border-radius: 1rem;
+  background: rgba(255, 247, 245, 0.9);
+}
+
+.planner-status-note[data-tone="warning"] {
+  border-color: rgba(210, 138, 62, 0.2);
+  background: rgba(255, 249, 241, 0.92);
+}
+
+.planner-status-note p {
+  margin: 0;
+}
+
+.planner-status-note-description {
+  color: rgba(64, 42, 28, 0.72);
+  font-size: 0.95rem;
 }
 
 .planner-danger-button {

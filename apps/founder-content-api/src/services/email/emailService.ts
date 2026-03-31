@@ -3052,7 +3052,7 @@ export async function createEmailCampaign(
   actorUserId: string | undefined,
   input: CreateEmailCampaignRequest,
 ): Promise<CreateEmailCampaignResponse> {
-  if (input.subject.trim() === "") {
+  if (input.subject.trim() === "" || (input.bodyText?.trim() || "") === "") {
     throw new HttpError(400, "email_campaign_invalid", "Subject and email body are required.");
   }
 
@@ -3087,7 +3087,8 @@ export async function createEmailCampaign(
           $7,
           $8,
           $9,
-          $10::uuid,
+          $10,
+          $11::uuid,
           'draft'
         )
         returning
