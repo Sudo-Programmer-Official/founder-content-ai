@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { useAuthContext } from "../auth/auth-context";
 import { useProductAccessContext } from "../access/product-access-context";
 import AiAssistPanel from "../components/AiAssistPanel.vue";
 import VoiceRecorder from "../components/VoiceRecorder.vue";
@@ -42,6 +43,7 @@ import { consumeRepurposeSeed } from "../utils/repurpose-loop";
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthContext();
 const {
   bootstrap: productAccess,
   setActiveBusinessId,
@@ -689,7 +691,7 @@ function applyHashtagResponse(response: GenerateHashtagsResponse) {
 }
 
 async function loadRecommendedPostTimes(businessId: string) {
-  if (!businessId) {
+  if (!auth.isReady.value || !auth.isAuthenticated.value || !businessId) {
     recommendedSlots.value = [];
     recommendedSlotsMessage.value = "";
     recommendedTimezone.value = "UTC";
@@ -1320,7 +1322,7 @@ async function scheduleCarouselPost() {
 watch(
   selectedBusinessId,
   async (businessId, previousBusinessId) => {
-    if (!isProductAccessReady.value || !businessId || businessId === previousBusinessId) {
+    if (!auth.isReady.value || !auth.isAuthenticated.value || !isProductAccessReady.value || !businessId || businessId === previousBusinessId) {
       return;
     }
 
@@ -1337,9 +1339,15 @@ watch(
 );
 
 watch(
-  () => isProductAccessReady.value,
-  async (accessReady, previousReady) => {
-    if (!accessReady || accessReady === previousReady) {
+  () => [auth.isReady.value, auth.isAuthenticated.value, isProductAccessReady.value] as const,
+  async ([authReady, isAuthenticated, accessReady], previousValue) => {
+    const [previousAuthReady, previousIsAuthenticated, previousAccessReady] = previousValue ?? [false, false, false];
+    if (
+      !authReady ||
+      !isAuthenticated ||
+      !accessReady ||
+      (authReady === previousAuthReady && isAuthenticated === previousIsAuthenticated && accessReady === previousAccessReady)
+    ) {
       return;
     }
 
@@ -1367,7 +1375,7 @@ watch(
 onMounted(async () => {
   applyRepurposeSeed();
 
-  if (!isProductAccessReady.value) {
+  if (!auth.isReady.value || !auth.isAuthenticated.value || !isProductAccessReady.value) {
     return;
   }
 

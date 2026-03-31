@@ -9,6 +9,7 @@ import type {
   SchedulingSafetyWarning,
   ScheduledPostStatus,
 } from "../../../packages/shared-types";
+import { useAuthContext } from "../auth/auth-context";
 import { useProductAccessContext } from "../access/product-access-context";
 import PlannerSkeleton from "../components/skeletons/PlannerSkeleton.vue";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
@@ -60,6 +61,7 @@ interface LinkedInPreviewModel {
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthContext();
 const {
   bootstrap: productAccess,
   activeBusinessId,
@@ -702,7 +704,7 @@ async function loadBusinesses(): Promise<void> {
 }
 
 async function loadPlannerData(): Promise<void> {
-  if (!resolvedBusinessId.value || !schedulerEnabled.value) {
+  if (!auth.isReady.value || !auth.isAuthenticated.value || !resolvedBusinessId.value || !schedulerEnabled.value) {
     dashboard.value = null;
     scheduledPosts.value = [];
     recommendedSlots.value = [];
@@ -1173,14 +1175,16 @@ watch(
 watch(
   () =>
     [
+      auth.isReady.value,
+      auth.isAuthenticated.value,
       isProductAccessReady.value,
       resolvedBusinessId.value,
       schedulerEnabled.value,
       canReadDraftBacklog.value,
       audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
     ] as const,
-  ([accessReady]) => {
-    if (!accessReady) {
+  ([authReady, isAuthenticated, accessReady]) => {
+    if (!authReady || !isAuthenticated || !accessReady) {
       return;
     }
 
@@ -1189,7 +1193,7 @@ watch(
 );
 
 onMounted(() => {
-  if (isProductAccessReady.value) {
+  if (auth.isReady.value && auth.isAuthenticated.value && isProductAccessReady.value) {
     void initializePage();
   }
 });

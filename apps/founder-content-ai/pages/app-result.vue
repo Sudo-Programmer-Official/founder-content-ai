@@ -13,6 +13,7 @@ import type {
   WorkspaceAsset,
 } from "../../../packages/shared-types";
 import WorkspaceAssetPickerModal from "../components/WorkspaceAssetPickerModal.vue";
+import { useAuthContext } from "../auth/auth-context";
 import { useProductAccessContext } from "../access/product-access-context";
 import { calculateContentScore } from "../composables/useContentScore";
 import { ApiRequestError } from "../services/api-client";
@@ -55,6 +56,7 @@ import { saveRepurposeSeed } from "../utils/repurpose-loop";
 
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthContext();
 const { bootstrap, isFeatureEnabled } = useProductAccessContext();
 
 const draft = ref<ActivationDraftRecord | null>(null);
@@ -1286,7 +1288,7 @@ function seedScheduleForm(): void {
 }
 
 async function loadRecommendedScheduleSlots(preferredTimezone?: string): Promise<void> {
-  if (!activeBusinessId.value) {
+  if (!auth.isReady.value || !auth.isAuthenticated.value || !activeBusinessId.value) {
     recommendedSlots.value = [];
     return;
   }
