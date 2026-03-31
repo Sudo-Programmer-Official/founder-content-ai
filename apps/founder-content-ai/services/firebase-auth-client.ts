@@ -9,12 +9,16 @@ import {
 } from "./auth-session-store";
 
 interface FirebaseAuthResponse {
-  idToken: string;
-  refreshToken: string;
-  expiresIn: string;
-  localId: string;
-  email: string;
+  idToken?: string;
+  refreshToken?: string;
+  expiresIn?: string | number;
+  localId?: string;
+  email?: string;
   displayName?: string;
+  id_token?: string;
+  refresh_token?: string;
+  expires_in?: string | number;
+  local_id?: string;
 }
 
 interface FirebaseRefreshResponse {
@@ -104,12 +108,24 @@ function toStoredAuthSession(
   response: FirebaseAuthResponse,
   existingSession?: StoredAuthSession | null,
 ): StoredAuthSession {
+  const idToken = response.idToken ?? response.id_token;
+  const refreshToken = response.refreshToken ?? response.refresh_token;
+  const localId = response.localId ?? response.local_id ?? existingSession?.localId;
+  const email = response.email ?? existingSession?.email;
+  const expiresInRaw = response.expiresIn ?? response.expires_in;
+  const expiresInSeconds = Number(expiresInRaw ?? 3600);
+  const expiresAtMs = Date.now() + (Number.isFinite(expiresInSeconds) ? expiresInSeconds : 3600) * 1000;
+
+  if (!idToken || !refreshToken || !localId || !email) {
+    throw new Error("Authentication succeeded, but the session payload was incomplete.");
+  }
+
   return {
-    idToken: response.idToken,
-    refreshToken: response.refreshToken,
-    expiresAt: new Date(Date.now() + Number(response.expiresIn) * 1000).toISOString(),
-    email: response.email,
-    localId: response.localId,
+    idToken,
+    refreshToken,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    email,
+    localId,
     displayName: response.displayName?.trim() || existingSession?.displayName,
   };
 }
