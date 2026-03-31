@@ -7,11 +7,65 @@ export interface StoredAuthSession {
   displayName?: string;
 }
 
+export type AuthSessionPersistence = "local" | "session";
+
 const AUTH_SESSION_STORAGE_KEY = "founder-content-auth-session";
 export const AUTH_SESSION_CHANGED_EVENT = "founder-content-auth-session-changed";
 
 function canUseBrowserStorage(): boolean {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
+  return (
+    typeof window !== "undefined" &&
+    typeof window.localStorage !== "undefined" &&
+    typeof window.sessionStorage !== "undefined"
+  );
+}
+
+function storageForPersistence(persistence: AuthSessionPersistence): Storage {
+  return persistence === "session" ? window.sessionStorage : window.localStorage;
+}
+
+function readStoredSessionFrom(storage: Storage): StoredAuthSession | null {
+  const rawValue = storage.getItem(AUTH_SESSION_STORAGE_KEY);
+
+  if (!rawValue) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawValue) as StoredAuthSession;
+  } catch {
+    storage.removeItem(AUTH_SESSION_STORAGE_KEY);
+    return null;
+  }
+}
+
+function loadStoredAuthSessionRecord(): {
+  session: StoredAuthSession;
+  persistence: AuthSessionPersistence;
+} | null {
+  if (!canUseBrowserStorage()) {
+    return null;
+  }
+
+  const localSession = readStoredSessionFrom(window.localStorage);
+
+  if (localSession) {
+    return {
+      session: localSession,
+      persistence: "local",
+    };
+  }
+
+  const sessionSession = readStoredSessionFrom(window.sessionStorage);
+
+  if (sessionSession) {
+    return {
+      session: sessionSession,
+      persistence: "session",
+    };
+  }
+
+  return null;
 }
 
 function dispatchAuthSessionChanged(): void {
@@ -23,30 +77,25 @@ function dispatchAuthSessionChanged(): void {
 }
 
 export function loadStoredAuthSession(): StoredAuthSession | null {
-  if (!canUseBrowserStorage()) {
-    return null;
-  }
-
-  const rawValue = window.localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
-
-  if (!rawValue) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(rawValue) as StoredAuthSession;
-  } catch {
-    window.localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
-    return null;
-  }
+  return loadStoredAuthSessionRecord()?.session ?? null;
 }
 
-export function persistAuthSession(session: StoredAuthSession): void {
+export function getStoredAuthSessionPersistence(): AuthSessionPersistence | null {
+  return loadStoredAuthSessionRecord()?.persistence ?? null;
+}
+
+export function persistAuthSession(
+  session: StoredAuthSession,
+  persistence: AuthSessionPersistence = "local",
+): void {
   if (!canUseBrowserStorage()) {
     return;
   }
 
-  window.localStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+  storageForPersistence(persistence).setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session));
+  storageForPersistence(persistence === "local" ? "session" : "local").removeItem(
+    AUTH_SESSION_STORAGE_KEY,
+  );
   dispatchAuthSessionChanged();
 }
 
@@ -56,6 +105,7 @@ export function clearStoredAuthSession(): void {
   }
 
   window.localStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
+  window.sessionStorage.removeItem(AUTH_SESSION_STORAGE_KEY);
   dispatchAuthSessionChanged();
 }
 

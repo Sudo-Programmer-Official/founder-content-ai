@@ -15,6 +15,7 @@ export interface AuthContextValue {
   login: (input: {
     email: string;
     password: string;
+    rememberBrowser?: boolean;
   }) => Promise<MeResponse | null>;
   signup: (input: {
     email: string;

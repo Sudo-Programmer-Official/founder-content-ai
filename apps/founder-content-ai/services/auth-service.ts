@@ -52,6 +52,31 @@ async function loadAppSession(): Promise<MeResponse> {
   }
 }
 
+async function buildFirebaseFrontendSession(
+  authSession: StoredAuthSession,
+  options?: {
+    tolerateAppSessionFailure?: boolean;
+  },
+): Promise<FrontendAuthSession> {
+  try {
+    return {
+      authSession,
+      appSession: await loadAppSession(),
+      mode: "firebase",
+    };
+  } catch (error) {
+    if (!options?.tolerateAppSessionFailure) {
+      throw error;
+    }
+
+    return {
+      authSession,
+      appSession: null,
+      mode: "firebase",
+    };
+  }
+}
+
 export async function restoreFrontendAuthSession(): Promise<FrontendAuthSession | null> {
   const authSession = await ensureFreshStoredAuthSession();
 
@@ -82,14 +107,12 @@ export async function restoreFrontendAuthSession(): Promise<FrontendAuthSession 
 export async function loginWithEmailPassword(
   email: string,
   password: string,
+  options?: {
+    rememberBrowser?: boolean;
+  },
 ): Promise<FrontendAuthSession> {
-  const authSession = await signInWithEmailPassword(email, password);
-
-  return {
-    authSession,
-    appSession: await loadAppSession(),
-    mode: "firebase",
-  };
+  const authSession = await signInWithEmailPassword(email, password, options);
+  return buildFirebaseFrontendSession(authSession);
 }
 
 export async function signupWithEmailPassword(
@@ -97,13 +120,25 @@ export async function signupWithEmailPassword(
   password: string,
   displayName?: string,
 ): Promise<FrontendAuthSession> {
-  const authSession = await signUpWithEmailPassword(email, password, displayName);
+  try {
+    const authSession = await signUpWithEmailPassword(email, password, displayName);
+    return buildFirebaseFrontendSession(authSession, {
+      tolerateAppSessionFailure: true,
+    });
+  } catch (error) {
+    if (getFirebaseAuthErrorCode(error) !== "EMAIL_EXISTS") {
+      throw error;
+    }
 
-  return {
-    authSession,
-    appSession: await loadAppSession(),
-    mode: "firebase",
-  };
+    try {
+      const authSession = await signInWithEmailPassword(email, password);
+      return buildFirebaseFrontendSession(authSession, {
+        tolerateAppSessionFailure: true,
+      });
+    } catch {
+      throw error;
+    }
+  }
 }
 
 export async function requestPasswordResetEmail(email: string): Promise<void> {

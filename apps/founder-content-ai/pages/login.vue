@@ -11,6 +11,7 @@ const auth = useAuthContext();
 
 const email = ref(typeof route.query.email === "string" ? route.query.email.trim() : "");
 const password = ref("");
+const rememberBrowser = ref(true);
 const pageError = ref("");
 const resetNotice = ref("");
 
@@ -34,6 +35,7 @@ async function handleLogin(): Promise<void> {
     await auth.login({
       email: email.value.trim(),
       password: password.value,
+      rememberBrowser: rememberBrowser.value,
     });
     await router.replace(redirectTarget.value);
   } catch (error) {
@@ -94,6 +96,11 @@ async function handlePasswordReset(): Promise<void> {
             autocomplete="current-password"
             placeholder="Your password"
           />
+        </label>
+
+        <label class="remember-browser-toggle">
+          <input v-model="rememberBrowser" type="checkbox" />
+          <span>Remember this browser</span>
         </label>
 
         <div class="auth-helper-row">
@@ -199,6 +206,21 @@ async function handlePasswordReset(): Promise<void> {
   background: var(--fc-surface);
   color: var(--fc-text);
   font: inherit;
+}
+
+.remember-browser-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--fc-text);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.remember-browser-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--fc-accent);
 }
 
 .auth-primary,

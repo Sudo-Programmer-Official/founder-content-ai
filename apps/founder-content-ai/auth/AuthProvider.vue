@@ -60,11 +60,14 @@ async function refreshSession(): Promise<MeResponse | null> {
 async function login(input: {
   email: string;
   password: string;
+  rememberBrowser?: boolean;
 }): Promise<MeResponse | null> {
   isLoading.value = true;
 
   try {
-    const session = await loginWithEmailPassword(input.email, input.password);
+    const session = await loginWithEmailPassword(input.email, input.password, {
+      rememberBrowser: input.rememberBrowser,
+    });
     authSession.value = session.authSession;
     appSession.value = session.appSession;
     mode.value = session.mode;

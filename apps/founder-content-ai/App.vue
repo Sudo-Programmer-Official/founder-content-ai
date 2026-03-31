@@ -8,12 +8,13 @@ import { appRoutes } from "./utils/routes";
 
 const route = useRoute();
 const router = useRouter();
-const { bootstrap, isFeatureEnabled } = useProductAccessContext();
+const { bootstrap, activeBusinessId, isFeatureEnabled } = useProductAccessContext();
 const auth = useAuthContext();
 const mobileMenuOpen = ref(false);
 const accountMenuOpen = ref(false);
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "founder-content:sidebar-collapsed";
 const sidebarCollapsed = ref(false);
+const lastKnownPlatformAdminUserId = ref("");
 
 if (typeof window !== "undefined") {
   sidebarCollapsed.value = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
@@ -23,10 +24,24 @@ const isPublicShell = computed(() => route.meta.shell === "public");
 const usesWorkspaceShell = computed(
   () => !isPublicShell.value && route.name !== "onboarding",
 );
+const currentWorkspaceId = computed(
+  () => bootstrap.value?.activeBusinessId?.trim() || activeBusinessId.value?.trim() || "",
+);
+const canAccessAdmin = computed(() => {
+  const currentAuthUserId = auth.authSession.value?.localId ?? "";
+
+  if (!currentAuthUserId || !auth.isAuthenticated.value) {
+    return false;
+  }
+
+  return (
+    Boolean(bootstrap.value?.isPlatformAdmin) ||
+    lastKnownPlatformAdminUserId.value === currentAuthUserId
+  );
+});
 
 const visibleAppLinks = computed(() => {
-  const currentBusinessId = bootstrap.value?.activeBusinessId;
-  const hasWorkspaceContext = Boolean(currentBusinessId);
+  const hasWorkspaceContext = Boolean(currentWorkspaceId.value);
   const canUsePlanner = hasWorkspaceContext && isFeatureEnabled("scheduler");
   const canUseDashboard = hasWorkspaceContext && isFeatureEnabled("control_dashboard");
   const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
@@ -43,7 +58,7 @@ const visibleAppLinks = computed(() => {
     { to: appRoutes.appEmail, label: "Email", shortLabel: "E", visible: canUseEmail },
     { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", visible: canUseDashboard },
     { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", visible: true },
-    { to: appRoutes.admin, label: "Admin", shortLabel: "AD", visible: bootstrap.value?.isPlatformAdmin ?? false },
+    { to: appRoutes.admin, label: "Admin", shortLabel: "AD", visible: canAccessAdmin.value },
   ].filter((link) => link.visible);
 });
 
@@ -103,7 +118,14 @@ const currentPageSubtitle = computed(() => {
   return "Keep navigation persistent, content focused, and actions obvious.";
 });
 
-const userLabel = computed(() => auth.currentUser.value?.fullName || auth.currentUser.value?.email || "");
+const userLabel = computed(
+  () =>
+    auth.currentUser.value?.fullName ||
+    auth.currentUser.value?.email ||
+    auth.authSession.value?.displayName ||
+    auth.authSession.value?.email ||
+    "",
+);
 const userInitial = computed(() => userLabel.value.trim().charAt(0).toUpperCase() || "F");
 
 watch(
@@ -122,6 +144,26 @@ watch(sidebarCollapsed, (value) => {
   window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(value));
   accountMenuOpen.value = false;
 });
+
+watch(
+  () => auth.authSession.value?.localId ?? "",
+  (nextUserId, previousUserId) => {
+    if (nextUserId !== previousUserId) {
+      lastKnownPlatformAdminUserId.value = "";
+    }
+  },
+);
+
+watch(
+  () => bootstrap.value?.isPlatformAdmin ?? false,
+  (isPlatformAdmin) => {
+    const currentAuthUserId = auth.authSession.value?.localId ?? "";
+
+    if (isPlatformAdmin && currentAuthUserId) {
+      lastKnownPlatformAdminUserId.value = currentAuthUserId;
+    }
+  },
+);
 
 function handleDocumentClick(event: MouseEvent): void {
   const target = event.target;
@@ -164,6 +206,11 @@ function toggleSidebar(): void {
 
 function toggleAccountMenu(): void {
   accountMenuOpen.value = !accountMenuOpen.value;
+}
+
+async function goToAdmin(): Promise<void> {
+  accountMenuOpen.value = false;
+  await router.push(appRoutes.admin);
 }
 </script>
 
@@ -287,6 +334,15 @@ function toggleAccountMenu(): void {
 
             <transition name="sidebar-fade">
               <div v-if="accountMenuOpen" class="sidebar-account-menu" role="menu">
+                <button
+                  v-if="canAccessAdmin"
+                  type="button"
+                  class="sidebar-account-menu-item"
+                  role="menuitem"
+                  @click="void goToAdmin()"
+                >
+                  Admin
+                </button>
                 <button
                   type="button"
                   class="sidebar-account-menu-item"

@@ -1,8 +1,10 @@
 import {
   clearStoredAuthSession,
+  getStoredAuthSessionPersistence,
   isSessionExpiringSoon,
   loadStoredAuthSession,
   persistAuthSession,
+  type AuthSessionPersistence,
   type StoredAuthSession,
 } from "./auth-session-store";
 
@@ -241,6 +243,9 @@ async function updateDisplayName(idToken: string, displayName: string): Promise<
 export async function signInWithEmailPassword(
   email: string,
   password: string,
+  options?: {
+    rememberBrowser?: boolean;
+  },
 ): Promise<StoredAuthSession> {
   const response = await postJson<FirebaseAuthResponse>(
     `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${resolveFirebaseApiKey()}`,
@@ -252,7 +257,7 @@ export async function signInWithEmailPassword(
   );
 
   const session = toStoredAuthSession(response);
-  persistAuthSession(session);
+  persistAuthSession(session, options?.rememberBrowser === false ? "session" : "local");
   return session;
 }
 
@@ -293,6 +298,7 @@ export async function sendPasswordResetEmail(email: string): Promise<void> {
 
 export async function refreshStoredAuthSession(): Promise<StoredAuthSession | null> {
   const currentSession = loadStoredAuthSession();
+  const persistence = getStoredAuthSessionPersistence();
 
   if (!currentSession?.refreshToken) {
     clearStoredAuthSession();
@@ -317,7 +323,7 @@ export async function refreshStoredAuthSession(): Promise<StoredAuthSession | nu
       displayName: currentSession.displayName,
     };
 
-    persistAuthSession(nextSession);
+    persistAuthSession(nextSession, (persistence ?? "local") as AuthSessionPersistence);
     return nextSession;
   } catch {
     clearStoredAuthSession();

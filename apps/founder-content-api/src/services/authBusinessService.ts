@@ -404,54 +404,46 @@ async function insertBusinessWithUniqueSlug(
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const slug = attempt === 0 ? baseSlug : `${baseSlug}-${attempt + 1}`;
+    const result = await client.query<BusinessRow>(
+      `
+        insert into businesses (
+          owner_user_id,
+          name,
+          slug,
+          brand_name,
+          website_url,
+          niche,
+          timezone,
+          status
+        ) values (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          'active'
+        )
+        on conflict (slug) do nothing
+        returning
+          id,
+          owner_user_id,
+          name,
+          slug,
+          brand_name,
+          website_url,
+          niche,
+          timezone,
+          status,
+          created_at,
+          updated_at
+      `,
+      [ownerUserId, name, slug, brandName, websiteUrl ?? null, niche ?? null, timezone],
+    );
 
-    try {
-      const result = await client.query<BusinessRow>(
-        `
-          insert into businesses (
-            owner_user_id,
-            name,
-            slug,
-            brand_name,
-            website_url,
-            niche,
-            timezone,
-            status
-          ) values (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            $6,
-            $7,
-            'active'
-          )
-          returning
-            id,
-            owner_user_id,
-            name,
-            slug,
-            brand_name,
-            website_url,
-            niche,
-            timezone,
-            status,
-            created_at,
-            updated_at
-        `,
-        [ownerUserId, name, slug, brandName, websiteUrl ?? null, niche ?? null, timezone],
-      );
-
+    if (result.rows[0]) {
       return mapBusinessRow(result.rows[0]);
-    } catch (error) {
-      const candidate = error as { code?: string; constraint?: string };
-
-      if (candidate.code === "23505" && candidate.constraint?.includes("slug")) {
-        continue;
-      }
-
-      throw error;
     }
   }
 
