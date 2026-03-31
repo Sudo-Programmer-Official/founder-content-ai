@@ -41,6 +41,7 @@ import {
   resolveScheduledPostStatusLabel,
   resolveScheduledPostStatusSummary,
 } from "../utils/scheduled-post-status";
+import { toFriendlyMediaStorageMessage } from "../services/media-storage-errors";
 
 interface PlannerDayModel {
   key: string;
@@ -420,6 +421,10 @@ const selectedScheduledPostNeedsReconnect = computed(() => {
   const message = selectedScheduledPost.value?.errorMessage?.toLowerCase() || "";
   return message.includes("reconnect linkedin") || message.includes("connection expired");
 });
+
+const selectedScheduledPostFriendlyError = computed(() =>
+  toFriendlyMediaStorageMessage(selectedScheduledPost.value?.errorMessage),
+);
 
 function resolveIdentityTypeLabel(post: ScheduledPost): string {
   if (post.selectedIdentityType === "organization") {
@@ -1575,7 +1580,7 @@ onMounted(() => {
                 v-if="selectedScheduledPost.errorMessage"
                 class="planner-feedback danger"
               >
-                {{ selectedScheduledPost.errorMessage }}
+                {{ selectedScheduledPostFriendlyError }}
               </p>
 
               <div

@@ -1,10 +1,27 @@
 import { ApiRequestError } from "./api-client";
 
 const MEDIA_STORAGE_SETUP_MESSAGE =
-  "Media uploads are turned off until backend storage is configured. Set S3_MEDIA_BUCKET, AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY on the API service.";
+  "Media uploads are unavailable right now because storage is not configured yet. This post can still publish as text until media storage is set up.";
 
 function looksLikeMediaStorageError(message: string): boolean {
   return /S3_MEDIA_BUCKET|AWS access key and secret|required for S3 media uploads/i.test(message);
+}
+
+export function toFriendlyMediaStorageMessage(
+  message: string | null | undefined,
+  fallbackMessage?: string,
+): string {
+  const normalized = message?.trim() || "";
+
+  if (!normalized) {
+    return fallbackMessage || MEDIA_STORAGE_SETUP_MESSAGE;
+  }
+
+  if (looksLikeMediaStorageError(normalized)) {
+    return MEDIA_STORAGE_SETUP_MESSAGE;
+  }
+
+  return normalized;
 }
 
 export function toFriendlyMediaStorageError(
