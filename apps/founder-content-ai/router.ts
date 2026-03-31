@@ -4,11 +4,13 @@ import { appRoutes } from "./utils/routes";
 import HomePage from "./pages/home.vue";
 import AdminPage from "./pages/admin.vue";
 import AdminFeaturesPage from "./pages/admin-features.vue";
+import AdminMediaRegistryPage from "./pages/admin-media-registry.vue";
 import AdminOutreachPage from "./pages/admin-outreach.vue";
 import AdminUsagePage from "./pages/admin-usage.vue";
 import AdminUsersPage from "./pages/admin-users.vue";
 import AdminWorkspacesPage from "./pages/admin-workspaces.vue";
 import AppEmailPage from "./pages/app-email.vue";
+import AppAssetsPage from "./pages/app-assets.vue";
 import AppGeneratePage from "./pages/app-generate.vue";
 import AppGrowthPage from "./pages/app-growth.vue";
 import AppHistoryPage from "./pages/app-history.vue";
@@ -127,6 +129,14 @@ const router = createRouter({
       },
     },
     {
+      path: "/app/assets",
+      name: "app-assets",
+      component: AppAssetsPage,
+      meta: {
+        requiresAuth: true,
+      },
+    },
+    {
       path: "/app/email",
       name: "app-email",
       component: AppEmailPage,
@@ -151,6 +161,14 @@ const router = createRouter({
       path: "/admin/features",
       name: "admin-features",
       component: AdminFeaturesPage,
+      meta: {
+        requiresAuth: true,
+      },
+    },
+    {
+      path: "/admin/media-registry",
+      name: "admin-media-registry",
+      component: AdminMediaRegistryPage,
       meta: {
         requiresAuth: true,
       },

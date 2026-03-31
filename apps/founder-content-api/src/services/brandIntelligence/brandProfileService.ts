@@ -26,6 +26,7 @@ import { queryDb } from "../db/client.ts";
 import { getCompetitiveIntelligenceSnapshot } from "../competitiveIntelligence/service.ts";
 import { normalizePublicUrl } from "../competitiveIntelligence/fetchUtils.ts";
 import { logWarn } from "../../utils/logger.ts";
+import { loadWorkspaceKnowledgeProfileForBusiness } from "./workspaceKnowledgeService.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../../");
 
@@ -632,6 +633,13 @@ function inferVisualStyle(
 function toBrandPromptContext(
   profile: BrandProfile,
   suggestedCompetitors?: BrandCompetitorReference[],
+  knowledgeProfile?: {
+    voiceSummary?: string;
+    audienceSummary?: string;
+    positioningSummary?: string;
+    beliefs?: string[];
+    topicClusters?: string[];
+  },
 ): BrandPromptContext {
   const marketReferences = (
     profile.selectedCompetitors.length > 0
@@ -643,15 +651,23 @@ function toBrandPromptContext(
         ? `${competitor.label} (${competitor.rationale})`
         : competitor.label,
     );
+  const topics = uniqueValues([
+    ...profile.topics,
+    ...(knowledgeProfile?.topicClusters ?? []),
+  ]);
 
   return {
     tone: profile.tone ?? profile.preferredTone,
     writingStyle: profile.writingStyle,
     visualStyle: profile.visualStyle,
     goals: profile.goals,
-    topics: profile.topics,
+    topics,
     patterns: profile.patterns,
     marketReferences,
+    voiceSummary: knowledgeProfile?.voiceSummary,
+    audience: knowledgeProfile?.audienceSummary,
+    positioning: knowledgeProfile?.positioningSummary,
+    beliefs: uniqueValues(knowledgeProfile?.beliefs ?? []),
   };
 }
 
@@ -1075,13 +1091,14 @@ export async function getBrandProfile(
       };
 
   const suggestedCompetitors = buildSuggestedCompetitors(result.brandProfile);
+  const knowledgeProfile = await loadWorkspaceKnowledgeProfileForBusiness(query.businessId);
 
   return {
     brandProfile: result.brandProfile,
     suggestedCompetitors,
     visualPromptTemplate: buildBrandAlignedImagePrompt(
       "Create a brand-aligned LinkedIn visual.",
-      toBrandPromptContext(result.brandProfile, suggestedCompetitors),
+      toBrandPromptContext(result.brandProfile, suggestedCompetitors, knowledgeProfile),
     ),
     signalSummary: result.signalSummary,
   };
@@ -1148,13 +1165,14 @@ export async function updateBrandProfile(
   });
 
   const suggestedCompetitors = buildSuggestedCompetitors(updatedProfile);
+  const knowledgeProfile = await loadWorkspaceKnowledgeProfileForBusiness(input.businessId);
 
   return {
     brandProfile: updatedProfile,
     suggestedCompetitors,
     visualPromptTemplate: buildBrandAlignedImagePrompt(
       "Create a brand-aligned LinkedIn visual.",
-      toBrandPromptContext(updatedProfile, suggestedCompetitors),
+      toBrandPromptContext(updatedProfile, suggestedCompetitors, knowledgeProfile),
     ),
     signalSummary: baseResult.signalSummary,
   };
@@ -1170,7 +1188,10 @@ export async function getBrandPromptContextForBusiness(
   }
 
   try {
-    const existingProfile = await loadBrandProfileRecord(normalizedBusinessId);
+    const [existingProfile, knowledgeProfile] = await Promise.all([
+      loadBrandProfileRecord(normalizedBusinessId),
+      loadWorkspaceKnowledgeProfileForBusiness(normalizedBusinessId),
+    ]);
     const suggestedCompetitors = existingProfile ? buildSuggestedCompetitors(existingProfile) : [];
 
     if (
@@ -1181,11 +1202,15 @@ export async function getBrandPromptContextForBusiness(
       existingProfile.topics.length > 0 &&
       existingProfile.patterns.length > 0
     ) {
-      return toBrandPromptContext(existingProfile, suggestedCompetitors);
+      return toBrandPromptContext(existingProfile, suggestedCompetitors, knowledgeProfile);
     }
 
     const result = await ensureBrandProfileFromSignals(normalizedBusinessId);
-    return toBrandPromptContext(result.brandProfile, buildSuggestedCompetitors(result.brandProfile));
+    return toBrandPromptContext(
+      result.brandProfile,
+      buildSuggestedCompetitors(result.brandProfile),
+      knowledgeProfile,
+    );
   } catch (error) {
     logWarn("Skipping brand prompt context enrichment.", {
       businessId: normalizedBusinessId,

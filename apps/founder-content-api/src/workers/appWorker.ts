@@ -2,6 +2,7 @@ import { recalculateAllEmailDomainReputations } from "../services/email/emailDel
 import { drainQueuedEmailCampaigns, processQueuedEmailContactImportJobs } from "../services/email/emailService.ts";
 import { processGrowthAutomationDueRuns } from "../services/growth/growthAutomationService.ts";
 import { processQueuedIdeaUnderstandingJobs } from "../services/controlDashboardService.ts";
+import { processQueuedWorkspaceKnowledgeJobs } from "../services/brandIntelligence/workspaceKnowledgeService.ts";
 import { inspectJobQueue } from "../services/jobQueueService.ts";
 import { processDueScheduledPosts } from "../services/scheduledPostService.ts";
 import { recordWorkerFailure, recordWorkerHeartbeat } from "../services/workerRuntimeService.ts";
@@ -46,6 +47,14 @@ interface IdeaUnderstandingWorkerResult {
   jobsClaimed: number;
   jobsCompleted: number;
   jobsFailed: number;
+}
+
+interface WorkspaceKnowledgeWorkerResult {
+  jobsClaimed: number;
+  jobsCompleted: number;
+  jobsFailed: number;
+  sourcesProcessed: number;
+  profilesUpdated: number;
 }
 
 const DEFAULT_APP_WORKER_POLL_INTERVAL_MS = 5000;
@@ -127,6 +136,16 @@ function hasEmailContactImportWork(result: EmailContactImportWorkerResult): bool
 
 function hasIdeaUnderstandingWork(result: IdeaUnderstandingWorkerResult): boolean {
   return result.jobsClaimed > 0 || result.jobsCompleted > 0 || result.jobsFailed > 0;
+}
+
+function hasWorkspaceKnowledgeWork(result: WorkspaceKnowledgeWorkerResult): boolean {
+  return (
+    result.jobsClaimed > 0 ||
+    result.jobsCompleted > 0 ||
+    result.jobsFailed > 0 ||
+    result.sourcesProcessed > 0 ||
+    result.profilesUpdated > 0
+  );
 }
 
 let shutdownRequested = false;
@@ -218,6 +237,21 @@ async function runIdeaUnderstanding(): Promise<boolean> {
   return false;
 }
 
+async function runWorkspaceKnowledge(): Promise<boolean> {
+  try {
+    const result = await processQueuedWorkspaceKnowledgeJobs();
+
+    if (hasWorkspaceKnowledgeWork(result)) {
+      logInfo("Processed workspace knowledge jobs.", { ...result });
+      return true;
+    }
+  } catch (error) {
+    logError("Shared worker failed while processing workspace knowledge.", toErrorContext(error));
+  }
+
+  return false;
+}
+
 async function runGrowthAutomation(): Promise<boolean> {
   try {
     const result = await processGrowthAutomationDueRuns();
@@ -268,6 +302,7 @@ export async function runAppWorker(): Promise<void> {
     const emailCampaignWork = await runEmailCampaigns();
     const emailContactImportWork = await runEmailContactImports();
     const ideaUnderstandingWork = await runIdeaUnderstanding();
+    const workspaceKnowledgeWork = await runWorkspaceKnowledge();
     const growthAutomationWork = await runGrowthAutomation();
 
     let deliverabilityWork = false;
@@ -291,6 +326,7 @@ export async function runAppWorker(): Promise<void> {
       emailCampaignWork ||
       emailContactImportWork ||
       ideaUnderstandingWork ||
+      workspaceKnowledgeWork ||
       growthAutomationWork ||
       deliverabilityWork;
 
@@ -321,6 +357,7 @@ export async function runAppWorker(): Promise<void> {
         emailCampaignWork,
         emailContactImportWork,
         ideaUnderstandingWork,
+        workspaceKnowledgeWork,
         growthAutomationWork,
         deliverabilityWork,
         pid: process.pid,

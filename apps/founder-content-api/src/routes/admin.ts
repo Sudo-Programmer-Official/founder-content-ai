@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  getAdminMediaRegistry,
   getAdminErrors,
   getAdminFeatureFlags,
   getAdminOverview,
@@ -8,8 +9,11 @@ import {
   getAdminUsers,
   getAdminWorkspaces,
   patchAdminWorkspaceAccess,
+  postAdminDecisionRule,
   postAdminFeatureFlag,
   postAdminFeatureFlagTarget,
+  postAdminMediaPreset,
+  postAdminPromptTemplate,
 } from "../controllers/adminController.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { requireSuperAdmin } from "../middleware/admin.ts";
@@ -25,4 +29,8 @@ adminRoute.patch("/api/admin/workspaces/:workspaceId/access", requireAuth(), req
 adminRoute.get("/api/admin/feature-flags", requireAuth(), requireSuperAdmin(), getAdminFeatureFlags);
 adminRoute.post("/api/admin/feature-flags", requireAuth(), requireSuperAdmin(), postAdminFeatureFlag);
 adminRoute.post("/api/admin/feature-flags/targets", requireAuth(), requireSuperAdmin(), postAdminFeatureFlagTarget);
+adminRoute.get("/api/admin/media-registry", requireAuth(), requireSuperAdmin(), getAdminMediaRegistry);
+adminRoute.post("/api/admin/media-registry/presets", requireAuth(), requireSuperAdmin(), postAdminMediaPreset);
+adminRoute.post("/api/admin/media-registry/prompt-templates", requireAuth(), requireSuperAdmin(), postAdminPromptTemplate);
+adminRoute.post("/api/admin/media-registry/decision-rules", requireAuth(), requireSuperAdmin(), postAdminDecisionRule);
 adminRoute.get("/api/admin/usage", requireAuth(), requireSuperAdmin(), getAdminUsage);

@@ -1,5 +1,13 @@
+import type {
+  BusinessMediaProfileType,
+  MediaRecommendationContentType,
+  MediaRecommendationGoal,
+  MediaSuggestionType,
+} from "./media-intelligence.ts";
+
 export type BusinessPlanCode = "free" | "pro" | "growth" | "custom";
 export type FeatureFlagTargetType = "business" | "user";
+export type AdminDecisionRuleScope = "global" | "business_type" | "workspace";
 export type AdminWorkspaceAccessAction =
   | "grant_pro_access"
   | "set_plan"
@@ -72,6 +80,121 @@ export interface UpsertAdminFeatureFlagTargetRequest {
 
 export interface UpsertAdminFeatureFlagTargetResponse {
   flag: AdminFeatureFlag;
+}
+
+export interface AdminMediaPresetRecord {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string;
+  supportedBusinessTypes: BusinessMediaProfileType[];
+  supportedContentTypes: MediaRecommendationContentType[];
+  supportedGoals: MediaRecommendationGoal[];
+  mediaTypes: MediaSuggestionType[];
+  fallbackOrder: MediaSuggestionType[];
+  uiLabel?: string;
+  priority: number;
+  isActive: boolean;
+  promptTemplateByMediaType: Partial<Record<MediaSuggestionType, string>>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminPromptTemplateRecord {
+  id: string;
+  slug: string;
+  name: string;
+  category: string;
+  templateBody: string;
+  variables: string[];
+  notes?: string;
+  version: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminDecisionRuleRecord {
+  id: string;
+  ruleName: string;
+  ruleScope: AdminDecisionRuleScope;
+  businessType?: BusinessMediaProfileType;
+  businessId?: string;
+  businessName?: string;
+  conditions: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  priority: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminMediaRegistryOptions {
+  businessTypes: BusinessMediaProfileType[];
+  contentTypes: MediaRecommendationContentType[];
+  goals: MediaRecommendationGoal[];
+  mediaTypes: MediaSuggestionType[];
+  ruleScopes: AdminDecisionRuleScope[];
+  promptTemplateCategories: string[];
+}
+
+export interface AdminMediaRegistryResponse {
+  options: AdminMediaRegistryOptions;
+  presets: AdminMediaPresetRecord[];
+  promptTemplates: AdminPromptTemplateRecord[];
+  decisionRules: AdminDecisionRuleRecord[];
+}
+
+export interface UpsertAdminMediaPresetRequest {
+  id?: string;
+  slug: string;
+  name: string;
+  description?: string;
+  supportedBusinessTypes: BusinessMediaProfileType[];
+  supportedContentTypes: MediaRecommendationContentType[];
+  supportedGoals: MediaRecommendationGoal[];
+  mediaTypes: MediaSuggestionType[];
+  fallbackOrder: MediaSuggestionType[];
+  uiLabel?: string;
+  priority: number;
+  isActive: boolean;
+  promptTemplateByMediaType: Partial<Record<MediaSuggestionType, string>>;
+}
+
+export interface UpsertAdminMediaPresetResponse {
+  preset: AdminMediaPresetRecord;
+}
+
+export interface UpsertAdminPromptTemplateRequest {
+  id?: string;
+  slug: string;
+  name: string;
+  category: string;
+  templateBody: string;
+  variables: string[];
+  notes?: string;
+  version: number;
+  isActive: boolean;
+}
+
+export interface UpsertAdminPromptTemplateResponse {
+  promptTemplate: AdminPromptTemplateRecord;
+}
+
+export interface UpsertAdminDecisionRuleRequest {
+  id?: string;
+  ruleName: string;
+  ruleScope: AdminDecisionRuleScope;
+  businessType?: BusinessMediaProfileType;
+  businessId?: string;
+  conditions: Record<string, unknown>;
+  outputs: Record<string, unknown>;
+  priority: number;
+  isActive: boolean;
+}
+
+export interface UpsertAdminDecisionRuleResponse {
+  decisionRule: AdminDecisionRuleRecord;
 }
 
 export interface UpdateAdminWorkspaceAccessRequest {

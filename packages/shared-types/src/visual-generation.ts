@@ -43,6 +43,11 @@ export interface GenerateVisualRequest {
   brandKit?: BrandKitInput;
   watermarkMode?: VisualWatermarkMode;
   captionFooterCredit?: string;
+  mediaPresetId?: string;
+  promptTemplateId?: string;
+  generatedMediaType?: import("./media-intelligence.ts").MediaSuggestionType;
+  contentAssetId?: string;
+  sourceAssetIds?: string[];
 }
 
 export interface GenerateVisualResponse {

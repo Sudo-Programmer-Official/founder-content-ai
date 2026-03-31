@@ -4,12 +4,15 @@ import { useRoute, useRouter } from "vue-router";
 import type {
   ContentAiEditPreview,
   ContentAsset,
+  MediaRecommendationSuggestion,
   PostAsset,
   RecommendedPostTimeSlot,
   RepurposeContentResponse,
   SchedulingSafetyWarning,
   SocialAccount,
+  WorkspaceAsset,
 } from "../../../packages/shared-types";
+import WorkspaceAssetPickerModal from "../components/WorkspaceAssetPickerModal.vue";
 import { useProductAccessContext } from "../access/product-access-context";
 import { calculateContentScore } from "../composables/useContentScore";
 import { ApiRequestError } from "../services/api-client";
@@ -24,6 +27,8 @@ import {
   requestPipelineItem,
   requestUpdatePipelineItem,
 } from "../services/control-dashboard-service";
+import { requestVisualGeneration } from "../services/generation-service";
+import { requestMediaRecommendations } from "../services/media-intelligence-service";
 import {
   requestLinkedInSocialAuthStart,
   requestPublishPost,
@@ -63,6 +68,10 @@ const isUploadingPostAssets = ref(false);
 const removingPostAssetId = ref("");
 const mediaFeedback = ref("");
 const postAssets = ref<PostAsset[]>([]);
+const isWorkspaceAssetPickerOpen = ref(false);
+const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
+const isLoadingMediaRecommendations = ref(false);
+const isGeneratingRecommendationId = ref("");
 const aiEditInstruction = ref("");
 const aiEditPreview = ref<ContentAiEditPreview | null>(null);
 const aiEditFeedback = ref("");
@@ -376,6 +385,9 @@ const actionPriorityLabel = computed(() =>
   canScheduleDraft.value ? "Schedule next" : connectedLinkedInAccount.value ? "Publish now" : "Connect channel",
 );
 const recommendedContentType = computed(() => (postAssets.value.length > 0 ? "image" : "text"));
+const visibleMediaRecommendations = computed(() =>
+  mediaRecommendations.value.filter((suggestion) => suggestion.actionType !== "skip"),
+);
 const selectedAudienceTimeLabel = computed(() => {
   if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
     return "";
@@ -918,6 +930,54 @@ async function loadPostAssets(): Promise<void> {
   }
 }
 
+function buildVisualBulletPoints(): string[] {
+  return previewBodyParagraphs.value
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter((paragraph) => paragraph.length > 0)
+    .slice(0, 3)
+    .map((paragraph) =>
+      paragraph.length > 96 ? `${paragraph.slice(0, 93).trimEnd()}...` : paragraph,
+    );
+}
+
+function buildGeneratedMediaFileName(suggestion: MediaRecommendationSuggestion): string {
+  const base =
+    (draft.value?.result.idea.title || "generated-visual")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "generated-visual";
+  const suffix = suggestion.suggestedMediaType || suggestion.visualTemplateType || "visual";
+
+  return `${base}-${suffix}.png`;
+}
+
+async function loadMediaRecommendations(): Promise<void> {
+  if (!activeBusinessId.value || !postContent.value.trim()) {
+    mediaRecommendations.value = [];
+    return;
+  }
+
+  isLoadingMediaRecommendations.value = true;
+
+  try {
+    const response = await requestMediaRecommendations({
+      businessId: activeBusinessId.value,
+      contentText: postContent.value,
+      contentType: "post",
+      goal: "authority",
+      sourceAssetIds: postAssets.value.map((asset) => asset.id),
+    });
+
+    mediaRecommendations.value = response.suggestions;
+  } catch (error) {
+    mediaRecommendations.value = [];
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to load media recommendations.";
+  } finally {
+    isLoadingMediaRecommendations.value = false;
+  }
+}
+
 async function handleMediaSelection(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
@@ -926,8 +986,8 @@ async function handleMediaSelection(event: Event): Promise<void> {
     return;
   }
 
-  if (!activeBusinessId.value || !persistedPostId.value) {
-    mediaFeedback.value = "Save this draft first, then attach media.";
+  if (!activeBusinessId.value) {
+    mediaFeedback.value = "Select a workspace before attaching media.";
     input.value = "";
     return;
   }
@@ -936,10 +996,17 @@ async function handleMediaSelection(event: Event): Promise<void> {
   mediaFeedback.value = "";
 
   try {
+    const persistedId = await ensurePersistedDraft();
+
+    if (!persistedId) {
+      mediaFeedback.value = "Save this draft first, then attach media.";
+      return;
+    }
+
     for (const file of files) {
       const uploadTarget = await requestMediaUploadUrl({
         businessId: activeBusinessId.value,
-        postId: persistedPostId.value,
+        postId: persistedId,
         fileType: file.type,
         fileName: file.name,
         sizeBytes: file.size,
@@ -959,7 +1026,7 @@ async function handleMediaSelection(event: Event): Promise<void> {
 
       await requestCreatePostAsset({
         businessId: activeBusinessId.value,
-        postId: persistedPostId.value,
+        postId: persistedId,
         storageKey: uploadTarget.storageKey,
         storageUrl: uploadTarget.storageUrl,
         mimeType: file.type,
@@ -977,6 +1044,152 @@ async function handleMediaSelection(event: Event): Promise<void> {
     isUploadingPostAssets.value = false;
     input.value = "";
   }
+}
+
+async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
+  if (!activeBusinessId.value) {
+    mediaFeedback.value = "Select a workspace before attaching workspace assets.";
+    return;
+  }
+
+  isUploadingPostAssets.value = true;
+  mediaFeedback.value = "";
+
+  try {
+    const persistedId = await ensurePersistedDraft();
+
+    if (!persistedId) {
+      mediaFeedback.value = "Save this draft first, then attach workspace assets.";
+      return;
+    }
+
+    for (const asset of assets) {
+      if (!asset.storageKey) {
+        continue;
+      }
+
+      await requestCreatePostAsset({
+        businessId: activeBusinessId.value,
+        postId: persistedId,
+        storageKey: asset.storageKey,
+        storageUrl: asset.storageUrl,
+        mimeType: asset.mimeType,
+        sizeBytes: asset.sizeBytes,
+        source: asset.sourceType === "generated" ? "generated" : "upload",
+      });
+    }
+
+    await loadPostAssets();
+    mediaFeedback.value = `${assets.length} workspace asset${assets.length === 1 ? "" : "s"} attached to this draft.`;
+    isWorkspaceAssetPickerOpen.value = false;
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to attach workspace assets right now.";
+  } finally {
+    isUploadingPostAssets.value = false;
+  }
+}
+
+async function generateRecommendedMedia(
+  suggestion: MediaRecommendationSuggestion,
+): Promise<void> {
+  if (!activeBusinessId.value || !suggestion.visualTemplateType) {
+    return;
+  }
+
+  isGeneratingRecommendationId.value = suggestion.id;
+  mediaFeedback.value = "";
+
+  try {
+    const persistedId = await ensurePersistedDraft();
+
+    if (!persistedId) {
+      mediaFeedback.value = "Save this draft first, then generate media.";
+      return;
+    }
+
+    const generatedVisual = await requestVisualGeneration({
+      businessId: activeBusinessId.value,
+      templateType: suggestion.visualTemplateType,
+      content: {
+        headline: previewLeadLines.value[0] || draft.value?.result.idea.title || "Founder insight",
+        supportingText:
+          previewLeadLines.value[1] ||
+          previewBodyParagraphs.value[0]?.replace(/\s+/g, " ").trim().slice(0, 140) ||
+          undefined,
+        bulletPoints: buildVisualBulletPoints(),
+      },
+      mediaPresetId: suggestion.mediaPresetId,
+      promptTemplateId: suggestion.promptTemplateId,
+      generatedMediaType: suggestion.suggestedMediaType,
+      contentAssetId: persistedId,
+      sourceAssetIds: suggestion.recommendedAssetIds,
+    });
+
+    const blob = await fetch(generatedVisual.imageDataUrl).then(async (response) => {
+      if (!response.ok) {
+        throw new Error("Unable to convert the generated visual into an uploadable file.");
+      }
+
+      return response.blob();
+    });
+
+    const fileName = buildGeneratedMediaFileName(suggestion);
+    const uploadTarget = await requestMediaUploadUrl({
+      businessId: activeBusinessId.value,
+      postId: persistedId,
+      fileType: blob.type || generatedVisual.mimeType,
+      fileName,
+      sizeBytes: blob.size,
+    });
+
+    const uploadResponse = await fetch(uploadTarget.uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": blob.type || generatedVisual.mimeType,
+      },
+      body: blob,
+    });
+
+    if (!uploadResponse.ok) {
+      throw new Error("Unable to upload the generated visual to storage.");
+    }
+
+    await requestCreatePostAsset({
+      businessId: activeBusinessId.value,
+      postId: persistedId,
+      storageKey: uploadTarget.storageKey,
+      storageUrl: uploadTarget.storageUrl,
+      mimeType: blob.type || generatedVisual.mimeType,
+      sizeBytes: blob.size,
+      source: "generated",
+    });
+
+    await loadPostAssets();
+    mediaFeedback.value = `${suggestion.title} attached to this draft.`;
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to generate media right now.";
+  } finally {
+    isGeneratingRecommendationId.value = "";
+  }
+}
+
+async function applyMediaRecommendation(
+  suggestion: MediaRecommendationSuggestion,
+): Promise<void> {
+  if (suggestion.actionType === "use_existing_asset") {
+    isWorkspaceAssetPickerOpen.value = true;
+    mediaFeedback.value = "Pick an existing workspace asset to use for this post.";
+    return;
+  }
+
+  if (suggestion.actionType === "skip") {
+    mediaFeedback.value = "Kept this draft text-first for now.";
+    return;
+  }
+
+  await generateRecommendedMedia(suggestion);
 }
 
 async function removePostAsset(assetId: string): Promise<void> {
@@ -1388,6 +1601,14 @@ watch(
 );
 
 watch(
+  () => [activeBusinessId.value, postContent.value, postAssets.value.length],
+  () => {
+    void loadMediaRecommendations();
+  },
+  { immediate: true },
+);
+
+watch(
   () => audienceTimezone.value,
   (nextTimezone, previousTimezone) => {
     if (!isSchedulePanelOpen.value || !nextTimezone || nextTimezone === previousTimezone) {
@@ -1766,7 +1987,7 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <section v-if="hasPersistedAsset" class="media-panel">
+          <section v-if="draft" class="media-panel">
             <div class="media-panel-header">
               <div>
                 <p class="panel-meta">Media</p>
@@ -1786,6 +2007,58 @@ onBeforeUnmount(() => {
                 />
                 {{ isUploadingPostAssets ? "Uploading..." : "Add media" }}
               </label>
+              <button
+                type="button"
+                class="secondary-action"
+                @click="isWorkspaceAssetPickerOpen = true"
+              >
+                Use existing
+              </button>
+            </div>
+
+            <div v-if="visibleMediaRecommendations.length > 0 || isLoadingMediaRecommendations" class="media-recommendation-panel">
+              <div class="media-recommendation-header">
+                <div>
+                  <p class="panel-meta">Recommended next move</p>
+                  <strong>Choose the safest visual path for this post</strong>
+                </div>
+                <span class="workspace-chip">{{ recommendedContentType === "image" ? "Assets already attached" : "Text-first draft" }}</span>
+              </div>
+
+              <p v-if="isLoadingMediaRecommendations" class="result-feedback subtle">
+                Loading media recommendations...
+              </p>
+
+              <div v-else class="media-recommendation-grid">
+                <article
+                  v-for="suggestion in visibleMediaRecommendations"
+                  :key="suggestion.id"
+                  class="media-recommendation-card"
+                >
+                  <div>
+                    <p class="panel-meta">{{ suggestion.actionType.replace(/_/g, " ") }}</p>
+                    <strong>{{ suggestion.title }}</strong>
+                    <p>{{ suggestion.description }}</p>
+                    <small>{{ suggestion.reason }}</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="secondary-action"
+                    :disabled="isGeneratingRecommendationId === suggestion.id || isUploadingPostAssets"
+                    @click="void applyMediaRecommendation(suggestion)"
+                  >
+                    {{
+                      suggestion.actionType === "generate_visual"
+                        ? isGeneratingRecommendationId === suggestion.id
+                          ? "Generating..."
+                          : "Generate visual"
+                        : suggestion.actionType === "use_existing_asset"
+                          ? "Use existing"
+                          : "Skip media"
+                    }}
+                  </button>
+                </article>
+              </div>
             </div>
 
             <p v-if="mediaFeedback" class="result-feedback">{{ mediaFeedback }}</p>
@@ -1818,6 +2091,16 @@ onBeforeUnmount(() => {
               No media attached yet. This post will publish as text until you add images.
             </p>
           </section>
+
+          <WorkspaceAssetPickerModal
+            :open="isWorkspaceAssetPickerOpen"
+            :business-id="activeBusinessId"
+            asset-type="image"
+            multiple
+            title="Attach existing workspace media"
+            @close="isWorkspaceAssetPickerOpen = false"
+            @select="void attachWorkspaceAssets($event)"
+          />
 
           <section class="ai-command-panel">
             <div class="ai-command-header">
@@ -2498,6 +2781,57 @@ onBeforeUnmount(() => {
 
 .media-panel-header strong {
   display: block;
+}
+
+.workspace-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(245, 232, 219, 0.82);
+  color: var(--fc-text);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.media-recommendation-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 90%, transparent);
+  background: rgba(255, 249, 243, 0.94);
+}
+
+.media-recommendation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.media-recommendation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.media-recommendation-card {
+  display: grid;
+  gap: 12px;
+  align-content: space-between;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 90%, transparent);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.media-recommendation-card p,
+.media-recommendation-card small {
+  display: block;
+  margin-top: 6px;
+  color: var(--fc-text-muted);
 }
 
 .media-upload-button {

@@ -14,11 +14,14 @@ import type {
   EmailCampaignStats,
   EmailList,
   ImportEmailContactsRequest,
+  MediaRecommendationSuggestion,
   PostAsset,
+  WorkspaceAsset,
 } from "../../../packages/shared-types";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "../access/product-access-context";
+import WorkspaceAssetPickerModal from "../components/WorkspaceAssetPickerModal.vue";
 import EmailSkeleton from "../components/skeletons/EmailSkeleton.vue";
 import {
   getActivationDraft,
@@ -39,11 +42,18 @@ import {
   requestEmailDomainSettings,
   requestEmailLists,
 } from "../services/email-service";
+import { requestVisualGeneration } from "../services/generation-service";
+import { requestMediaRecommendations } from "../services/media-intelligence-service";
 import {
   requestCreatePostAsset,
   requestMediaUploadUrl,
   requestPostAssets,
 } from "../services/post-assets-service";
+import {
+  requestCreateWorkspaceAsset,
+  requestRecordWorkspaceAssetUsage,
+  requestWorkspaceAssetUploadUrl,
+} from "../services/workspace-assets-service";
 import { appRoutes } from "../utils/routes";
 
 function buildSuggestedSubject(value: string): string {
@@ -160,10 +170,14 @@ const isSavingDomain = ref(false);
 const isEditingDomainSetup = ref(false);
 const isLoadingDraftMedia = ref(false);
 const isUploadingDraftMedia = ref(false);
+const isWorkspaceAssetPickerOpen = ref(false);
+const isLoadingMediaRecommendations = ref(false);
+const isGeneratingMediaRecommendationId = ref("");
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const latestStatsCampaignId = ref("");
 const emailMediaAssets = ref<PostAsset[]>([]);
+const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
 let campaignProgressPollHandle: number | null = null;
 let importJobPollHandle: number | null = null;
 
@@ -390,17 +404,38 @@ const selectedLibraryDraft = computed(() =>
   selectedLibraryDraftId.value ? getActivationDraft(selectedLibraryDraftId.value) : null,
 );
 const activationSourcePostId = computed(() => {
-  const queryDraftId = typeof route.query.draftId === "string" ? route.query.draftId : "";
   const assetId = activationDraft.value?.result.asset?.id;
-  return assetId || queryDraftId || "";
+  return assetId || "";
 });
 const effectiveSourcePostId = computed(() => {
   if (campaignSourceMode.value === "draft-library") {
-    return selectedLibraryDraft.value?.result.asset?.id || selectedLibraryDraftId.value || "";
+    return selectedLibraryDraft.value?.result.asset?.id || "";
   }
 
   if (campaignSourceMode.value === "current") {
     return activationSourcePostId.value;
+  }
+
+  return "";
+});
+const effectiveSourceIdeaId = computed(() => {
+  if (campaignSourceMode.value === "draft-library") {
+    return selectedLibraryDraft.value?.result.asset?.sourceIdeaId || "";
+  }
+
+  if (campaignSourceMode.value === "current") {
+    return activationDraft.value?.result.asset?.sourceIdeaId || "";
+  }
+
+  return "";
+});
+const effectiveSourceTitle = computed(() => {
+  if (campaignSourceMode.value === "draft-library" && selectedLibraryDraft.value) {
+    return buildSourceTitle(selectedLibraryDraft.value.result.post, selectedLibraryDraft.value.result.idea.title);
+  }
+
+  if (campaignSourceMode.value === "current" && activationSeed.value) {
+    return buildSourceTitle(activationSeed.value, activationDraft.value?.result.idea.title);
   }
 
   return "";
@@ -499,6 +534,9 @@ const selectedInlineImagePreviews = computed(() =>
     id: `${url}-${index}`,
     url,
   })),
+);
+const visibleMediaRecommendations = computed(() =>
+  mediaRecommendations.value.filter((suggestion) => suggestion.actionType !== "skip"),
 );
 const campaignContentPayload = computed<EmailCampaignContent>(() => ({
   headerImage: campaignForm.value.headerImageUrl
@@ -745,6 +783,55 @@ async function loadDraftMedia(): Promise<void> {
   }
 }
 
+function buildEmailVisualBulletPoints(): string[] {
+  return campaignForm.value.bodyText
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter((paragraph) => paragraph.length > 0)
+    .slice(0, 3)
+    .map((paragraph) =>
+      paragraph.length > 96 ? `${paragraph.slice(0, 93).trimEnd()}...` : paragraph,
+    );
+}
+
+function buildEmailGeneratedMediaFileName(suggestion: MediaRecommendationSuggestion): string {
+  const base =
+    (campaignForm.value.subject || "email-visual")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "email-visual";
+  const suffix = suggestion.suggestedMediaType || suggestion.visualTemplateType || "visual";
+
+  return `${base}-${suffix}.png`;
+}
+
+async function loadEmailMediaRecommendations(): Promise<void> {
+  if (!selectedBusinessId.value || !campaignForm.value.bodyText.trim()) {
+    mediaRecommendations.value = [];
+    return;
+  }
+
+  isLoadingMediaRecommendations.value = true;
+
+  try {
+    const response = await requestMediaRecommendations({
+      businessId: selectedBusinessId.value,
+      contentText: `${campaignForm.value.subject}\n\n${campaignForm.value.bodyText}`.trim(),
+      contentType: "email",
+      goal: "conversion",
+      sourceAssetIds: emailMediaAssets.value.map((asset) => asset.id),
+    });
+
+    mediaRecommendations.value = response.suggestions;
+  } catch (error) {
+    mediaRecommendations.value = [];
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to load media recommendations.";
+  } finally {
+    isLoadingMediaRecommendations.value = false;
+  }
+}
+
 async function handleEmailMediaSelection(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement | null;
   const files = Array.from(input?.files ?? []);
@@ -807,6 +894,201 @@ async function handleEmailMediaSelection(event: Event): Promise<void> {
       input.value = "";
     }
   }
+}
+
+async function attachWorkspaceAssetsToEmail(selectedAssets: WorkspaceAsset[]): Promise<void> {
+  if (!selectedBusinessId.value) {
+    feedbackMessage.value = "Select a workspace before attaching assets.";
+    return;
+  }
+
+  errorMessage.value = "";
+
+  try {
+    const nextInlineImages = [...campaignForm.value.inlineImageUrls];
+
+    for (const asset of selectedAssets) {
+      const sourceUrl = asset.previewUrl || asset.storageUrl;
+
+      if (!campaignForm.value.headerImageUrl) {
+        campaignForm.value.headerImageUrl = sourceUrl;
+      } else if (!nextInlineImages.includes(sourceUrl)) {
+        nextInlineImages.push(sourceUrl);
+      }
+
+      await requestRecordWorkspaceAssetUsage(asset.id, {
+        businessId: selectedBusinessId.value,
+        usageSurface: "email",
+        referenceId: effectiveSourcePostId.value || "email-composer",
+        metadata: {
+          editorMode: campaignEditorMode.value,
+        },
+      });
+    }
+
+    campaignForm.value.inlineImageUrls = dedupeStrings(nextInlineImages);
+    isWorkspaceAssetPickerOpen.value = false;
+    feedbackMessage.value = `${selectedAssets.length} workspace asset${selectedAssets.length === 1 ? "" : "s"} added to this email.`;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to use workspace assets right now.";
+  }
+}
+
+async function generateRecommendedEmailMedia(
+  suggestion: MediaRecommendationSuggestion,
+): Promise<void> {
+  if (!selectedBusinessId.value || !suggestion.visualTemplateType) {
+    return;
+  }
+
+  isGeneratingMediaRecommendationId.value = suggestion.id;
+  errorMessage.value = "";
+
+  try {
+    const generatedVisual = await requestVisualGeneration({
+      businessId: selectedBusinessId.value,
+      templateType: suggestion.visualTemplateType,
+      content: {
+        headline: campaignForm.value.subject.trim() || "Email visual",
+        supportingText:
+          campaignForm.value.bodyText
+            .split(/\n{2,}/)
+            .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+            .find((paragraph) => paragraph.length > 0)
+            ?.slice(0, 140) || undefined,
+        bulletPoints: buildEmailVisualBulletPoints(),
+      },
+      mediaPresetId: suggestion.mediaPresetId,
+      promptTemplateId: suggestion.promptTemplateId,
+      generatedMediaType: suggestion.suggestedMediaType,
+      contentAssetId: effectiveSourcePostId.value || undefined,
+      sourceAssetIds: suggestion.recommendedAssetIds,
+    });
+
+    const blob = await fetch(generatedVisual.imageDataUrl).then(async (response) => {
+      if (!response.ok) {
+        throw new Error("Unable to prepare the generated visual for upload.");
+      }
+
+      return response.blob();
+    });
+
+    const fileName = buildEmailGeneratedMediaFileName(suggestion);
+    let nextUrl = "";
+
+    if (effectiveSourcePostId.value) {
+      const uploadTarget = await requestMediaUploadUrl({
+        businessId: selectedBusinessId.value,
+        postId: effectiveSourcePostId.value,
+        fileType: blob.type || generatedVisual.mimeType,
+        fileName,
+        sizeBytes: blob.size,
+      });
+
+      const uploadResponse = await fetch(uploadTarget.uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": blob.type || generatedVisual.mimeType,
+        },
+        body: blob,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Unable to upload the generated visual.");
+      }
+
+      await requestCreatePostAsset({
+        businessId: selectedBusinessId.value,
+        postId: effectiveSourcePostId.value,
+        storageKey: uploadTarget.storageKey,
+        storageUrl: uploadTarget.storageUrl,
+        mimeType: blob.type || generatedVisual.mimeType,
+        sizeBytes: blob.size,
+        source: "generated",
+      });
+
+      nextUrl = uploadTarget.storageUrl;
+      await loadDraftMedia();
+    } else {
+      const uploadTarget = await requestWorkspaceAssetUploadUrl({
+        businessId: selectedBusinessId.value,
+        fileType: blob.type || generatedVisual.mimeType,
+        fileName,
+        sizeBytes: blob.size,
+        assetType: "image",
+      });
+
+      const uploadResponse = await fetch(uploadTarget.uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": blob.type || generatedVisual.mimeType,
+        },
+        body: blob,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error("Unable to upload the generated visual.");
+      }
+
+      const createdAsset = await requestCreateWorkspaceAsset({
+        businessId: selectedBusinessId.value,
+        storageKey: uploadTarget.storageKey,
+        storageUrl: uploadTarget.storageUrl,
+        mimeType: blob.type || generatedVisual.mimeType,
+        sizeBytes: blob.size,
+        title: campaignForm.value.subject || "Generated email visual",
+        assetType: "image",
+        sourceType: "generated",
+        metadata: {
+          mediaPresetId: suggestion.mediaPresetId,
+          promptTemplateId: suggestion.promptTemplateId,
+        },
+      });
+
+      nextUrl = createdAsset.asset.previewUrl || createdAsset.asset.storageUrl;
+      await requestRecordWorkspaceAssetUsage(createdAsset.asset.id, {
+        businessId: selectedBusinessId.value,
+        usageSurface: "email",
+        referenceId: "email-composer",
+        metadata: {
+          recommendationId: suggestion.id,
+        },
+      });
+    }
+
+    if (!campaignForm.value.headerImageUrl) {
+      campaignForm.value.headerImageUrl = nextUrl;
+    } else {
+      campaignForm.value.inlineImageUrls = dedupeStrings([
+        ...campaignForm.value.inlineImageUrls,
+        nextUrl,
+      ]);
+    }
+
+    feedbackMessage.value = `${suggestion.title} added to this email.`;
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to generate recommended media.";
+  } finally {
+    isGeneratingMediaRecommendationId.value = "";
+  }
+}
+
+async function applyEmailMediaRecommendation(
+  suggestion: MediaRecommendationSuggestion,
+): Promise<void> {
+  if (suggestion.actionType === "use_existing_asset") {
+    isWorkspaceAssetPickerOpen.value = true;
+    feedbackMessage.value = "Pick an existing workspace asset for this email.";
+    return;
+  }
+
+  if (suggestion.actionType === "skip") {
+    feedbackMessage.value = "Keeping this email text-first for now.";
+    return;
+  }
+
+  await generateRecommendedEmailMedia(suggestion);
 }
 
 function formatStatus(value?: string): string {
@@ -1178,6 +1460,9 @@ async function createCampaign(): Promise<void> {
       subject: campaignForm.value.subject,
       bodyText: campaignForm.value.bodyText,
       replyToEmail: campaignForm.value.replyToEmail || undefined,
+      sourceAssetId: effectiveSourcePostId.value || undefined,
+      sourceIdeaId: effectiveSourceIdeaId.value || undefined,
+      sourceTitle: effectiveSourceTitle.value || undefined,
       content: campaignContentPayload.value,
     });
     feedbackMessage.value = `Campaign created: ${response.campaign.name}.`;
@@ -1274,6 +1559,19 @@ watch(
   () => {
     void loadDraftMedia();
   },
+);
+
+watch(
+  () => [
+    selectedBusinessId.value,
+    campaignForm.value.subject,
+    campaignForm.value.bodyText,
+    emailMediaAssets.value.length,
+  ],
+  () => {
+    void loadEmailMediaRecommendations();
+  },
+  { immediate: true },
 );
 
 watch(
@@ -1389,6 +1687,9 @@ onBeforeUnmount(() => {
                     <div class="overview-campaign-copy">
                       <strong>{{ campaign.name }}</strong>
                       <p class="overview-campaign-subject">{{ campaign.subject }}</p>
+                      <p v-if="campaign.sourceTitle" class="overview-campaign-source">
+                        From {{ campaign.sourceTitle }}
+                      </p>
                       <p class="overview-campaign-preview">
                         {{ campaign.preview || "No campaign copy preview yet." }}
                       </p>
@@ -1652,6 +1953,49 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
+            <div v-if="visibleMediaRecommendations.length > 0 || isLoadingMediaRecommendations" class="media-recommendation-panel">
+              <div class="panel-header compact">
+                <div>
+                  <p class="panel-meta">Recommended next move</p>
+                  <strong>Choose the fastest safe visual path for this email</strong>
+                </div>
+                <span class="workspace-chip">{{ campaignForm.headerImageUrl || campaignForm.inlineImageUrls.length > 0 ? "Media attached" : "Text-first" }}</span>
+              </div>
+
+              <p v-if="isLoadingMediaRecommendations" class="panel-note">Loading media recommendations...</p>
+
+              <div v-else class="media-recommendation-grid">
+                <article
+                  v-for="suggestion in visibleMediaRecommendations"
+                  :key="suggestion.id"
+                  class="media-recommendation-card"
+                >
+                  <div>
+                    <p class="panel-meta">{{ suggestion.actionType.replace(/_/g, " ") }}</p>
+                    <strong>{{ suggestion.title }}</strong>
+                    <p>{{ suggestion.description }}</p>
+                    <small>{{ suggestion.reason }}</small>
+                  </div>
+                  <button
+                    type="button"
+                    class="workspace-secondary-button compact"
+                    :disabled="isGeneratingMediaRecommendationId === suggestion.id || isUploadingDraftMedia"
+                    @click="void applyEmailMediaRecommendation(suggestion)"
+                  >
+                    {{
+                      suggestion.actionType === "generate_visual"
+                        ? isGeneratingMediaRecommendationId === suggestion.id
+                          ? "Generating..."
+                          : "Generate visual"
+                        : suggestion.actionType === "use_existing_asset"
+                          ? "Use existing"
+                          : "Skip media"
+                    }}
+                  </button>
+                </article>
+              </div>
+            </div>
+
             <div class="email-media-input-row">
               <input
                 v-model="campaignForm.mediaUrlInput"
@@ -1663,6 +2007,9 @@ onBeforeUnmount(() => {
               </button>
               <button type="button" class="secondary-action" @click="addManualMediaUrl('inline')">
                 Add inline
+              </button>
+              <button type="button" class="secondary-action" @click="isWorkspaceAssetPickerOpen = true">
+                Use workspace asset
               </button>
               <label class="workspace-secondary-button compact media-upload-trigger" :class="{ disabled: !activationSourcePostId || isUploadingDraftMedia }">
                 <input
@@ -1745,6 +2092,16 @@ onBeforeUnmount(() => {
               <strong>{{ campaignForm.includeSignature ? "Will be included" : "Not included" }}</strong>
               <pre>{{ effectiveSignatureText || "Set a sender signature in Email settings." }}</pre>
             </div>
+
+            <WorkspaceAssetPickerModal
+              :open="isWorkspaceAssetPickerOpen"
+              :business-id="selectedBusinessId"
+              asset-type="image"
+              multiple
+              title="Use workspace assets in this email"
+              @close="isWorkspaceAssetPickerOpen = false"
+              @select="void attachWorkspaceAssetsToEmail($event)"
+            />
           </section>
 
           <p class="panel-meta">Step 5 · Create draft</p>
@@ -1762,6 +2119,7 @@ onBeforeUnmount(() => {
               <div>
                 <strong>{{ campaign.name }}</strong>
                 <p>{{ campaign.subject }}</p>
+                <p v-if="campaign.sourceTitle" class="campaign-source-note">From {{ campaign.sourceTitle }}</p>
                 <p class="campaign-metrics">
                   {{ formatStatus(campaign.status) }} · {{ formatCampaignProgress(campaign) }} · {{ campaign.deliveredCount }} delivered ·
                   {{ campaign.failedCount }} failed
@@ -2449,6 +2807,41 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
+.panel-header.compact {
+  align-items: center;
+}
+
+.media-recommendation-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: color-mix(in srgb, var(--fc-surface-subtle) 92%, white 8%);
+}
+
+.media-recommendation-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.media-recommendation-card {
+  display: grid;
+  gap: 12px;
+  align-content: space-between;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.media-recommendation-card p,
+.media-recommendation-card small {
+  margin: 6px 0 0;
+  color: var(--fc-text-muted);
+}
+
 .email-preview-shell {
   display: grid;
   gap: 14px;
@@ -2663,6 +3056,12 @@ onBeforeUnmount(() => {
 .overview-campaign-subject {
   font-weight: 700;
   color: var(--fc-text);
+}
+
+.overview-campaign-source,
+.campaign-source-note {
+  font-size: 0.9rem;
+  color: var(--fc-text-muted);
 }
 
 .overview-campaign-preview {

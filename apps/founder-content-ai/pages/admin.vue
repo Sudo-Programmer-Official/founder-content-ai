@@ -464,6 +464,9 @@ onMounted(() => {
           <router-link class="dashboard-button secondary" :to="appRoutes.adminFeatures">
             Features
           </router-link>
+          <router-link class="dashboard-button secondary" :to="appRoutes.adminMediaRegistry">
+            Media registry
+          </router-link>
           <router-link class="dashboard-button secondary" :to="appRoutes.adminOutreach">
             Outreach
           </router-link>

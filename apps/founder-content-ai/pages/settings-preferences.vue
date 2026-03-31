@@ -6,6 +6,9 @@ import type {
   BrandCompetitorReference,
   BrandProfile,
   BrandSignalSummary,
+  WorkspaceKnowledgeProfile,
+  WorkspaceKnowledgeSource,
+  WorkspaceKnowledgeSourceType,
   ProductAccessLimits,
   SavedContentSource,
   SocialAccount,
@@ -21,8 +24,11 @@ import AiAssistPanel from "../components/AiAssistPanel.vue";
 import { useAiAssistSuggestions } from "../composables/use-ai-assist";
 import { usePreferenceContext } from "../preferences/preference-context";
 import {
+  requestCreateWorkspaceKnowledgeSource,
   requestBrandProfile,
+  requestRefreshWorkspaceKnowledge,
   requestUpdateBrandProfile,
+  requestWorkspaceKnowledge,
 } from "../services/brand-profile-service";
 import {
   requestContentIngestionPreview,
@@ -84,6 +90,17 @@ const isSavingBrandSources = ref(false);
 const brandSourcesFeedback = ref("");
 const brandSourcesError = ref("");
 const brandSourceWarnings = ref<string[]>([]);
+const workspaceKnowledgeProfile = ref<WorkspaceKnowledgeProfile | null>(null);
+const workspaceKnowledgeSources = ref<WorkspaceKnowledgeSource[]>([]);
+const knowledgeSourceTypeInput = ref<WorkspaceKnowledgeSourceType>("website");
+const knowledgeTitleInput = ref("");
+const knowledgeUrlInput = ref("");
+const knowledgeNoteInput = ref("");
+const isLoadingWorkspaceKnowledge = ref(false);
+const isSavingWorkspaceKnowledge = ref(false);
+const isRefreshingWorkspaceKnowledge = ref(false);
+const workspaceKnowledgeFeedback = ref("");
+const workspaceKnowledgeError = ref("");
 
 const workspaceChannelDefinitions: WorkspaceChannelDefinition[] = [
   {
@@ -274,6 +291,32 @@ const effectiveMarketReferencePreview = computed(() =>
     ? selectedCompetitorsInput.value
     : suggestedCompetitors.value.slice(0, 3),
 );
+const workspaceKnowledgeReadySources = computed(() =>
+  workspaceKnowledgeSources.value.filter((source) => source.processingStatus === "completed"),
+);
+const workspaceKnowledgeStatusLabel = computed(() => {
+  const status = workspaceKnowledgeProfile.value?.processingStatus;
+
+  switch (status) {
+    case "processing":
+      return "Refreshing now";
+    case "queued":
+      return "Queued for analysis";
+    case "failed":
+      return "Needs attention";
+    case "completed":
+      return "Live in prompts";
+    default:
+      return "No knowledge profile yet";
+  }
+});
+const workspaceKnowledgeInsightChips = computed(() =>
+  [
+    workspaceKnowledgeProfile.value?.voiceSummary ? "Voice ready" : "",
+    workspaceKnowledgeProfile.value?.audienceSummary ? "Audience defined" : "",
+    workspaceKnowledgeProfile.value?.positioningSummary ? "Positioning locked" : "",
+  ].filter((value) => value !== ""),
+);
 
 function joinList(values: string[]): string {
   return values.join(", ");
@@ -284,6 +327,15 @@ function parseList(value: string): string[] {
     .split(/[\n,]/)
     .map((entry) => entry.trim())
     .filter((entry) => entry !== "");
+}
+
+function formatKnowledgeSourceType(type: WorkspaceKnowledgeSourceType): string {
+  return type === "website" ? "Website" : "Note";
+}
+
+function truncateKnowledgePreview(value: string, maxLength = 180): string {
+  const normalized = value.trim();
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength).trim()}…` : normalized;
 }
 
 function hydrateBrandContextForm(profile: BrandProfile | null): void {
@@ -613,6 +665,94 @@ async function handleBrandContextRefresh(): Promise<void> {
   }
 }
 
+async function loadWorkspaceKnowledge(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    workspaceKnowledgeProfile.value = null;
+    workspaceKnowledgeSources.value = [];
+    return;
+  }
+
+  isLoadingWorkspaceKnowledge.value = true;
+  workspaceKnowledgeError.value = "";
+
+  try {
+    const response = await requestWorkspaceKnowledge(businessId);
+    workspaceKnowledgeProfile.value = response.profile ?? null;
+    workspaceKnowledgeSources.value = response.sources;
+  } catch (error) {
+    workspaceKnowledgeProfile.value = null;
+    workspaceKnowledgeSources.value = [];
+    workspaceKnowledgeError.value =
+      error instanceof Error ? error.message : "Unable to load workspace knowledge.";
+  } finally {
+    isLoadingWorkspaceKnowledge.value = false;
+  }
+}
+
+async function handleWorkspaceKnowledgeSave(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    return;
+  }
+
+  isSavingWorkspaceKnowledge.value = true;
+  workspaceKnowledgeFeedback.value = "";
+  workspaceKnowledgeError.value = "";
+
+  try {
+    const response = await requestCreateWorkspaceKnowledgeSource({
+      businessId,
+      sourceType: knowledgeSourceTypeInput.value,
+      title: knowledgeTitleInput.value.trim(),
+      sourceUrl: knowledgeSourceTypeInput.value === "website" ? knowledgeUrlInput.value.trim() : undefined,
+      rawText: knowledgeSourceTypeInput.value === "note" ? knowledgeNoteInput.value.trim() : undefined,
+    });
+    workspaceKnowledgeProfile.value = response.profile ?? null;
+    workspaceKnowledgeSources.value = response.sources;
+    knowledgeTitleInput.value = "";
+    knowledgeUrlInput.value = "";
+    knowledgeNoteInput.value = "";
+    workspaceKnowledgeFeedback.value =
+      knowledgeSourceTypeInput.value === "website"
+        ? "Website source saved. The worker is extracting knowledge now."
+        : "Workspace note saved. The worker is refreshing the knowledge profile now.";
+  } catch (error) {
+    workspaceKnowledgeError.value =
+      error instanceof Error ? error.message : "Unable to save workspace knowledge.";
+  } finally {
+    isSavingWorkspaceKnowledge.value = false;
+  }
+}
+
+async function handleWorkspaceKnowledgeRefresh(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    return;
+  }
+
+  isRefreshingWorkspaceKnowledge.value = true;
+  workspaceKnowledgeFeedback.value = "";
+  workspaceKnowledgeError.value = "";
+
+  try {
+    const response = await requestRefreshWorkspaceKnowledge({
+      businessId,
+    });
+    workspaceKnowledgeProfile.value = response.profile ?? null;
+    workspaceKnowledgeSources.value = response.sources;
+    workspaceKnowledgeFeedback.value = "Workspace knowledge queued for a fresh rebuild.";
+  } catch (error) {
+    workspaceKnowledgeError.value =
+      error instanceof Error ? error.message : "Unable to refresh workspace knowledge.";
+  } finally {
+    isRefreshingWorkspaceKnowledge.value = false;
+  }
+}
+
 async function loadWorkspaceChannels(): Promise<void> {
   const businessId = activeBusinessId.value;
 
@@ -715,9 +855,11 @@ watch(
     channelFeedback.value = "";
     brandContextFeedback.value = "";
     brandSourcesFeedback.value = "";
+    workspaceKnowledgeFeedback.value = "";
     void loadWorkspaceChannels();
     void loadBrandContext();
     void loadBrandSources();
+    void loadWorkspaceKnowledge();
   },
   { immediate: true },
 );
@@ -1407,6 +1549,207 @@ watch(
       </div>
     </section>
 
+    <section class="dashboard-panel workspace-knowledge-panel">
+      <div class="brand-context-panel-header">
+        <div>
+          <p class="panel-meta">Workspace Knowledge</p>
+          <h2>Turn website pages and founder notes into reusable memory.</h2>
+        </div>
+        <span class="usage-badge">
+          {{ activeBusinessId ? workspaceKnowledgeStatusLabel : "Select a workspace first" }}
+        </span>
+      </div>
+
+      <p class="dashboard-description">
+        Save the pages, notes, and positioning cues that should compound over time. The worker extracts audience, beliefs, and topic clusters, then generation uses them automatically.
+      </p>
+
+      <p v-if="workspaceKnowledgeFeedback" class="dashboard-feedback">{{ workspaceKnowledgeFeedback }}</p>
+      <p v-if="workspaceKnowledgeError" class="dashboard-feedback error">{{ workspaceKnowledgeError }}</p>
+
+      <div class="brand-context-layout">
+        <div class="brand-context-form">
+          <div class="settings-grid brand-context-grid">
+            <label class="dashboard-field">
+              <span>Source type</span>
+              <select
+                v-model="knowledgeSourceTypeInput"
+                :disabled="isLoadingWorkspaceKnowledge || isSavingWorkspaceKnowledge || !activeBusinessId"
+              >
+                <option value="website">Website</option>
+                <option value="note">Note</option>
+              </select>
+            </label>
+
+            <label class="dashboard-field">
+              <span>Title (optional)</span>
+              <input
+                v-model="knowledgeTitleInput"
+                type="text"
+                :disabled="isLoadingWorkspaceKnowledge || isSavingWorkspaceKnowledge || !activeBusinessId"
+                placeholder="Homepage, founder note, positioning memo"
+              />
+            </label>
+
+            <label v-if="knowledgeSourceTypeInput === 'website'" class="dashboard-field brand-context-field-wide">
+              <span>Website URL</span>
+              <input
+                v-model="knowledgeUrlInput"
+                type="url"
+                :disabled="isLoadingWorkspaceKnowledge || isSavingWorkspaceKnowledge || !activeBusinessId"
+                placeholder="https://plancraft.ai"
+              />
+            </label>
+
+            <label v-else class="dashboard-field brand-context-field-wide">
+              <span>Founder note</span>
+              <textarea
+                v-model="knowledgeNoteInput"
+                rows="5"
+                :disabled="isLoadingWorkspaceKnowledge || isSavingWorkspaceKnowledge || !activeBusinessId"
+                placeholder="What should the system remember about this workspace? Example: We speak directly to founders, avoid fluff, and believe consistency beats hacks."
+              />
+            </label>
+          </div>
+
+          <div class="channel-actions">
+            <button
+              type="button"
+              class="dashboard-button"
+              :disabled="isSavingWorkspaceKnowledge || isLoadingWorkspaceKnowledge || !activeBusinessId"
+              @click="void handleWorkspaceKnowledgeSave()"
+            >
+              {{ isSavingWorkspaceKnowledge ? "Saving..." : "Save & process" }}
+            </button>
+
+            <button
+              type="button"
+              class="dashboard-button secondary"
+              :disabled="isRefreshingWorkspaceKnowledge || isLoadingWorkspaceKnowledge || !activeBusinessId || workspaceKnowledgeSources.length === 0"
+              @click="void handleWorkspaceKnowledgeRefresh()"
+            >
+              {{ isRefreshingWorkspaceKnowledge ? "Refreshing..." : "Rebuild profile" }}
+            </button>
+          </div>
+
+          <div v-if="workspaceKnowledgeSources.length > 0" class="knowledge-source-list">
+            <article
+              v-for="source in workspaceKnowledgeSources"
+              :key="source.id"
+              class="knowledge-source-card"
+              :data-status="source.processingStatus"
+            >
+              <div class="knowledge-source-card-header">
+                <div>
+                  <p class="dashboard-card-label">{{ formatKnowledgeSourceType(source.sourceType) }}</p>
+                  <strong>{{ source.title || (source.sourceType === "website" ? source.sourceUrl : "Founder note") }}</strong>
+                </div>
+                <span class="channel-status-badge" :class="{ connected: source.processingStatus === 'completed', warning: source.processingStatus === 'failed' }">
+                  {{
+                    source.processingStatus === "completed"
+                      ? "Ready"
+                      : source.processingStatus === "processing"
+                        ? "Processing"
+                        : source.processingStatus === "failed"
+                          ? "Failed"
+                          : "Queued"
+                  }}
+                </span>
+              </div>
+              <p class="dashboard-description">
+                {{
+                  truncateKnowledgePreview(
+                    source.extractedText || source.rawText || source.sourceUrl || "No extracted text yet.",
+                  )
+                }}
+              </p>
+              <p v-if="source.processingError" class="dashboard-feedback error">{{ source.processingError }}</p>
+            </article>
+          </div>
+        </div>
+
+        <aside class="brand-context-preview">
+          <div>
+            <p class="panel-meta">Derived knowledge profile</p>
+            <h3>
+              {{
+                workspaceKnowledgeProfile
+                  ? "Generation now has deeper workspace memory"
+                  : "No knowledge profile has been built yet"
+              }}
+            </h3>
+            <p class="dashboard-description">
+              {{
+                workspaceKnowledgeProfile
+                  ? "These summaries feed prompt context behind the scenes so posts, email, and repurpose stay closer to the workspace voice."
+                  : "Add a website or founder note here so the system can derive audience, beliefs, and reusable topic clusters."
+              }}
+            </p>
+          </div>
+
+          <div v-if="workspaceKnowledgeInsightChips.length > 0" class="saved-source-list">
+            <span
+              v-for="chip in workspaceKnowledgeInsightChips"
+              :key="chip"
+              class="saved-source-chip"
+            >
+              {{ chip }}
+            </span>
+          </div>
+
+          <div v-if="workspaceKnowledgeProfile?.voiceSummary" class="brand-preview-block">
+            <p class="panel-meta">Voice</p>
+            <p class="dashboard-description">{{ workspaceKnowledgeProfile.voiceSummary }}</p>
+          </div>
+
+          <div v-if="workspaceKnowledgeProfile?.audienceSummary" class="brand-preview-block">
+            <p class="panel-meta">Audience</p>
+            <p class="dashboard-description">{{ workspaceKnowledgeProfile.audienceSummary }}</p>
+          </div>
+
+          <div v-if="workspaceKnowledgeProfile?.positioningSummary" class="brand-preview-block">
+            <p class="panel-meta">Positioning</p>
+            <p class="dashboard-description">{{ workspaceKnowledgeProfile.positioningSummary }}</p>
+          </div>
+
+          <div v-if="workspaceKnowledgeProfile?.beliefs?.length" class="brand-preview-block">
+            <p class="panel-meta">Core beliefs</p>
+            <ul class="brand-preview-list">
+              <li v-for="belief in workspaceKnowledgeProfile.beliefs" :key="belief">{{ belief }}</li>
+            </ul>
+          </div>
+
+          <div v-if="workspaceKnowledgeProfile?.topicClusters?.length" class="brand-preview-block">
+            <p class="panel-meta">Topic clusters</p>
+            <div class="saved-source-list">
+              <span
+                v-for="topic in workspaceKnowledgeProfile.topicClusters"
+                :key="topic"
+                class="saved-source-chip"
+              >
+                {{ topic }}
+              </span>
+            </div>
+          </div>
+
+          <div class="brand-signal-grid">
+            <article class="usage-card">
+              <p class="dashboard-card-label">Completed sources</p>
+              <strong>{{ workspaceKnowledgeReadySources.length }}</strong>
+            </article>
+            <article class="usage-card">
+              <p class="dashboard-card-label">Total sources</p>
+              <strong>{{ workspaceKnowledgeSources.length }}</strong>
+            </article>
+            <article class="usage-card">
+              <p class="dashboard-card-label">Profile status</p>
+              <strong>{{ workspaceKnowledgeStatusLabel }}</strong>
+            </article>
+          </div>
+        </aside>
+      </div>
+    </section>
+
     <section class="dashboard-panel usage-panel">
       <div class="usage-panel-header">
         <div>
@@ -1485,6 +1828,12 @@ watch(
 }
 
 .brand-context-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.workspace-knowledge-panel {
   display: grid;
   gap: 18px;
   margin-top: 18px;
@@ -1811,6 +2160,41 @@ watch(
 .brand-preview-block {
   display: grid;
   gap: 10px;
+}
+
+.knowledge-source-list {
+  display: grid;
+  gap: 12px;
+}
+
+.knowledge-source-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 88%, var(--fc-surface-muted));
+}
+
+.knowledge-source-card[data-status="completed"] {
+  border-color: color-mix(in srgb, var(--fc-success-text) 18%, var(--fc-border));
+}
+
+.knowledge-source-card[data-status="failed"] {
+  border-color: color-mix(in srgb, var(--fc-danger, #b84b3c) 26%, var(--fc-border));
+}
+
+.knowledge-source-card-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.knowledge-source-card-header strong {
+  display: block;
+  margin-top: 4px;
+  line-height: 1.4;
 }
 
 .brand-preview-list {

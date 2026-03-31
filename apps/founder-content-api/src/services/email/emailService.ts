@@ -120,6 +120,9 @@ interface EmailCampaignRow extends QueryResultRow {
   id: string;
   business_id: string;
   list_id: string | null;
+  source_asset_id: string | null;
+  source_idea_id: string | null;
+  source_title: string | null;
   name: string;
   subject: string;
   body_html: string;
@@ -168,6 +171,21 @@ interface CountRow extends QueryResultRow {
 
 interface BusinessIdRow extends QueryResultRow {
   business_id: string;
+}
+
+interface SourceAssetRow extends QueryResultRow {
+  id: string;
+  business_id: string | null;
+  title: string | null;
+  source_idea_id: string | null;
+  content_body: unknown;
+}
+
+interface SourceIdeaRow extends QueryResultRow {
+  id: string;
+  business_id: string;
+  body: string;
+  understanding_json: unknown | null;
 }
 
 interface EmailCampaignRecipientProgressRow extends QueryResultRow {
@@ -604,6 +622,9 @@ function mapEmailCampaign(row: EmailCampaignRow): EmailCampaign {
     id: row.id,
     businessId: row.business_id,
     listId: row.list_id ?? undefined,
+    sourceAssetId: row.source_asset_id ?? undefined,
+    sourceIdeaId: row.source_idea_id ?? undefined,
+    sourceTitle: row.source_title ?? undefined,
     name: row.name,
     subject: row.subject,
     bodyHtml: row.body_html,
@@ -644,6 +665,113 @@ function mapEmailContactImportJob(row: EmailContactImportJobRow): EmailContactIm
     createdAt: new Date(row.created_at).toISOString(),
     startedAt: toIsoString(row.started_at),
     completedAt: toIsoString(row.completed_at),
+  };
+}
+
+function deriveSourceTitleFromContent(value: unknown): string | null {
+  if (typeof value === "string") {
+    const normalized = value.trim().split("\n").find((line) => line.trim() !== "");
+    return normalized?.trim().slice(0, 120) || null;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const direct =
+    typeof candidate.text === "string"
+      ? candidate.text
+      : typeof candidate.textContent === "string"
+        ? candidate.textContent
+        : typeof candidate.body === "string"
+          ? candidate.body
+          : "";
+  const normalized = direct.trim().split("\n").find((line) => line.trim() !== "");
+  return normalized?.trim().slice(0, 120) || null;
+}
+
+async function resolveCampaignSource(
+  businessId: string,
+  input: CreateEmailCampaignRequest,
+  client: PoolClient,
+): Promise<{
+  sourceAssetId: string | null;
+  sourceIdeaId: string | null;
+  sourceTitle: string | null;
+}> {
+  const requestedSourceAssetId = input.sourceAssetId?.trim() || null;
+  const requestedSourceIdeaId = input.sourceIdeaId?.trim() || null;
+  const requestedSourceTitle = input.sourceTitle?.trim() || null;
+  let sourceAssetId = requestedSourceAssetId;
+  let sourceIdeaId = requestedSourceIdeaId;
+  let sourceTitle = requestedSourceTitle;
+
+  if (requestedSourceAssetId) {
+    const assetResult = await executeQuery<SourceAssetRow>(
+      `
+        select
+          id,
+          business_id,
+          title,
+          source_idea_id,
+          content_body
+        from content_assets
+        where id = $1::uuid
+        limit 1
+      `,
+      [requestedSourceAssetId],
+      client,
+    );
+
+    const asset = assetResult.rows[0];
+
+    if (!asset || asset.business_id !== businessId) {
+      throw new HttpError(400, "email_campaign_invalid_source", "The selected source draft is invalid for this workspace.");
+    }
+
+    sourceAssetId = asset.id;
+    sourceIdeaId = asset.source_idea_id ?? sourceIdeaId;
+    sourceTitle = asset.title?.trim() || deriveSourceTitleFromContent(asset.content_body) || sourceTitle;
+  }
+
+  if (sourceIdeaId) {
+    const ideaResult = await executeQuery<SourceIdeaRow>(
+      `
+        select
+          id,
+          business_id,
+          body,
+          understanding_json
+        from idea_inbox_items
+        where id = $1::uuid
+        limit 1
+      `,
+      [sourceIdeaId],
+      client,
+    );
+
+    const idea = ideaResult.rows[0];
+
+    if (!idea || idea.business_id !== businessId) {
+      throw new HttpError(400, "email_campaign_invalid_source", "The selected source idea is invalid for this workspace.");
+    }
+
+    const understanding =
+      idea.understanding_json && typeof idea.understanding_json === "object" && !Array.isArray(idea.understanding_json)
+        ? (idea.understanding_json as Record<string, unknown>)
+        : null;
+
+    sourceTitle =
+      sourceTitle
+      || (typeof understanding?.topic === "string" && understanding.topic.trim() ? understanding.topic.trim() : null)
+      || deriveSourceTitleFromContent(idea.body);
+  }
+
+  return {
+    sourceAssetId,
+    sourceIdeaId,
+    sourceTitle,
   };
 }
 
@@ -1753,6 +1881,9 @@ async function loadEmailCampaignOrThrow(
         c.id,
         c.business_id,
         c.list_id,
+        c.source_asset_id,
+        c.source_idea_id,
+        c.source_title,
         c.name,
         c.subject,
         c.body_html,
@@ -2929,12 +3060,16 @@ export async function createEmailCampaign(
     await loadEmailListOrThrow(businessId, input.listId, client);
     const settingsRow = await ensureEmailSettingsRow(businessId, client);
     const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow));
+    const campaignSource = await resolveCampaignSource(businessId, input, client);
 
     const result = await executeQuery<EmailCampaignRow>(
       `
         insert into email_campaigns (
           business_id,
           list_id,
+          source_asset_id,
+          source_idea_id,
+          source_title,
           name,
           subject,
           body_html,
@@ -2945,18 +3080,23 @@ export async function createEmailCampaign(
         ) values (
           $1::uuid,
           $2::uuid,
-          $3,
-          $4,
+          $3::uuid,
+          $4::uuid,
           $5,
           $6,
           $7,
-          $8::uuid,
+          $8,
+          $9,
+          $10::uuid,
           'draft'
         )
         returning
           id,
           business_id,
           list_id,
+          source_asset_id,
+          source_idea_id,
+          source_title,
           name,
           subject,
           body_html,
@@ -2979,6 +3119,9 @@ export async function createEmailCampaign(
       [
         businessId,
         input.listId,
+        campaignSource.sourceAssetId,
+        campaignSource.sourceIdeaId,
+        campaignSource.sourceTitle,
         input.name.trim() || input.subject.trim(),
         input.subject.trim(),
         renderedBody.html,
@@ -3027,6 +3170,9 @@ export async function listEmailCampaigns(businessId: string): Promise<EmailCampa
         c.id,
         c.business_id,
         c.list_id,
+        c.source_asset_id,
+        c.source_idea_id,
+        c.source_title,
         c.name,
         c.subject,
         c.body_html,
@@ -3080,6 +3226,9 @@ export async function processQueuedEmailCampaigns(
         c.id,
         c.business_id,
         c.list_id,
+        c.source_asset_id,
+        c.source_idea_id,
+        c.source_title,
         c.name,
         c.subject,
         c.body_html,

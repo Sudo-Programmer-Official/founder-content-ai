@@ -19,3 +19,6 @@ export * from "./src/admin-control.ts";
 export * from "./src/product-access.ts";
 export * from "./src/email.ts";
 export * from "./src/growth.ts";
+export * from "./src/workspace-assets.ts";
+export * from "./src/media-intelligence.ts";
+export * from "./src/workspace-insights.ts";

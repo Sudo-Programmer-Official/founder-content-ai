@@ -42,6 +42,7 @@ import {
   publishLinkedInMultiImagePost,
   publishLinkedInTextPost,
 } from "./publishingService.ts";
+import { recordDerivedMediaPerformanceFromPostFeedback } from "./mediaIntelligenceService.ts";
 import { sendScheduledPostPublishedNotification } from "./scheduledPostNotificationService.ts";
 import { HttpError } from "../utils/http.ts";
 import { logError, logInfo, logWarn } from "../utils/logger.ts";
@@ -1852,6 +1853,21 @@ export async function updateScheduledPostPerformance(
     action: "performance_feedback",
     performanceLabel,
   });
+
+  try {
+    await recordDerivedMediaPerformanceFromPostFeedback({
+      businessId,
+      contentAssetId: existing.asset_group_id,
+      engagementScore: engagementScoreFromPerformanceLabel(performanceLabel),
+    });
+  } catch (error) {
+    logWarn("Unable to bridge scheduled post feedback into media performance stats.", {
+      scheduledPostId: existing.id,
+      businessId,
+      assetGroupId: existing.asset_group_id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   const updatedRow = await loadScheduledPostRow(businessId, existing.id);
   const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);

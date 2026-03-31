@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import type { ContentAsset, ControlDashboardResponse, IdeaInboxItem } from "../../../packages/shared-types";
+import type {
+  ContentAsset,
+  ControlDashboardResponse,
+  IdeaInboxItem,
+  WorkspaceInsightAngleType,
+  WorkspaceInsightSuggestion,
+  WorkspaceInsightsResponse,
+  WorkspaceTopicInsight,
+} from "../../../packages/shared-types";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useProductAccessContext } from "../access/product-access-context";
@@ -9,6 +17,7 @@ import {
   requestCreateIdeaInboxItem,
   requestUpdatePipelineItem,
 } from "../services/control-dashboard-service";
+import { requestWorkspaceInsights } from "../services/workspace-insights-service";
 import { appRoutes } from "../utils/routes";
 import { saveRepurposeSeed } from "../utils/repurpose-loop";
 
@@ -47,6 +56,7 @@ const feedbackMessage = ref("");
 const drawerFeedbackMessage = ref("");
 
 const dashboard = ref<ControlDashboardResponse | null>(null);
+const workspaceInsights = ref<WorkspaceInsightsResponse | null>(null);
 const composerText = ref("");
 const expandedIdeaIds = ref<string[]>([]);
 const searchQuery = ref("");
@@ -124,6 +134,42 @@ const suggestedIdeas = computed(() =>
     })
     .slice(0, 3),
 );
+
+const topicInsightsByKey = computed(() => {
+  const map = new Map<string, WorkspaceTopicInsight>();
+
+  for (const topic of workspaceInsights.value?.topics ?? []) {
+    map.set(topic.topicKey, topic);
+  }
+
+  return map;
+});
+
+const topTopicKeys = computed(
+  () =>
+    new Set(
+      (workspaceInsights.value?.topics ?? [])
+        .slice(0, 3)
+        .map((topic) => topic.topicKey),
+    ),
+);
+
+const ideaInsightSuggestions = computed(() => workspaceInsights.value?.suggestions ?? []);
+
+const summaryInsightCards = computed(() => {
+  const summary = workspaceInsights.value?.summary;
+
+  if (!summary) {
+    return [];
+  }
+
+  return [
+    { label: "Top topic", value: summary.topTopicLabel || "Still learning" },
+    { label: "Best angle", value: summary.bestAngleLabel || "Still learning" },
+    { label: "Best format", value: summary.bestFormatLabel || "Still learning" },
+    { label: "Best time", value: summary.bestSendWindowLabel || "Still learning" },
+  ];
+});
 
 const ideaCards = computed<IdeaCardModel[]>(() =>
   (dashboard.value?.ideaInbox ?? [])
@@ -260,6 +306,15 @@ function normalizeIdeaText(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
+function normalizeTopicKey(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 72);
+}
+
 function tokenize(value: string): string[] {
   return normalizeIdeaText(value)
     .split(/[^a-z0-9]+/i)
@@ -294,6 +349,36 @@ function buildIdeaTitle(idea: IdeaInboxItem): string {
     .find((line) => line !== "");
 
   return firstLine?.slice(0, 76) || "Untitled idea";
+}
+
+function getTopicInsightForCard(card: IdeaCardModel): WorkspaceTopicInsight | undefined {
+  return topicInsightsByKey.value.get(normalizeTopicKey(card.title));
+}
+
+function isWorkingIdea(card: IdeaCardModel): boolean {
+  return topTopicKeys.value.has(normalizeTopicKey(card.title)) && card.posts.length > 0;
+}
+
+function buildTopicInsightLine(card: IdeaCardModel): string | null {
+  const topicInsight = getTopicInsightForCard(card);
+
+  if (!topicInsight || topicInsight.postCount === 0) {
+    return null;
+  }
+
+  if (topicInsight.emailSupportScore > 0.15) {
+    return `Cross-channel: this topic is landing in email too, so it is a strong reuse candidate for another post or campaign.`;
+  }
+
+  if (topicInsight.highSignalCount > topicInsight.lowSignalCount && topicInsight.highSignalCount > 0) {
+    return `Working now: ${topicInsight.highSignalCount} strong signal${topicInsight.highSignalCount === 1 ? "" : "s"} across ${topicInsight.postCount} post${topicInsight.postCount === 1 ? "" : "s"}.`;
+  }
+
+  if (topicInsight.lowSignalCount > topicInsight.highSignalCount && topicInsight.lowSignalCount > 0) {
+    return `Mixed so far: ${topicInsight.lowSignalCount} weak signal${topicInsight.lowSignalCount === 1 ? "" : "s"} suggest the framing still needs work.`;
+  }
+
+  return `Untested loop: ${topicInsight.postCount} post${topicInsight.postCount === 1 ? "" : "s"} exist, but this theme still needs more feedback.`;
 }
 
 function buildIdeaPreview(idea: IdeaInboxItem): string {
@@ -445,6 +530,7 @@ function formatIdeaTimestamp(value: string): string {
 async function loadIdeaInbox(): Promise<void> {
   if (!activeBusinessId.value || !canUseIdeas.value) {
     dashboard.value = null;
+    workspaceInsights.value = null;
     return;
   }
 
@@ -452,7 +538,13 @@ async function loadIdeaInbox(): Promise<void> {
   errorMessage.value = "";
 
   try {
-    dashboard.value = await requestControlDashboard(activeBusinessId.value);
+    const [dashboardResponse, insightsResponse] = await Promise.all([
+      requestControlDashboard(activeBusinessId.value),
+      requestWorkspaceInsights(activeBusinessId.value).catch(() => null),
+    ]);
+
+    dashboard.value = dashboardResponse;
+    workspaceInsights.value = insightsResponse;
   } catch (error) {
     errorMessage.value =
       error instanceof Error ? error.message : "Unable to load the idea inbox right now.";
@@ -478,6 +570,10 @@ function ensureIdeaExpanded(ideaId: string): void {
   if (!expandedIdeaIds.value.includes(ideaId)) {
     expandedIdeaIds.value = [...expandedIdeaIds.value, ideaId];
   }
+}
+
+function getIdeaCardById(ideaId: string): IdeaCardModel | undefined {
+  return ideaCards.value.find((card) => card.idea.id === ideaId);
 }
 
 function refreshAngles(ideaId: string): void {
@@ -580,6 +676,67 @@ async function generatePostFromAngle(idea: IdeaInboxItem, angle: IdeaAngleModel)
       error instanceof Error ? error.message : "Unable to generate a post from this angle.";
   } finally {
     activeGenerateKey.value = "";
+  }
+}
+
+function humanizeSuggestionKind(kind: WorkspaceInsightSuggestion["kind"]): string {
+  switch (kind) {
+    case "double_down":
+      return "Working now";
+    case "missing_angle":
+      return "Missing angle";
+    case "reuse":
+      return "Reuse";
+    case "timing":
+      return "Timing edge";
+    case "watchout":
+      return "Watchout";
+    default:
+      return "Suggestion";
+  }
+}
+
+function resolveSuggestedAngle(
+  card: IdeaCardModel | undefined,
+  angleType: WorkspaceInsightAngleType | undefined,
+): IdeaAngleModel | undefined {
+  if (!card || !angleType) {
+    return undefined;
+  }
+
+  return card.angles.find((angle) => angle.type === angleType);
+}
+
+function openSuggestionIdea(suggestion: WorkspaceInsightSuggestion): void {
+  if (!suggestion.ideaId) {
+    return;
+  }
+
+  ensureIdeaExpanded(suggestion.ideaId);
+  void nextTick(() => {
+    document.getElementById(`idea-card-${suggestion.ideaId}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+  });
+}
+
+async function actOnSuggestion(suggestion: WorkspaceInsightSuggestion): Promise<void> {
+  if (suggestion.kind === "timing") {
+    await router.push(appRoutes.planner());
+    return;
+  }
+
+  const card = suggestion.ideaId ? getIdeaCardById(suggestion.ideaId) : undefined;
+  const angle = resolveSuggestedAngle(card, suggestion.angleType);
+
+  if (card && angle) {
+    await generatePostFromAngle(card.idea, angle);
+    return;
+  }
+
+  if (suggestion.ideaId) {
+    openSuggestionIdea(suggestion);
   }
 }
 
@@ -776,7 +933,73 @@ onMounted(() => {
         <p v-if="feedbackMessage" class="ideas-feedback success">{{ feedbackMessage }}</p>
       </section>
 
-      <section v-if="suggestedIdeas.length > 0" class="workspace-card suggestions-card">
+      <section v-if="summaryInsightCards.length > 0" class="workspace-card insight-summary-card">
+        <div class="panel-header">
+          <div>
+            <p class="panel-meta">What is working</p>
+            <h2>Use live signals to decide what to post next</h2>
+          </div>
+        </div>
+
+        <div class="insight-summary-grid">
+          <article
+            v-for="item in summaryInsightCards"
+            :key="item.label"
+            class="insight-summary-tile"
+          >
+            <span>{{ item.label }}</span>
+            <strong>{{ item.value }}</strong>
+          </article>
+        </div>
+      </section>
+
+      <section v-if="ideaInsightSuggestions.length > 0" class="workspace-card suggestions-card">
+        <div class="panel-header">
+          <div>
+            <p class="panel-meta">Suggested today</p>
+            <h2>Use the feedback loop instead of guessing</h2>
+          </div>
+        </div>
+
+        <div class="suggestions-grid">
+          <article
+            v-for="suggestion in ideaInsightSuggestions"
+            :key="suggestion.id"
+            class="suggestion-card"
+            :data-tone="suggestion.kind"
+          >
+            <div class="suggestion-card-copy">
+              <span class="workspace-chip">{{ humanizeSuggestionKind(suggestion.kind) }}</span>
+              <strong>{{ suggestion.title }}</strong>
+              <p>{{ suggestion.description }}</p>
+              <small class="suggestion-reason">{{ suggestion.reason }}</small>
+            </div>
+
+            <div class="suggestion-card-actions">
+              <button
+                v-if="suggestion.ideaId"
+                type="button"
+                class="workspace-secondary-button compact"
+                @click="openSuggestionIdea(suggestion)"
+              >
+                Open idea
+              </button>
+              <button
+                type="button"
+                class="workspace-primary-button compact"
+                @click="actOnSuggestion(suggestion)"
+              >
+                {{ suggestion.cta }}
+              </button>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section
+        v-else-if="suggestedIdeas.length > 0"
+        class="workspace-card suggestions-card"
+      >
         <div class="panel-header">
           <div>
             <p class="panel-meta">Suggested today</p>
@@ -881,6 +1104,7 @@ onMounted(() => {
               <div class="idea-card-meta">
                 <span class="workspace-chip">{{ card.angles.length }} angles</span>
                 <span class="workspace-chip">{{ card.posts.length }} posts</span>
+                <span v-if="isWorkingIdea(card)" class="workspace-chip" data-tone="working">Working now</span>
                 <span class="workspace-chip" :data-tone="card.statusTone">{{ card.statusLabel }}</span>
               </div>
             </div>
@@ -892,6 +1116,10 @@ onMounted(() => {
                 <span v-for="tag in card.tags" :key="tag" class="workspace-chip subtle">{{ tag }}</span>
                 <span class="workspace-chip subtle">{{ formatIdeaTimestamp(card.idea.createdAt) }}</span>
               </div>
+            </div>
+
+            <div v-if="buildTopicInsightLine(card)" class="idea-insight-callout">
+              {{ buildTopicInsightLine(card) }}
             </div>
 
             <section class="idea-section">
@@ -1229,6 +1457,11 @@ onMounted(() => {
   color: #1d7a4b;
 }
 
+.workspace-chip[data-tone="working"] {
+  background: color-mix(in srgb, #eef6e9 80%, white 20%);
+  color: #2c6e3f;
+}
+
 .ideas-header-card {
   display: flex;
   align-items: flex-end;
@@ -1289,10 +1522,39 @@ onMounted(() => {
   gap: 10px;
 }
 
+.insight-summary-card,
 .suggestions-card,
 .filters-card {
   display: grid;
   gap: 18px;
+}
+
+.insight-summary-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.insight-summary-tile {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border-radius: 24px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 14px 28px rgba(70, 42, 24, 0.05);
+}
+
+.insight-summary-tile span {
+  color: var(--fc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.insight-summary-tile strong {
+  font-size: 1.05rem;
 }
 
 .panel-header {
@@ -1327,6 +1589,22 @@ onMounted(() => {
   background: linear-gradient(180deg, rgba(255, 249, 243, 0.94), rgba(255, 244, 236, 0.9));
 }
 
+.suggestion-card[data-tone="double_down"] {
+  background: linear-gradient(180deg, rgba(237, 246, 233, 0.96), rgba(245, 251, 241, 0.92));
+}
+
+.suggestion-card[data-tone="missing_angle"] {
+  background: linear-gradient(180deg, rgba(255, 244, 232, 0.96), rgba(255, 250, 244, 0.92));
+}
+
+.suggestion-card[data-tone="timing"] {
+  background: linear-gradient(180deg, rgba(238, 244, 253, 0.96), rgba(247, 250, 255, 0.92));
+}
+
+.suggestion-card[data-tone="watchout"] {
+  background: linear-gradient(180deg, rgba(255, 240, 236, 0.96), rgba(255, 248, 246, 0.92));
+}
+
 .suggestion-card-copy {
   display: grid;
   gap: 10px;
@@ -1340,6 +1618,12 @@ onMounted(() => {
   margin: 0;
   color: var(--fc-text-muted);
   line-height: 1.6;
+}
+
+.suggestion-reason {
+  color: var(--fc-text);
+  font-size: 0.88rem;
+  line-height: 1.55;
 }
 
 .suggestion-card-actions {
@@ -1450,6 +1734,16 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.idea-insight-callout {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, #d6eadb 72%, var(--fc-border));
+  background: linear-gradient(180deg, rgba(241, 248, 239, 0.9), rgba(248, 251, 246, 0.92));
+  color: #35583d;
+  font-weight: 600;
+  line-height: 1.55;
 }
 
 .idea-section {

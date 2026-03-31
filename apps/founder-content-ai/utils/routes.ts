@@ -1,5 +1,6 @@
 export const appRoutes = {
   appCreate: "/app/create",
+  appAssets: "/app/assets",
   appEmail: "/app/email",
   appGenerate: "/app/create",
   appGrowth: "/app/growth",
@@ -11,6 +12,7 @@ export const appRoutes = {
   appOutreach: "/app/outreach",
   admin: "/admin",
   adminFeatures: "/admin/features",
+  adminMediaRegistry: "/admin/media-registry",
   adminOutreach: "/admin/outreach",
   adminUsers: "/admin/users",
   adminUsage: "/admin/usage",

@@ -35,6 +35,7 @@ const visibleAppLinks = computed(() => {
   return [
     { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
     { to: appRoutes.appIdeas, label: "Ideas", shortLabel: "I", visible: canUseDashboard },
+    { to: appRoutes.appAssets, label: "Assets", shortLabel: "AS", visible: canUseDashboard },
     { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", visible: canUsePlanner },
     { to: appRoutes.appHistory, label: "History", shortLabel: "H", visible: canUsePlanner },
     { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
@@ -49,11 +50,13 @@ const visibleAppLinks = computed(() => {
 const pageTitleMap: Record<string, string> = {
   admin: "Admin",
   "admin-features": "Feature controls",
+  "admin-media-registry": "Media registry",
   "admin-outreach": "Outreach control",
   "admin-usage": "Usage control",
   "admin-users": "Admin users",
   "admin-workspaces": "Admin workspaces",
   "app-dashboard": "Dashboard",
+  "app-assets": "Assets",
   "app-email": "Email",
   "app-create": "Create new post",
   "app-growth": "Growth",
@@ -83,6 +86,10 @@ const currentPageSubtitle = computed(() => {
 
   if (route.name === "app-ideas") {
     return "Capture ideas, shape angles, and move the best ones into real posts.";
+  }
+
+  if (route.name === "app-assets") {
+    return "Keep reusable media, logos, and supporting files in one workspace library.";
   }
 
   if (route.name === "app-planner") {

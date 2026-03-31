@@ -152,6 +152,9 @@ export interface EmailCampaign {
   id: string;
   businessId: string;
   listId?: string;
+  sourceAssetId?: string;
+  sourceIdeaId?: string;
+  sourceTitle?: string;
   name: string;
   subject: string;
   bodyHtml: string;
@@ -336,6 +339,9 @@ export interface CreateEmailCampaignRequest {
   bodyText?: string;
   replyToEmail?: string;
   content?: EmailCampaignContent;
+  sourceAssetId?: string;
+  sourceIdeaId?: string;
+  sourceTitle?: string;
 }
 
 export interface CreateEmailCampaignResponse {

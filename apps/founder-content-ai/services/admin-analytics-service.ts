@@ -1,4 +1,5 @@
 import type {
+  AdminMediaRegistryResponse,
   AdminErrorsResponse,
   AdminFeatureFlagsResponse,
   AdminOverviewResponse,
@@ -11,10 +12,16 @@ import type {
   TrackAnalyticsEventResponse,
   UpdateAdminWorkspaceAccessRequest,
   UpdateAdminWorkspaceAccessResponse,
+  UpsertAdminDecisionRuleRequest,
+  UpsertAdminDecisionRuleResponse,
   UpsertAdminFeatureFlagRequest,
   UpsertAdminFeatureFlagResponse,
   UpsertAdminFeatureFlagTargetRequest,
   UpsertAdminFeatureFlagTargetResponse,
+  UpsertAdminMediaPresetRequest,
+  UpsertAdminMediaPresetResponse,
+  UpsertAdminPromptTemplateRequest,
+  UpsertAdminPromptTemplateResponse,
   WorkspaceAnalyticsOverviewResponse,
 } from "../../../packages/shared-types";
 import { apiGet, apiPatch, apiPost } from "./api-client";
@@ -46,11 +53,42 @@ export async function requestAdminFeatureFlags(): Promise<AdminFeatureFlagsRespo
   return apiGet<AdminFeatureFlagsResponse>("/admin/feature-flags");
 }
 
+export async function requestAdminMediaRegistry(): Promise<AdminMediaRegistryResponse> {
+  return apiGet<AdminMediaRegistryResponse>("/admin/media-registry");
+}
+
 export async function requestAdminFeatureFlagUpsert(
   payload: UpsertAdminFeatureFlagRequest,
 ): Promise<UpsertAdminFeatureFlagResponse> {
   return apiPost<UpsertAdminFeatureFlagRequest, UpsertAdminFeatureFlagResponse>(
     "/admin/feature-flags",
+    payload,
+  );
+}
+
+export async function requestAdminMediaPresetUpsert(
+  payload: UpsertAdminMediaPresetRequest,
+): Promise<UpsertAdminMediaPresetResponse> {
+  return apiPost<UpsertAdminMediaPresetRequest, UpsertAdminMediaPresetResponse>(
+    "/admin/media-registry/presets",
+    payload,
+  );
+}
+
+export async function requestAdminPromptTemplateUpsert(
+  payload: UpsertAdminPromptTemplateRequest,
+): Promise<UpsertAdminPromptTemplateResponse> {
+  return apiPost<UpsertAdminPromptTemplateRequest, UpsertAdminPromptTemplateResponse>(
+    "/admin/media-registry/prompt-templates",
+    payload,
+  );
+}
+
+export async function requestAdminDecisionRuleUpsert(
+  payload: UpsertAdminDecisionRuleRequest,
+): Promise<UpsertAdminDecisionRuleResponse> {
+  return apiPost<UpsertAdminDecisionRuleRequest, UpsertAdminDecisionRuleResponse>(
+    "/admin/media-registry/decision-rules",
     payload,
   );
 }

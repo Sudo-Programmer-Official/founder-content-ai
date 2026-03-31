@@ -1,4 +1,5 @@
 import type {
+  AdminMediaRegistryResponse,
   AdminErrorsResponse,
   AdminOverviewResponse,
   AdminOpsOverviewResponse,
@@ -9,10 +10,16 @@ import type {
   ApiError,
   UpdateAdminWorkspaceAccessRequest,
   UpdateAdminWorkspaceAccessResponse,
+  UpsertAdminDecisionRuleRequest,
+  UpsertAdminDecisionRuleResponse,
   UpsertAdminFeatureFlagRequest,
   UpsertAdminFeatureFlagResponse,
   UpsertAdminFeatureFlagTargetRequest,
   UpsertAdminFeatureFlagTargetResponse,
+  UpsertAdminMediaPresetRequest,
+  UpsertAdminMediaPresetResponse,
+  UpsertAdminPromptTemplateRequest,
+  UpsertAdminPromptTemplateResponse,
 } from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
 import {
@@ -21,6 +28,12 @@ import {
   listAdminUsers,
 } from "../services/analytics/analyticsService.ts";
 import { ensureCurrentUser } from "../services/authBusinessService.ts";
+import {
+  listAdminMediaRegistry,
+  upsertAdminDecisionRule,
+  upsertAdminMediaPreset,
+  upsertAdminPromptTemplate,
+} from "../services/adminMediaRegistryService.ts";
 import {
   listAdminFeatureFlags,
   listAdminWorkspacesWithAccess,
@@ -162,6 +175,28 @@ export async function getAdminFeatureFlags(
   }
 }
 
+export async function getAdminMediaRegistry(
+  request: Request,
+  response: Response<AdminMediaRegistryResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const registry = await listAdminMediaRegistry();
+    response.json(registry);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_media_registry_failed",
+      message: "Unable to load the media registry.",
+      logMessage: "Failed to load admin media registry.",
+    });
+  }
+}
+
 export async function postAdminFeatureFlag(
   request: Request<unknown, unknown, UpsertAdminFeatureFlagRequest>,
   response: Response<UpsertAdminFeatureFlagResponse | ApiError>,
@@ -181,6 +216,75 @@ export async function postAdminFeatureFlag(
       code: "admin_feature_flag_upsert_failed",
       message: "Unable to save feature flag.",
       logMessage: "Failed to save feature flag.",
+    });
+  }
+}
+
+export async function postAdminMediaPreset(
+  request: Request<unknown, unknown, UpsertAdminMediaPresetRequest>,
+  response: Response<UpsertAdminMediaPresetResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const actor = await ensureCurrentUser(request.auth);
+    const preset = await upsertAdminMediaPreset(request.body, actor.id);
+    response.json({ preset });
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_media_preset_upsert_failed",
+      message: "Unable to save the media preset.",
+      logMessage: "Failed to save admin media preset.",
+    });
+  }
+}
+
+export async function postAdminPromptTemplate(
+  request: Request<unknown, unknown, UpsertAdminPromptTemplateRequest>,
+  response: Response<UpsertAdminPromptTemplateResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const actor = await ensureCurrentUser(request.auth);
+    const promptTemplate = await upsertAdminPromptTemplate(request.body, actor.id);
+    response.json({ promptTemplate });
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_prompt_template_upsert_failed",
+      message: "Unable to save the prompt template.",
+      logMessage: "Failed to save admin prompt template.",
+    });
+  }
+}
+
+export async function postAdminDecisionRule(
+  request: Request<unknown, unknown, UpsertAdminDecisionRuleRequest>,
+  response: Response<UpsertAdminDecisionRuleResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const actor = await ensureCurrentUser(request.auth);
+    const decisionRule = await upsertAdminDecisionRule(request.body, actor.id);
+    response.json({ decisionRule });
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_decision_rule_upsert_failed",
+      message: "Unable to save the decision rule.",
+      logMessage: "Failed to save admin decision rule.",
     });
   }
 }

@@ -13,4 +13,5 @@ export const competitiveIntelligencePromptFiles = {
 
 export const brandIntelligencePromptFiles = {
   brandProfileExtractor: "packages/prompts/brand-intelligence/brand-profile-extractor.prompt",
+  workspaceKnowledgeExtractor: "packages/prompts/brand-intelligence/workspace-knowledge-extractor.prompt",
 } as const;

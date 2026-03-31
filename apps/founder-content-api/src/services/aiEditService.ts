@@ -17,12 +17,17 @@ function serializeBrandContext(brandContext: BrandPromptContext | undefined): st
   const topics = (brandContext.topics ?? []).map((topic) => topic.trim()).filter(Boolean);
   const patterns = (brandContext.patterns ?? []).map((pattern) => pattern.trim()).filter(Boolean);
   const marketReferences = (brandContext.marketReferences ?? []).map((value) => value.trim()).filter(Boolean);
+  const beliefs = (brandContext.beliefs ?? []).map((value) => value.trim()).filter(Boolean);
   const lines = [
     brandContext.tone ? `Tone: ${brandContext.tone}` : "",
     brandContext.writingStyle ? `Writing style: ${brandContext.writingStyle}` : "",
     brandContext.visualStyle ? `Visual style: ${brandContext.visualStyle}` : "",
+    brandContext.voiceSummary ? `Voice summary: ${brandContext.voiceSummary}` : "",
+    brandContext.audience ? `Audience: ${brandContext.audience}` : "",
+    brandContext.positioning ? `Positioning: ${brandContext.positioning}` : "",
     topics.length > 0 ? `Topics: ${topics.join(", ")}` : "",
     patterns.length > 0 ? `Patterns: ${patterns.join(" | ")}` : "",
+    beliefs.length > 0 ? `Core beliefs: ${beliefs.join(" | ")}` : "",
     marketReferences.length > 0 ? `Market references: ${marketReferences.join(" | ")}` : "",
   ].filter(Boolean);
 

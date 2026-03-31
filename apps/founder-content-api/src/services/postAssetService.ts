@@ -21,6 +21,10 @@ import {
 } from "./governanceService.ts";
 import { HttpError } from "../utils/http.ts";
 import { logInfo, logWarn } from "../utils/logger.ts";
+import {
+  releaseWorkspacePostAssetUsage,
+  syncWorkspaceAssetFromPostAsset,
+} from "./workspaceAssetService.ts";
 
 interface AwsCredentials {
   accessKeyId: string;
@@ -532,6 +536,15 @@ export async function createPostAsset(
   );
 
   const asset = mapPostAsset(result.rows[0], true);
+  void syncWorkspaceAssetFromPostAsset({
+    businessId,
+    postId,
+    postAssetId: asset.id,
+    storageKey: asset.storageKey,
+    storageUrl: asset.storageUrl,
+    mimeType: asset.mimeType,
+    sizeBytes: asset.sizeBytes,
+  });
   logInfo("Created post asset metadata row.", {
     assetId: asset.id,
     postId,
@@ -610,6 +623,12 @@ export async function deletePostAsset(
     assetId,
     postId: asset.post_id,
     businessId,
+  });
+  void releaseWorkspacePostAssetUsage({
+    businessId,
+    postId: asset.post_id,
+    storageKey: asset.storage_key,
+    postAssetId: assetId,
   });
 
   return {
