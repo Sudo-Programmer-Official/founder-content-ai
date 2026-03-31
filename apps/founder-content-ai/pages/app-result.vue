@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
   ContentAiEditPreview,
@@ -72,6 +72,7 @@ const isWorkspaceAssetPickerOpen = ref(false);
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
 const isLoadingMediaRecommendations = ref(false);
 const isGeneratingRecommendationId = ref("");
+const mediaRecommendationPanelRef = ref<HTMLElement | null>(null);
 const aiEditInstruction = ref("");
 const aiEditPreview = ref<ContentAiEditPreview | null>(null);
 const aiEditFeedback = ref("");
@@ -387,6 +388,46 @@ const actionPriorityLabel = computed(() =>
 const recommendedContentType = computed(() => (postAssets.value.length > 0 ? "image" : "text"));
 const visibleMediaRecommendations = computed(() =>
   mediaRecommendations.value.filter((suggestion) => suggestion.actionType !== "skip"),
+);
+const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>(() => [
+  {
+    id: "fallback-quote-card",
+    actionType: "generate_visual",
+    title: "Generate quote card",
+    description: "Turn the strongest line into a clean quote-style visual.",
+    reason: "Safe default for text-first founder posts when no stronger match is available yet.",
+    suggestedMediaType: "quote_card",
+    visualTemplateType: "quote",
+    recommendedAssetIds: [],
+  },
+  {
+    id: "fallback-stat-card",
+    actionType: "generate_visual",
+    title: "Generate stat card",
+    description: "Package the main idea into a compact insight or proof-style card.",
+    reason: "Useful when the post has a clear takeaway but not enough structure for a carousel.",
+    suggestedMediaType: "stat_card",
+    visualTemplateType: "insight",
+    recommendedAssetIds: [],
+  },
+  {
+    id: "fallback-framework-card",
+    actionType: "generate_visual",
+    title: "Generate framework card",
+    description: "Lay out the idea as a scan-friendly multi-step framework.",
+    reason: "Best for tactical posts where the reader should absorb a short sequence.",
+    suggestedMediaType: "framework_card",
+    visualTemplateType: "carousel",
+    recommendedAssetIds: [],
+  },
+]);
+const displayedMediaRecommendations = computed(() =>
+  visibleMediaRecommendations.value.length > 0
+    ? visibleMediaRecommendations.value
+    : fallbackMediaRecommendations.value,
+);
+const isUsingFallbackMediaRecommendations = computed(
+  () => !isLoadingMediaRecommendations.value && visibleMediaRecommendations.value.length === 0,
 );
 const selectedAudienceTimeLabel = computed(() => {
   if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
@@ -969,12 +1010,29 @@ async function loadMediaRecommendations(): Promise<void> {
     });
 
     mediaRecommendations.value = response.suggestions;
+    if (response.suggestions.filter((suggestion) => suggestion.actionType !== "skip").length === 0) {
+      mediaFeedback.value = "No strong visual match yet. You can still generate media manually.";
+    }
   } catch (error) {
     mediaRecommendations.value = [];
     mediaFeedback.value =
-      error instanceof Error ? error.message : "Unable to load media recommendations.";
+      error instanceof Error && error.message.trim() !== ""
+        ? `${error.message} You can still generate media manually.`
+        : "No strong visual match yet. You can still generate media manually.";
   } finally {
     isLoadingMediaRecommendations.value = false;
+  }
+}
+
+async function openGenerateMediaOptions(): Promise<void> {
+  await nextTick();
+  mediaRecommendationPanelRef.value?.scrollIntoView({
+    behavior: "smooth",
+    block: "nearest",
+  });
+
+  if (isUsingFallbackMediaRecommendations.value) {
+    mediaFeedback.value = "No strong visual match yet. You can still generate media manually.";
   }
 }
 
@@ -1997,41 +2055,60 @@ onBeforeUnmount(() => {
                 </p>
               </div>
 
-              <label class="media-upload-button">
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif"
-                  multiple
-                  :disabled="isUploadingPostAssets"
-                  @change="void handleMediaSelection($event)"
-                />
-                {{ isUploadingPostAssets ? "Uploading..." : "Add media" }}
-              </label>
-              <button
-                type="button"
-                class="secondary-action"
-                @click="isWorkspaceAssetPickerOpen = true"
-              >
-                Use existing
-              </button>
+              <div class="media-panel-actions">
+                <button
+                  type="button"
+                  class="primary-action media-generate-button"
+                  :disabled="isLoadingMediaRecommendations || isUploadingPostAssets"
+                  @click="void openGenerateMediaOptions()"
+                >
+                  {{ isLoadingMediaRecommendations ? "Loading options..." : "Generate media" }}
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  @click="isWorkspaceAssetPickerOpen = true"
+                >
+                  Use existing
+                </button>
+                <label class="media-upload-button">
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif"
+                    multiple
+                    :disabled="isUploadingPostAssets"
+                    @change="void handleMediaSelection($event)"
+                  />
+                  {{ isUploadingPostAssets ? "Uploading..." : "Upload" }}
+                </label>
+              </div>
             </div>
 
-            <div v-if="visibleMediaRecommendations.length > 0 || isLoadingMediaRecommendations" class="media-recommendation-panel">
+            <div
+              v-if="displayedMediaRecommendations.length > 0 || isLoadingMediaRecommendations"
+              ref="mediaRecommendationPanelRef"
+              class="media-recommendation-panel"
+            >
               <div class="media-recommendation-header">
                 <div>
                   <p class="panel-meta">Recommended next move</p>
-                  <strong>Choose the safest visual path for this post</strong>
+                  <strong>{{ isUsingFallbackMediaRecommendations ? "Generate media for this post" : "Choose the safest visual path for this post" }}</strong>
                 </div>
-                <span class="workspace-chip">{{ recommendedContentType === "image" ? "Assets already attached" : "Text-first draft" }}</span>
+                <span class="workspace-chip">
+                  {{ isUsingFallbackMediaRecommendations ? "Manual generation" : recommendedContentType === "image" ? "Assets already attached" : "Text-first draft" }}
+                </span>
               </div>
 
               <p v-if="isLoadingMediaRecommendations" class="result-feedback subtle">
                 Loading media recommendations...
               </p>
+              <p v-else-if="isUsingFallbackMediaRecommendations" class="result-feedback subtle">
+                No strong visual match yet. You can still generate media manually.
+              </p>
 
               <div v-else class="media-recommendation-grid">
                 <article
-                  v-for="suggestion in visibleMediaRecommendations"
+                  v-for="suggestion in displayedMediaRecommendations"
                   :key="suggestion.id"
                   class="media-recommendation-card"
                 >
@@ -2783,6 +2860,19 @@ onBeforeUnmount(() => {
   display: block;
 }
 
+.media-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.media-generate-button {
+  min-width: 170px;
+  justify-content: center;
+}
+
 .workspace-chip {
   display: inline-flex;
   align-items: center;
@@ -2838,6 +2928,7 @@ onBeforeUnmount(() => {
   position: relative;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   min-height: 42px;
   padding: 0 18px;
   border-radius: 999px;

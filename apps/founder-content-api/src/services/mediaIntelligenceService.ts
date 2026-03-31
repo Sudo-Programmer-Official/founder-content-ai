@@ -158,6 +158,27 @@ interface LatestGeneratedMediaRow extends QueryResultRow {
   generated_media_type: MediaSuggestionType;
 }
 
+interface RegclassLookupRow extends QueryResultRow {
+  relation_name: string | null;
+}
+
+async function hasMediaPerformanceRollupTables(): Promise<boolean> {
+  const [presetTable, typeTable] = await Promise.all([
+    queryDb<RegclassLookupRow>(
+      `
+        select to_regclass('public.workspace_media_preset_performance')::text as relation_name
+      `,
+    ),
+    queryDb<RegclassLookupRow>(
+      `
+        select to_regclass('public.workspace_media_type_performance')::text as relation_name
+      `,
+    ),
+  ]);
+
+  return Boolean(presetTable.rows[0]?.relation_name && typeTable.rows[0]?.relation_name);
+}
+
 function toIsoString(value: Date | string): string {
   return new Date(value).toISOString();
 }
@@ -568,6 +589,10 @@ async function loadAvailableImageAssets(businessId: string): Promise<AssetAvaila
 }
 
 async function refreshMediaPerformanceRollups(businessId: string): Promise<void> {
+  if (!(await hasMediaPerformanceRollupTables())) {
+    return;
+  }
+
   const [presetAggregates, mediaTypeAggregates] = await Promise.all([
     queryDb<MediaPresetPerformanceAggregateRow>(
       `
@@ -759,7 +784,15 @@ async function refreshMediaPerformanceRollups(businessId: string): Promise<void>
 }
 
 async function ensureMediaPerformanceRollups(businessId: string): Promise<void> {
-  const [hasPresetRollups, hasTypeRollups, hasRawStats] = await Promise.all([
+  if (!(await hasMediaPerformanceRollupTables())) {
+    return;
+  }
+
+  let hasPresetRollups;
+  let hasTypeRollups;
+  let hasRawStats;
+
+  [hasPresetRollups, hasTypeRollups, hasRawStats] = await Promise.all([
     queryDb<{ id: string }>(
       `
         select id
@@ -802,6 +835,10 @@ async function loadPresetPerformanceRollups(
   businessId: string,
   surface?: MediaRecommendationContentType,
 ): Promise<MediaPresetPerformanceSummary[]> {
+  if (!(await hasMediaPerformanceRollupTables())) {
+    return [];
+  }
+
   const result = await queryDb<MediaPresetPerformanceRow>(
     `
       select
@@ -835,6 +872,10 @@ async function loadMediaTypePerformanceRollups(
   businessId: string,
   surface?: MediaRecommendationContentType,
 ): Promise<MediaTypePerformanceSummary[]> {
+  if (!(await hasMediaPerformanceRollupTables())) {
+    return [];
+  }
+
   const result = await queryDb<MediaTypePerformanceRow>(
     `
       select
