@@ -13,6 +13,7 @@ export interface GenerateImageResponse {
 interface ImageGenerationApiResponse {
   data?: Array<{
     b64_json?: string;
+    url?: string;
   }>;
   error?: {
     message?: string;
@@ -41,7 +42,6 @@ export async function generateImage(input: GenerateImageRequest): Promise<Genera
       model,
       prompt: input.prompt,
       size,
-      response_format: "b64_json",
     }),
   });
 
@@ -53,14 +53,36 @@ export async function generateImage(input: GenerateImageRequest): Promise<Genera
   }
 
   const imageBase64 = responseData.data?.[0]?.b64_json?.trim();
+  const imageUrl = responseData.data?.[0]?.url?.trim();
 
-  if (!imageBase64) {
+  if (imageBase64) {
+    return {
+      imageDataUrl: `data:image/png;base64,${imageBase64}`,
+      mimeType: "image/png",
+      model,
+    };
+  }
+
+  if (imageUrl) {
+    const imageResponse = await fetch(imageUrl);
+
+    if (!imageResponse.ok) {
+      throw new Error("OpenAI image generation returned an unreadable image URL.");
+    }
+
+    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    const mimeType = imageResponse.headers.get("content-type")?.trim() || "image/png";
+
+    return {
+      imageDataUrl: `data:${mimeType};base64,${imageBuffer.toString("base64")}`,
+      mimeType,
+      model,
+    };
+  }
+
+  if (!imageBase64 && !imageUrl) {
     throw new Error("OpenAI image generation returned an empty image payload.");
   }
 
-  return {
-    imageDataUrl: `data:image/png;base64,${imageBase64}`,
-    mimeType: "image/png",
-    model,
-  };
+  throw new Error("OpenAI image generation returned an unsupported image payload.");
 }
