@@ -3,16 +3,19 @@ import { appRoutes } from "../utils/routes";
 
 const steps = [
   {
-    title: "Capture anything",
-    description: "Drop in a screenshot, rough note, pasted text, or saved idea instead of starting from scratch.",
+    title: "Capture real inputs",
+    description:
+      "Drop in a screenshot, rough note, pasted text, or saved idea instead of staring at a blank page.",
   },
   {
-    title: "Generate hooks + posts",
-    description: "Turn raw input into attention-grabbing hooks and a polished LinkedIn post in seconds.",
+    title: "Shape the message",
+    description:
+      "Turn raw input into attention-grabbing hooks and a polished LinkedIn post that still sounds like you.",
   },
   {
-    title: "Post consistently",
-    description: "Keep your brand visible without waiting for inspiration or burning time on every draft.",
+    title: "Build consistency",
+    description:
+      "Use scheduling and planning to keep showing up without burning time or relying on last-minute inspiration.",
   },
 ];
 
@@ -46,11 +49,11 @@ const features = [
   },
   {
     title: "Idea Vault",
-    description: "Turn scattered notes and unfinished thoughts into a repeatable content pipeline.",
+    description: "Turn scattered notes and unfinished thoughts into a repeatable content workflow.",
   },
   {
-    title: "Multi-style hooks",
-    description: "Generate different angles for storytelling, lessons, and build-in-public content.",
+    title: "Planning cues",
+    description: "See the next best post, timing suggestions, and queue prompts that help you stay consistent.",
   },
 ];
 
@@ -59,9 +62,9 @@ const pricingPlans = [
     name: "Free",
     price: "$0",
     cadence: "/month",
-    badge: "Start here",
-    description: "Validate the workflow before paying.",
-    points: ["5 generations/day", "Try the content engine", "Best for first-time users"],
+    badge: "Try the system",
+    description: "Validate your content workflow before you pay for momentum.",
+    points: ["2 posts per day", "1 scheduled post at a time", "Try the full content system"],
     ctaLabel: "Create your first post",
     ctaTo: appRoutes.signup,
     featured: false,
@@ -70,9 +73,9 @@ const pricingPlans = [
     name: "Starter",
     price: "$9",
     cadence: "/month",
-    badge: "Best value",
-    description: "The right plan for early traction and daily use.",
-    points: ["50 generations/day", "Capture + remix workflows", "No watermark"],
+    badge: "Build momentum",
+    description: "Post consistently without burning out or rebuilding the workflow every day.",
+    points: ["5 posts per day", "Unlimited scheduling queue", "Plan your week ahead"],
     ctaLabel: "Choose Starter",
     ctaTo: appRoutes.signup,
     featured: true,
@@ -81,9 +84,9 @@ const pricingPlans = [
     name: "Pro",
     price: "$19",
     cadence: "/month",
-    badge: "Scale mode",
-    description: "For teams and operators who want the engine every day.",
-    points: ["Unlimited generations", "Priority speed", "Future scheduling access"],
+    badge: "Scale the engine",
+    description: "Run content like a system with more leverage, more headroom, and priority execution.",
+    points: ["Unlimited posting rhythm", "Advanced scheduling windows", "Priority execution and growth workflow"],
     ctaLabel: "Go Pro",
     ctaTo: appRoutes.signup,
     featured: false,
@@ -95,11 +98,11 @@ const pricingPlans = [
   <main class="landing-shell">
     <section class="hero-section">
       <div class="hero-copy">
-        <p class="eyebrow">LinkedIn content engine for founders, marketers, and business owners</p>
-        <h1>Turn anything into LinkedIn content that actually gets attention.</h1>
+        <p class="eyebrow">Consistency engine for founders, marketers, and business owners</p>
+        <h1>Turn captured ideas into LinkedIn content you can publish consistently.</h1>
         <p class="hero-description">
           Upload a screenshot, paste a post, or drop an idea. FounderContent AI turns raw input
-          into hooks, posts, and momentum in seconds.
+          into hooks, posts, and a workflow that helps you keep showing up without burning out.
         </p>
 
         <div class="cta-row">
@@ -109,8 +112,8 @@ const pricingPlans = [
           <a class="secondary-cta" href="/#demo">See how it works</a>
         </div>
 
-        <p class="hero-loop">Screenshots. Ideas. Tweets. Notes. → Hooks → Posts → Growth.</p>
-        <p class="hero-hook">Stop thinking. Just capture and post.</p>
+        <p class="hero-loop">Capture → Generate → Schedule → Stay visible.</p>
+        <p class="hero-hook">The goal is not more posts. It is consistent content that compounds.</p>
       </div>
 
       <div class="hero-visual">
@@ -133,7 +136,7 @@ const pricingPlans = [
           <ul class="proof-points">
             <li>Clear hook with tension</li>
             <li>Founder-native tone</li>
-            <li>Ready to post in one click</li>
+            <li>Built for repeatable publishing, not one-off drafts</li>
           </ul>
           <router-link class="proof-link" :to="appRoutes.signup">Generate your first post</router-link>
         </article>
@@ -145,8 +148,8 @@ const pricingPlans = [
         <p class="eyebrow">Demo</p>
         <h2>Show the transformation instantly.</h2>
         <p class="section-description">
-          People usually do not struggle to write. They struggle to start. The landing page should
-          prove that one input can become a publishable post fast.
+          People usually do not struggle to write. They struggle to start and to stay consistent.
+          The landing page should prove that one input can become a publishable post fast, then feed a workflow worth repeating.
         </p>
       </div>
 
@@ -179,7 +182,7 @@ const pricingPlans = [
     <section id="how-it-works" class="content-section">
       <div class="section-header">
         <p class="eyebrow">How It Works</p>
-        <h2>One workflow. No complexity.</h2>
+        <h2>One workflow that turns capture into consistency.</h2>
       </div>
 
       <div class="steps-grid">
@@ -210,7 +213,7 @@ const pricingPlans = [
         <p class="eyebrow">Features</p>
         <h2>Keep the story tight.</h2>
         <p class="section-description">
-          This product wins by helping people start faster, remix smarter, and post more consistently.
+          This product wins by helping people start faster, remix smarter, and keep a publishing rhythm they can actually maintain.
         </p>
       </div>
 
@@ -225,9 +228,9 @@ const pricingPlans = [
     <section id="pricing" class="content-section pricing-section">
       <div class="section-header">
         <p class="eyebrow">Pricing</p>
-        <h2>Simple pricing that removes friction.</h2>
+        <h2>Pricing built around consistency, not feature bloat.</h2>
         <p class="section-description">
-          The first goal is easy adoption. The second goal is turning daily usage into monthly revenue.
+          Start by validating the workflow, then unlock the weekly planning system as your posting habit takes hold. The goal is not more posts. It is consistent, high-performing content that compounds.
         </p>
       </div>
 
@@ -258,10 +261,10 @@ const pricingPlans = [
 
     <section class="final-cta">
       <p class="eyebrow">Final CTA</p>
-      <h2>Start creating content in seconds.</h2>
+      <h2>Build a content system you can actually keep.</h2>
       <p>
-        Turn anything you see or think into high-performing LinkedIn content and move from blank page
-        to published post faster.
+        Turn anything you capture into a repeatable LinkedIn workflow, then move from scattered ideas
+        to consistent publishing without rebuilding momentum every day.
       </p>
       <div class="cta-row">
         <router-link class="primary-cta" :to="appRoutes.signup">

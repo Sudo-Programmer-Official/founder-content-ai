@@ -10,7 +10,12 @@ import type {
   ProductFeatureMap,
 } from "../../../../packages/shared-types/index.ts";
 import { getAppSession } from "./authBusinessService.ts";
-import { getBusinessAccessState, isFeatureEnabled } from "./adminControlService.ts";
+import {
+  getBusinessAccessState,
+  isFeatureEnabled,
+  resolveScheduledQueueLimit,
+} from "./adminControlService.ts";
+import { queryDb } from "./db/client.ts";
 
 const PRODUCT_FEATURE_KEYS: ProductFeatureKey[] = [
   "content_generation",
@@ -44,11 +49,38 @@ function buildDisabledFeatureMap(): ProductFeatureMap {
   );
 }
 
-function mapLimits(access: ProductAccessState): ProductAccessLimits {
+async function loadScheduledQueueUsage(businessId: string): Promise<number> {
+  const result = await queryDb<{ total: string | number }>(
+    `
+      select count(*)::int as total
+      from scheduled_posts
+      where business_id = $1
+        and platform = 'linkedin'
+        and status in ('scheduled', 'processing', 'paused', 'failed')
+    `,
+    [businessId],
+  );
+
+  const parsed = Number(result.rows[0]?.total ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function mapLimits(
+  access: ProductAccessState,
+  scheduledQueueUsed: number,
+): ProductAccessLimits {
+  const scheduledQueueLimit = resolveScheduledQueueLimit(access.planCode);
+
   return {
     postsLimit: access.dailyLimits.postsLimit,
     postsUsed: access.dailyLimits.postsUsed,
     postsRemaining: Math.max(0, access.dailyLimits.postsLimit - access.dailyLimits.postsUsed),
+    scheduledQueueLimit,
+    scheduledQueueUsed,
+    scheduledQueueRemaining:
+      scheduledQueueLimit === null
+        ? null
+        : Math.max(0, scheduledQueueLimit - scheduledQueueUsed),
     emailsLimit: access.dailyLimits.emailsLimit,
     emailsUsed: access.dailyLimits.emailsUsed,
     emailsRemaining: Math.max(0, access.dailyLimits.emailsLimit - access.dailyLimits.emailsUsed),
@@ -106,7 +138,10 @@ export async function getProductAccessBootstrap(
   );
   const readOnly = featureEntries.find(([key]) => key === "system_read_only")?.[1] ?? false;
   const featureMap = Object.fromEntries(featureEntries) as ProductFeatureMap;
-  const workspaceAccess = await getBusinessAccessState(businessId);
+  const [workspaceAccess, scheduledQueueUsed] = await Promise.all([
+    getBusinessAccessState(businessId),
+    loadScheduledQueueUsage(businessId),
+  ]);
   const access: ProductAccessState = {
     ...workspaceAccess,
     readOnly,
@@ -117,7 +152,7 @@ export async function getProductAccessBootstrap(
     activeBusinessId: businessId,
     isPlatformAdmin: principal.isSuperAdmin,
     features: featureMap,
-    limits: mapLimits(access),
+    limits: mapLimits(access, scheduledQueueUsed),
     access,
   };
 }

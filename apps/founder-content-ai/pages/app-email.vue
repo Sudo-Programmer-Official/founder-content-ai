@@ -1606,7 +1606,7 @@ onBeforeUnmount(() => {
       <section v-if="!selectedBusinessId" class="workspace-card empty-state">
         <h2>Email needs a workspace.</h2>
         <p>Create or select a workspace first, then send the first campaign from there.</p>
-        <router-link class="primary-action" :to="appRoutes.onboarding">Set up workspace</router-link>
+        <router-link class="primary-action" :to="appRoutes.onboardingWorkspace">Create workspace</router-link>
       </section>
 
       <section v-else-if="!emailFeatureEnabled" class="workspace-card empty-state">
@@ -1617,14 +1617,40 @@ onBeforeUnmount(() => {
       <section v-else class="email-workspace-stack">
         <section class="workspace-card email-tabs-card">
           <div class="email-tabs-header">
-            <div>
-              <p class="panel-meta">Email campaigns</p>
-              <h1>Manage lists, campaigns, and delivery</h1>
-              <p class="panel-note">Operate email from one workspace without leaving the product flow.</p>
+            <div class="email-tabs-intro">
+              <span class="workspace-chip email-workspace-chip">
+                {{ businesses.find((membership) => membership.businessId === selectedBusinessId)?.business.name || "Workspace" }}
+              </span>
+              <div>
+                <p class="panel-meta">Email campaigns</p>
+                <h1>Manage lists, campaigns, and delivery</h1>
+                <p class="panel-note">Operate email from one workspace without leaving the product flow.</p>
+              </div>
+              <div class="email-hero-chip-row">
+                <span class="workspace-chip">{{ emailLimitText || "Email workspace ready" }}</span>
+                <span class="workspace-chip">{{ emailContactsTotal }} contacts</span>
+                <span class="workspace-chip">{{ campaigns.length }} campaigns</span>
+              </div>
             </div>
-            <span class="workspace-chip email-workspace-chip">
-              {{ businesses.find((membership) => membership.businessId === selectedBusinessId)?.business.name || "Workspace" }}
-            </span>
+
+            <aside class="email-hero-aside">
+              <p class="panel-meta">Sender setup</p>
+              <strong>{{ hasConfiguredDomain ? senderIdentitySummary : "Configure your branded sender" }}</strong>
+              <p class="panel-note">
+                {{
+                  hasConfiguredDomain
+                    ? `${domainStatusSummary}. Deliverability stays visible for this workspace.`
+                    : "Finish the sender setup once, then reuse the same identity across every campaign."
+                }}
+              </p>
+              <button
+                type="button"
+                class="secondary-action hero-inline-action"
+                @click="setEmailTab(hasConfiguredDomain ? 'campaigns' : 'settings')"
+              >
+                {{ hasConfiguredDomain ? "Open campaigns" : "Finish setup" }}
+              </button>
+            </aside>
           </div>
 
           <div class="email-tab-row" role="tablist" aria-label="Email sections">
@@ -1704,10 +1730,19 @@ onBeforeUnmount(() => {
                 </article>
               </div>
               <div v-else class="empty-note overview-empty-state">
-                <p>No campaigns yet.</p>
-                <button type="button" class="primary-action" @click="setEmailTab('campaigns')">
-                  Create your first campaign
-                </button>
+                <span class="overview-empty-badge">No campaigns yet</span>
+                <div class="overview-empty-copy">
+                  <h3>Your first send starts here</h3>
+                  <p>Start with one focused list, preview the message, and send a small test before scaling.</p>
+                </div>
+                <div class="overview-empty-actions">
+                  <button type="button" class="primary-action overview-empty-button" @click="setEmailTab('campaigns')">
+                    Create your first campaign
+                  </button>
+                  <button type="button" class="secondary-action overview-empty-button" @click="setEmailTab('contacts')">
+                    Import contacts first
+                  </button>
+                </div>
               </div>
             </article>
 
@@ -2460,9 +2495,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .workspace-shell {
-  width: min(100%, 1120px);
-  margin: 0 auto;
-  padding: 32px 20px 80px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 12px 0 80px;
 }
 
 .workspace-eyebrow,
@@ -2547,15 +2583,36 @@ onBeforeUnmount(() => {
 .email-tabs-card,
 .email-overview-stack {
   display: grid;
-  gap: 18px;
+  gap: 22px;
+}
+
+.email-tabs-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.email-tabs-card::before {
+  content: "";
+  position: absolute;
+  inset: -18% 48% auto -8%;
+  height: 220px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(215, 102, 52, 0.14) 0%, rgba(215, 102, 52, 0) 72%);
+  pointer-events: none;
 }
 
 .email-tabs-header {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.email-tabs-intro {
+  display: grid;
   gap: 16px;
-  align-items: flex-start;
+  min-width: 0;
 }
 
 .email-tabs-header h1 {
@@ -2566,13 +2623,45 @@ onBeforeUnmount(() => {
 
 .email-workspace-chip {
   align-self: flex-start;
-  margin-top: 0.1rem;
+  width: fit-content;
+  margin-top: 0;
+}
+
+.email-hero-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.email-hero-aside {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 22px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 78%, rgba(215, 102, 52, 0.16));
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255, 252, 248, 0.92) 0%, rgba(255, 247, 239, 0.82) 100%);
+  box-shadow: 0 18px 34px rgba(60, 36, 21, 0.06);
+}
+
+.email-hero-aside strong {
+  font-size: 1.06rem;
+  line-height: 1.45;
+}
+
+.hero-inline-action {
+  justify-self: start;
+  min-height: 40px;
+  padding: 0 14px;
 }
 
 .email-tab-row {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--fc-border) 86%, transparent);
 }
 
 .email-tab-button {
@@ -2665,7 +2754,7 @@ onBeforeUnmount(() => {
 .email-overview-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
 .email-stat-card {
@@ -2673,6 +2762,18 @@ onBeforeUnmount(() => {
   gap: 8px;
   min-height: 132px;
   align-content: end;
+  position: relative;
+  overflow: hidden;
+}
+
+.email-stat-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 72px;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
 }
 
 .email-stat-card span {
@@ -3008,18 +3109,19 @@ onBeforeUnmount(() => {
 .overview-quick-actions {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
 .overview-action-button {
   width: 100%;
-  min-height: 54px;
+  min-height: 48px;
 }
 
 .overview-dashboard-grid {
   display: grid;
   gap: 20px;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.6fr);
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
+  align-items: start;
 }
 
 .overview-campaigns-card,
@@ -3079,9 +3181,55 @@ onBeforeUnmount(() => {
 
 .overview-empty-state {
   display: grid;
-  gap: 14px;
+  gap: 18px;
   justify-items: start;
+  align-content: center;
+  min-height: 340px;
+  padding: clamp(24px, 3vw, 36px);
+  border: 1px dashed color-mix(in srgb, var(--fc-border) 82%, rgba(215, 102, 52, 0.28));
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at top left, rgba(215, 102, 52, 0.12) 0%, rgba(215, 102, 52, 0) 42%),
+    linear-gradient(180deg, rgba(255, 250, 245, 0.88) 0%, rgba(255, 246, 237, 0.7) 100%);
   margin-top: 0;
+}
+
+.overview-empty-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+  color: var(--fc-text-muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.overview-empty-copy {
+  display: grid;
+  gap: 10px;
+  max-width: 34rem;
+}
+
+.overview-empty-copy h3 {
+  margin: 0;
+  font-size: clamp(1.4rem, 2.3vw, 1.85rem);
+  line-height: 1.1;
+}
+
+.overview-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.overview-empty-button {
+  min-height: 44px;
+  padding: 0 18px;
 }
 
 .overview-empty-state p {
@@ -3091,11 +3239,14 @@ onBeforeUnmount(() => {
 .status-summary-grid {
   display: grid;
   gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .status-summary-card {
   display: grid;
   gap: 6px;
+  align-content: start;
+  min-height: 104px;
   padding: 16px 18px;
   border-radius: 20px;
   border: 1px solid var(--fc-border);
@@ -3347,8 +3498,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 48px;
-  padding: 0 18px;
+  min-height: 44px;
+  padding: 0 16px;
   border-radius: 999px;
   text-decoration: none;
   font-weight: 800;
@@ -3369,7 +3520,8 @@ onBeforeUnmount(() => {
 
 .secondary-action {
   border: 1px solid var(--fc-border);
-  background: transparent;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 10px 20px rgba(60, 36, 21, 0.04);
   color: var(--fc-text);
   cursor: pointer;
 }
@@ -3481,16 +3633,13 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 920px) {
+  .email-tabs-header,
   .email-overview-grid,
   .overview-quick-actions,
   .overview-dashboard-grid,
   .domain-grid,
   .contact-import-stack {
     grid-template-columns: 1fr;
-  }
-
-  .email-tabs-header {
-    align-items: stretch;
   }
 
   .contact-preview-summary,
@@ -3505,8 +3654,21 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 640px) {
+  .workspace-shell {
+    padding-top: 0;
+  }
+
   .email-stat-card {
     min-height: auto;
+  }
+
+  .overview-empty-state {
+    min-height: auto;
+  }
+
+  .overview-empty-actions,
+  .overview-empty-button {
+    width: 100%;
   }
 
   .contact-preview-summary,

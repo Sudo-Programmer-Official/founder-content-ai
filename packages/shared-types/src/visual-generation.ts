@@ -34,6 +34,10 @@ export interface VisualPromptContent {
   headline: string;
   supportingText?: string;
   bulletPoints?: string[];
+  highlightText?: string;
+  eyebrowText?: string;
+  footerText?: string;
+  closingText?: string;
 }
 
 export interface GenerateVisualRequest {

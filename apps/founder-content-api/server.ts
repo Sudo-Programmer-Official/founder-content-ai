@@ -6,6 +6,7 @@ import { competitiveIntelligenceRoute } from "./src/routes/competitiveIntelligen
 import { controlDashboardRoute } from "./src/routes/controlDashboard.ts";
 import { contentOrchestrationRoute } from "./src/routes/contentOrchestration.ts";
 import { adminRoute } from "./src/routes/admin.ts";
+import { billingRoute } from "./src/routes/billing.ts";
 import { emailRoute } from "./src/routes/email.ts";
 import { generateHookRoute } from "./src/routes/generateHook.ts";
 import { generateIdeasRoute } from "./src/routes/generateIdeas.ts";
@@ -108,6 +109,7 @@ export function createServerApp(): Express {
     next();
   });
 
+  app.use(billingRoute);
   app.use(express.json({ limit: "25mb" }));
 
   app.get("/health", (_request, response) => {

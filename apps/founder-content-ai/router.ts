@@ -11,6 +11,7 @@ import AdminUsersPage from "./pages/admin-users.vue";
 import AdminWorkspacesPage from "./pages/admin-workspaces.vue";
 import AppEmailPage from "./pages/app-email.vue";
 import AppAssetsPage from "./pages/app-assets.vue";
+import AppBillingPage from "./pages/app-billing.vue";
 import AppGeneratePage from "./pages/app-generate.vue";
 import AppGrowthPage from "./pages/app-growth.vue";
 import AppHistoryPage from "./pages/app-history.vue";
@@ -26,6 +27,7 @@ import LinkedInHookGeneratorPage from "./pages/linkedin-hook-generator.vue";
 import LinkedInPostIdeasForFoundersPage from "./pages/linkedin-post-ideas-for-founders.vue";
 import LoginPage from "./pages/login.vue";
 import OnboardingPage from "./pages/onboarding.vue";
+import OnboardingWorkspacePage from "./pages/onboarding-workspace.vue";
 import SettingsPreferencesPage from "./pages/settings-preferences.vue";
 import SignupPage from "./pages/signup.vue";
 
@@ -66,6 +68,7 @@ const router = createRouter({
       component: AppGeneratePage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -78,6 +81,7 @@ const router = createRouter({
       component: AppGrowthPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -86,6 +90,7 @@ const router = createRouter({
       component: AppIdeasPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -94,6 +99,7 @@ const router = createRouter({
       component: AppHistoryPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -102,6 +108,7 @@ const router = createRouter({
       component: AppPlannerPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -110,6 +117,7 @@ const router = createRouter({
       component: AppResultPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -118,6 +126,7 @@ const router = createRouter({
       component: DashboardPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -126,6 +135,7 @@ const router = createRouter({
       component: AppOutreachPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -134,6 +144,16 @@ const router = createRouter({
       component: AppAssetsPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
+      },
+    },
+    {
+      path: "/app/billing",
+      name: "app-billing",
+      component: AppBillingPage,
+      meta: {
+        requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -142,6 +162,7 @@ const router = createRouter({
       component: AppEmailPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -211,6 +232,7 @@ const router = createRouter({
       component: DashboardAnalyticsPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -219,6 +241,7 @@ const router = createRouter({
       component: DashboardPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -227,6 +250,7 @@ const router = createRouter({
       component: EmailCampaignsPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -235,6 +259,16 @@ const router = createRouter({
       component: OnboardingPage,
       meta: {
         requiresAuth: true,
+        shell: "standalone",
+      },
+    },
+    {
+      path: "/onboarding/workspace",
+      name: "onboarding-workspace",
+      component: OnboardingWorkspacePage,
+      meta: {
+        requiresAuth: true,
+        shell: "standalone",
       },
     },
     {
@@ -243,6 +277,7 @@ const router = createRouter({
       component: SettingsPreferencesPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {
@@ -251,6 +286,7 @@ const router = createRouter({
       component: LinkedInHookGeneratorPage,
       meta: {
         requiresAuth: true,
+        requiresWorkspace: true,
       },
     },
     {

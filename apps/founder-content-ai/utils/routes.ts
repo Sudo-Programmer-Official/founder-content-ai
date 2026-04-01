@@ -1,6 +1,7 @@
 export const appRoutes = {
   appCreate: "/app/create",
   appAssets: "/app/assets",
+  appBilling: "/app/billing",
   appEmail: "/app/email",
   appGenerate: "/app/create",
   appGrowth: "/app/growth",
@@ -26,6 +27,7 @@ export const appRoutes = {
   linkedinPostIdeasForFounders: "/linkedin-post-ideas-for-founders",
   login: "/login",
   onboarding: "/onboarding",
+  onboardingWorkspace: "/onboarding/workspace",
   settingsPreferences: "/settings/preferences",
   signup: "/signup",
 } as const;

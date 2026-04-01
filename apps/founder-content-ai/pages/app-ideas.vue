@@ -723,7 +723,7 @@ function openSuggestionIdea(suggestion: WorkspaceInsightSuggestion): void {
 
 async function actOnSuggestion(suggestion: WorkspaceInsightSuggestion): Promise<void> {
   if (suggestion.kind === "timing") {
-    await router.push(appRoutes.planner());
+    await router.push(appRoutes.appPlanner);
     return;
   }
 

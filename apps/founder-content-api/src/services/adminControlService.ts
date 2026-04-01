@@ -81,25 +81,32 @@ const PLAN_LIMIT_DEFAULTS: Record<
   Omit<AdminWorkspaceLimitSnapshot, "date" | "postsUsed" | "emailsUsed" | "outreachUsed">
 > = {
   free: {
-    postsLimit: 10,
+    postsLimit: 2,
     emailsLimit: 20,
     outreachLimit: 20,
   },
   pro: {
-    postsLimit: 100,
+    postsLimit: 5,
     emailsLimit: 200,
     outreachLimit: 100,
   },
   growth: {
-    postsLimit: 300,
+    postsLimit: 100000,
     emailsLimit: 500,
     outreachLimit: 250,
   },
   custom: {
-    postsLimit: 1000,
+    postsLimit: 100000,
     emailsLimit: 2500,
     outreachLimit: 500,
   },
+};
+
+const PLAN_SCHEDULED_QUEUE_LIMITS: Record<BusinessPlanCode, number | null> = {
+  free: 1,
+  pro: null,
+  growth: null,
+  custom: null,
 };
 
 function toIsoString(value: Date | string | null | undefined): string | undefined {
@@ -131,6 +138,10 @@ function normalizeDays(value: number | undefined, fallback: number): number {
 
 function resolvePlanDefaults(planCode: BusinessPlanCode) {
   return PLAN_LIMIT_DEFAULTS[planCode] ?? PLAN_LIMIT_DEFAULTS.free;
+}
+
+export function resolveScheduledQueueLimit(planCode: BusinessPlanCode): number | null {
+  return PLAN_SCHEDULED_QUEUE_LIMITS[planCode] ?? PLAN_SCHEDULED_QUEUE_LIMITS.free;
 }
 
 async function executeQuery<TRow extends QueryResultRow>(

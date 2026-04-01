@@ -318,7 +318,7 @@ onMounted(() => {
       <section v-if="!selectedBusinessId" class="workspace-card empty-state">
         <h2>Outreach needs a workspace.</h2>
         <p>Create or select a workspace first, then come back to use this message as outreach copy.</p>
-        <router-link class="primary-action" :to="appRoutes.onboarding">Set up workspace</router-link>
+        <router-link class="primary-action" :to="appRoutes.onboardingWorkspace">Create workspace</router-link>
       </section>
 
       <section v-else-if="!outreachFeatureEnabled" class="workspace-card empty-state">

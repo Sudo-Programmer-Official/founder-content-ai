@@ -40,7 +40,7 @@ async function handleSignup(): Promise<void> {
       password: password.value,
       displayName: displayName.value.trim() || undefined,
     });
-    await router.replace(appRoutes.appGenerate);
+    await router.replace(appRoutes.onboardingWorkspace);
   } catch (error) {
     showLoginInstead.value = isEmailAlreadyInUseError(error);
     pageError.value = error instanceof Error ? error.message : "Unable to create account.";
@@ -54,8 +54,8 @@ async function handleSignup(): Promise<void> {
       <p class="auth-eyebrow">/signup</p>
       <h1>Create an account and land on value first.</h1>
       <p class="auth-copy">
-        This flow signs you in, boots your workspace session, and sends you straight to the first
-        post-generation step.
+        This flow signs you in, creates your first workspace, and only then opens the rest of the
+        app.
       </p>
 
       <form class="auth-form" @submit.prevent="handleSignup">

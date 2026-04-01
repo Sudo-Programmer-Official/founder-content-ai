@@ -562,7 +562,7 @@ onMounted(() => {
         <p class="dashboard-description">
           Growth automation is workspace-scoped, so start by creating the brand container that will own leads, flows, and sending.
         </p>
-        <router-link class="dashboard-button" :to="appRoutes.onboarding">Go to onboarding</router-link>
+        <router-link class="dashboard-button" :to="appRoutes.onboardingWorkspace">Create workspace</router-link>
       </section>
 
       <section v-else-if="!growthFeatureEnabled" class="dashboard-panel empty-state-panel">

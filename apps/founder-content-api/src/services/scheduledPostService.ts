@@ -21,6 +21,10 @@ import type {
 } from "../../../../packages/shared-types/index.ts";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { requireBusinessMembership } from "./authBusinessService.ts";
+import {
+  getBusinessAccessState,
+  resolveScheduledQueueLimit,
+} from "./adminControlService.ts";
 import { updateContentPipelineItem } from "./controlDashboardService.ts";
 import { queryDb, withDbTransaction } from "./db/client.ts";
 import {
@@ -99,6 +103,10 @@ interface SchedulingConflictCheckResult extends QueryResultRow {
   id: string;
 }
 
+interface ScheduledQueueUsageRow extends QueryResultRow {
+  total: string | number;
+}
+
 async function executeQuery<TRow extends QueryResultRow>(
   text: string,
   values: unknown[],
@@ -118,6 +126,77 @@ function toIsoString(value: Date | string | null | undefined): string | undefine
 function toNumber(value: string | number | null | undefined): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+async function loadScheduledQueueUsage(
+  businessId: string,
+  client?: PoolClient,
+): Promise<number> {
+  const result = await executeQuery<ScheduledQueueUsageRow>(
+    `
+      select count(*)::int as total
+      from scheduled_posts
+      where business_id = $1
+        and platform = 'linkedin'
+        and status in ('scheduled', 'processing', 'paused', 'failed')
+    `,
+    [businessId],
+    client,
+  );
+
+  return toNumber(result.rows[0]?.total);
+}
+
+async function lockBusinessForScheduling(
+  businessId: string,
+  client: PoolClient,
+): Promise<void> {
+  const result = await executeQuery<{ id: string }>(
+    `
+      select id
+      from businesses
+      where id = $1
+      limit 1
+      for update
+    `,
+    [businessId],
+    client,
+  );
+
+  if (!result.rows[0]) {
+    throw new HttpError(404, "business_not_found", "Workspace not found.");
+  }
+}
+
+async function enforceScheduledQueueLimit(
+  businessId: string,
+  client?: PoolClient,
+): Promise<void> {
+  const access = await getBusinessAccessState(businessId, client);
+  const scheduledQueueLimit = resolveScheduledQueueLimit(access.planCode);
+
+  if (scheduledQueueLimit === null) {
+    return;
+  }
+
+  const scheduledQueueUsed = await loadScheduledQueueUsage(businessId, client);
+
+  if (scheduledQueueUsed < scheduledQueueLimit) {
+    return;
+  }
+
+  throw new HttpError(
+    429,
+    "scheduled_queue_limit_reached",
+    "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue.",
+    {
+      scheduledQueueLimit,
+      scheduledQueueUsed,
+      scheduledQueueRemaining: Math.max(0, scheduledQueueLimit - scheduledQueueUsed),
+      upgradeTitle: "Queue your week, not just one post",
+      upgradeMessage: "Unlock multiple scheduled posts so you can stay consistent beyond the first win.",
+    },
+  );
 }
 
 function parseSlides(assetPayload: unknown): ScheduledPostSlide[] {
@@ -1482,6 +1561,8 @@ export async function createScheduledPost(
     throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
   }
 
+  await enforceScheduledQueueLimit(businessId);
+
   const safetyWarnings = await collectSchedulingSafetyWarnings({
     businessId,
     scheduledAt,
@@ -1500,6 +1581,9 @@ export async function createScheduledPost(
   let createdScheduledPostId = "";
 
   await withDbTransaction(async (client) => {
+    await lockBusinessForScheduling(businessId, client);
+    await enforceScheduledQueueLimit(businessId, client);
+
     const dispatchWindow = buildDispatchWindow(scheduledAt);
     const fingerprint = buildContentFingerprint(contentText);
     const insertResult = await executeQuery<{ id: string }>(

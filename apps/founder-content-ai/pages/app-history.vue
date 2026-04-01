@@ -54,6 +54,7 @@ const router = useRouter();
 const {
   bootstrap: productAccess,
   activeBusinessId,
+  refreshProductAccess,
   setActiveBusinessId,
   isReady: isProductAccessReady,
   isFeatureEnabled,
@@ -548,6 +549,7 @@ async function mutateSelectedPost(
                 : "Slot removed. The draft is back in the planner backlog.";
     selectedScheduledPostId.value = response.scheduledPost.id;
     await loadHistoryData();
+    await refreshProductAccess(resolvedBusinessId.value);
     syncSelection();
 
     if (action === "move_to_draft" && selectedAssetGroupId) {
@@ -613,6 +615,7 @@ async function rescheduleSelectedPost(): Promise<void> {
     }
     selectedScheduledPostId.value = response.scheduledPost.id;
     await loadHistoryData();
+    await refreshProductAccess(resolvedBusinessId.value);
     syncSelection();
   } catch (error) {
     errorMessage.value =

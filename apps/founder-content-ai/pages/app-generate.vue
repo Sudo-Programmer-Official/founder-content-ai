@@ -44,7 +44,7 @@ const { bootstrap } = useProductAccessContext();
 type GenerationSourceMode = "fresh" | "feed";
 
 const input = ref("");
-const tone = ref<(typeof toneOptions)[number]["value"]>("storytelling");
+const tone = ref<(typeof toneOptions)[number]["value"]>("direct");
 const isLoading = ref(false);
 const errorMessage = ref("");
 const helperMessage = ref("Paste a thought, saved post, or rough idea. Voice works too.");
@@ -693,7 +693,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="activation-panel-header">
-        <div>
+        <div class="activation-panel-copy">
           <p class="panel-meta">Input</p>
           <h2>{{ sourceInputLabel }}</h2>
         </div>
@@ -1084,10 +1084,9 @@ onBeforeUnmount(() => {
 }
 
 .activation-panel-header {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px 20px;
   align-items: flex-start;
 }
 
@@ -1127,6 +1126,21 @@ onBeforeUnmount(() => {
 
 .source-mode-row {
   margin-top: 18px;
+}
+
+.create-mode-row {
+  margin-top: 0;
+}
+
+.activation-panel-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.tone-selector {
+  justify-content: flex-end;
+  align-self: start;
 }
 
 .saved-sources-panel {
@@ -1312,6 +1326,14 @@ onBeforeUnmount(() => {
   .brand-context-header,
   .activation-helper-row {
     flex-direction: column;
+  }
+
+  .activation-panel-header {
+    grid-template-columns: 1fr;
+  }
+
+  .tone-selector {
+    justify-content: flex-start;
   }
 
   .brand-context-actions,

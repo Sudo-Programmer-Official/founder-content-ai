@@ -65,6 +65,7 @@ const auth = useAuthContext();
 const {
   bootstrap: productAccess,
   activeBusinessId,
+  refreshProductAccess,
   setActiveBusinessId,
   isReady: isProductAccessReady,
   isFeatureEnabled,
@@ -92,6 +93,7 @@ const recommendedTimezone = ref("UTC");
 const isLoading = ref(true);
 const isScheduling = ref(false);
 const isUpdatingScheduledPost = ref(false);
+const loadErrorMessage = ref("");
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const selectedGridDateKey = ref("");
@@ -144,6 +146,50 @@ const canReadDraftBacklog = computed(
     !resolvedBusinessId.value ||
     !productAccess.value?.activeBusinessId ||
     isFeatureEnabled("control_dashboard"),
+);
+const accessMatchesResolvedBusiness = computed(
+  () => productAccess.value?.businessId === resolvedBusinessId.value,
+);
+const accessLimits = computed(() =>
+  accessMatchesResolvedBusiness.value ? productAccess.value?.limits ?? null : null,
+);
+const scheduledQueueLimit = computed(() => accessLimits.value?.scheduledQueueLimit ?? null);
+const scheduledQueueUsed = computed(() => accessLimits.value?.scheduledQueueUsed ?? 0);
+const scheduledQueueRemaining = computed(() => accessLimits.value?.scheduledQueueRemaining ?? null);
+const hasScheduledQueuePreview = computed(() => scheduledQueueLimit.value !== null);
+const queueLimitReached = computed(
+  () => hasScheduledQueuePreview.value && scheduledQueueRemaining.value === 0,
+);
+const queuePreviewHeadline = computed(() => {
+  if (!hasScheduledQueuePreview.value || scheduledQueueLimit.value === null) {
+    return "";
+  }
+
+  if (queueLimitReached.value) {
+    return `${scheduledQueueUsed.value} of ${scheduledQueueLimit.value} queued`;
+  }
+
+  if (scheduledQueueRemaining.value === scheduledQueueLimit.value) {
+    return `${scheduledQueueLimit.value} queued post preview`;
+  }
+
+  return `${scheduledQueueRemaining.value} queue slot left`;
+});
+const queuePreviewCopy = computed(() => {
+  if (!hasScheduledQueuePreview.value) {
+    return "";
+  }
+
+  if (queueLimitReached.value) {
+    return "Your first scheduled post is covered. Upgrade to line up the rest of the week and stay consistent.";
+  }
+
+  return "Queue one post for free, feel the timing advantage, then upgrade when you want the rest of the week lined up.";
+});
+const queueLimitPrompt = computed(() =>
+  queueLimitReached.value
+    ? "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue."
+    : "",
 );
 
 const pipelineItems = computed(() => dashboard.value?.pipeline.flatMap((column) => column.items) ?? []);
@@ -364,6 +410,9 @@ const selectedScheduledPostCanMoveToDraft = computed(() => {
 const selectedBacklogAsset = computed(
   () => unscheduledBacklog.value.find((asset) => asset.id === selectedBacklogAssetId.value) ?? null,
 );
+const canQueueSelectedAsset = computed(
+  () => Boolean(selectedBacklogAsset.value) && !queueLimitReached.value,
+);
 const isPlannerDetailModalOpen = computed(
   () => Boolean(selectedScheduledPost.value || selectedBacklogAsset.value),
 );
@@ -530,6 +579,14 @@ function confirmSchedulingWarnings(warnings: SchedulingSafetyWarning[]): boolean
   return window.confirm(
     `${buildSchedulingWarningMessage(warnings)}\n\nChoose OK to schedule anyway, or Cancel to keep the safer spacing.`,
   );
+}
+
+function extractScheduledQueueLimitMessage(error: unknown): string | null {
+  if (!(error instanceof ApiRequestError) || error.code !== "scheduled_queue_limit_reached") {
+    return null;
+  }
+
+  return error.message || "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue.";
 }
 
 async function reconnectLinkedIn(): Promise<void> {
@@ -755,7 +812,7 @@ async function initializePage(): Promise<void> {
   }
 
   isLoading.value = true;
-  errorMessage.value = "";
+  loadErrorMessage.value = "";
 
   try {
     await loadBusinesses();
@@ -764,7 +821,7 @@ async function initializePage(): Promise<void> {
     syncSelection();
     await consumeIncomingDraftSelection();
   } catch (error) {
-    errorMessage.value =
+    loadErrorMessage.value =
       error instanceof Error ? error.message : "Unable to load the planner right now.";
   } finally {
     isLoading.value = false;
@@ -863,6 +920,11 @@ async function scheduleSelectedAsset(): Promise<void> {
     return;
   }
 
+  if (queueLimitReached.value) {
+    errorMessage.value = queueLimitPrompt.value;
+    return;
+  }
+
   const contentText = selectedBacklogAsset.value.textContent?.trim() || "";
 
   if (!contentText) {
@@ -913,10 +975,19 @@ async function scheduleSelectedAsset(): Promise<void> {
     selectedBacklogAssetId.value = "";
     selectedScheduledPostId.value = response.scheduledPost.id;
     await loadPlannerData();
+    const refreshedAccess = await refreshProductAccess(resolvedBusinessId.value);
+    const queueFilledByThisSchedule =
+      refreshedAccess?.limits?.scheduledQueueLimit !== null
+      && refreshedAccess?.limits?.scheduledQueueRemaining === 0;
+
+    if (queueFilledByThisSchedule) {
+      feedbackMessage.value = `Nice — your post is queued for peak engagement on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Upgrade to line up the rest of your week.`;
+    }
     syncSelection();
   } catch (error) {
     errorMessage.value =
-      error instanceof Error ? error.message : "Unable to schedule this draft right now.";
+      extractScheduledQueueLimitMessage(error)
+      ?? (error instanceof Error ? error.message : "Unable to schedule this draft right now.");
   } finally {
     isScheduling.value = false;
   }
@@ -1022,6 +1093,7 @@ async function updateSelectedScheduledPost(
                 ? "Post pushed to publish now."
                 : "Slot removed. The draft is back in the backlog.";
     await loadPlannerData();
+    await refreshProductAccess(resolvedBusinessId.value);
 
     if (action === "move_to_draft" && selectedAssetGroupId) {
       selectBacklogAsset(selectedAssetGroupId, selectedGridDateKey.value);
@@ -1087,6 +1159,7 @@ async function rescheduleSelectedPost(): Promise<void> {
     }
     selectedScheduledPostId.value = response.scheduledPost.id;
     await loadPlannerData();
+    await refreshProductAccess(resolvedBusinessId.value);
     syncSelection();
   } catch (error) {
     errorMessage.value =
@@ -1264,9 +1337,9 @@ onMounted(() => {
         </div>
       </section>
 
-      <section v-if="errorMessage" class="workspace-card empty-state">
+      <section v-if="loadErrorMessage" class="workspace-card empty-state">
         <h2>Planner unavailable</h2>
-        <p>{{ errorMessage }}</p>
+        <p>{{ loadErrorMessage }}</p>
       </section>
 
       <section v-else-if="!resolvedBusinessId" class="workspace-card empty-state">
@@ -1329,6 +1402,19 @@ onMounted(() => {
             <button type="button" class="workspace-secondary-button compact" @click="applyRecommendedSlot(bestSlot)">
               Use this slot
             </button>
+          </div>
+
+          <div class="planner-insight-card" v-if="hasScheduledQueuePreview">
+            <span class="planner-insight-label">Queue preview</span>
+            <strong>{{ queuePreviewHeadline }}</strong>
+            <p>{{ queuePreviewCopy }}</p>
+            <a
+              v-if="queueLimitReached"
+              class="workspace-secondary-button compact link-button"
+              href="/#pricing"
+            >
+              See pricing
+            </a>
           </div>
         </div>
 
@@ -1497,6 +1583,7 @@ onMounted(() => {
         </section>
 
         <p v-if="feedbackMessage" class="planner-feedback success">{{ feedbackMessage }}</p>
+        <p v-if="errorMessage" class="planner-feedback danger">{{ errorMessage }}</p>
 
         <section
           v-if="isPlannerDetailModalOpen"
@@ -1791,6 +1878,14 @@ onMounted(() => {
                 <p class="workspace-description compact">
                   Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
                 </p>
+                <p
+                  v-if="hasScheduledQueuePreview"
+                  class="planner-status-note"
+                  :data-tone="queueLimitReached ? 'warning' : undefined"
+                >
+                  <span class="planner-inline-label">Queue preview</span>
+                  {{ queueLimitReached ? queueLimitPrompt : queuePreviewCopy }}
+                </p>
               </div>
 
               <div class="planner-sidebar-actions">
@@ -1824,10 +1919,16 @@ onMounted(() => {
                 <button
                   type="button"
                   class="workspace-primary-button"
-                  :disabled="isScheduling"
+                  :disabled="isScheduling || !canQueueSelectedAsset"
                   @click="scheduleSelectedAsset"
                 >
-                  {{ isScheduling ? "Scheduling..." : "Add to queue" }}
+                  {{
+                    queueLimitReached
+                      ? "Queue full"
+                      : isScheduling
+                        ? "Scheduling..."
+                        : "Add to queue"
+                  }}
                 </button>
               </div>
             </template>

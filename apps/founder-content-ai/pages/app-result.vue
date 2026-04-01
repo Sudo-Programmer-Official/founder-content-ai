@@ -58,7 +58,7 @@ import { saveRepurposeSeed } from "../utils/repurpose-loop";
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthContext();
-const { bootstrap, isFeatureEnabled } = useProductAccessContext();
+const { bootstrap, refreshProductAccess, isFeatureEnabled } = useProductAccessContext();
 
 const draft = ref<ActivationDraftRecord | null>(null);
 const feedbackMessage = ref("");
@@ -169,6 +169,14 @@ function confirmSchedulingWarnings(warnings: SchedulingSafetyWarning[]): boolean
   );
 }
 
+function extractScheduledQueueLimitMessage(error: unknown): string | null {
+  if (!(error instanceof ApiRequestError) || error.code !== "scheduled_queue_limit_reached") {
+    return null;
+  }
+
+  return error.message || "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue.";
+}
+
 function splitPostParagraphs(value: string): string[] {
   return value
     .split(/\n{2,}/)
@@ -266,6 +274,7 @@ const qualitySummary = computed(() => draft.value?.result.quality);
 const hasPersistedAsset = computed(() => Boolean(draft.value?.result.asset?.id));
 const persistedPostId = computed(() => draft.value?.result.asset?.id ?? "");
 const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? "");
+const accessLimits = computed(() => bootstrap.value?.limits ?? null);
 const canPersistDraft = computed(() => Boolean(activeBusinessId.value && draft.value));
 const schedulerEnabled = computed(
   () =>
@@ -274,6 +283,39 @@ const schedulerEnabled = computed(
 );
 const canScheduleDraft = computed(
   () => schedulerEnabled.value && canPersistDraft.value,
+);
+const scheduledQueueLimit = computed(() => accessLimits.value?.scheduledQueueLimit ?? null);
+const scheduledQueueRemaining = computed(() => accessLimits.value?.scheduledQueueRemaining ?? null);
+const hasScheduledQueuePreview = computed(() => scheduledQueueLimit.value !== null);
+const queueLimitReached = computed(
+  () => hasScheduledQueuePreview.value && scheduledQueueRemaining.value === 0,
+);
+const queuePreviewHeadline = computed(() => {
+  if (!hasScheduledQueuePreview.value || scheduledQueueLimit.value === null) {
+    return "";
+  }
+
+  if (queueLimitReached.value) {
+    return `${scheduledQueueLimit.value} of ${scheduledQueueLimit.value} queued`;
+  }
+
+  return `${scheduledQueueRemaining.value} of ${scheduledQueueLimit.value} queue slots left`;
+});
+const queuePreviewCopy = computed(() => {
+  if (!hasScheduledQueuePreview.value) {
+    return "";
+  }
+
+  if (queueLimitReached.value) {
+    return "Your first scheduled post is locked in. Upgrade to plan the rest of your week and stay consistent.";
+  }
+
+  return "Queue one post for free, keep the best-time guidance visible, then upgrade when you want a real scheduling cadence.";
+});
+const queueLimitPrompt = computed(() =>
+  queueLimitReached.value
+    ? "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue."
+    : "",
 );
 const audienceTimezoneOptions = computed(() => {
   const unique = new Set<string>([
@@ -1516,6 +1558,11 @@ async function scheduleDraft(): Promise<void> {
     return;
   }
 
+  if (queueLimitReached.value) {
+    scheduleFeedback.value = queueLimitPrompt.value;
+    return;
+  }
+
   isSchedulingDraft.value = true;
   scheduleFeedback.value = "";
   feedbackMessage.value = "";
@@ -1566,15 +1613,23 @@ async function scheduleDraft(): Promise<void> {
         : "Queued for dispatch with a manual safety override.";
     }
 
+    const refreshedAccess = await refreshProductAccess(activeBusinessId.value);
+    const queueFilledByThisSchedule =
+      refreshedAccess?.limits?.scheduledQueueLimit !== null
+      && refreshedAccess?.limits?.scheduledQueueRemaining === 0;
+
     isSchedulePanelOpen.value = false;
     if (!feedbackMessage.value) {
-      feedbackMessage.value = selectedDispatchWindowLabel.value
-        ? `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Dispatch window: ${selectedDispatchWindowLabel.value}.`
-        : `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
+      feedbackMessage.value = queueFilledByThisSchedule
+        ? `Nice — your post is queued for peak engagement on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Upgrade to plan the rest of your week.`
+        : selectedDispatchWindowLabel.value
+          ? `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Dispatch window: ${selectedDispatchWindowLabel.value}.`
+          : `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
     }
   } catch (error) {
     scheduleFeedback.value =
-      error instanceof Error ? error.message : "Unable to schedule this draft right now.";
+      extractScheduledQueueLimitMessage(error)
+      ?? (error instanceof Error ? error.message : "Unable to schedule this draft right now.");
   } finally {
     isSchedulingDraft.value = false;
   }
@@ -2211,6 +2266,18 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
+            <div
+              v-if="hasScheduledQueuePreview"
+              class="schedule-best-slot"
+              :data-tone="queueLimitReached ? 'warning' : 'default'"
+            >
+              <div>
+                <p class="panel-meta">Queue preview</p>
+                <strong>{{ queuePreviewHeadline }}</strong>
+                <p class="ai-command-copy">{{ queueLimitReached ? queueLimitPrompt : queuePreviewCopy }}</p>
+              </div>
+            </div>
+
             <div class="schedule-form-grid">
               <label>
                 <span>Date</span>
@@ -2248,10 +2315,16 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="primary-action"
-                :disabled="isSchedulingDraft"
+                :disabled="isSchedulingDraft || queueLimitReached"
                 @click="void scheduleDraft()"
               >
-                {{ isSchedulingDraft ? "Adding to queue..." : "Add to queue" }}
+                {{
+                  queueLimitReached
+                    ? "Queue full"
+                    : isSchedulingDraft
+                      ? "Adding to queue..."
+                      : "Add to queue"
+                }}
               </button>
               <button type="button" class="secondary-action" @click="goToPlanner">
                 Open planner
@@ -3084,6 +3157,11 @@ onBeforeUnmount(() => {
   border-radius: 18px;
   border: 1px solid color-mix(in srgb, var(--fc-accent) 16%, var(--fc-border));
   background: color-mix(in srgb, var(--fc-accent-soft) 28%, white 72%);
+}
+
+.schedule-best-slot[data-tone="warning"] {
+  border-color: color-mix(in srgb, #b46a00 24%, var(--fc-border));
+  background: color-mix(in srgb, #f8b84e 10%, white 90%);
 }
 
 .schedule-best-slot strong {

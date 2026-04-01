@@ -60,6 +60,10 @@ export async function generateVisualController(
         headline: request.body.content.headline?.trim() ?? "",
         supportingText: request.body.content.supportingText?.trim() || undefined,
         bulletPoints: request.body.content.bulletPoints,
+        highlightText: request.body.content.highlightText?.trim() || undefined,
+        eyebrowText: request.body.content.eyebrowText?.trim() || undefined,
+        footerText: request.body.content.footerText?.trim() || undefined,
+        closingText: request.body.content.closingText?.trim() || undefined,
       },
       brandKit: request.body.brandKit
         ? {

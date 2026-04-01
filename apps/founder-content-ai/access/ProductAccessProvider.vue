@@ -74,6 +74,10 @@ function isAuthFailure(error: unknown): boolean {
   return /authentication is required|authorization: bearer/i.test(error.message);
 }
 
+function resolveDefaultBusinessId(): string {
+  return auth.appSession.value?.businesses[0]?.businessId?.trim() ?? "";
+}
+
 async function refreshProductAccess(nextBusinessId?: string | null): Promise<MyFeaturesResponse | null> {
   if (!auth.isReady.value) {
     return bootstrap.value;
@@ -91,11 +95,25 @@ async function refreshProductAccess(nextBusinessId?: string | null): Promise<MyF
   isLoading.value = true;
 
   try {
-    const response = await requestProductAccessBootstrap({
+    let response = await requestProductAccessBootstrap({
       businessId: nextBusinessId?.trim() || undefined,
     });
+
+    const fallbackBusinessId = resolveDefaultBusinessId();
+    const requestedBusinessId = nextBusinessId?.trim() || "";
+
+    if (
+      !response.activeBusinessId &&
+      !requestedBusinessId &&
+      fallbackBusinessId
+    ) {
+      response = await requestProductAccessBootstrap({
+        businessId: fallbackBusinessId,
+      });
+    }
+
     bootstrap.value = response;
-    activeBusinessId.value = response.activeBusinessId ?? "";
+    activeBusinessId.value = response.activeBusinessId ?? requestedBusinessId ?? fallbackBusinessId ?? "";
     storeBusinessId(activeBusinessId.value);
     errorMessage.value = "";
     return response;

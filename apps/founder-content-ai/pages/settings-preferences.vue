@@ -1754,14 +1754,14 @@ watch(
       <div class="usage-panel-header">
         <div>
           <p class="panel-meta">Usage & Billing</p>
-          <h2>Keep workspace limits visible without cluttering navigation.</h2>
+          <h2>Review limits here, then manage billing in the dedicated workspace screen.</h2>
         </div>
         <span v-if="isReadOnly" class="usage-badge warning">Read-only</span>
-        <span v-else class="usage-badge">Billing page next</span>
+        <router-link v-else class="usage-badge" :to="appRoutes.appBilling">Open billing</router-link>
       </div>
 
       <p class="dashboard-description">
-        This is the clearest place to review daily credits for the active workspace. Pricing and billing controls can slot in here later without crowding the rest of the product.
+        Usage still belongs in workspace settings, but upgrades, subscription management, and Stripe billing now live on the billing page so monetization stays explicit.
       </p>
 
       <div v-if="usageCards.length > 0" class="usage-grid">

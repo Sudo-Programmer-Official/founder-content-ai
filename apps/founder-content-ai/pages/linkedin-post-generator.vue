@@ -123,6 +123,14 @@ function confirmSchedulingWarnings(warnings: SchedulingSafetyWarning[]): boolean
     `${buildSchedulingWarningMessage(warnings)}\n\nChoose OK to schedule anyway, or Cancel to keep the safer spacing.`,
   );
 }
+
+function extractScheduledQueueLimitMessage(error: unknown): string | null {
+  if (!(error instanceof ApiRequestError) || error.code !== "scheduled_queue_limit_reached") {
+    return null;
+  }
+
+  return error.message || "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue.";
+}
 const scheduleAt = ref(defaultScheduleValue());
 const selectedCaptionKey = ref("");
 const scheduleFeedback = ref("");
@@ -142,11 +150,14 @@ const isConnectingLinkedIn = ref(false);
 
 const visualSelections = ref<Record<string, VisualTemplateType>>({});
 const visualStyleSelections = ref<Record<string, VisualStylePreset>>({});
+const visualHighlightModes = ref<Record<string, VisualHighlightMode>>({});
+const manualVisualHighlights = ref<Record<string, string>>({});
 const generatedVisuals = ref<Record<string, GenerateVisualResponse>>({});
 const visualLoading = ref<Record<string, boolean>>({});
 const visualErrors = ref<Record<string, string>>({});
 
-type VisualStylePreset = "minimal-dark" | "clean-white" | "bold-color";
+type VisualStylePreset = "brand-signal" | "editorial-light" | "high-contrast";
+type VisualHighlightMode = "auto" | "manual";
 
 interface GeneratedVisualEntry {
   key: string;
@@ -188,7 +199,11 @@ function isVisualTemplateType(value: string): value is VisualTemplateType {
 }
 
 function isVisualStylePreset(value: string): value is VisualStylePreset {
-  return value === "minimal-dark" || value === "clean-white" || value === "bold-color";
+  return value === "brand-signal" || value === "editorial-light" || value === "high-contrast";
+}
+
+function isVisualHighlightMode(value: string): value is VisualHighlightMode {
+  return value === "auto" || value === "manual";
 }
 
 function isPublishableImageMimeType(value: string | undefined): boolean {
@@ -198,6 +213,8 @@ function isPublishableImageMimeType(value: string | undefined): boolean {
 function resetVisualState() {
   visualSelections.value = {};
   visualStyleSelections.value = {};
+  visualHighlightModes.value = {};
+  manualVisualHighlights.value = {};
   generatedVisuals.value = {};
   visualLoading.value = {};
   visualErrors.value = {};
@@ -248,6 +265,70 @@ function summarizeSentence(value: string, maxLength: number): string {
   return truncateLine(firstSentence, maxLength);
 }
 
+function sanitizeVisualPhrase(value: string, maxLength: number): string {
+  const normalized = normalizeLine(value)
+    .replace(/^[\s"'()[\]]+/, "")
+    .replace(/[\s"'()[\].,!?;:]+$/, "")
+    .trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  return truncateLine(normalized, maxLength);
+}
+
+function extractVisualHighlightCandidate(value: string): string {
+  const normalized = normalizeLine(value);
+
+  if (!normalized) {
+    return "";
+  }
+
+  const preferredPatterns = [
+    /\babout\s+(.+)$/i,
+    /\bwithout\s+(.+)$/i,
+    /\binto\s+(.+)$/i,
+    /\bthan\s+(.+)$/i,
+    /\bisn't\s+(.+)$/i,
+    /\bis not\s+(.+)$/i,
+    /\bis\s+(.+)$/i,
+    /\bwas\s+(.+)$/i,
+  ];
+
+  for (const pattern of preferredPatterns) {
+    const match = normalized.match(pattern);
+    const candidate = sanitizeVisualPhrase(match?.[1] ?? "", 56);
+
+    if (candidate.split(/\s+/).length >= 2) {
+      return candidate;
+    }
+  }
+
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  if (words.length <= 4) {
+    return sanitizeVisualPhrase(normalized, 56);
+  }
+
+  return sanitizeVisualPhrase(words.slice(-3).join(" "), 56);
+}
+
+function extractVisualFooterLabel(value: string | undefined): string {
+  const normalized = normalizeLine(value ?? "");
+
+  if (!normalized) {
+    return "";
+  }
+
+  try {
+    const parsed = /^https?:\/\//i.test(normalized) ? new URL(normalized) : new URL(`https://${normalized}`);
+    return parsed.hostname.replace(/^www\./i, "");
+  } catch {
+    return normalized;
+  }
+}
+
 function deriveBulletPoints(content: string): string[] {
   const lines = extractLines(content);
   const bulletLikeLines = lines.filter((line) => line.length > 10).slice(1, 4);
@@ -279,11 +360,15 @@ function resolveBrandTone(value: string): BrandKitInput["tone"] {
 }
 
 function resolveVisualStyleSelection(key: string): VisualStylePreset {
-  return visualStyleSelections.value[key] ?? "minimal-dark";
+  return visualStyleSelections.value[key] ?? "brand-signal";
 }
 
 function resolveVisualTemplateSelection(key: string): VisualTemplateType {
   return visualSelections.value[key] ?? "quote";
+}
+
+function resolveVisualHighlightMode(key: string): VisualHighlightMode {
+  return visualHighlightModes.value[key] ?? "auto";
 }
 
 function updateVisualTemplateSelection(key: string, value: string) {
@@ -308,13 +393,37 @@ function updateVisualStylePreset(key: string, value: string) {
   };
 }
 
+function updateVisualHighlightMode(key: string, value: string) {
+  if (!isVisualHighlightMode(value)) {
+    return;
+  }
+
+  visualHighlightModes.value = {
+    ...visualHighlightModes.value,
+    [key]: value,
+  };
+
+  if (value === "auto") {
+    const nextHighlights = { ...manualVisualHighlights.value };
+    delete nextHighlights[key];
+    manualVisualHighlights.value = nextHighlights;
+  }
+}
+
+function updateManualVisualHighlight(key: string, value: string) {
+  manualVisualHighlights.value = {
+    ...manualVisualHighlights.value,
+    [key]: value,
+  };
+}
+
 function resolveBrandKitPreset(preset: VisualStylePreset): BrandKitInput {
   const baseTone = resolveBrandTone(tone.value);
 
-  if (preset === "clean-white") {
+  if (preset === "editorial-light") {
     return {
-      primaryColor: "#FFFFFF",
-      secondaryColor: "#111827",
+      primaryColor: "#F8F2EA",
+      secondaryColor: "#1F2937",
       backgroundStyle: "light",
       fontStyle: "modern",
       visualStyle: "minimal",
@@ -322,20 +431,20 @@ function resolveBrandKitPreset(preset: VisualStylePreset): BrandKitInput {
     };
   }
 
-  if (preset === "bold-color") {
+  if (preset === "high-contrast") {
     return {
-      primaryColor: "#0F172A",
-      secondaryColor: "#2563EB",
-      backgroundStyle: "gradient",
+      primaryColor: "#111111",
+      secondaryColor: "#FACC15",
+      backgroundStyle: "dark",
       fontStyle: "bold",
-      visualStyle: "playful",
+      visualStyle: "minimal",
       tone: "bold",
     };
   }
 
   return {
-    primaryColor: "#111827",
-    secondaryColor: "#F8FAFC",
+    primaryColor: "#161617",
+    secondaryColor: "#F28C28",
     backgroundStyle: "dark",
     fontStyle: "bold",
     visualStyle: "minimal",
@@ -343,22 +452,72 @@ function resolveBrandKitPreset(preset: VisualStylePreset): BrandKitInput {
   };
 }
 
+const selectedBusiness = computed(
+  () => memberships.value.find((membership) => membership.businessId === selectedBusinessId.value) ?? memberships.value[0] ?? null,
+);
+
+function resolveVisualEyebrow(variation: LinkedInPostVariation): string | undefined {
+  return (
+    selectedBusiness.value?.business.brandName ||
+    selectedBusiness.value?.business.name ||
+    variation.angle
+  )?.trim();
+}
+
+function resolveVisualFooter(): string | undefined {
+  const business = selectedBusiness.value?.business;
+  return extractVisualFooterLabel(business?.websiteUrl || business?.brandName || business?.name);
+}
+
+function resolveVisualHighlight(
+  key: string,
+  headline: string,
+  supportingText: string,
+): string | undefined {
+  const mode = resolveVisualHighlightMode(key);
+
+  if (mode === "manual") {
+    const manualValue = sanitizeVisualPhrase(manualVisualHighlights.value[key] ?? "", 56);
+    return manualValue || undefined;
+  }
+
+  return sanitizeVisualPhrase(
+    extractVisualHighlightCandidate(headline) || extractVisualHighlightCandidate(supportingText),
+    56,
+  ) || undefined;
+}
+
 function buildVisualRequest(
   variation: LinkedInPostVariation,
   templateType: VisualTemplateType,
   preset: VisualStylePreset,
 ): Parameters<typeof requestVisualGeneration>[0] {
+  const key = getVariationKey(variation);
   const lines = extractLines(variation.content);
-  const headline = summarizeSentence(lines[0] ?? topic.value, templateType === "contrarian" ? 88 : 108);
+  const headline = summarizeSentence(lines[0] ?? topic.value, templateType === "contrarian" ? 88 : templateType === "carousel" ? 82 : 108);
   const supportingText = summarizeSentence(lines[1] ?? `${tone.value} LinkedIn insight`, 88);
+  const footerText = resolveVisualFooter();
+  const eyebrowText = resolveVisualEyebrow(variation);
+  const highlightText = resolveVisualHighlight(key, headline, supportingText);
+  const closingText =
+    templateType === "quote"
+      ? summarizeSentence(lines[1] ?? lines[2] ?? "I was wrong.", 68)
+      : undefined;
 
   return {
     businessId: selectedBusinessId.value || undefined,
     templateType,
     content: {
       headline,
-      supportingText: templateType === "carousel" ? supportingText : undefined,
+      supportingText:
+        templateType === "carousel" || templateType === "contrarian"
+          ? supportingText
+          : undefined,
       bulletPoints: templateType === "insight" ? deriveBulletPoints(variation.content) : undefined,
+      highlightText,
+      eyebrowText,
+      footerText,
+      closingText,
     },
     brandKit: resolveBrandKitPreset(preset),
     watermarkMode: "auto",
@@ -390,6 +549,12 @@ const accessLimits = computed(() =>
   accessMatchesSelectedBusiness.value ? productAccess.value?.limits : undefined,
 );
 const postsRemaining = computed(() => accessLimits.value?.postsRemaining ?? null);
+const scheduledQueueLimit = computed(() => accessLimits.value?.scheduledQueueLimit ?? null);
+const scheduledQueueRemaining = computed(() => accessLimits.value?.scheduledQueueRemaining ?? null);
+const hasScheduledQueuePreview = computed(() => scheduledQueueLimit.value !== null);
+const queueLimitReached = computed(
+  () => hasScheduledQueuePreview.value && scheduledQueueRemaining.value === 0,
+);
 const canGeneratePosts = computed(
   () =>
     contentGenerationEnabled.value &&
@@ -432,7 +597,22 @@ const schedulerLockedMessage = computed(() => {
     return "You've reached your daily post limit. Upgrade or try tomorrow.";
   }
 
+  if (queueLimitReached.value) {
+    return "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue.";
+  }
+
   return "";
+});
+const queuePreviewMessage = computed(() => {
+  if (!selectedBusinessId.value || !accessMatchesSelectedBusiness.value || !hasScheduledQueuePreview.value) {
+    return "";
+  }
+
+  if (queueLimitReached.value) {
+    return "";
+  }
+
+  return "Queue one post for free so you can feel the timing lift. Upgrade when you want the rest of the week lined up.";
 });
 
 const generatedVisualEntries = computed<GeneratedVisualEntry[]>(() =>
@@ -586,6 +766,7 @@ function distributionFormatLabel(format: GrowthDistributionFormat): string {
 const canSchedulePost = computed(() => {
   return (
     schedulerEnabled.value &&
+    !queueLimitReached.value &&
     Boolean(selectedBusinessId.value) &&
     Boolean(connectedLinkedInAccount.value) &&
     publishableVisualEntries.value.length >= 2 &&
@@ -1250,6 +1431,11 @@ async function scheduleCarouselPost() {
     return;
   }
 
+  if (queueLimitReached.value) {
+    scheduleError.value = schedulerLockedMessage.value || "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue.";
+    return;
+  }
+
   if (!selectedBusinessId.value) {
     scheduleError.value = "Select a workspace before scheduling.";
     return;
@@ -1309,11 +1495,19 @@ async function scheduleCarouselPost() {
     }
     scheduledPosts.value = [response.scheduledPost, ...scheduledPosts.value].slice(0, 10);
     scheduleAt.value = toLocalDatetimeValue(new Date(response.scheduledPost.scheduledAt));
-    await setActiveBusinessId(selectedBusinessId.value);
+    const accessState = await setActiveBusinessId(selectedBusinessId.value);
+    const queueFilledByThisSchedule =
+      accessState?.limits?.scheduledQueueLimit !== null
+      && accessState?.limits?.scheduledQueueRemaining === 0;
+
+    if (queueFilledByThisSchedule) {
+      scheduleFeedback.value = "Nice — your post is queued for peak engagement. Upgrade to plan the rest of your week.";
+    }
     await loadPublishingContext(selectedBusinessId.value);
   } catch (error) {
     scheduleError.value =
-      error instanceof Error ? error.message : "Unable to schedule the carousel post.";
+      extractScheduledQueueLimitMessage(error)
+      ?? (error instanceof Error ? error.message : "Unable to schedule the carousel post.");
   } finally {
     isScheduling.value = false;
   }
@@ -1658,10 +1852,10 @@ onMounted(async () => {
                 )
               "
             >
-              <option value="quote">Bold Quote</option>
-              <option value="insight">Insight Card</option>
-              <option value="contrarian">Contrarian Hook</option>
-              <option value="carousel">Carousel Cover</option>
+              <option value="quote">Contrast Quote</option>
+              <option value="contrarian">Split Emphasis</option>
+              <option value="carousel">Minimal Brand Card</option>
+              <option value="insight">Insight Framework</option>
             </select>
           </label>
 
@@ -1676,10 +1870,42 @@ onMounted(async () => {
                 )
               "
             >
-              <option value="minimal-dark">Minimal Dark</option>
-              <option value="clean-white">Clean White</option>
-              <option value="bold-color">Bold Color</option>
+              <option value="brand-signal">Brand Signal</option>
+              <option value="editorial-light">Editorial Light</option>
+              <option value="high-contrast">High Contrast</option>
             </select>
+          </label>
+
+          <label>
+            <span>Highlight</span>
+            <select
+              :value="resolveVisualHighlightMode(getVariationKey(variation))"
+              @change="
+                updateVisualHighlightMode(
+                  getVariationKey(variation),
+                  ($event.target as HTMLSelectElement).value,
+                )
+              "
+            >
+              <option value="auto">Auto</option>
+              <option value="manual">Manual</option>
+            </select>
+          </label>
+
+          <label v-if="resolveVisualHighlightMode(getVariationKey(variation)) === 'manual'">
+            <span>Phrase</span>
+            <input
+              type="text"
+              :value="manualVisualHighlights[getVariationKey(variation)] ?? ''"
+              maxlength="56"
+              placeholder="Pick the phrase that should hit hardest"
+              @input="
+                updateManualVisualHighlight(
+                  getVariationKey(variation),
+                  ($event.target as HTMLInputElement).value,
+                )
+              "
+            />
           </label>
 
           <button
@@ -1757,6 +1983,7 @@ onMounted(async () => {
       </div>
 
       <p v-if="schedulerLockedMessage" class="feedback">{{ schedulerLockedMessage }}</p>
+      <p v-if="queuePreviewMessage" class="feedback">{{ queuePreviewMessage }}</p>
       <p v-if="schedulingContextMessage" class="feedback">{{ schedulingContextMessage }}</p>
       <p v-if="scheduleFeedback" class="feedback">{{ scheduleFeedback }}</p>
       <p v-if="scheduleError" class="feedback error">{{ scheduleError }}</p>

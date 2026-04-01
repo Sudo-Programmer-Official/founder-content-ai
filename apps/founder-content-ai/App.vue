@@ -8,7 +8,7 @@ import { appRoutes } from "./utils/routes";
 
 const route = useRoute();
 const router = useRouter();
-const { bootstrap, activeBusinessId, isFeatureEnabled } = useProductAccessContext();
+const { bootstrap, activeBusinessId, isFeatureEnabled, isReady: productAccessReady } = useProductAccessContext();
 const auth = useAuthContext();
 const mobileMenuOpen = ref(false);
 const accountMenuOpen = ref(false);
@@ -21,8 +21,14 @@ if (typeof window !== "undefined") {
 }
 
 const isPublicShell = computed(() => route.meta.shell === "public");
+const isStandaloneShell = computed(() => route.meta.shell === "standalone");
+const requiresWorkspace = computed(() => route.meta.requiresWorkspace === true);
+const isWorkspaceGateRoute = computed(() => route.name === "onboarding-workspace");
+const hasWorkspaceMemberships = computed(
+  () => (auth.appSession.value?.businesses.length ?? 0) > 0,
+);
 const usesWorkspaceShell = computed(
-  () => !isPublicShell.value && route.name !== "onboarding",
+  () => !isPublicShell.value && !isStandaloneShell.value,
 );
 const currentWorkspaceId = computed(
   () => bootstrap.value?.activeBusinessId?.trim() || activeBusinessId.value?.trim() || "",
@@ -42,6 +48,15 @@ const canAccessAdmin = computed(() => {
     lastKnownPlatformAdminUserId.value === currentAuthUserId
   );
 });
+const shouldHoldWorkspaceRoute = computed(
+  () =>
+    requiresWorkspace.value &&
+    (!auth.isReady.value ||
+      !productAccessReady.value ||
+      (auth.isAuthenticated.value &&
+        !currentWorkspaceId.value &&
+        !hasWorkspaceMemberships.value)),
+);
 
 const visibleAppLinks = computed(() => {
   const hasWorkspaceContext = Boolean(currentWorkspaceId.value);
@@ -75,6 +90,7 @@ const pageTitleMap: Record<string, string> = {
   "admin-workspaces": "Admin workspaces",
   "app-dashboard": "Dashboard",
   "app-assets": "Assets",
+  "app-billing": "Billing",
   "app-email": "Email",
   "app-create": "Create new post",
   "app-growth": "Growth",
@@ -85,6 +101,7 @@ const pageTitleMap: Record<string, string> = {
   "app-result": "Generated content",
   "dashboard-analytics": "Analytics",
   onboarding: "Onboarding",
+  "onboarding-workspace": "Create workspace",
   "settings-preferences": "Settings",
 };
 
@@ -118,6 +135,10 @@ const currentPageSubtitle = computed(() => {
     return "Verify what shipped, recover failures, and keep the publishing loop trustworthy.";
   }
 
+  if (route.name === "app-billing") {
+    return "Upgrade through Stripe, monitor usage, and keep plan enforcement visible.";
+  }
+
   return "Keep navigation persistent, content focused, and actions obvious.";
 });
 
@@ -139,6 +160,19 @@ watch(
   },
 );
 
+function resolveWorkspaceRedirectTarget(candidate: unknown): string {
+  if (
+    typeof candidate === "string" &&
+    candidate.startsWith("/") &&
+    candidate !== appRoutes.onboardingWorkspace &&
+    !candidate.startsWith(`${appRoutes.onboardingWorkspace}?`)
+  ) {
+    return candidate;
+  }
+
+  return appRoutes.dashboard;
+}
+
 watch(sidebarCollapsed, (value) => {
   if (typeof window === "undefined") {
     return;
@@ -155,6 +189,53 @@ watch(
       lastKnownPlatformAdminUserId.value = "";
     }
   },
+);
+
+watch(
+  () => [
+    route.fullPath,
+    auth.isReady.value,
+    auth.isAuthenticated.value,
+    productAccessReady.value,
+    currentWorkspaceId.value,
+    hasWorkspaceMemberships.value,
+    isWorkspaceGateRoute.value,
+    requiresWorkspace.value,
+  ] as const,
+  async ([
+    currentPath,
+    authReady,
+    isAuthenticated,
+    accessReady,
+    workspaceId,
+    hasMemberships,
+    onWorkspaceGate,
+    routeNeedsWorkspace,
+  ]) => {
+    if (!authReady || !isAuthenticated || !accessReady) {
+      return;
+    }
+
+    if (onWorkspaceGate) {
+      if (workspaceId) {
+        await router.replace(resolveWorkspaceRedirectTarget(route.query.redirect));
+      }
+
+      return;
+    }
+
+    if (!routeNeedsWorkspace || workspaceId || hasMemberships) {
+      return;
+    }
+
+    await router.replace({
+      path: appRoutes.onboardingWorkspace,
+      query: {
+        redirect: currentPath,
+      },
+    });
+  },
+  { immediate: true },
 );
 
 watch(
@@ -225,7 +306,7 @@ async function goToAdmin(): Promise<void> {
       'sidebar-collapsed': usesWorkspaceShell && sidebarCollapsed,
     }"
   >
-    <template v-if="!usesWorkspaceShell">
+    <template v-if="isPublicShell">
       <header class="site-header" :class="{ 'public-shell': isPublicShell }">
         <router-link class="brand" to="/">
           <img
@@ -277,15 +358,43 @@ async function goToAdmin(): Promise<void> {
       <router-view />
     </template>
 
+    <template v-else-if="isStandaloneShell">
+      <router-view />
+    </template>
+
+    <template v-else-if="shouldHoldWorkspaceRoute">
+      <main class="route-gate-shell">
+        <section class="route-gate-card">
+          <p class="route-gate-kicker">/workspace</p>
+          <h1>Preparing your workspace access</h1>
+          <p>
+            We’re checking whether this account already has a workspace or needs first-time setup.
+          </p>
+        </section>
+      </main>
+    </template>
+
     <template v-else>
       <aside class="workspace-sidebar">
-        <router-link class="sidebar-brand" to="/">
-          <img
-            class="brand-logo"
-            :src="sidebarCollapsed ? '/foundercontent-mark.svg' : '/foundercontent-wordmark.svg'"
-            alt="FounderContent"
-          />
-        </router-link>
+        <div class="sidebar-brand-row">
+          <router-link class="sidebar-brand" to="/">
+            <img
+              class="brand-logo"
+              :src="sidebarCollapsed ? '/foundercontent-mark.svg' : '/foundercontent-wordmark.svg'"
+              alt="FounderContent"
+            />
+          </router-link>
+
+          <button
+            type="button"
+            class="sidebar-panel-toggle"
+            :aria-label="sidebarCollapsed ? 'Open navigation panel' : 'Close navigation panel'"
+            :title="sidebarCollapsed ? 'Open panel' : 'Close panel'"
+            @click="toggleSidebar"
+          >
+            <span aria-hidden="true">{{ sidebarCollapsed ? ">" : "<" }}</span>
+          </button>
+        </div>
 
         <router-link
           class="sidebar-primary-cta"
@@ -311,7 +420,7 @@ async function goToAdmin(): Promise<void> {
         </nav>
 
         <div class="sidebar-footer">
-          <router-link class="sidebar-footer-link" :to="appRoutes.settingsPreferences">
+          <router-link class="sidebar-footer-link" :to="appRoutes.appBilling">
             Usage & billing
           </router-link>
           <template v-if="userLabel && !sidebarCollapsed">
@@ -438,7 +547,7 @@ async function goToAdmin(): Promise<void> {
             <div class="sidebar-footer">
               <router-link
                 class="sidebar-footer-link"
-                :to="appRoutes.settingsPreferences"
+                :to="appRoutes.appBilling"
                 @click="mobileMenuOpen = false"
               >
                 Usage & billing
@@ -475,14 +584,6 @@ async function goToAdmin(): Promise<void> {
               <span></span>
               <span></span>
             </button>
-            <button
-              type="button"
-              class="header-secondary-button desktop-sidebar-toggle desktop-only"
-              :aria-label="sidebarCollapsed ? 'Open navigation panel' : 'Close navigation panel'"
-              @click="toggleSidebar"
-            >
-              {{ sidebarCollapsed ? "Open panel" : "Hide panel" }}
-            </button>
             <div>
               <p class="workspace-header-kicker">{{ currentPageTitle }}</p>
               <strong>{{ currentPageSubtitle }}</strong>
@@ -506,6 +607,43 @@ async function goToAdmin(): Promise<void> {
 .app-shell {
   min-height: 100vh;
   color: var(--fc-text);
+}
+
+.route-gate-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+}
+
+.route-gate-card {
+  width: min(100%, 520px);
+  padding: clamp(28px, 4vw, 40px);
+  border: 1px solid var(--fc-border);
+  border-radius: 28px;
+  background: linear-gradient(180deg, var(--fc-surface) 0%, var(--fc-surface-subtle) 100%);
+  box-shadow: var(--fc-card-shadow);
+}
+
+.route-gate-kicker {
+  margin: 0 0 12px;
+  color: var(--fc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.route-gate-card h1 {
+  margin: 0 0 12px;
+  font-size: clamp(2rem, 4vw, 2.6rem);
+  line-height: 1.04;
+}
+
+.route-gate-card p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.7;
 }
 
 .workspace-shell {
@@ -543,6 +681,13 @@ async function goToAdmin(): Promise<void> {
   text-decoration: none;
 }
 
+.sidebar-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .brand-logo {
   display: block;
   width: clamp(172px, 18vw, 214px);
@@ -551,6 +696,37 @@ async function goToAdmin(): Promise<void> {
 
 .sidebar-brand .brand-logo {
   width: min(100%, 182px);
+}
+
+.sidebar-panel-toggle {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--fc-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 84%, white 16%);
+  color: var(--fc-text);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 0 10px 18px rgba(64, 44, 28, 0.06);
+  transition:
+    transform 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.sidebar-panel-toggle:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--fc-accent) 28%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-panel-bg) 72%, white 28%);
+  box-shadow: 0 14px 22px rgba(64, 44, 28, 0.1);
 }
 
 .site-nav {
@@ -925,12 +1101,6 @@ async function goToAdmin(): Promise<void> {
   min-width: 0;
 }
 
-.desktop-sidebar-toggle {
-  min-height: 40px;
-  padding: 0 14px;
-  white-space: nowrap;
-}
-
 .workspace-header-copy > div {
   display: grid;
   gap: 4px;
@@ -1042,22 +1212,19 @@ async function goToAdmin(): Promise<void> {
   gap: 12px;
 }
 
-.desktop-only {
-  display: inline-flex;
-}
-
 .sidebar-collapsed .workspace-sidebar {
   width: 96px;
   padding: 22px 12px;
   align-items: center;
 }
 
-.sidebar-collapsed .sidebar-brand {
-  justify-content: center;
+.sidebar-collapsed .sidebar-brand-row {
+  width: 100%;
+  gap: 8px;
 }
 
 .sidebar-collapsed .sidebar-brand .brand-logo {
-  width: 52px;
+  width: 32px;
 }
 
 .sidebar-collapsed .sidebar-nav {
@@ -1157,10 +1324,6 @@ async function goToAdmin(): Promise<void> {
     margin-left: 0;
   }
 
-  .desktop-sidebar-toggle {
-    display: none;
-  }
-
   .workspace-header {
     padding: 16px 18px;
   }
@@ -1180,10 +1343,6 @@ async function goToAdmin(): Promise<void> {
 
   .mobile-menu-button {
     display: inline-flex;
-  }
-
-  .desktop-only {
-    display: none;
   }
 
   .app-content {

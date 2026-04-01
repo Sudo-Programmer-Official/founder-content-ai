@@ -17,6 +17,9 @@ export interface ProductAccessLimits {
   postsLimit: number;
   postsUsed: number;
   postsRemaining: number;
+  scheduledQueueLimit: number | null;
+  scheduledQueueUsed: number;
+  scheduledQueueRemaining: number | null;
   emailsLimit: number;
   emailsUsed: number;
   emailsRemaining: number;

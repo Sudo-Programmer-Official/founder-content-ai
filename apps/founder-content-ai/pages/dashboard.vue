@@ -1686,7 +1686,7 @@ onBeforeUnmount(() => {
         <p class="dashboard-description">
           Finish onboarding to create your first workspace before using the content control loop.
         </p>
-        <router-link class="dashboard-button" :to="appRoutes.onboarding">Go to onboarding</router-link>
+        <router-link class="dashboard-button" :to="appRoutes.onboardingWorkspace">Create workspace</router-link>
       </section>
 
       <section

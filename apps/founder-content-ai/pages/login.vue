@@ -74,7 +74,8 @@ async function handlePasswordReset(): Promise<void> {
       <p class="auth-eyebrow">/login</p>
       <h1>Log in and get straight back to execution.</h1>
       <p class="auth-copy">
-        Your session opens on the generate flow first, then branches into outreach or email.
+        If this account already has a workspace, you go straight back into it. If not, we’ll make
+        you create one before opening the app.
       </p>
 
       <form class="auth-form" @submit.prevent="handleLogin">
