@@ -69,10 +69,40 @@ function buildBaseLinkedInPostPayload(authorUrn: string, commentary: string): Re
   };
 }
 
+function collectTaggedEntitiesPaths(value: unknown, currentPath = "$"): string[] {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry, index) => collectTaggedEntitiesPaths(entry, `${currentPath}[${index}]`));
+  }
+
+  const record = value as Record<string, unknown>;
+  const taggedEntitiesPath =
+    Object.prototype.hasOwnProperty.call(record, "taggedEntities") ? [`${currentPath}.taggedEntities`] : [];
+
+  return Object.entries(record).flatMap(([key, entry]) =>
+    key === "taggedEntities"
+      ? taggedEntitiesPath
+      : collectTaggedEntitiesPaths(entry, `${currentPath}.${key}`),
+  );
+}
+
 async function createLinkedInPost(
   accessToken: string,
   payload: Record<string, unknown>,
 ): Promise<LinkedInPostCreationResult> {
+  const taggedEntitiesPaths = collectTaggedEntitiesPaths(payload);
+
+  if (taggedEntitiesPaths.length > 0) {
+    throw new HttpError(
+      422,
+      "linkedin_payload_invalid",
+      `LinkedIn payload contains unsupported taggedEntities fields at ${taggedEntitiesPaths.join(", ")}.`,
+    );
+  }
+
   const postResponse = await fetch(LINKEDIN_POSTS_API_URL, {
     method: "POST",
     headers: buildLinkedInHeaders(accessToken),
