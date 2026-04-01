@@ -206,6 +206,16 @@ async function uploadPostAssetToLinkedIn(
   });
 }
 
+function buildLinkedInMultiImageEntry(input: {
+  imageUrn: string;
+  altText?: string;
+}): Record<string, unknown> {
+  return {
+    id: input.imageUrn,
+    ...(input.altText ? { altText: input.altText.slice(0, 4086) } : {}),
+  };
+}
+
 export async function publishLinkedInMultiImagePost(input: {
   businessId: string;
   contentText: string;
@@ -240,11 +250,7 @@ export async function publishLinkedInMultiImagePost(input: {
       ...buildBaseLinkedInPostPayload(credentials.selectedIdentityUrn, input.contentText),
       content: {
         multiImage: {
-          images: uploadedSlides.map((slide) => ({
-            id: slide.imageUrn,
-            ...(slide.altText ? { altText: slide.altText.slice(0, 4086) } : {}),
-            taggedEntities: [],
-          })),
+          images: uploadedSlides.map((slide) => buildLinkedInMultiImageEntry(slide)),
         },
       },
     },
@@ -305,10 +311,7 @@ export async function publishLinkedInImagePost(input: {
         }
       : {
           multiImage: {
-            images: uploadedAssets.map((asset) => ({
-              id: asset.imageUrn,
-              ...(asset.altText ? { altText: asset.altText.slice(0, 4086) } : {})
-            })),
+            images: uploadedAssets.map((asset) => buildLinkedInMultiImageEntry(asset)),
           },
         };
 
