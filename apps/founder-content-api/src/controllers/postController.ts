@@ -10,6 +10,7 @@ import {
   safeLogContentGeneration,
   safeLogEvent,
 } from "../services/analytics/eventLoggingService.ts";
+import { resolveContentGenerationTone } from "../services/contentGenerationToneService.ts";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
 
@@ -22,10 +23,14 @@ export async function generatePost(
   response: Response<LinkedInPostGenerationResponse | ApiError>,
 ): Promise<void> {
   const topic = request.body?.topic?.trim();
-  const tone = request.body?.tone?.trim() || "storytelling";
+  const businessId = request.body?.businessId?.trim();
+  const tone = await resolveContentGenerationTone({
+    requestedTone: request.body?.tone,
+    businessId,
+  });
   const length = request.body?.length?.trim() || "medium";
   const selectedHook = request.body?.selectedHook?.trim();
-  const businessId = request.body?.businessId?.trim();
+  const strategy = request.body?.strategy;
   const startedAt = Date.now();
 
   if (!topic) {
@@ -50,6 +55,7 @@ export async function generatePost(
     const generatedPosts = await generatePostsWithAI({
       topic,
       tone,
+      strategy,
       length,
       selectedHook,
       businessId,
@@ -64,7 +70,7 @@ export async function generatePost(
         userId: request.auth?.userId,
         businessId,
         inputType: "idea",
-        inputPayload: { topic, tone, length, selectedHook },
+        inputPayload: { topic, tone, strategy, length, selectedHook },
         outputPayload: generatedPosts,
         success: true,
         latencyMs,
@@ -99,7 +105,7 @@ export async function generatePost(
         userId: request.auth?.userId,
         businessId,
         inputType: "idea",
-        inputPayload: { topic, tone, length, selectedHook },
+        inputPayload: { topic, tone, strategy, length, selectedHook },
         success: false,
         latencyMs,
       }),

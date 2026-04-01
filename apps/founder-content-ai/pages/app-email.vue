@@ -9,6 +9,7 @@ import type {
   EmailContactImportJob,
   EmailContactImportMapping,
   EmailContactStatus,
+  GenerateVisualResponse,
   ImportEmailContactsPreviewResponse,
   EmailCampaign,
   EmailCampaignStats,
@@ -21,6 +22,7 @@ import type {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "../access/product-access-context";
+import { useAuthContext } from "../auth/auth-context";
 import WorkspaceAssetPickerModal from "../components/WorkspaceAssetPickerModal.vue";
 import EmailSkeleton from "../components/skeletons/EmailSkeleton.vue";
 import {
@@ -143,8 +145,53 @@ function buildEmailBodyFromSource(sourceText: string, tone: "direct" | "story" |
   return `${opener}\n\n${bodyCore}\n\nIf this is useful, hit reply and tell me what stands out.`;
 }
 
+function normalizeDomainInput(value: string | undefined | null): string {
+  const normalized = (value ?? "").trim().toLowerCase();
+
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.includes("@") && !normalized.includes("://")) {
+    const [, domainPart = ""] = normalized.split("@");
+    return domainPart.replace(/^www\./, "").replace(/\.$/, "");
+  }
+
+  const withoutProtocol = normalized.replace(/^[a-z]+:\/\//i, "");
+  const urlCandidate = /^[a-z]+:\/\//i.test(normalized) ? normalized : `https://${withoutProtocol}`;
+
+  try {
+    return new URL(urlCandidate).hostname.replace(/^www\./, "").replace(/\.$/, "");
+  } catch {
+    return withoutProtocol.split(/[/?#]/)[0]?.replace(/^www\./, "").replace(/\.$/, "") || "";
+  }
+}
+
+function normalizeEmailInput(value: string | undefined | null): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+function isValidDomainInput(value: string): boolean {
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(value);
+}
+
+function buildDefaultSenderEmail(domainName: string): string {
+  return domainName ? `hello@${domainName}` : "";
+}
+
+function normalizeWebsiteUrlForSignature(value: string | undefined | null, domainName: string): string {
+  const normalized = (value ?? "").trim();
+
+  if (!normalized) {
+    return domainName ? `https://${domainName}` : "";
+  }
+
+  return /^[a-z]+:\/\//i.test(normalized) ? normalized : `https://${normalized}`;
+}
+
 const route = useRoute();
 const router = useRouter();
+const auth = useAuthContext();
 const {
   bootstrap: productAccess,
   activeBusinessId,
@@ -204,6 +251,13 @@ const CONTACT_IMPORT_FIELDS: Array<{
   { field: "tags", label: "Tags", required: false },
 ];
 
+const resolvedUserName = computed(
+  () =>
+    auth.currentUser.value?.fullName?.trim() ||
+    auth.authSession.value?.displayName?.trim() ||
+    "",
+);
+
 const contactImport = ref<ImportEmailContactsRequest>({
   listName: "Launch List",
   csvText: "",
@@ -249,6 +303,31 @@ const emailFeatureEnabled = computed(
     !productAccess.value?.activeBusinessId ||
     isFeatureEnabled("email_campaigns"),
 );
+const currentBusinessMembership = computed(
+  () => businesses.value.find((membership) => membership.businessId === selectedBusinessId.value) ?? null,
+);
+const workspaceSuggestedDomain = computed(() =>
+  normalizeDomainInput(currentBusinessMembership.value?.business.websiteUrl),
+);
+const recommendedDomainForm = computed(() => {
+  const business = currentBusinessMembership.value?.business;
+  const domainName = workspaceSuggestedDomain.value;
+  const fromName = business?.brandName?.trim() || business?.name?.trim() || resolvedUserName.value || "";
+  const fromEmail = buildDefaultSenderEmail(domainName);
+  const signatureLines = [
+    resolvedUserName.value || fromName,
+    resolvedUserName.value && business?.brandName?.trim() ? `Founder @ ${business.brandName.trim()}` : "",
+    normalizeWebsiteUrlForSignature(business?.websiteUrl, domainName),
+  ].filter((value) => value !== "");
+
+  return {
+    domainName,
+    fromName,
+    fromEmail,
+    replyToEmail: fromEmail,
+    signatureText: signatureLines.join("\n"),
+  };
+});
 const emailLimitText = computed(() => {
   const limits = productAccess.value?.limits;
   return limits ? `Emails left today: ${limits.emailsRemaining}` : "";
@@ -276,6 +355,10 @@ const activeEmailTab = computed<EmailTabKey>(() => {
 
   if (activationSeed.value) {
     return "campaigns";
+  }
+
+  if (!hasConfiguredDomain.value) {
+    return "settings";
   }
 
   return "overview";
@@ -624,6 +707,47 @@ const systemWarnings = computed(() => {
 
   return warnings.slice(0, 3);
 });
+const normalizedDomainForm = computed(() => {
+  const recommended = recommendedDomainForm.value;
+  const domainName =
+    normalizeDomainInput(domainForm.value.domainName) ||
+    normalizeDomainInput(domainForm.value.fromEmail) ||
+    recommended.domainName;
+  const fromName = domainForm.value.fromName.trim() || recommended.fromName;
+  const fromEmail = normalizeEmailInput(domainForm.value.fromEmail) || buildDefaultSenderEmail(domainName);
+  const replyToEmail = normalizeEmailInput(domainForm.value.replyToEmail) || fromEmail;
+  const signatureText = domainForm.value.signatureText.trim() || recommended.signatureText;
+
+  return {
+    domainName,
+    fromName,
+    fromEmail,
+    replyToEmail,
+    signatureText,
+  };
+});
+const domainSetupHints = computed(() => {
+  const hints: string[] = [];
+
+  if (!normalizedDomainForm.value.domainName) {
+    hints.push("Add a website URL, root domain, or branded sender email.");
+  } else if (!isValidDomainInput(normalizedDomainForm.value.domainName)) {
+    hints.push("Use a root domain like yourbrand.com.");
+  }
+
+  if (
+    normalizedDomainForm.value.fromEmail &&
+    normalizeDomainInput(normalizedDomainForm.value.fromEmail) !== normalizedDomainForm.value.domainName
+  ) {
+    hints.push("From email must use the same domain you plan to verify.");
+  }
+
+  if (!domainForm.value.domainName.trim() && workspaceSuggestedDomain.value) {
+    hints.push(`Using ${workspaceSuggestedDomain.value} from this workspace website as the default sending domain.`);
+  }
+
+  return hints.slice(0, 3);
+});
 
 function loadActivationDraftLibrary(): void {
   activationDraftLibrary.value = listActivationDrafts().slice(0, 8);
@@ -803,6 +927,15 @@ function buildEmailGeneratedMediaFileName(suggestion: MediaRecommendationSuggest
   const suffix = suggestion.suggestedMediaType || suggestion.visualTemplateType || "visual";
 
   return `${base}-${suffix}.png`;
+}
+
+function buildEmailVisualFeedback(
+  successMessage: string,
+  generatedVisual: GenerateVisualResponse,
+): string {
+  return generatedVisual.brandConsistency.tone === "review"
+    ? `${successMessage} ${generatedVisual.brandConsistency.summary}`
+    : successMessage;
 }
 
 async function loadEmailMediaRecommendations(): Promise<void> {
@@ -1065,7 +1198,10 @@ async function generateRecommendedEmailMedia(
       ]);
     }
 
-    feedbackMessage.value = `${suggestion.title} added to this email.`;
+    feedbackMessage.value = buildEmailVisualFeedback(
+      `${suggestion.title} added to this email.`,
+      generatedVisual,
+    );
   } catch (error) {
     errorMessage.value =
       error instanceof Error ? error.message : "Unable to generate recommended media.";
@@ -1239,13 +1375,22 @@ function applyDomainSettings(
     return;
   }
 
+  const recommended = recommendedDomainForm.value;
+
   domainForm.value = {
-    domainName: settings?.domainName ?? "",
-    fromName: settings?.fromName ?? "",
-    fromEmail: settings?.fromEmail ?? "",
-    replyToEmail: settings?.replyToEmail ?? "",
-    signatureText: settings?.signatureText ?? "",
+    domainName: settings?.domainName ?? recommended.domainName,
+    fromName: settings?.fromName ?? recommended.fromName,
+    fromEmail: settings?.fromEmail ?? recommended.fromEmail,
+    replyToEmail: settings?.replyToEmail ?? recommended.replyToEmail,
+    signatureText: settings?.signatureText ?? recommended.signatureText,
   };
+}
+
+function applyRecommendedDomainSetup(): void {
+  domainForm.value = { ...recommendedDomainForm.value };
+  feedbackMessage.value = workspaceSuggestedDomain.value
+    ? `Prefilled sender setup from ${workspaceSuggestedDomain.value}.`
+    : "Prefilled the recommended sender defaults for this workspace.";
 }
 
 function setEmailTab(tab: EmailTabKey): void {
@@ -1505,8 +1650,23 @@ async function sendCampaign(campaignId: string): Promise<void> {
 }
 
 async function saveDomainUpgrade(): Promise<void> {
-  if (!selectedBusinessId.value || !domainForm.value.domainName.trim()) {
-    errorMessage.value = "Add a domain name before saving the brand sender setup.";
+  const normalizedPayload = normalizedDomainForm.value;
+
+  if (!selectedBusinessId.value || !normalizedPayload.domainName) {
+    errorMessage.value = "Add a website URL, sender email, or root domain before saving the brand sender setup.";
+    return;
+  }
+
+  if (!isValidDomainInput(normalizedPayload.domainName)) {
+    errorMessage.value = "Use a root domain like yourbrand.com so we can generate the DNS records correctly.";
+    return;
+  }
+
+  if (
+    normalizedPayload.fromEmail &&
+    normalizeDomainInput(normalizedPayload.fromEmail) !== normalizedPayload.domainName
+  ) {
+    errorMessage.value = "From email must use the same domain you are setting up for sending.";
     return;
   }
 
@@ -1514,7 +1674,7 @@ async function saveDomainUpgrade(): Promise<void> {
   errorMessage.value = "";
 
   try {
-    const response = await requestEmailDomainCreate(selectedBusinessId.value, domainForm.value);
+    const response = await requestEmailDomainCreate(selectedBusinessId.value, normalizedPayload);
     applyDomainSettings(response.settings, { syncForm: true });
     isEditingDomainSetup.value = false;
     feedbackMessage.value = `Domain setup saved for ${response.settings.domainName}.`;
@@ -1619,7 +1779,7 @@ onBeforeUnmount(() => {
           <div class="email-tabs-header">
             <div class="email-tabs-intro">
               <span class="workspace-chip email-workspace-chip">
-                {{ businesses.find((membership) => membership.businessId === selectedBusinessId)?.business.name || "Workspace" }}
+                {{ currentBusinessMembership?.business.name || "Workspace" }}
               </span>
               <div>
                 <p class="panel-meta">Email campaigns</p>
@@ -1668,7 +1828,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-if="activeEmailTab === 'overview'" class="email-overview-stack">
+          <section v-if="activeEmailTab === 'overview'" class="email-overview-stack">
           <section class="email-overview-grid">
             <article
               v-for="card in overviewStats"
@@ -1682,8 +1842,12 @@ onBeforeUnmount(() => {
           </section>
 
           <section class="overview-quick-actions">
-            <button type="button" class="primary-action overview-action-button" @click="setEmailTab('campaigns')">
-              Create campaign
+            <button
+              type="button"
+              class="primary-action overview-action-button"
+              @click="setEmailTab(hasConfiguredDomain ? 'campaigns' : 'settings')"
+            >
+              {{ hasConfiguredDomain ? "Create campaign" : "Finish sender setup" }}
             </button>
             <button type="button" class="secondary-action overview-action-button" @click="setEmailTab('contacts')">
               Import contacts
@@ -2185,10 +2349,10 @@ onBeforeUnmount(() => {
             <div>
               <p class="panel-meta">Contacts</p>
               <h2>Import and manage your launch audience</h2>
-              <p class="panel-note">
-                {{ businesses.find((membership) => membership.businessId === selectedBusinessId)?.business.name || "No workspace selected" }}
-              </p>
-            </div>
+                <p class="panel-note">
+                  {{ currentBusinessMembership?.business.name || "No workspace selected" }}
+                </p>
+              </div>
           </div>
 
           <div class="contact-import-stack">
@@ -2456,16 +2620,64 @@ onBeforeUnmount(() => {
               {{
                 hasConfiguredDomain
                   ? "Update the saved sender setup. The current values are already persisted for this workspace."
-                  : "Save a sender identity once, then reuse it every time this workspace comes back to email."
+                  : "Paste a website URL, a root domain, or a branded sender email. We will normalize the sending domain and save one reusable sender identity for this workspace."
               }}
             </p>
 
+            <article class="sender-setup-assist-card">
+              <div>
+                <p class="panel-meta">Recommended for this workspace</p>
+                <strong>{{ normalizedDomainForm.domainName || "Add a website, domain, or sender email" }}</strong>
+                <p class="panel-note">
+                  {{
+                    workspaceSuggestedDomain
+                      ? `We detected ${workspaceSuggestedDomain} from the workspace website and can prefill the sender identity for you.`
+                      : "If the workspace website is missing, you can still paste a sender email like hello@yourbrand.com and we will extract the domain."
+                  }}
+                </p>
+              </div>
+              <button
+                type="button"
+                class="secondary-action"
+                :disabled="!workspaceSuggestedDomain"
+                @click="applyRecommendedDomainSetup"
+              >
+                Use workspace defaults
+              </button>
+            </article>
+
             <div class="domain-grid">
-              <input v-model="domainForm.domainName" class="workspace-input" placeholder="yourbrand.com" />
-              <input v-model="domainForm.fromName" class="workspace-input" placeholder="From name" />
-              <input v-model="domainForm.fromEmail" class="workspace-input" placeholder="marketing@yourbrand.com" />
-              <input v-model="domainForm.replyToEmail" class="workspace-input" placeholder="reply-to email" />
+              <input
+                v-model="domainForm.domainName"
+                class="workspace-input"
+                placeholder="yourbrand.com or https://yourbrand.com"
+              />
+              <input v-model="domainForm.fromName" class="workspace-input" placeholder="Founder Content" />
+              <input v-model="domainForm.fromEmail" class="workspace-input" placeholder="hello@yourbrand.com" />
+              <input v-model="domainForm.replyToEmail" class="workspace-input" placeholder="reply@yourbrand.com" />
             </div>
+            <p class="panel-note">
+              Domain can be a website URL, the root domain, or the sender email. Saving this generates the DNS records you need next.
+            </p>
+
+            <div class="sender-setup-preview-grid">
+              <article class="sender-setup-preview-card">
+                <span>Detected domain</span>
+                <strong>{{ normalizedDomainForm.domainName || "Waiting for input" }}</strong>
+              </article>
+              <article class="sender-setup-preview-card">
+                <span>Will send as</span>
+                <strong>{{ normalizedDomainForm.fromEmail || "hello@yourbrand.com" }}</strong>
+              </article>
+              <article class="sender-setup-preview-card">
+                <span>Reply-to</span>
+                <strong>{{ normalizedDomainForm.replyToEmail || normalizedDomainForm.fromEmail || "reply@yourbrand.com" }}</strong>
+              </article>
+            </div>
+
+            <ul v-if="domainSetupHints.length > 0" class="sender-setup-hint-list">
+              <li v-for="hint in domainSetupHints" :key="hint">{{ hint }}</li>
+            </ul>
             <textarea
               v-model="domainForm.signatureText"
               class="workspace-textarea compact"
@@ -3599,6 +3811,27 @@ onBeforeUnmount(() => {
   margin-top: 20px;
 }
 
+.sender-setup-assist-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 80%, rgba(215, 102, 52, 0.18));
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(215, 102, 52, 0.08) 0%, rgba(215, 102, 52, 0) 42%),
+    linear-gradient(180deg, rgba(255, 251, 246, 0.96) 0%, rgba(255, 246, 238, 0.88) 100%);
+}
+
+.sender-setup-assist-card strong {
+  display: block;
+  font-size: 1.02rem;
+  line-height: 1.4;
+}
+
 .domain-summary-card {
   display: grid;
   gap: 16px;
@@ -3632,6 +3865,44 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.sender-setup-preview-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.sender-setup-preview-card {
+  display: grid;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 20px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.sender-setup-preview-card span {
+  color: var(--fc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.sender-setup-preview-card strong {
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.sender-setup-hint-list {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0 0;
+  padding-left: 18px;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
+}
+
 @media (max-width: 920px) {
   .email-tabs-header,
   .email-overview-grid,
@@ -3645,6 +3916,10 @@ onBeforeUnmount(() => {
   .contact-preview-summary,
   .contact-mapping-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sender-setup-assist-card {
+    flex-direction: column;
   }
 
   .contact-preview-row,

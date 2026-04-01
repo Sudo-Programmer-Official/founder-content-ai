@@ -9,6 +9,8 @@ import type {
   CreateWorkspaceKnowledgeSourceRequest,
   CreateWorkspaceKnowledgeSourceResponse,
   RefreshWorkspaceKnowledgeResponse,
+  UpdateWorkspaceKnowledgeProfileRequest,
+  UpdateWorkspaceKnowledgeProfileResponse,
   WorkspaceKnowledgeProcessingStatus,
   WorkspaceKnowledgeProfile,
   WorkspaceKnowledgeResponse,
@@ -1050,6 +1052,52 @@ export async function refreshWorkspaceKnowledge(
   });
 
   return getWorkspaceKnowledge(principal, businessId);
+}
+
+export async function updateWorkspaceKnowledgeProfile(
+  principal: AuthenticatedPrincipal,
+  input: UpdateWorkspaceKnowledgeProfileRequest,
+): Promise<UpdateWorkspaceKnowledgeProfileResponse> {
+  const businessId = input.businessId.trim();
+
+  await requireBusinessMembership(principal, businessId);
+
+  const [sources, existingProfile] = await Promise.all([
+    loadWorkspaceKnowledgeSourcesInternal(businessId),
+    loadWorkspaceKnowledgeProfileRecord(businessId),
+  ]);
+
+  const profile = await upsertWorkspaceKnowledgeProfile(businessId, {
+    voiceSummary:
+      typeof input.voiceSummary === "string"
+        ? input.voiceSummary.trim()
+        : existingProfile?.voiceSummary,
+    audienceSummary:
+      typeof input.audienceSummary === "string"
+        ? input.audienceSummary.trim()
+        : existingProfile?.audienceSummary,
+    positioningSummary:
+      typeof input.positioningSummary === "string"
+        ? input.positioningSummary.trim()
+        : existingProfile?.positioningSummary,
+    beliefs:
+      input.beliefs !== undefined
+        ? uniqueValues(input.beliefs)
+        : existingProfile?.beliefs,
+    topicClusters:
+      input.topicClusters !== undefined
+        ? uniqueValues(input.topicClusters)
+        : existingProfile?.topicClusters,
+    sourceCount: sources.length,
+    processingStatus: "completed",
+    processingError: undefined,
+    touchProcessedAt: true,
+  });
+
+  return {
+    profile,
+    sources,
+  };
 }
 
 export async function loadWorkspaceKnowledgeProfileForBusiness(

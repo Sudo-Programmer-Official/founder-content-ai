@@ -2,12 +2,18 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
+  CarouselDraft,
+  CarouselDraftSlide,
+  ContentNarrative,
+  ContentNarrativeSlide,
   ContentAiEditPreview,
   ContentAsset,
+  GenerateVisualResponse,
   MediaRecommendationSuggestion,
   PostAsset,
   RecommendedPostTimeSlot,
   RepurposeContentResponse,
+  RepurposeStrategy,
   SchedulingSafetyWarning,
   SocialAccount,
   WorkspaceAsset,
@@ -54,11 +60,18 @@ import {
   toTimeValueInTimezone,
 } from "../utils/timezone";
 import { saveRepurposeSeed } from "../utils/repurpose-loop";
+import {
+  DEFAULT_REPURPOSE_STRATEGY,
+  REPURPOSE_STRATEGY_OPTIONS,
+} from "../utils/repurpose-strategies";
 
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthContext();
 const { bootstrap, refreshProductAccess, isFeatureEnabled } = useProductAccessContext();
+const FOLLOW_UP_STRATEGY_OPTIONS = REPURPOSE_STRATEGY_OPTIONS.filter(
+  (option) => option.value !== DEFAULT_REPURPOSE_STRATEGY,
+);
 
 const draft = ref<ActivationDraftRecord | null>(null);
 const feedbackMessage = ref("");
@@ -246,6 +259,275 @@ function extractPreviewBody(paragraphs: string[], leadLines: string[]): string[]
     .filter((paragraph) => paragraph !== "");
 }
 
+function normalizeCarouselDraftSlide(value: unknown): CarouselDraftSlide | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const headline = typeof candidate.headline === "string" ? candidate.headline.trim() : "";
+
+  if (!headline) {
+    return null;
+  }
+
+  const supportingText =
+    typeof candidate.supportingText === "string" && candidate.supportingText.trim() !== ""
+      ? candidate.supportingText.trim()
+      : "";
+
+  return {
+    headline,
+    supportingText,
+    bulletPoints: Array.isArray(candidate.bulletPoints)
+      ? candidate.bulletPoints.filter((point): point is string => typeof point === "string" && point.trim() !== "")
+      : [],
+    highlightText:
+      typeof candidate.highlightText === "string" && candidate.highlightText.trim() !== ""
+        ? candidate.highlightText.trim()
+        : undefined,
+    eyebrowText:
+      typeof candidate.eyebrowText === "string" && candidate.eyebrowText.trim() !== ""
+        ? candidate.eyebrowText.trim()
+        : undefined,
+    footerText:
+      typeof candidate.footerText === "string" && candidate.footerText.trim() !== ""
+        ? candidate.footerText.trim()
+        : undefined,
+    closingText:
+      typeof candidate.closingText === "string" && candidate.closingText.trim() !== ""
+        ? candidate.closingText.trim()
+        : undefined,
+    narrativeRole:
+      typeof candidate.narrativeRole === "string" && candidate.narrativeRole.trim() !== ""
+        ? candidate.narrativeRole.trim()
+        : undefined,
+  };
+}
+
+function normalizeContentNarrativeSlide(value: unknown): ContentNarrativeSlide | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const headline = typeof candidate.headline === "string" ? candidate.headline.trim() : "";
+
+  if (!headline) {
+    return null;
+  }
+
+  return {
+    role:
+      typeof candidate.role === "string" && candidate.role.trim() !== ""
+        ? candidate.role.trim()
+        : "insight",
+    headline,
+    supportingText:
+      typeof candidate.supportingText === "string" && candidate.supportingText.trim() !== ""
+        ? candidate.supportingText.trim()
+        : undefined,
+    bulletPoints: Array.isArray(candidate.bulletPoints)
+      ? candidate.bulletPoints.filter((point): point is string => typeof point === "string" && point.trim() !== "")
+      : [],
+    highlightText:
+      typeof candidate.highlightText === "string" && candidate.highlightText.trim() !== ""
+        ? candidate.highlightText.trim()
+        : undefined,
+    eyebrowText:
+      typeof candidate.eyebrowText === "string" && candidate.eyebrowText.trim() !== ""
+        ? candidate.eyebrowText.trim()
+        : undefined,
+    footerText:
+      typeof candidate.footerText === "string" && candidate.footerText.trim() !== ""
+        ? candidate.footerText.trim()
+        : undefined,
+    closingText:
+      typeof candidate.closingText === "string" && candidate.closingText.trim() !== ""
+        ? candidate.closingText.trim()
+        : undefined,
+    assetId:
+      typeof candidate.assetId === "string" && candidate.assetId.trim() !== ""
+        ? candidate.assetId.trim()
+        : undefined,
+    imageDataUrl:
+      typeof candidate.imageDataUrl === "string" && candidate.imageDataUrl.trim() !== ""
+        ? candidate.imageDataUrl.trim()
+        : undefined,
+    mimeType:
+      typeof candidate.mimeType === "string" && candidate.mimeType.trim() !== ""
+        ? candidate.mimeType.trim()
+        : undefined,
+  };
+}
+
+function mapCarouselDraftFromNarrative(narrative: ContentNarrative): CarouselDraft {
+  return {
+    title: narrative.title,
+    subtitle: narrative.subtitle,
+    narrativeType: narrative.type,
+    slides: narrative.slides.map((slide) => ({
+      headline: slide.headline,
+      supportingText: slide.supportingText || "",
+      bulletPoints: slide.bulletPoints ?? [],
+      highlightText: slide.highlightText,
+      eyebrowText: slide.eyebrowText,
+      footerText: slide.footerText,
+      closingText: slide.closingText,
+      narrativeRole: slide.role,
+    })),
+  };
+}
+
+function normalizeContentNarrative(
+  value: unknown,
+  fallback: {
+    title: string;
+    subtitle: string;
+  },
+): ContentNarrative {
+  if (!value || typeof value !== "object") {
+    return {
+      format: "carousel",
+      type: "story",
+      title: fallback.title,
+      subtitle: fallback.subtitle,
+      slides: [],
+    };
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const slides = Array.isArray(candidate.slides)
+    ? candidate.slides
+      .map((slide) => normalizeContentNarrativeSlide(slide))
+      .filter((slide): slide is ContentNarrativeSlide => Boolean(slide))
+      .slice(0, 5)
+    : [];
+
+  return {
+    format: "carousel",
+    type:
+      candidate.type === "story"
+      || candidate.type === "framework"
+      || candidate.type === "contrarian"
+        ? candidate.type
+        : "story",
+    title:
+      typeof candidate.title === "string" && candidate.title.trim() !== ""
+        ? candidate.title.trim()
+        : fallback.title,
+    subtitle:
+      typeof candidate.subtitle === "string" && candidate.subtitle.trim() !== ""
+        ? candidate.subtitle.trim()
+        : fallback.subtitle,
+    sourceText:
+      typeof candidate.sourceText === "string" && candidate.sourceText.trim() !== ""
+        ? candidate.sourceText.trim()
+        : undefined,
+    slides,
+  };
+}
+
+function normalizeCarouselDraft(
+  value: unknown,
+  fallback: {
+    title: string;
+    subtitle: string;
+  },
+): CarouselDraft {
+  if (!value || typeof value !== "object") {
+    return mapCarouselDraftFromNarrative(normalizeContentNarrative(undefined, fallback));
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const slides = Array.isArray(candidate.slides)
+    ? candidate.slides
+      .map((slide) => normalizeCarouselDraftSlide(slide))
+      .filter((slide): slide is CarouselDraftSlide => Boolean(slide))
+      .slice(0, 5)
+    : [];
+  const narrativeType =
+    candidate.narrativeType === "story"
+    || candidate.narrativeType === "framework"
+    || candidate.narrativeType === "contrarian"
+      ? candidate.narrativeType
+      : "story";
+
+  return {
+    title:
+      typeof candidate.title === "string" && candidate.title.trim() !== ""
+        ? candidate.title.trim()
+        : fallback.title,
+    subtitle:
+      typeof candidate.subtitle === "string" && candidate.subtitle.trim() !== ""
+        ? candidate.subtitle.trim()
+        : fallback.subtitle,
+    narrativeType,
+    slides,
+  };
+}
+
+function mapPersistableNarrative(narrative: ContentNarrative): ContentNarrative {
+  return {
+    format: "carousel",
+    type: narrative.type,
+    title: narrative.title,
+    subtitle: narrative.subtitle,
+    sourceText: narrative.sourceText,
+    slides: narrative.slides.map((slide) => ({
+      role: slide.role,
+      headline: slide.headline,
+      supportingText: slide.supportingText,
+      bulletPoints: slide.bulletPoints ?? [],
+      highlightText: slide.highlightText,
+      eyebrowText: slide.eyebrowText,
+      footerText: slide.footerText,
+      closingText: slide.closingText,
+      assetId: slide.assetId,
+    })),
+  };
+}
+
+function formatCarouselNarrativeLabel(value: CarouselDraft["narrativeType"] | ContentNarrative["type"] | undefined): string {
+  if (value === "framework") {
+    return "Framework";
+  }
+
+  if (value === "contrarian") {
+    return "Contrarian";
+  }
+
+  return "Story";
+}
+
+function isUploadableGeneratedMimeType(value: string | undefined): boolean {
+  return value === "image/png" || value === "image/jpeg" || value === "image/gif";
+}
+
+function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): string {
+  if (suggestion.visualTemplateType === "carousel") {
+    return "Generate carousel";
+  }
+
+  return suggestion.title;
+}
+
+function getMediaSuggestionDescription(suggestion: MediaRecommendationSuggestion): string {
+  if (suggestion.visualTemplateType === "carousel") {
+    return "Turn this post into a 3-5 slide narrative deck, then render matching slides automatically.";
+  }
+
+  return suggestion.description;
+}
+
+function getMediaSuggestionReason(suggestion: MediaRecommendationSuggestion): string {
+  if (suggestion.visualTemplateType === "carousel") {
+    return "This keeps the workflow content → narrative → visuals instead of making you manually collect disconnected images.";
+  }
+
+  return suggestion.reason;
+}
+
 const postScore = computed(() =>
   draft.value
     ? calculateContentScore({
@@ -267,6 +549,31 @@ const postParagraphs = computed(() => splitPostParagraphs(postContent.value));
 const previewLeadLines = computed(() => extractPreviewLead(postParagraphs.value));
 const previewBodyParagraphs = computed(() =>
   extractPreviewBody(postParagraphs.value, previewLeadLines.value),
+);
+const visualNarrative = computed(() =>
+  draft.value
+    ? normalizeContentNarrative(
+        draft.value.result.visualNarrative,
+        {
+          title: draft.value.result.idea.title,
+          subtitle: draft.value.result.idea.angle,
+        },
+      )
+    : null,
+);
+const carouselDraft = computed(() =>
+  draft.value
+    ? mapCarouselDraftFromNarrative(
+        visualNarrative.value
+          ?? normalizeContentNarrative(undefined, {
+            title: draft.value.result.idea.title,
+            subtitle: draft.value.result.idea.angle,
+          }),
+      )
+    : null,
+);
+const carouselNarrativeLabel = computed(() =>
+  formatCarouselNarrativeLabel(visualNarrative.value?.type ?? carouselDraft.value?.narrativeType),
 );
 const hooks = computed(() => draft.value?.result.hooks ?? []);
 const povSummary = computed(() => draft.value?.result.pov?.summary ?? "");
@@ -441,6 +748,16 @@ const visibleMediaRecommendations = computed(() =>
 );
 const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>(() => [
   {
+    id: "fallback-carousel",
+    actionType: "generate_visual",
+    title: "Generate carousel",
+    description: "Turn the post into a 3-5 slide narrative deck with matching visuals.",
+    reason: "Best default when the post has enough tension or structure to earn a multi-slide story.",
+    suggestedMediaType: "framework_card",
+    visualTemplateType: "carousel",
+    recommendedAssetIds: [],
+  },
+  {
     id: "fallback-quote-card",
     actionType: "generate_visual",
     title: "Generate quote card",
@@ -460,21 +777,17 @@ const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>((
     visualTemplateType: "insight",
     recommendedAssetIds: [],
   },
-  {
-    id: "fallback-framework-card",
-    actionType: "generate_visual",
-    title: "Generate framework card",
-    description: "Lay out the idea as a scan-friendly multi-step framework.",
-    reason: "Best for tactical posts where the reader should absorb a short sequence.",
-    suggestedMediaType: "framework_card",
-    visualTemplateType: "carousel",
-    recommendedAssetIds: [],
-  },
 ]);
 const displayedMediaRecommendations = computed(() =>
-  visibleMediaRecommendations.value.length > 0
+  (visibleMediaRecommendations.value.length > 0
     ? visibleMediaRecommendations.value
-    : fallbackMediaRecommendations.value,
+    : fallbackMediaRecommendations.value)
+    .slice()
+    .sort((left, right) => {
+      const leftPriority = left.visualTemplateType === "carousel" ? 0 : 1;
+      const rightPriority = right.visualTemplateType === "carousel" ? 0 : 1;
+      return leftPriority - rightPriority;
+    }),
 );
 const isUsingFallbackMediaRecommendations = computed(
   () => !isLoadingMediaRecommendations.value && visibleMediaRecommendations.value.length === 0,
@@ -805,47 +1118,73 @@ function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null 
     return null;
   }
 
+  const fallbackNarrative = normalizeContentNarrative(body.visualNarrative, {
+    title:
+      typeof body.idea?.title === "string" && body.idea.title.trim() !== ""
+        ? body.idea.title
+        : asset.title || "Saved draft",
+    subtitle:
+      typeof body.idea?.angle === "string" && body.idea.angle.trim() !== ""
+        ? body.idea.angle
+        : "Refine and publish this workspace draft.",
+  });
+  const normalizedNarrative =
+    body.visualNarrative && typeof body.visualNarrative === "object"
+      ? fallbackNarrative
+      : normalizeContentNarrative(body.carouselDraft, {
+          title:
+            typeof body.idea?.title === "string" && body.idea.title.trim() !== ""
+              ? body.idea.title
+              : asset.title || "Saved draft",
+          subtitle:
+            typeof body.idea?.angle === "string" && body.idea.angle.trim() !== ""
+              ? body.idea.angle
+              : "Refine and publish this workspace draft.",
+        });
+  const normalizedResult: RepurposeContentResponse = {
+    inputType: body.inputType ?? "text",
+    intent: body.intent ?? (asset.sourceKind === "remix" ? "reference" : "capture"),
+    strategy:
+      body.strategy === "continue"
+      || body.strategy === "deepen"
+      || body.strategy === "contrarian"
+      || body.strategy === "tactical"
+        ? body.strategy
+        : "continue",
+    sourceText: typeof body.sourceText === "string" ? body.sourceText : post,
+    idea: {
+      title:
+        typeof body.idea?.title === "string" && body.idea.title.trim() !== ""
+          ? body.idea.title
+          : asset.title || "Saved draft",
+      angle:
+        typeof body.idea?.angle === "string" && body.idea.angle.trim() !== ""
+          ? body.idea.angle
+          : "Refine and publish this workspace draft.",
+    },
+    hooks: Array.isArray(body.hooks) ? body.hooks.filter((hook): hook is string => typeof hook === "string") : [],
+    post,
+    visualNarrative: normalizedNarrative,
+    variations: Array.isArray(body.variations) ? body.variations : [],
+    carouselDraft: mapCarouselDraftFromNarrative(normalizedNarrative),
+    quickSignals:
+      body.quickSignals && typeof body.quickSignals === "object"
+        ? body.quickSignals
+        : {
+            readyLabel: "Saved as draft",
+            formatLabel: "This post is persisted and ready for the next action.",
+          },
+    captionFooterCredit:
+      typeof body.captionFooterCredit === "string" ? body.captionFooterCredit : "",
+    asset,
+  };
+
   return {
     id: asset.id,
     input: post,
     mode: asset.sourceKind === "remix" ? "improve" : "generate",
     createdAt: asset.updatedAt ?? asset.createdAt,
-    result: {
-      inputType: body.inputType ?? "text",
-      intent: body.intent ?? (asset.sourceKind === "remix" ? "reference" : "capture"),
-      sourceText: typeof body.sourceText === "string" ? body.sourceText : post,
-      idea: {
-        title:
-          typeof body.idea?.title === "string" && body.idea.title.trim() !== ""
-            ? body.idea.title
-            : asset.title || "Saved draft",
-        angle:
-          typeof body.idea?.angle === "string" && body.idea.angle.trim() !== ""
-            ? body.idea.angle
-            : "Refine and publish this workspace draft.",
-      },
-      hooks: Array.isArray(body.hooks) ? body.hooks.filter((hook): hook is string => typeof hook === "string") : [],
-      post,
-      variations: Array.isArray(body.variations) ? body.variations : [],
-      carouselDraft:
-        body.carouselDraft && typeof body.carouselDraft === "object"
-          ? body.carouselDraft
-          : {
-              title: asset.title || "Saved draft",
-              subtitle: "Refine and publish this workspace draft.",
-              slides: [],
-            },
-      quickSignals:
-        body.quickSignals && typeof body.quickSignals === "object"
-          ? body.quickSignals
-          : {
-              readyLabel: "Saved as draft",
-              formatLabel: "This post is persisted and ready for the next action.",
-            },
-      captionFooterCredit:
-        typeof body.captionFooterCredit === "string" ? body.captionFooterCredit : "",
-      asset,
-    },
+    result: normalizedResult,
   };
 }
 
@@ -947,10 +1286,39 @@ function buildDraftContentBody(): Record<string, unknown> {
   }
 
   const { asset: _ignoredAsset, ...resultWithoutAsset } = draft.value.result;
+  const nextVisualNarrative = mapPersistableNarrative(
+    normalizeContentNarrative(resultWithoutAsset.visualNarrative, {
+      title: draft.value.result.idea.title,
+      subtitle: draft.value.result.idea.angle,
+    }),
+  );
 
   return {
     ...resultWithoutAsset,
     post: postContent.value,
+    visualNarrative: nextVisualNarrative,
+    carouselDraft: mapCarouselDraftFromNarrative(nextVisualNarrative),
+  };
+}
+
+function buildDraftContentBodyWithVisualNarrative(nextVisualNarrative: ContentNarrative): Record<string, unknown> {
+  if (!draft.value) {
+    return {
+      content: postContent.value,
+      post: postContent.value,
+      visualNarrative: mapPersistableNarrative(nextVisualNarrative),
+      carouselDraft: mapCarouselDraftFromNarrative(nextVisualNarrative),
+    };
+  }
+
+  const { asset: _ignoredAsset, ...resultWithoutAsset } = draft.value.result;
+  const persistableNarrative = mapPersistableNarrative(nextVisualNarrative);
+
+  return {
+    ...resultWithoutAsset,
+    post: postContent.value,
+    visualNarrative: persistableNarrative,
+    carouselDraft: mapCarouselDraftFromNarrative(persistableNarrative),
   };
 }
 
@@ -1004,6 +1372,36 @@ async function updateDraftPostContent(nextText: string, successMessage: string):
 
   draft.value = nextDraft;
   feedbackMessage.value = successMessage;
+}
+
+async function updateDraftVisualNarrative(nextVisualNarrative: ContentNarrative): Promise<void> {
+  if (!draft.value) {
+    return;
+  }
+
+  let nextAsset = draft.value.result.asset;
+
+  if (activeBusinessId.value && draft.value.result.asset?.id) {
+    const response = await requestUpdatePipelineItem({
+      businessId: activeBusinessId.value,
+      assetId: draft.value.result.asset.id,
+      textContent: postContent.value,
+      contentBody: buildDraftContentBodyWithVisualNarrative(nextVisualNarrative),
+    });
+
+    nextAsset = response.asset;
+  }
+
+  const persistableNarrative = mapPersistableNarrative(nextVisualNarrative);
+  draft.value = replaceActivationDraft({
+    ...draft.value,
+    result: {
+      ...draft.value.result,
+      visualNarrative: persistableNarrative,
+      carouselDraft: mapCarouselDraftFromNarrative(persistableNarrative),
+      asset: nextAsset,
+    },
+  });
 }
 
 async function ensurePersistedDraft(): Promise<string | null> {
@@ -1160,15 +1558,68 @@ function buildVisualBulletPoints(): string[] {
     );
 }
 
-function buildGeneratedMediaFileName(suggestion: MediaRecommendationSuggestion): string {
+function buildGeneratedMediaFileName(
+  suggestion: MediaRecommendationSuggestion,
+  options?: { slideIndex?: number },
+): string {
   const base =
     (draft.value?.result.idea.title || "generated-visual")
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "") || "generated-visual";
   const suffix = suggestion.suggestedMediaType || suggestion.visualTemplateType || "visual";
+  const slideSuffix =
+    typeof options?.slideIndex === "number" ? `-slide-${options.slideIndex + 1}` : "";
 
-  return `${base}-${suffix}.png`;
+  return `${base}-${suffix}${slideSuffix}.png`;
+}
+
+function buildVisualAttachmentFeedback(
+  successMessage: string,
+  generatedVisual: GenerateVisualResponse,
+): string {
+  return generatedVisual.brandConsistency.tone === "review"
+    ? `${successMessage} ${generatedVisual.brandConsistency.summary}`
+    : successMessage;
+}
+
+async function uploadGeneratedBlobToPost(input: {
+  persistedId: string;
+  fileName: string;
+  mimeType: string;
+  blob: Blob;
+}): Promise<PostAsset> {
+  const uploadTarget = await requestMediaUploadUrl({
+    businessId: activeBusinessId.value,
+    postId: input.persistedId,
+    fileType: input.mimeType,
+    fileName: input.fileName,
+    sizeBytes: input.blob.size,
+  });
+
+  const uploadResponse = await fetch(uploadTarget.uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": input.mimeType,
+    },
+    body: input.blob,
+  });
+
+  if (!uploadResponse.ok) {
+    throw new Error("Unable to upload the generated visual to storage.");
+  }
+
+  const response = await requestCreatePostAsset({
+    businessId: activeBusinessId.value,
+    postId: input.persistedId,
+    storageKey: uploadTarget.storageKey,
+    storageUrl: uploadTarget.storageUrl,
+    mimeType: input.mimeType,
+    sizeBytes: input.blob.size,
+    source: "generated",
+  });
+
+  return response.asset;
 }
 
 async function loadMediaRecommendations(): Promise<void> {
@@ -1345,23 +1796,103 @@ async function generateRecommendedMedia(
       return;
     }
 
+    const currentVisualNarrative = visualNarrative.value
+      ?? normalizeContentNarrative(undefined, {
+        title: draft.value?.result.idea.title || "Founder insight",
+        subtitle: draft.value?.result.idea.angle || "Turn this idea into a stronger narrative.",
+      });
+    const coverSlide = currentVisualNarrative.slides[0];
     const generatedVisual = await requestVisualGeneration({
       businessId: activeBusinessId.value,
       templateType: suggestion.visualTemplateType,
       content: {
-        headline: previewLeadLines.value[0] || draft.value?.result.idea.title || "Founder insight",
+        headline:
+          coverSlide?.headline ||
+          previewLeadLines.value[0] ||
+          draft.value?.result.idea.title ||
+          "Founder insight",
         supportingText:
+          coverSlide?.supportingText ||
           previewLeadLines.value[1] ||
           previewBodyParagraphs.value[0]?.replace(/\s+/g, " ").trim().slice(0, 140) ||
           undefined,
-        bulletPoints: buildVisualBulletPoints(),
+        bulletPoints:
+          suggestion.visualTemplateType === "carousel"
+            ? coverSlide?.bulletPoints || buildVisualBulletPoints()
+            : buildVisualBulletPoints(),
       },
+      narrative:
+        suggestion.visualTemplateType === "carousel"
+          ? {
+              ...currentVisualNarrative,
+              sourceText: postContent.value,
+            }
+          : undefined,
       mediaPresetId: suggestion.mediaPresetId,
       promptTemplateId: suggestion.promptTemplateId,
       generatedMediaType: suggestion.suggestedMediaType,
       contentAssetId: persistedId,
       sourceAssetIds: suggestion.recommendedAssetIds,
     });
+
+    if (suggestion.visualTemplateType === "carousel") {
+      if (!generatedVisual.narrative || generatedVisual.narrative.slides.length === 0) {
+        throw new Error("Unable to generate a carousel from this post right now.");
+      }
+
+      if (!generatedVisual.narrative.slides.every((slide) => isUploadableGeneratedMimeType(slide.mimeType))) {
+        throw new Error("The carousel was generated in preview mode only. Re-run once PNG or JPG generation is available to attach every slide.");
+      }
+
+      const uploadedNarrativeSlides: ContentNarrativeSlide[] = [];
+
+      for (const [index, slide] of generatedVisual.narrative.slides.entries()) {
+        const imageDataUrl = slide.imageDataUrl;
+
+        if (!imageDataUrl) {
+          throw new Error("One of the generated slides did not include a renderable image.");
+        }
+
+        const blob = await fetch(imageDataUrl).then(async (response) => {
+          if (!response.ok) {
+            throw new Error("Unable to convert one of the generated slides into an uploadable file.");
+          }
+
+          return response.blob();
+        });
+
+        const asset = await uploadGeneratedBlobToPost({
+          persistedId,
+          fileName: buildGeneratedMediaFileName(suggestion, { slideIndex: index }),
+          mimeType: slide.mimeType || generatedVisual.mimeType,
+          blob,
+        });
+
+        uploadedNarrativeSlides.push({
+          ...slide,
+          assetId: asset.id,
+        });
+      }
+
+      const nextVisualNarrative = mapPersistableNarrative({
+        format: "carousel",
+        type: generatedVisual.narrative.type,
+        title: generatedVisual.narrative.title,
+        subtitle: generatedVisual.narrative.subtitle,
+        slides: uploadedNarrativeSlides,
+      });
+      await updateDraftVisualNarrative(nextVisualNarrative);
+      await loadPostAssets();
+      mediaFeedback.value = buildVisualAttachmentFeedback(
+        `Generated ${generatedVisual.narrative.slides.length} ${formatCarouselNarrativeLabel(generatedVisual.narrative.type).toLowerCase()} slide${generatedVisual.narrative.slides.length === 1 ? "" : "s"} and attached them to this draft.`,
+        generatedVisual,
+      );
+      return;
+    }
+
+    if (!isUploadableGeneratedMimeType(generatedVisual.mimeType)) {
+      throw new Error("This visual came back as a preview-only SVG. Re-run once PNG or JPG generation is available to attach it.");
+    }
 
     const blob = await fetch(generatedVisual.imageDataUrl).then(async (response) => {
       if (!response.ok) {
@@ -1371,39 +1902,18 @@ async function generateRecommendedMedia(
       return response.blob();
     });
 
-    const fileName = buildGeneratedMediaFileName(suggestion);
-    const uploadTarget = await requestMediaUploadUrl({
-      businessId: activeBusinessId.value,
-      postId: persistedId,
-      fileType: blob.type || generatedVisual.mimeType,
-      fileName,
-      sizeBytes: blob.size,
-    });
-
-    const uploadResponse = await fetch(uploadTarget.uploadUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": blob.type || generatedVisual.mimeType,
-      },
-      body: blob,
-    });
-
-    if (!uploadResponse.ok) {
-      throw new Error("Unable to upload the generated visual to storage.");
-    }
-
-    await requestCreatePostAsset({
-      businessId: activeBusinessId.value,
-      postId: persistedId,
-      storageKey: uploadTarget.storageKey,
-      storageUrl: uploadTarget.storageUrl,
-      mimeType: blob.type || generatedVisual.mimeType,
-      sizeBytes: blob.size,
-      source: "generated",
+    await uploadGeneratedBlobToPost({
+      persistedId,
+      fileName: buildGeneratedMediaFileName(suggestion),
+      mimeType: generatedVisual.mimeType,
+      blob,
     });
 
     await loadPostAssets();
-    mediaFeedback.value = `${suggestion.title} attached to this draft.`;
+    mediaFeedback.value = buildVisualAttachmentFeedback(
+      `${getMediaSuggestionTitle(suggestion)} attached to this draft.`,
+      generatedVisual,
+    );
   } catch (error) {
     mediaFeedback.value =
       error instanceof Error ? error.message : "Unable to generate media right now.";
@@ -1725,7 +2235,9 @@ async function goToGrowth(): Promise<void> {
   }
 }
 
-async function goToRepurpose(): Promise<void> {
+async function goToContinueWriting(
+  strategy: RepurposeStrategy = DEFAULT_REPURPOSE_STRATEGY,
+): Promise<void> {
   if (!draft.value) {
     return;
   }
@@ -1733,15 +2245,13 @@ async function goToRepurpose(): Promise<void> {
   saveRepurposeSeed({
     text: postContent.value,
     title: draft.value.result.idea.title,
+    strategy,
+    autoGenerate: true,
     source: "result",
   });
 
   await router.push({
     path: appRoutes.appCreate,
-    query: {
-      mode: "repurpose",
-    },
-    hash: "#repurpose-panel",
   });
 }
 
@@ -2200,9 +2710,23 @@ onBeforeUnmount(() => {
             <button type="button" class="secondary-action" @click="goToImprove">
               Improve
             </button>
-            <button type="button" class="secondary-action" @click="goToRepurpose">
-              Repurpose
+            <button type="button" class="secondary-action" @click="void goToContinueWriting()">
+              Continue writing
             </button>
+            <div class="result-strategy-actions">
+              <span class="panel-meta">One-click angles</span>
+              <div class="result-strategy-row">
+                <button
+                  v-for="option in FOLLOW_UP_STRATEGY_OPTIONS"
+                  :key="option.value"
+                  type="button"
+                  class="secondary-action result-strategy-button"
+                  @click="void goToContinueWriting(option.value)"
+                >
+                  {{ option.shortLabel }}
+                </button>
+              </div>
+            </div>
 
             <button
               v-if="!canScheduleDraft"
@@ -2336,9 +2860,9 @@ onBeforeUnmount(() => {
             <div class="media-panel-header">
               <div>
                 <p class="panel-meta">Media</p>
-                <strong>Attach images for LinkedIn</strong>
+                <strong>Turn this post into visuals</strong>
                 <p class="ai-command-copy">
-                  Keep the workflow text-first. Add up to 10 images only when the post needs visual support.
+                  Keep the workflow text-first. When the post earns visuals, generate a narrative deck before you add or upload anything manually.
                 </p>
               </div>
 
@@ -2349,7 +2873,7 @@ onBeforeUnmount(() => {
                   :disabled="isLoadingMediaRecommendations || isUploadingPostAssets"
                   @click="void openGenerateMediaOptions()"
                 >
-                  {{ isLoadingMediaRecommendations ? "Loading options..." : "Generate media" }}
+                  {{ isLoadingMediaRecommendations ? "Loading options..." : "Choose visual format" }}
                 </button>
                 <button
                   type="button"
@@ -2370,6 +2894,40 @@ onBeforeUnmount(() => {
                 </label>
               </div>
             </div>
+
+            <section
+              v-if="carouselDraft && carouselDraft.slides.length > 0"
+              class="carousel-blueprint-panel"
+            >
+              <div class="carousel-blueprint-header">
+                <div>
+                  <p class="panel-meta">Carousel blueprint</p>
+                  <strong>{{ carouselNarrativeLabel }} narrative · {{ carouselDraft.slides.length }} slides</strong>
+                  <p class="ai-command-copy">
+                    This is the story system behind the visual output. Generate carousel to render this narrative into matching slides.
+                  </p>
+                </div>
+                <span class="workspace-chip">Carousel recommended</span>
+              </div>
+
+              <div class="carousel-blueprint-grid">
+                <article
+                  v-for="(slide, index) in carouselDraft.slides"
+                  :key="`${carouselDraft.title}-${index}`"
+                  class="carousel-blueprint-card"
+                >
+                  <div class="carousel-blueprint-card-header">
+                    <strong>Slide {{ index + 1 }}</strong>
+                    <span v-if="slide.narrativeRole">{{ slide.narrativeRole.replace(/_/g, " ") }}</span>
+                  </div>
+                  <p>{{ slide.headline }}</p>
+                  <small v-if="slide.supportingText">{{ slide.supportingText }}</small>
+                  <ul v-if="slide.bulletPoints.length > 0" class="carousel-blueprint-points">
+                    <li v-for="point in slide.bulletPoints" :key="point">{{ point }}</li>
+                  </ul>
+                </article>
+              </div>
+            </section>
 
             <div
               v-if="displayedMediaRecommendations.length > 0 || isLoadingMediaRecommendations"
@@ -2398,12 +2956,13 @@ onBeforeUnmount(() => {
                   v-for="suggestion in displayedMediaRecommendations"
                   :key="suggestion.id"
                   class="media-recommendation-card"
+                  :data-recommended="suggestion.visualTemplateType === 'carousel'"
                 >
                   <div>
                     <p class="panel-meta">{{ suggestion.actionType.replace(/_/g, " ") }}</p>
-                    <strong>{{ suggestion.title }}</strong>
-                    <p>{{ suggestion.description }}</p>
-                    <small>{{ suggestion.reason }}</small>
+                    <strong>{{ getMediaSuggestionTitle(suggestion) }}</strong>
+                    <p>{{ getMediaSuggestionDescription(suggestion) }}</p>
+                    <small>{{ getMediaSuggestionReason(suggestion) }}</small>
                   </div>
                   <button
                     type="button"
@@ -2415,7 +2974,9 @@ onBeforeUnmount(() => {
                       suggestion.actionType === "generate_visual"
                         ? isGeneratingRecommendationId === suggestion.id
                           ? "Generating..."
-                          : "Generate visual"
+                          : suggestion.visualTemplateType === "carousel"
+                            ? "Generate carousel"
+                            : "Generate visual"
                         : suggestion.actionType === "use_existing_asset"
                           ? "Use existing"
                           : "Skip media"
@@ -3275,6 +3836,83 @@ onBeforeUnmount(() => {
   justify-content: center;
 }
 
+.carousel-blueprint-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--fc-accent-soft) 26%, transparent) 0%, transparent 34%),
+    rgba(255, 249, 243, 0.94);
+}
+
+.carousel-blueprint-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.carousel-blueprint-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.carousel-blueprint-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 90%, transparent);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.carousel-blueprint-card p,
+.carousel-blueprint-card small {
+  margin: 0;
+}
+
+.carousel-blueprint-card p {
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.carousel-blueprint-card small {
+  color: var(--fc-text-muted);
+  line-height: 1.5;
+}
+
+.carousel-blueprint-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.carousel-blueprint-card-header strong {
+  font-size: 0.95rem;
+}
+
+.carousel-blueprint-card-header span {
+  color: var(--fc-text-muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.carousel-blueprint-points {
+  display: grid;
+  gap: 8px;
+  padding-left: 18px;
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.45;
+}
+
 .workspace-chip {
   display: inline-flex;
   align-items: center;
@@ -3317,6 +3955,11 @@ onBeforeUnmount(() => {
   border-radius: 18px;
   border: 1px solid color-mix(in srgb, var(--fc-border) 90%, transparent);
   background: rgba(255, 255, 255, 0.88);
+}
+
+.media-recommendation-card[data-recommended="true"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 22%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 20%, white 80%);
 }
 
 .media-recommendation-card p,
@@ -3481,6 +4124,23 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 18px;
+}
+
+.result-strategy-actions {
+  display: grid;
+  gap: 10px;
+  min-width: min(100%, 320px);
+}
+
+.result-strategy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.result-strategy-button {
+  min-height: 42px;
+  padding: 0 14px;
 }
 
 .primary-action,

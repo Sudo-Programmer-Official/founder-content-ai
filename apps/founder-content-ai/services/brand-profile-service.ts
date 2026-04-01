@@ -4,6 +4,8 @@ import type {
   CreateWorkspaceKnowledgeSourceResponse,
   RefreshWorkspaceKnowledgeRequest,
   RefreshWorkspaceKnowledgeResponse,
+  UpdateWorkspaceKnowledgeProfileRequest,
+  UpdateWorkspaceKnowledgeProfileResponse,
   UpdateBrandProfileRequest,
   UpdateBrandProfileResponse,
   WorkspaceKnowledgeResponse,
@@ -14,6 +16,7 @@ const API_ENDPOINTS = {
   brandProfile: "/brand-profile",
   updateBrandProfile: "/brand-profile/update",
   workspaceKnowledge: "/workspace-knowledge",
+  updateWorkspaceKnowledgeProfile: "/workspace-knowledge/profile",
   refreshWorkspaceKnowledge: "/workspace-knowledge/refresh",
 } as const;
 
@@ -58,6 +61,15 @@ export async function requestCreateWorkspaceKnowledgeSource(
 ): Promise<CreateWorkspaceKnowledgeSourceResponse> {
   return apiPost<CreateWorkspaceKnowledgeSourceRequest, CreateWorkspaceKnowledgeSourceResponse>(
     API_ENDPOINTS.workspaceKnowledge,
+    input,
+  );
+}
+
+export async function requestUpdateWorkspaceKnowledgeProfile(
+  input: UpdateWorkspaceKnowledgeProfileRequest,
+): Promise<UpdateWorkspaceKnowledgeProfileResponse> {
+  return apiPost<UpdateWorkspaceKnowledgeProfileRequest, UpdateWorkspaceKnowledgeProfileResponse>(
+    API_ENDPOINTS.updateWorkspaceKnowledgeProfile,
     input,
   );
 }

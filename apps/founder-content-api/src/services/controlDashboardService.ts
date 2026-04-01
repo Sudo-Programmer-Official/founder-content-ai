@@ -1,5 +1,6 @@
 import type { QueryResultRow } from "pg";
 import type {
+  ContentGenerationSuggestion,
   ContentAiEditPreview,
   ContentAsset,
   ContentAssetStatus,
@@ -14,7 +15,9 @@ import type {
   CreateIdeaInboxResponse,
   DashboardSuggestion,
   IdeaInboxItem,
+  ListContentGenerationSuggestionsResponse,
   PreviewContentAiEditRequest,
+  RepurposeStrategy,
   UpdateContentPipelineItemRequest,
   UpdateContentPipelineItemResponse,
 } from "../../../../packages/shared-types/index.ts";
@@ -31,6 +34,13 @@ import {
   buildDashboardIntelligenceSummary,
   resolveStoredContentAssetIntelligence,
 } from "./contentIntelligenceService.ts";
+import {
+  loadContentGenerationSuggestionFeedbackSummary,
+  type ContentGenerationSuggestionFeedbackSummary,
+  safeRecordContentGenerationSuggestionEdited,
+  safeRecordContentGenerationSuggestionPublished,
+} from "./contentGenerationFeedbackService.ts";
+import { resolveContentGenerationTone } from "./contentGenerationToneService.ts";
 import { previewContentIngestion } from "./content/ingestionService.ts";
 import { getBrandPromptContextForBusiness } from "./brandIntelligence/brandProfileService.ts";
 import { recommendPostTimes } from "./growthIntelligenceService.ts";
@@ -138,6 +148,7 @@ const PIPELINE_STAGES = [
   { stage: "posted", label: "Posted" },
 ] as const;
 const IDEA_INPUT_TYPES = new Set<IdeaInboxItem["inputType"]>(["text", "voice", "image", "link"]);
+const ZERO_INPUT_STRATEGIES: RepurposeStrategy[] = ["continue", "contrarian", "tactical"];
 
 function toIsoString(value: Date | string): string {
   return new Date(value).toISOString();
@@ -596,6 +607,248 @@ function mapContentAsset(row: ContentAssetRow): ContentAsset {
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const truncated = value.slice(0, maxLength);
+  const lastSpaceIndex = truncated.lastIndexOf(" ");
+  return (lastSpaceIndex > 80 ? truncated.slice(0, lastSpaceIndex) : truncated).trim();
+}
+
+function extractOpeningLine(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => normalizeText(line))
+    .find((line): line is string => Boolean(line))
+    ?? "";
+}
+
+function buildSuggestionTopicLabel(asset: ContentAsset): string {
+  return normalizeText(asset.title)
+    ?? truncateText(extractOpeningLine(asset.textContent ?? ""), 72)
+    ?? "your recent post";
+}
+
+function buildSuggestionPreviewText(asset: ContentAsset): string {
+  return truncateText(normalizeText(asset.textContent ?? "") ?? "", 180);
+}
+
+function buildTopicFingerprint(asset: ContentAsset): string {
+  const source = `${buildSuggestionTopicLabel(asset)} ${extractOpeningLine(asset.textContent ?? "")}`
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/gi, " ");
+
+  const tokens = source
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4);
+
+  return tokens.slice(0, 6).join(" ");
+}
+
+function stagePriority(stage: ContentAsset["pipelineStage"]): number {
+  switch (stage) {
+    case "posted":
+      return 42;
+    case "scheduled":
+      return 32;
+    case "review":
+      return 24;
+    case "draft":
+      return 18;
+    default:
+      return 12;
+  }
+}
+
+function performancePriority(label: PostPerformanceSignalRow["performance_label"] | undefined): number {
+  switch (label) {
+    case "high":
+      return 36;
+    case "medium":
+      return 20;
+    case "low":
+      return 6;
+    default:
+      return 0;
+  }
+}
+
+function clampLearningScore(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function learningPriority(input: {
+  strategy: RepurposeStrategy;
+  asset: ContentAsset;
+  feedbackSummary: ContentGenerationSuggestionFeedbackSummary;
+}): number {
+  const strategyScore = clampLearningScore(
+    input.feedbackSummary.strategyScores.get(input.strategy) ?? 0,
+    -4,
+    8,
+  );
+  const sourceScore = clampLearningScore(
+    input.feedbackSummary.sourceAssetScores.get(input.asset.id) ?? 0,
+    -5,
+    9,
+  );
+  const sourceStrategyScore = clampLearningScore(
+    input.feedbackSummary.sourceStrategyScores.get(`${input.asset.id}:${input.strategy}`) ?? 0,
+    -6,
+    10,
+  );
+
+  return strategyScore * 0.9 + sourceScore * 0.7 + sourceStrategyScore;
+}
+
+function strategyFitPriority(strategy: RepurposeStrategy, asset: ContentAsset): number {
+  switch (strategy) {
+    case "continue":
+      return asset.pipelineStage === "posted" || asset.pipelineStage === "scheduled" ? 18 : 8;
+    case "contrarian":
+      return asset.intelligence?.pov?.boldness === "bold"
+        ? 18
+        : asset.intelligence?.hookType === "bold_statement"
+          ? 15
+          : 10;
+    case "tactical":
+      return asset.intelligence?.format === "list"
+        ? 18
+        : asset.intelligence?.format === "insight"
+          ? 14
+          : asset.intelligence?.length === "long"
+            ? 12
+            : 8;
+    default:
+      return 8;
+  }
+}
+
+function buildSuggestionReason(input: {
+  asset: ContentAsset;
+  strategy: RepurposeStrategy;
+  performanceLabel?: PostPerformanceSignalRow["performance_label"];
+}): string {
+  const stageLabel = input.asset.pipelineStage === "posted"
+    ? "published"
+    : input.asset.pipelineStage === "scheduled"
+      ? "scheduled"
+      : input.asset.pipelineStage === "review"
+        ? "review-ready"
+        : "draft";
+  const performanceLabel = input.performanceLabel
+    ? `${input.performanceLabel}-performing`
+    : "recent";
+
+  switch (input.strategy) {
+    case "continue":
+      return `Built from a ${performanceLabel} ${stageLabel} post so the narrative keeps compounding.`;
+    case "contrarian":
+      return `Uses a ${performanceLabel} ${stageLabel} idea and pushes it into a sharper point of view.`;
+    case "tactical":
+      return `Turns a ${performanceLabel} ${stageLabel} insight into something founders can apply immediately.`;
+    default:
+      return `Built from a ${performanceLabel} ${stageLabel} post.`;
+  }
+}
+
+function buildGenerationSuggestion(input: {
+  asset: ContentAsset;
+  strategy: RepurposeStrategy;
+  performanceLabel?: PostPerformanceSignalRow["performance_label"];
+  recommended: boolean;
+}): ContentGenerationSuggestion {
+  const topicLabel = buildSuggestionTopicLabel(input.asset);
+  const previewText = buildSuggestionPreviewText(input.asset);
+
+  switch (input.strategy) {
+    case "continue":
+      return {
+        id: `${input.asset.id}:continue`,
+        title: `Continue the thread on ${topicLabel}`,
+        description: "Keep the narrative moving with the next logical founder post.",
+        rationale: buildSuggestionReason(input),
+        strategy: input.strategy,
+        sourceAssetId: input.asset.id,
+        sourceTitle: topicLabel,
+        sourceStage: input.asset.pipelineStage,
+        sourceText: input.asset.textContent ?? "",
+        previewText,
+        recommended: input.recommended,
+        performanceLabel: input.performanceLabel ?? undefined,
+      };
+    case "deepen":
+      return {
+        id: `${input.asset.id}:deepen`,
+        title: `Go deeper on ${topicLabel}`,
+        description: "Push the same topic into a sharper second-layer founder post.",
+        rationale: buildSuggestionReason({
+          ...input,
+          strategy: "continue",
+        }),
+        strategy: input.strategy,
+        sourceAssetId: input.asset.id,
+        sourceTitle: topicLabel,
+        sourceStage: input.asset.pipelineStage,
+        sourceText: input.asset.textContent ?? "",
+        previewText,
+        recommended: input.recommended,
+        performanceLabel: input.performanceLabel ?? undefined,
+      };
+    case "contrarian":
+      return {
+        id: `${input.asset.id}:contrarian`,
+        title: `Take a sharper stance on ${topicLabel}`,
+        description: "Turn the same theme into a stronger, more opinionated founder take.",
+        rationale: buildSuggestionReason(input),
+        strategy: input.strategy,
+        sourceAssetId: input.asset.id,
+        sourceTitle: topicLabel,
+        sourceStage: input.asset.pipelineStage,
+        sourceText: input.asset.textContent ?? "",
+        previewText,
+        recommended: input.recommended,
+        performanceLabel: input.performanceLabel ?? undefined,
+      };
+    case "tactical":
+      return {
+        id: `${input.asset.id}:tactical`,
+        title: `Make ${topicLabel} practical`,
+        description: "Convert the insight into a useful post with clear decisions or actions.",
+        rationale: buildSuggestionReason(input),
+        strategy: input.strategy,
+        sourceAssetId: input.asset.id,
+        sourceTitle: topicLabel,
+        sourceStage: input.asset.pipelineStage,
+        sourceText: input.asset.textContent ?? "",
+        previewText,
+        recommended: input.recommended,
+        performanceLabel: input.performanceLabel ?? undefined,
+      };
+    default:
+      return {
+        id: `${input.asset.id}:${input.strategy}`,
+        title: `Continue the thread on ${topicLabel}`,
+        description: "Keep the narrative moving with the next logical founder post.",
+        rationale: buildSuggestionReason({
+          ...input,
+          strategy: "continue",
+        }),
+        strategy: input.strategy,
+        sourceAssetId: input.asset.id,
+        sourceTitle: topicLabel,
+        sourceStage: input.asset.pipelineStage,
+        sourceText: input.asset.textContent ?? "",
+        previewText,
+        recommended: input.recommended,
+        performanceLabel: input.performanceLabel ?? undefined,
+      };
+  }
 }
 
 function buildDateLabel(): string {
@@ -1146,6 +1399,93 @@ async function loadRecentPostPerformanceSignals(
   return result.rows;
 }
 
+function selectSuggestionSource(input: {
+  strategy: RepurposeStrategy;
+  candidates: ContentAsset[];
+  performanceByAssetId: Map<string, PostPerformanceSignalRow>;
+  feedbackSummary: ContentGenerationSuggestionFeedbackSummary;
+  usedFingerprints: Set<string>;
+}): ContentAsset | null {
+  const ranked = [...input.candidates]
+    .sort((left, right) => {
+      const leftPerformance = input.performanceByAssetId.get(left.id)?.performance_label;
+      const rightPerformance = input.performanceByAssetId.get(right.id)?.performance_label;
+      const leftQuality = left.intelligence?.quality?.overall ?? 0;
+      const rightQuality = right.intelligence?.quality?.overall ?? 0;
+      const leftRank =
+        stagePriority(left.pipelineStage)
+        + performancePriority(leftPerformance)
+        + strategyFitPriority(input.strategy, left)
+        + learningPriority({
+          strategy: input.strategy,
+          asset: left,
+          feedbackSummary: input.feedbackSummary,
+        })
+        + leftQuality * 0.1;
+      const rightRank =
+        stagePriority(right.pipelineStage)
+        + performancePriority(rightPerformance)
+        + strategyFitPriority(input.strategy, right)
+        + learningPriority({
+          strategy: input.strategy,
+          asset: right,
+          feedbackSummary: input.feedbackSummary,
+        })
+        + rightQuality * 0.1;
+
+      return rightRank - leftRank;
+    });
+
+  const distinct = ranked.find((asset) => !input.usedFingerprints.has(buildTopicFingerprint(asset)));
+  return distinct ?? ranked[0] ?? null;
+}
+
+function buildContentGenerationSuggestions(input: {
+  pipelineItems: ContentAsset[];
+  recentPerformanceSignals: PostPerformanceSignalRow[];
+  feedbackSummary: ContentGenerationSuggestionFeedbackSummary;
+}): ContentGenerationSuggestion[] {
+  const candidates = input.pipelineItems.filter((asset) =>
+    asset.contentType === "post" && (asset.textContent?.trim().length ?? 0) >= 80
+  );
+
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  const performanceByAssetId = new Map(
+    input.recentPerformanceSignals
+      .filter((signal) => Boolean(signal.asset_group_id))
+      .map((signal) => [signal.asset_group_id as string, signal]),
+  );
+  const usedFingerprints = new Set<string>();
+
+  return ZERO_INPUT_STRATEGIES.flatMap((strategy, index) => {
+    const asset = selectSuggestionSource({
+      strategy,
+      candidates,
+      performanceByAssetId,
+      feedbackSummary: input.feedbackSummary,
+      usedFingerprints,
+    });
+
+    if (!asset) {
+      return [];
+    }
+
+    usedFingerprints.add(buildTopicFingerprint(asset));
+
+    return [
+      buildGenerationSuggestion({
+        asset,
+        strategy,
+        performanceLabel: performanceByAssetId.get(asset.id)?.performance_label,
+        recommended: index === 0,
+      }),
+    ];
+  });
+}
+
 function calculateStreakDays(activityDates: string[]): number {
   if (activityDates.length === 0) {
     return 0;
@@ -1595,6 +1935,29 @@ export async function getControlDashboard(
   };
 }
 
+export async function getContentGenerationSuggestions(
+  principal: AuthenticatedPrincipal,
+  businessId: string,
+): Promise<ListContentGenerationSuggestionsResponse> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  await requireBusinessMembership(principal, businessId);
+
+  const [pipelineItems, recentPerformanceSignals, feedbackSummary] = await Promise.all([
+    loadPipelineItems(businessId),
+    loadRecentPostPerformanceSignals(businessId),
+    loadContentGenerationSuggestionFeedbackSummary(businessId),
+  ]);
+
+  return {
+    businessId,
+    suggestions: buildContentGenerationSuggestions({
+      pipelineItems,
+      recentPerformanceSignals,
+      feedbackSummary,
+    }),
+  };
+}
+
 export async function getContentPipelineItem(
   principal: AuthenticatedPrincipal,
   businessId: string,
@@ -1793,6 +2156,11 @@ export async function convertIdeaInboxItemToContent(
   ideaId: string,
   input: ConvertIdeaToContentRequest,
 ): Promise<ConvertIdeaToContentResponse> {
+  const tone = await resolveContentGenerationTone({
+    requestedTone: input.tone,
+    businessId,
+  });
+
   await enforceWorkspaceWriteAccess({
     principal,
     businessId,
@@ -1838,7 +2206,7 @@ export async function convertIdeaInboxItemToContent(
     const ideaPrompt = await buildIdeaConversionText(row);
     const generatedPosts = await generatePostsWithAI({
       topic: ideaPrompt,
-      tone: normalizeText(input.tone) ?? "storytelling",
+      tone,
       length: normalizeText(input.length) ?? "medium",
       businessId,
     });
@@ -1956,7 +2324,7 @@ export async function convertIdeaInboxItemToContent(
     recordStyleSignal({
       userId: principal.userId,
       businessId,
-      tone: normalizeText(input.tone) ?? "storytelling",
+      tone,
       contentType: "post",
     }),
   ]);
@@ -1987,9 +2355,16 @@ export async function updateContentPipelineItem(
   const existingText = extractTextContent(existing.content_body);
   const nextText = normalizeText(input.textContent) ?? existingText;
   const nextStage = input.status ?? existing.pipeline_stage ?? "draft";
-
-  const nextBody =
-    nextText !== existingText || typeof existing.content_body !== "object" || !existing.content_body
+  const providedBody =
+    input.contentBody && typeof input.contentBody === "object"
+      ? input.contentBody
+      : undefined;
+  const nextBody = providedBody
+    ? {
+        ...providedBody,
+        ...(nextText ? { post: nextText, content: nextText } : {}),
+      }
+    : nextText !== existingText || typeof existing.content_body !== "object" || !existing.content_body
       ? { content: nextText }
       : existing.content_body;
   const nextIntelligence = buildContentAssetIntelligenceFromText(nextText);
@@ -2030,6 +2405,10 @@ export async function updateContentPipelineItem(
         assetId,
         stage: nextStage,
       }),
+      safeRecordContentGenerationSuggestionEdited({
+        businessId,
+        assetId,
+      }),
       recordStyleSignal({
         userId: principal.userId,
         businessId,
@@ -2047,10 +2426,16 @@ export async function updateContentPipelineItem(
     });
 
     if (nextStage === "posted") {
-      await logEvent("publish_marked", principal.userId, businessId, {
-        assetId,
-        source: "control_dashboard",
-      });
+      await Promise.all([
+        logEvent("publish_marked", principal.userId, businessId, {
+          assetId,
+          source: "control_dashboard",
+        }),
+        safeRecordContentGenerationSuggestionPublished({
+          businessId,
+          assetId,
+        }),
+      ]);
     }
   }
 

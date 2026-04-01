@@ -2,7 +2,9 @@ import type { QueryResultRow } from "pg";
 import { resolveBrandKit } from "../../../../../packages/content-engine/src/index.ts";
 import type {
   BrandKit,
+  BrandKitAccentStyle,
   BrandKitBackgroundStyle,
+  BrandKitBrandPlacement,
   BrandKitFontStyle,
   BrandKitInput,
   BrandKitTone,
@@ -22,6 +24,8 @@ interface BrandKitRow extends QueryResultRow {
   font_style: BrandKitFontStyle;
   visual_style: BrandKitVisualStyle;
   tone: BrandKitTone;
+  accent_style: BrandKitAccentStyle;
+  brand_placement: BrandKitBrandPlacement;
   logo_url: string | null;
   created_at: Date | string;
   updated_at: Date | string;
@@ -47,6 +51,8 @@ function mapBrandKit(row: BrandKitRow): BrandKit {
     fontStyle: row.font_style,
     visualStyle: row.visual_style,
     tone: row.tone,
+    accentStyle: row.accent_style,
+    brandPlacement: row.brand_placement,
     logoUrl: row.logo_url ?? undefined,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
@@ -88,7 +94,9 @@ function mapVisualStyle(value: string | undefined | null): BrandKitVisualStyle {
 function buildSeedBrandKit(seed?: BrandProfileSeedRow): BrandKitInput {
   const tone = mapTone(seed?.tone ?? seed?.preferred_tone);
   const visualStyle = mapVisualStyle(seed?.visual_style);
-
+  const accentStyle: BrandKitAccentStyle = tone === "professional" ? "underline" : "highlight_box";
+  const brandPlacement: BrandKitBrandPlacement =
+    visualStyle === "luxury" ? "side_label" : "top_left";
   const backgroundStyle: BrandKitBackgroundStyle =
     visualStyle === "playful" ? "gradient" : "dark";
   const fontStyle: BrandKitFontStyle = tone === "professional" ? "modern" : "bold";
@@ -101,6 +109,8 @@ function buildSeedBrandKit(seed?: BrandProfileSeedRow): BrandKitInput {
       fontStyle,
       visualStyle,
       tone,
+      accentStyle,
+      brandPlacement,
     };
   }
 
@@ -111,6 +121,8 @@ function buildSeedBrandKit(seed?: BrandProfileSeedRow): BrandKitInput {
     fontStyle,
     visualStyle,
     tone,
+    accentStyle,
+    brandPlacement,
   };
 }
 
@@ -123,6 +135,8 @@ function mergeBrandKit(existing: BrandKit, overrides?: BrandKitInput): BrandKit 
       fontStyle: overrides?.fontStyle ?? existing.fontStyle,
       visualStyle: overrides?.visualStyle ?? existing.visualStyle,
       tone: overrides?.tone ?? existing.tone,
+      accentStyle: overrides?.accentStyle ?? existing.accentStyle,
+      brandPlacement: overrides?.brandPlacement ?? existing.brandPlacement,
       logoUrl: overrides?.logoUrl ?? existing.logoUrl,
     },
     {
@@ -146,6 +160,8 @@ async function loadBrandKitRecord(businessId: string): Promise<BrandKit | null> 
         font_style,
         visual_style,
         tone,
+        accent_style,
+        brand_placement,
         logo_url,
         created_at,
         updated_at
@@ -194,6 +210,8 @@ async function createBrandKitRecord(
         font_style,
         visual_style,
         tone,
+        accent_style,
+        brand_placement,
         logo_url
       ) values (
         $1,
@@ -203,7 +221,9 @@ async function createBrandKitRecord(
         $5,
         $6,
         $7,
-        $8
+        $8,
+        $9,
+        $10
       )
       returning
         id,
@@ -214,6 +234,8 @@ async function createBrandKitRecord(
         font_style,
         visual_style,
         tone,
+        accent_style,
+        brand_placement,
         logo_url,
         created_at,
         updated_at
@@ -226,6 +248,8 @@ async function createBrandKitRecord(
       resolved.fontStyle,
       resolved.visualStyle,
       resolved.tone,
+      resolved.accentStyle,
+      resolved.brandPlacement,
       resolved.logoUrl ?? null,
     ],
   );
@@ -276,7 +300,79 @@ export async function resolveBrandKitForGeneration(input: {
     );
   }
 
-  await requireBusinessMembership(input.principal, input.businessId);
+  if (!input.principal.isSuperAdmin) {
+    await requireBusinessMembership(input.principal, input.businessId);
+  }
+
   const existing = await ensureBrandKitForBusiness(input.businessId);
   return mergeBrandKit(existing, input.brandKit);
+}
+
+export async function getBrandKitForBusiness(input: {
+  principal: AuthenticatedPrincipal;
+  businessId: string;
+}): Promise<BrandKit> {
+  if (!input.principal.isSuperAdmin) {
+    await requireBusinessMembership(input.principal, input.businessId);
+  }
+
+  return ensureBrandKitForBusiness(input.businessId);
+}
+
+export async function updateBrandKitForBusiness(input: {
+  principal: AuthenticatedPrincipal;
+  businessId: string;
+  brandKit: BrandKitInput;
+}): Promise<BrandKit> {
+  if (!input.principal.isSuperAdmin) {
+    await requireBusinessMembership(input.principal, input.businessId);
+  }
+
+  const existing = await ensureBrandKitForBusiness(input.businessId);
+  const merged = mergeBrandKit(existing, input.brandKit);
+  const result = await queryDb<BrandKitRow>(
+    `
+      update brand_kits
+      set
+        primary_color = $2,
+        secondary_color = $3,
+        background_style = $4,
+        font_style = $5,
+        visual_style = $6,
+        tone = $7,
+        accent_style = $8,
+        brand_placement = $9,
+        logo_url = $10,
+        updated_at = now()
+      where business_id = $1
+      returning
+        id,
+        business_id,
+        primary_color,
+        secondary_color,
+        background_style,
+        font_style,
+        visual_style,
+        tone,
+        accent_style,
+        brand_placement,
+        logo_url,
+        created_at,
+        updated_at
+    `,
+    [
+      input.businessId,
+      merged.primaryColor,
+      merged.secondaryColor,
+      merged.backgroundStyle,
+      merged.fontStyle,
+      merged.visualStyle,
+      merged.tone,
+      merged.accentStyle,
+      merged.brandPlacement,
+      merged.logoUrl ?? null,
+    ],
+  );
+
+  return mapBrandKit(result.rows[0]);
 }

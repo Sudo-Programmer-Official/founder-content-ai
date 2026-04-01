@@ -1,5 +1,7 @@
 import type {
   ApiError,
+  ListContentGenerationSuggestionsQuery,
+  ListContentGenerationSuggestionsResponse,
   ControlDashboardQuery,
   ControlDashboardResponse,
   ConvertIdeaToContentRequest,
@@ -25,6 +27,7 @@ import {
   deleteContentPipelineItem,
   duplicateContentPipelineItem,
   getContentPipelineItem,
+  getContentGenerationSuggestions,
   getControlDashboard,
   previewContentPipelineAiEdit,
   updateContentPipelineItem,
@@ -55,6 +58,39 @@ export async function getDashboardLoop(
       code: "control_dashboard_failed",
       message: "Unable to load the control dashboard.",
       logMessage: "Failed to load control dashboard.",
+    });
+  }
+}
+
+export async function listContentGenerationSuggestions(
+  request: Request<
+    unknown,
+    ListContentGenerationSuggestionsResponse | ApiError,
+    unknown,
+    Partial<ListContentGenerationSuggestionsQuery>
+  >,
+  response: Response<ListContentGenerationSuggestionsResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  try {
+    response.json(await getContentGenerationSuggestions(request.auth, businessId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "content_generation_suggestions_failed",
+      message: "Unable to load content suggestions right now.",
+      logMessage: "Failed to load content generation suggestions.",
     });
   }
 }
@@ -198,6 +234,7 @@ export async function updatePipelineItem(
         title: request.body?.title,
         textContent: request.body?.textContent,
         status: request.body?.status,
+        contentBody: request.body?.contentBody,
       }),
     );
   } catch (error) {

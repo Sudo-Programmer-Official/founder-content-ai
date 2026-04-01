@@ -3,6 +3,7 @@ import type {
   ContentAsset,
   ControlDashboardResponse,
   IdeaInboxItem,
+  RepurposeStrategy,
   WorkspaceInsightAngleType,
   WorkspaceInsightSuggestion,
   WorkspaceInsightsResponse,
@@ -20,10 +21,17 @@ import {
 import { requestWorkspaceInsights } from "../services/workspace-insights-service";
 import { appRoutes } from "../utils/routes";
 import { saveRepurposeSeed } from "../utils/repurpose-loop";
+import {
+  DEFAULT_REPURPOSE_STRATEGY,
+  REPURPOSE_STRATEGY_OPTIONS,
+} from "../utils/repurpose-strategies";
 
 type IdeaStatusFilter = "all" | "fresh" | "explored" | "posted";
 type AngleTypeFilter = "all" | "contrarian" | "story" | "tactical";
 type IdeaAngleType = Exclude<AngleTypeFilter, "all">;
+const FOLLOW_UP_STRATEGY_OPTIONS = REPURPOSE_STRATEGY_OPTIONS.filter(
+  (option) => option.value !== DEFAULT_REPURPOSE_STRATEGY,
+);
 
 interface IdeaAngleModel {
   key: string;
@@ -816,7 +824,10 @@ function openGrowthForAsset(assetId: string): void {
   });
 }
 
-function repurposeAsset(assetId: string): void {
+function continueWritingFromAsset(
+  assetId: string,
+  strategy: RepurposeStrategy = DEFAULT_REPURPOSE_STRATEGY,
+): void {
   const asset = flatPipelineAssets.value.find((entry) => entry.id === assetId);
 
   if (!asset?.textContent?.trim()) {
@@ -826,15 +837,13 @@ function repurposeAsset(assetId: string): void {
   saveRepurposeSeed({
     text: asset.textContent,
     title: buildAssetTitle(asset),
+    strategy,
+    autoGenerate: true,
     source: "dashboard",
   });
 
   void router.push({
     path: appRoutes.appCreate,
-    query: {
-      mode: "repurpose",
-    },
-    hash: "#repurpose-panel",
   });
 }
 
@@ -1298,10 +1307,25 @@ onMounted(() => {
             type="button"
             class="workspace-secondary-button"
             :disabled="!selectedDrawerAsset.textContent?.trim()"
-            @click="repurposeAsset(selectedDrawerAsset.id)"
+            @click="continueWritingFromAsset(selectedDrawerAsset.id)"
           >
-            Repurpose
+            Continue writing
           </button>
+          <div class="idea-drawer-strategy-actions">
+            <span class="panel-meta">One-click angles</span>
+            <div class="idea-drawer-strategy-row">
+              <button
+                v-for="option in FOLLOW_UP_STRATEGY_OPTIONS"
+                :key="option.value"
+                type="button"
+                class="workspace-secondary-button compact"
+                :disabled="!selectedDrawerAsset.textContent?.trim()"
+                @click="continueWritingFromAsset(selectedDrawerAsset.id, option.value)"
+              >
+                {{ option.shortLabel }}
+              </button>
+            </div>
+          </div>
           <button
             type="button"
             class="workspace-primary-button"
@@ -1903,6 +1927,18 @@ onMounted(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.idea-drawer-strategy-actions {
+  display: grid;
+  gap: 10px;
+  min-width: min(100%, 320px);
+}
+
+.idea-drawer-strategy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 @media (max-width: 1120px) {

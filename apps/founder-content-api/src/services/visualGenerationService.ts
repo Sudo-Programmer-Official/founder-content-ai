@@ -1,7 +1,10 @@
 import { Buffer } from "node:buffer";
 import { generateImage } from "../../../../packages/ai-core/src/index.ts";
-import { buildVisualPrompt } from "../../../../packages/content-engine/src/index.ts";
+import { generateNarrative, buildVisualPrompt } from "../../../../packages/content-engine/src/index.ts";
 import type {
+  ContentNarrative,
+  ContentNarrativeSlide,
+  ContentNarrativeType,
   GenerateVisualRequest,
   GenerateVisualResponse,
   VisualPromptContent,
@@ -32,6 +35,28 @@ interface VisualSplitContent {
   after: string;
 }
 
+interface CanvasBounds {
+  frameX: number;
+  frameY: number;
+  frameWidth: number;
+  frameHeight: number;
+  contentLeft: number;
+  contentTop: number;
+  contentRight: number;
+  contentBottom: number;
+  contentWidth: number;
+}
+
+interface AccentMarkupResult {
+  markup: string;
+  endY: number;
+}
+
+interface ResolvedBrandSignatureLabel {
+  label: string;
+  source: "domain" | "brand_name" | "footer" | "watermark" | "fallback";
+}
+
 function collapseWhitespace(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
@@ -55,6 +80,49 @@ function sanitizePhrase(value: string | undefined, maxLength = 72): string {
   return lastSpaceIndex >= Math.floor(maxLength * 0.55)
     ? truncated.slice(0, lastSpaceIndex).trim()
     : truncated;
+}
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function parseHexColorChannels(value: string): [number, number, number] | null {
+  const normalized = value.trim().toUpperCase();
+
+  if (!/^#[0-9A-F]{6}$/.test(normalized)) {
+    return null;
+  }
+
+  return [
+    Number.parseInt(normalized.slice(1, 3), 16),
+    Number.parseInt(normalized.slice(3, 5), 16),
+    Number.parseInt(normalized.slice(5, 7), 16),
+  ];
+}
+
+function normalizeChannelForLuminance(value: number): number {
+  const channel = value / 255;
+  return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+function calculateRelativeLuminance(value: string): number {
+  const channels = parseHexColorChannels(value);
+
+  if (!channels) {
+    return 0;
+  }
+
+  const [red, green, blue] = channels.map((channel) => normalizeChannelForLuminance(channel));
+  return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+}
+
+function calculateContrastRatio(left: string, right: string): number {
+  const leftLuminance = calculateRelativeLuminance(left);
+  const rightLuminance = calculateRelativeLuminance(right);
+  const brightest = Math.max(leftLuminance, rightLuminance);
+  const darkest = Math.min(leftLuminance, rightLuminance);
+
+  return (brightest + 0.05) / (darkest + 0.05);
 }
 
 function extractHighlightCandidate(value: string): string {
@@ -99,6 +167,61 @@ function extractHighlightCandidate(value: string): string {
   }
 
   return sanitizePhrase(normalized, 64);
+}
+
+function resolveBrandSignatureLabel(input: {
+  content: VisualPromptContent;
+  businessContext: BusinessVisualContext | null;
+  brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
+}): ResolvedBrandSignatureLabel {
+  const footerText = sanitizePhrase(input.content.footerText, 42);
+
+  if (footerText) {
+    if (input.businessContext?.domainLabel && footerText === input.businessContext.domainLabel) {
+      return {
+        label: footerText,
+        source: "domain",
+      };
+    }
+
+    if (input.businessContext?.brandName && footerText === input.businessContext.brandName) {
+      return {
+        label: footerText,
+        source: "brand_name",
+      };
+    }
+
+    return {
+      label: footerText,
+      source: "footer",
+    };
+  }
+
+  if (input.businessContext?.domainLabel) {
+    return {
+      label: input.businessContext.domainLabel,
+      source: "domain",
+    };
+  }
+
+  if (input.businessContext?.brandName) {
+    return {
+      label: input.businessContext.brandName,
+      source: "brand_name",
+    };
+  }
+
+  if (input.brandingPolicy.watermarkApplied) {
+    return {
+      label: input.brandingPolicy.watermarkText,
+      source: "watermark",
+    };
+  }
+
+  return {
+    label: "",
+    source: "fallback",
+  };
 }
 
 function normalizeContent(
@@ -214,11 +337,290 @@ function resolveTextColor(
 function resolveAccentColor(
   brandKit: GenerateVisualResponse["brandKit"],
 ): string {
+  return brandKit.secondaryColor;
+}
+
+function resolvePreviewBackgrounds(
+  brandKit: GenerateVisualResponse["brandKit"],
+): string[] {
   if (brandKit.backgroundStyle === "light") {
-    return brandKit.secondaryColor;
+    return ["#FFF8F1"];
   }
 
-  return brandKit.secondaryColor;
+  if (brandKit.backgroundStyle === "gradient") {
+    return [brandKit.primaryColor, brandKit.secondaryColor];
+  }
+
+  return [brandKit.primaryColor];
+}
+
+function formatBrandPlacementLabel(
+  brandPlacement: GenerateVisualResponse["brandKit"]["brandPlacement"],
+): string {
+  if (brandPlacement === "bottom_right") {
+    return "bottom-right";
+  }
+
+  if (brandPlacement === "side_label") {
+    return "side label";
+  }
+
+  return "top-left";
+}
+
+function isContentTextDense(input: {
+  templateType: VisualTemplateType;
+  brandKit: GenerateVisualResponse["brandKit"];
+  content: VisualPromptContent;
+}): boolean {
+  const { content, brandKit, templateType } = input;
+  const headlineLength = collapseWhitespace(content.headline).length;
+  const supportingLength = collapseWhitespace(content.supportingText || content.closingText).length;
+  const bulletLoad = (content.bulletPoints ?? [])
+    .reduce((sum, point) => sum + collapseWhitespace(point).length, 0);
+  const bulletCount = content.bulletPoints?.length ?? 0;
+  const narrowLayout = brandKit.brandPlacement === "side_label";
+
+  if (templateType === "quote") {
+    return headlineLength > (narrowLayout ? 86 : 104) || supportingLength > 120;
+  }
+
+  if (templateType === "contrarian") {
+    return headlineLength > (narrowLayout ? 70 : 84) || supportingLength > 90;
+  }
+
+  return (
+    headlineLength > (narrowLayout ? 60 : 76)
+    || supportingLength > (narrowLayout ? 96 : 126)
+    || bulletLoad > (narrowLayout ? 90 : 126)
+    || (bulletCount >= 3 && supportingLength > 72)
+  );
+}
+
+function buildBrandConsistencySummary(
+  checks: GenerateVisualResponse["brandConsistency"]["checks"],
+  tone: GenerateVisualResponse["brandConsistency"]["tone"],
+  templateType: VisualTemplateType,
+): string {
+  if (tone === "strong") {
+    return templateType === "carousel"
+      ? "Brand system stays consistent across the slide set."
+      : "Brand system looks consistent. Contrast, placement, accent, and spacing are aligned.";
+  }
+
+  const warnings = checks.filter((check) => check.status === "warn");
+
+  if (warnings.length === 0) {
+    return "Review the visual before publishing.";
+  }
+
+  if (warnings.length === 1) {
+    return `Review ${warnings[0].label.toLowerCase()} before publishing. ${warnings[0].message}`;
+  }
+
+  return `Review ${warnings[0].label.toLowerCase()} and ${warnings[1].label.toLowerCase()} before publishing.`;
+}
+
+function evaluateBrandConsistency(input: {
+  templateType: VisualTemplateType;
+  brandKit: GenerateVisualResponse["brandKit"];
+  businessContext: BusinessVisualContext | null;
+  brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
+  contents: VisualPromptContent[];
+}): GenerateVisualResponse["brandConsistency"] {
+  const contents = input.contents.filter((content) => collapseWhitespace(content.headline) !== "");
+  const referenceContent = contents[0] ?? {
+    headline: "Founder insight",
+  };
+  const textColor = resolveTextColor(input.brandKit.backgroundStyle);
+  const contrastRatioValue = Math.min(
+    ...resolvePreviewBackgrounds(input.brandKit)
+      .map((background) => calculateContrastRatio(background, textColor)),
+  );
+  const contrastCheck: GenerateVisualResponse["brandConsistency"]["checks"][number] =
+    contrastRatioValue >= 7
+      ? {
+          key: "contrast",
+          label: "Contrast",
+          status: "pass",
+          score: 100,
+          message: "Text contrast is strong enough to survive the feed.",
+        }
+      : contrastRatioValue >= 4.5
+        ? {
+            key: "contrast",
+            label: "Contrast",
+            status: "pass",
+            score: 86,
+            message: "Contrast is acceptable, but there is not much margin for weaker exports.",
+          }
+        : {
+            key: "contrast",
+            label: "Contrast",
+            status: "warn",
+            score: 58,
+            message: "Text contrast is too soft for a reliable social preview. Increase separation before reusing this theme.",
+          };
+
+  const brandSignature = resolveBrandSignatureLabel({
+    content: referenceContent,
+    businessContext: input.businessContext,
+    brandingPolicy: input.brandingPolicy,
+  });
+  const placementLabel = formatBrandPlacementLabel(input.brandKit.brandPlacement);
+  const brandVisibilityCheck: GenerateVisualResponse["brandConsistency"]["checks"][number] =
+    brandSignature.source === "domain"
+      ? {
+          key: "brand_visibility",
+          label: "Brand visibility",
+          status: "pass",
+          score: 96,
+          message: `Brand signature is edge-locked at the ${placementLabel} and resolves to ${brandSignature.label}.`,
+        }
+      : brandSignature.source === "brand_name" || brandSignature.source === "footer"
+        ? {
+            key: "brand_visibility",
+            label: "Brand visibility",
+            status: "pass",
+            score: 88,
+            message: `Brand signature is visible at the ${placementLabel} and uses ${brandSignature.label}.`,
+          }
+        : brandSignature.source === "watermark"
+          ? {
+              key: "brand_visibility",
+              label: "Brand visibility",
+              status: "warn",
+              score: 68,
+              message: "Brand signature falls back to a generic watermark. Connect a workspace domain or brand source for stronger recall.",
+            }
+          : {
+              key: "brand_visibility",
+              label: "Brand visibility",
+              status: "warn",
+              score: 52,
+              message: "Brand signature is not resolving cleanly. Add a workspace domain or footer label before publishing.",
+            };
+
+  const aggressiveHighlightCount = contents.filter((content) => {
+    const highlight = sanitizePhrase(
+      content.highlightText || extractHighlightCandidate(content.headline || content.supportingText || ""),
+      64,
+    );
+    const wordCount = highlight ? highlight.split(/\s+/).filter(Boolean).length : 0;
+
+    if (!highlight) {
+      return false;
+    }
+
+    if (wordCount > 5 || highlight.length > 30) {
+      return true;
+    }
+
+    if (input.brandKit.accentStyle === "bold" && highlight.length > 22) {
+      return true;
+    }
+
+    if (input.brandKit.accentStyle === "highlight_box" && highlight.length > 26) {
+      return true;
+    }
+
+    return false;
+  }).length;
+  const highlightBalanceCheck: GenerateVisualResponse["brandConsistency"]["checks"][number] =
+    aggressiveHighlightCount === 0
+      ? {
+          key: "highlight_balance",
+          label: "Highlight balance",
+          status: "pass",
+          score: 92,
+          message: "Accent phrase length stays controlled and should not overpower the layout.",
+        }
+      : aggressiveHighlightCount < Math.max(2, contents.length)
+        ? {
+            key: "highlight_balance",
+            label: "Highlight balance",
+            status: "warn",
+            score: 74,
+            message:
+              input.templateType === "carousel"
+                ? `${aggressiveHighlightCount} slide${aggressiveHighlightCount === 1 ? "" : "s"} carry an accent phrase long enough to overpower the frame.`
+                : "The accent phrase is long enough to overpower the layout.",
+          }
+        : {
+            key: "highlight_balance",
+            label: "Highlight balance",
+            status: "warn",
+            score: 62,
+            message: "The highlight treatment is too aggressive for the amount of copy on the canvas.",
+          };
+
+  const denseContentCount = contents.filter((content) =>
+    isContentTextDense({
+      templateType: input.templateType,
+      brandKit: input.brandKit,
+      content,
+    }),
+  ).length;
+  const spacingCheck: GenerateVisualResponse["brandConsistency"]["checks"][number] =
+    denseContentCount === 0
+      ? {
+          key: "spacing",
+          label: "Spacing",
+          status: "pass",
+          score: 94,
+          message: "Renderer padding stays aligned and the copy volume fits the frame.",
+        }
+      : denseContentCount < Math.max(2, contents.length)
+        ? {
+            key: "spacing",
+            label: "Spacing",
+            status: "warn",
+            score: 76,
+            message:
+              input.templateType === "carousel"
+                ? `${denseContentCount} slide${denseContentCount === 1 ? "" : "s"} are text-heavy enough to crowd the frame.`
+                : "The copy volume is heavy enough to crowd the frame.",
+          }
+        : {
+            key: "spacing",
+            label: "Spacing",
+            status: "warn",
+            score: 66,
+            message: "The layout is likely to feel crowded even though padding stays aligned.",
+          };
+
+  const checks = [
+    contrastCheck,
+    brandVisibilityCheck,
+    highlightBalanceCheck,
+    spacingCheck,
+  ];
+  const overallScore = clampScore(
+    checks.reduce((sum, check) => sum + check.score, 0) / checks.length,
+  );
+  const tone: GenerateVisualResponse["brandConsistency"]["tone"] =
+    overallScore >= 80 && checks.every((check) => check.status === "pass")
+      ? "strong"
+      : "review";
+
+  return {
+    overallScore,
+    tone,
+    summary: buildBrandConsistencySummary(checks, tone, input.templateType),
+    checks,
+  };
+}
+
+function resolveHighlightSurfaceColor(
+  brandKit: GenerateVisualResponse["brandKit"],
+): string {
+  return brandKit.backgroundStyle === "light" ? brandKit.secondaryColor : "#FFF8F1";
+}
+
+function resolveHighlightSurfaceTextColor(
+  brandKit: GenerateVisualResponse["brandKit"],
+): string {
+  return brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#101826";
 }
 
 function extractDomainLabel(websiteUrl: string | null | undefined): string | undefined {
@@ -286,7 +688,7 @@ function splitTextAroundHighlight(text: string, highlightText: string | undefine
   if (!normalizedText || !highlight) {
     return {
       before: normalizedText,
-      highlight: highlight,
+      highlight,
       after: "",
     };
   }
@@ -310,22 +712,163 @@ function splitTextAroundHighlight(text: string, highlightText: string | undefine
   };
 }
 
-function buildFooterMarkup(
-  footerText: string | undefined,
-  textColor: string,
-): string {
-  if (!footerText) {
-    return "";
-  }
+function resolveCanvasBounds(
+  brandKit: GenerateVisualResponse["brandKit"],
+): CanvasBounds {
+  const contentLeft = 88;
+  const contentTop = 88;
+  const contentBottom = 936;
+  const rightInset = brandKit.brandPlacement === "side_label" ? 184 : 88;
+  const contentRight = 1024 - rightInset;
 
-  return `<text x="928" y="948" text-anchor="end" font-size="24" letter-spacing="1.6" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.82">${escapeSvg(footerText)}</text>`;
+  return {
+    frameX: 56,
+    frameY: 56,
+    frameWidth: 912,
+    frameHeight: 912,
+    contentLeft,
+    contentTop,
+    contentRight,
+    contentBottom,
+    contentWidth: contentRight - contentLeft,
+  };
 }
 
-function buildBrandMarkMarkup(markLabel: string, accentColor: string, textColor: string): string {
+function resolveContentStartY(
+  brandKit: GenerateVisualResponse["brandKit"],
+): number {
+  return brandKit.brandPlacement === "top_left" ? 214 : 160;
+}
+
+function buildAtmosphereMarkup(
+  brandKit: GenerateVisualResponse["brandKit"],
+  accentColor: string,
+): string {
+  if (brandKit.backgroundStyle === "light") {
+    return `
+      <circle cx="874" cy="164" r="220" fill="${accentColor}" opacity="0.08" />
+      <circle cx="164" cy="856" r="180" fill="${brandKit.primaryColor}" opacity="0.05" />
+    `;
+  }
+
   return `
-    <rect x="82" y="78" width="58" height="58" rx="18" fill="${accentColor}" />
-    <text x="111" y="116" text-anchor="middle" font-size="24" font-weight="700" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}">${escapeSvg(markLabel)}</text>
+    <circle cx="860" cy="170" r="220" fill="${accentColor}" opacity="0.14" />
+    <circle cx="188" cy="864" r="190" fill="#FFFFFF" opacity="0.05" />
   `;
+}
+
+function buildFrameMarkup(bounds: CanvasBounds, accentColor: string): string {
+  return `
+    <rect
+      x="${bounds.frameX}"
+      y="${bounds.frameY}"
+      width="${bounds.frameWidth}"
+      height="${bounds.frameHeight}"
+      rx="42"
+      fill="none"
+      stroke="${accentColor}"
+      stroke-width="2"
+      opacity="0.16"
+    />
+  `;
+}
+
+function buildBrandSignatureMarkup(input: {
+  brandKit: GenerateVisualResponse["brandKit"];
+  bounds: CanvasBounds;
+  brandLabel: string;
+  brandMarkLabel: string;
+  accentColor: string;
+  textColor: string;
+}): string {
+  const { brandKit, bounds, brandLabel, brandMarkLabel, accentColor, textColor } = input;
+  const rawLabel =
+    sanitizePhrase(
+      brandLabel,
+      brandKit.brandPlacement === "side_label" ? 24 : 28,
+    ) || "FounderContent";
+  const safeLabel = escapeSvg(rawLabel);
+
+  if (brandKit.brandPlacement === "bottom_right") {
+    const x = bounds.contentRight;
+    const y = bounds.contentBottom - 10;
+    return `
+      <line x1="${x - 132}" y1="${y - 18}" x2="${x - 40}" y2="${y - 18}" stroke="${accentColor}" stroke-width="4" stroke-linecap="round" opacity="0.88" />
+      <text x="${x}" y="${y}" text-anchor="end" font-size="24" letter-spacing="1.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.86">${safeLabel}</text>
+    `;
+  }
+
+  if (brandKit.brandPlacement === "side_label") {
+    const railX = 952;
+    const railY = 512;
+    return `
+      <g transform="translate(${railX} ${railY}) rotate(90)">
+        <line x1="-168" y1="-24" x2="-70" y2="-24" stroke="${accentColor}" stroke-width="4" stroke-linecap="round" opacity="0.82" />
+        <text x="0" y="0" text-anchor="middle" font-size="22" letter-spacing="6" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.84">${safeLabel}</text>
+      </g>
+    `;
+  }
+
+  const x = bounds.contentLeft;
+  const y = bounds.contentTop;
+  const markTextColor = brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#121212";
+
+  return `
+    <rect x="${x}" y="${y}" width="48" height="48" rx="15" fill="${accentColor}" />
+    <text x="${x + 24}" y="${y + 31}" text-anchor="middle" font-size="22" font-weight="750" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${markTextColor}">${escapeSvg(brandMarkLabel)}</text>
+    <text x="${x + 64}" y="${y + 20}" font-size="16" letter-spacing="3.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg(rawLabel.toUpperCase())}</text>
+    <line x1="${x + 64}" y1="${y + 34}" x2="${x + 182}" y2="${y + 34}" stroke="${accentColor}" stroke-width="4" stroke-linecap="round" opacity="0.78" />
+  `;
+}
+
+function buildAccentPhraseMarkup(input: {
+  lines: string[];
+  brandKit: GenerateVisualResponse["brandKit"];
+  x: number;
+  startY: number;
+  fontSize: number;
+  lineHeight: number;
+  maxWidth: number;
+  textColor: string;
+  accentColor: string;
+}): AccentMarkupResult {
+  const { lines, brandKit, x, startY, fontSize, lineHeight, maxWidth, textColor, accentColor } = input;
+  const surfaceFill = resolveHighlightSurfaceColor(brandKit);
+  const surfaceTextColor = resolveHighlightSurfaceTextColor(brandKit);
+  let markup = "";
+  let currentY = startY;
+
+  for (const line of lines) {
+    const width = Math.min(maxWidth, estimateTextWidth(line, fontSize, 0.6) + 48);
+
+    if (brandKit.accentStyle === "highlight_box") {
+      markup += `
+        <rect x="${x}" y="${currentY - fontSize + 16}" width="${width}" height="${fontSize + 34}" rx="22" fill="${surfaceFill}" />
+        <text x="${x + 24}" y="${currentY + 6}" font-size="${fontSize}" font-weight="820" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${surfaceTextColor}">${escapeSvg(line)}</text>
+      `;
+      currentY += lineHeight;
+      continue;
+    }
+
+    if (brandKit.accentStyle === "underline") {
+      markup += `
+        <text x="${x}" y="${currentY}" font-size="${fontSize}" font-weight="760" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>
+        <line x1="${x}" y1="${currentY + 18}" x2="${x + width - 28}" y2="${currentY + 18}" stroke="${accentColor}" stroke-width="8" stroke-linecap="round" opacity="0.92" />
+      `;
+      currentY += lineHeight;
+      continue;
+    }
+
+    markup += `
+      <text x="${x}" y="${currentY}" font-size="${fontSize + 6}" font-weight="840" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${accentColor}">${escapeSvg(line)}</text>
+    `;
+    currentY += lineHeight;
+  }
+
+  return {
+    markup,
+    endY: currentY,
+  };
 }
 
 function buildQuoteFallbackSvg(
@@ -333,47 +876,69 @@ function buildQuoteFallbackSvg(
   brandKit: GenerateVisualResponse["brandKit"],
   brandMarkLabel: string,
 ): string {
+  const bounds = resolveCanvasBounds(brandKit);
   const textColor = resolveTextColor(brandKit.backgroundStyle);
   const accentColor = resolveAccentColor(brandKit);
   const split = splitTextAroundHighlight(content.headline, content.highlightText);
-  const introLines = wrapSvgText(split.before || content.headline, 24, 3);
-  const highlightLines = wrapSvgText(split.highlight || content.highlightText || extractHighlightCandidate(content.headline), 14, 3);
-  const closingLines = wrapSvgText(content.closingText || content.supportingText || split.after, 24, 2);
+  const introLines = wrapSvgText(
+    split.before || content.headline,
+    brandKit.brandPlacement === "side_label" ? 15 : 18,
+    3,
+  );
+  const highlightLines = wrapSvgText(
+    split.highlight || content.highlightText || extractHighlightCandidate(content.headline),
+    brandKit.brandPlacement === "side_label" ? 10 : 12,
+    2,
+  );
+  const closingLines = wrapSvgText(
+    content.closingText || content.supportingText || split.after,
+    brandKit.brandPlacement === "side_label" ? 18 : 22,
+    3,
+  );
+  const contentStartY = resolveContentStartY(brandKit);
+  const eyebrowText = escapeSvg((content.eyebrowText || "SIGNATURE VISUAL").toUpperCase());
   const introMarkup = introLines
     .map(
       (line, index) =>
-        `<text x="88" y="${250 + index * 60}" font-size="52" font-weight="650" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${contentStartY + index * 76}" font-size="72" font-weight="720" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
     )
     .join("");
-  const highlightY = 250 + introLines.length * 60 + 34;
-  const highlightMarkup = highlightLines
-    .map((line, index) => {
-      const width = Math.min(820, estimateTextWidth(line, 66, 0.64) + 52);
-      const y = highlightY + index * 86;
-      return `
-        <rect x="88" y="${y - 56}" width="${width}" height="74" rx="22" fill="${accentColor}" />
-        <text x="114" y="${y}" font-size="62" font-weight="800" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#111111"}">${escapeSvg(line)}</text>
-      `;
-    })
-    .join("");
-  const closingStartY = highlightY + highlightLines.length * 86 + 40;
+  const highlightMarkup = buildAccentPhraseMarkup({
+    lines: highlightLines,
+    brandKit,
+    x: bounds.contentLeft,
+    startY: contentStartY + introLines.length * 76 + 18,
+    fontSize: 66,
+    lineHeight: 90,
+    maxWidth: bounds.contentWidth,
+    textColor,
+    accentColor,
+  });
+  const closingStartY = highlightMarkup.endY + 34;
   const closingMarkup = closingLines
     .map(
       (line, index) =>
-        `<text x="88" y="${closingStartY + index * 48}" font-size="38" font-weight="560" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.92">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${closingStartY + index * 48}" font-size="36" font-weight="560" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.9">${escapeSvg(line)}</text>`,
     )
     .join("");
 
   return `
     <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
       ${buildBackgroundFill(brandKit.backgroundStyle, brandKit.primaryColor, brandKit.secondaryColor)}
-      <rect x="58" y="58" width="908" height="908" rx="42" fill="none" stroke="${accentColor}" stroke-width="2" opacity="0.18" />
-      ${buildBrandMarkMarkup(brandMarkLabel, accentColor, brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#121212")}
-      <text x="164" y="114" font-size="22" letter-spacing="4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg(content.eyebrowText || "CONTRAST QUOTE")}</text>
+      ${buildAtmosphereMarkup(brandKit, accentColor)}
+      ${buildFrameMarkup(bounds, accentColor)}
+      ${buildBrandSignatureMarkup({
+        brandKit,
+        bounds,
+        brandLabel: content.footerText || content.eyebrowText || "FounderContent",
+        brandMarkLabel,
+        accentColor,
+        textColor,
+      })}
+      <text x="${bounds.contentLeft}" y="${contentStartY - 38}" font-size="18" letter-spacing="4.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${eyebrowText}</text>
       ${introMarkup}
-      ${highlightMarkup}
+      ${highlightMarkup.markup}
       ${closingMarkup}
-      ${buildFooterMarkup(content.footerText, textColor)}
     </svg>
   `.trim();
 }
@@ -383,42 +948,70 @@ function buildSplitEmphasisFallbackSvg(
   brandKit: GenerateVisualResponse["brandKit"],
   brandMarkLabel: string,
 ): string {
+  const bounds = resolveCanvasBounds(brandKit);
   const textColor = resolveTextColor(brandKit.backgroundStyle);
   const accentColor = resolveAccentColor(brandKit);
   const split = splitTextAroundHighlight(content.headline, content.highlightText);
-  const introLines = wrapSvgText(split.before || content.headline, 18, 5);
-  const emphasisLines = wrapSvgText(split.highlight || content.highlightText || extractHighlightCandidate(content.headline), 10, 3);
-  const supportLines = wrapSvgText(content.supportingText || split.after || content.closingText || "", 20, 3);
+  const contentStartY = resolveContentStartY(brandKit);
+  const dividerX = bounds.contentLeft + Math.round(bounds.contentWidth * 0.46);
+  const rightX = dividerX + 44;
+  const introLines = wrapSvgText(
+    split.before || content.headline,
+    brandKit.brandPlacement === "side_label" ? 13 : 15,
+    5,
+  );
+  const emphasisLines = wrapSvgText(
+    split.highlight || content.highlightText || extractHighlightCandidate(content.headline),
+    brandKit.brandPlacement === "side_label" ? 8 : 9,
+    3,
+  );
+  const supportLines = wrapSvgText(
+    content.supportingText || split.after || content.closingText || "",
+    brandKit.brandPlacement === "side_label" ? 16 : 18,
+    3,
+  );
   const introMarkup = introLines
     .map(
       (line, index) =>
-        `<text x="92" y="${270 + index * 52}" font-size="40" font-weight="620" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.92">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${contentStartY + index * 54}" font-size="44" font-weight="620" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.92">${escapeSvg(line)}</text>`,
     )
     .join("");
-  const emphasisMarkup = emphasisLines
-    .map(
-      (line, index) =>
-        `<text x="522" y="${356 + index * 96}" font-size="86" font-weight="800" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${accentColor}">${escapeSvg(line)}</text>`,
-    )
-    .join("");
+  const emphasisMarkup = buildAccentPhraseMarkup({
+    lines: emphasisLines,
+    brandKit,
+    x: rightX,
+    startY: contentStartY + 82,
+    fontSize: 80,
+    lineHeight: 100,
+    maxWidth: bounds.contentRight - rightX,
+    textColor,
+    accentColor,
+  });
   const supportMarkup = supportLines
     .map(
       (line, index) =>
-        `<text x="92" y="${716 + index * 42}" font-size="32" font-weight="560" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.8">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${emphasisMarkup.endY + 28 + index * 42}" font-size="30" font-weight="560" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.82">${escapeSvg(line)}</text>`,
     )
     .join("");
 
   return `
     <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
       ${buildBackgroundFill(brandKit.backgroundStyle, brandKit.primaryColor, brandKit.secondaryColor)}
-      <rect x="70" y="70" width="884" height="884" rx="42" fill="none" stroke="${accentColor}" stroke-width="2" opacity="0.16" />
-      <line x1="474" y1="148" x2="474" y2="836" stroke="${accentColor}" stroke-width="6" opacity="0.76" />
-      ${buildBrandMarkMarkup(brandMarkLabel, accentColor, brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#121212")}
-      <text x="164" y="114" font-size="22" letter-spacing="4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg(content.eyebrowText || "SPLIT EMPHASIS")}</text>
+      ${buildAtmosphereMarkup(brandKit, accentColor)}
+      ${buildFrameMarkup(bounds, accentColor)}
+      ${buildBrandSignatureMarkup({
+        brandKit,
+        bounds,
+        brandLabel: content.footerText || content.eyebrowText || "FounderContent",
+        brandMarkLabel,
+        accentColor,
+        textColor,
+      })}
+      <text x="${bounds.contentLeft}" y="${contentStartY - 38}" font-size="18" letter-spacing="4.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg((content.eyebrowText || "SPLIT EMPHASIS").toUpperCase())}</text>
+      <line x1="${dividerX}" y1="${contentStartY - 10}" x2="${dividerX}" y2="834" stroke="${accentColor}" stroke-width="4" opacity="0.72" />
       ${introMarkup}
-      ${emphasisMarkup}
+      ${emphasisMarkup.markup}
       ${supportMarkup}
-      ${buildFooterMarkup(content.footerText, textColor)}
     </svg>
   `.trim();
 }
@@ -428,33 +1021,79 @@ function buildMinimalBrandFallbackSvg(
   brandKit: GenerateVisualResponse["brandKit"],
   brandMarkLabel: string,
 ): string {
+  const bounds = resolveCanvasBounds(brandKit);
   const textColor = resolveTextColor(brandKit.backgroundStyle);
   const accentColor = resolveAccentColor(brandKit);
-  const headlineLines = wrapSvgText(content.headline, 14, 4);
-  const supportLines = wrapSvgText(content.supportingText || content.closingText || "", 26, 2);
+  const contentStartY = resolveContentStartY(brandKit) + 18;
+  const headlineLines = wrapSvgText(
+    content.headline,
+    brandKit.brandPlacement === "side_label" ? 10 : 12,
+    4,
+  );
   const headlineMarkup = headlineLines
     .map(
       (line, index) =>
-        `<text x="88" y="${316 + index * 92}" font-size="84" font-weight="800" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${contentStartY + index * 92}" font-size="86" font-weight="820" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
     )
     .join("");
+  const accentLines = wrapSvgText(
+    content.highlightText || extractHighlightCandidate(content.headline),
+    18,
+    2,
+  );
+  const accentMarkup = buildAccentPhraseMarkup({
+    lines: accentLines,
+    brandKit,
+    x: bounds.contentLeft,
+    startY: contentStartY + headlineLines.length * 92 + 8,
+    fontSize: 30,
+    lineHeight: 46,
+    maxWidth: bounds.contentWidth,
+    textColor,
+    accentColor,
+  });
+  const supportLines = wrapSvgText(
+    content.supportingText || content.closingText || "",
+    brandKit.brandPlacement === "side_label" ? 16 : 20,
+    2,
+  );
   const supportMarkup = supportLines
     .map(
       (line, index) =>
-        `<text x="88" y="${730 + index * 42}" font-size="32" font-weight="560" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.84">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${accentMarkup.endY + 48 + index * 42}" font-size="32" font-weight="560" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.84">${escapeSvg(line)}</text>`,
     )
+    .join("");
+  const bulletStartY = accentMarkup.endY + (supportLines.length > 0 ? 144 : 54);
+  const bulletMarkup = (content.bulletPoints ?? [])
+    .slice(0, 3)
+    .map((point, index) => {
+      const y = bulletStartY + index * 88;
+      return `
+        <rect x="${bounds.contentLeft}" y="${y - 38}" width="${bounds.contentWidth}" height="74" rx="22" fill="#FFFFFF" opacity="${brandKit.backgroundStyle === "light" ? "0.54" : "0.08"}" />
+        <circle cx="${bounds.contentLeft + 28}" cy="${y - 2}" r="7" fill="${accentColor}" />
+        <text x="${bounds.contentLeft + 52}" y="${y + 8}" font-size="28" font-weight="600" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.88">${escapeSvg(point)}</text>
+      `;
+    })
     .join("");
 
   return `
     <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
       ${buildBackgroundFill(brandKit.backgroundStyle, brandKit.primaryColor, brandKit.secondaryColor)}
-      <rect x="70" y="70" width="884" height="884" rx="42" fill="none" stroke="${accentColor}" stroke-width="2" opacity="0.14" />
-      ${buildBrandMarkMarkup(brandMarkLabel, accentColor, brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#121212")}
-      <text x="164" y="114" font-size="22" letter-spacing="4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg(content.eyebrowText || "MINIMAL BRAND")}</text>
-      <rect x="88" y="170" width="104" height="6" rx="3" fill="${accentColor}" />
+      ${buildAtmosphereMarkup(brandKit, accentColor)}
+      ${buildFrameMarkup(bounds, accentColor)}
+      ${buildBrandSignatureMarkup({
+        brandKit,
+        bounds,
+        brandLabel: content.footerText || content.eyebrowText || "FounderContent",
+        brandMarkLabel,
+        accentColor,
+        textColor,
+      })}
+      <text x="${bounds.contentLeft}" y="${contentStartY - 42}" font-size="18" letter-spacing="4.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg((content.eyebrowText || "CAROUSEL COVER").toUpperCase())}</text>
       ${headlineMarkup}
+      ${accentMarkup.markup}
       ${supportMarkup}
-      ${buildFooterMarkup(content.footerText, textColor)}
+      ${bulletMarkup}
     </svg>
   `.trim();
 }
@@ -464,42 +1103,348 @@ function buildInsightFallbackSvg(
   brandKit: GenerateVisualResponse["brandKit"],
   brandMarkLabel: string,
 ): string {
+  const bounds = resolveCanvasBounds(brandKit);
   const textColor = resolveTextColor(brandKit.backgroundStyle);
   const accentColor = resolveAccentColor(brandKit);
-  const headlineLines = wrapSvgText(content.headline, 18, 3);
-  const highlightText = content.highlightText || extractHighlightCandidate(content.headline);
-  const bulletPoints = (content.bulletPoints ?? []).slice(0, 3);
+  const contentStartY = resolveContentStartY(brandKit);
+  const headlineLines = wrapSvgText(
+    content.headline,
+    brandKit.brandPlacement === "side_label" ? 14 : 16,
+    3,
+  );
   const headlineMarkup = headlineLines
     .map(
       (line, index) =>
-        `<text x="88" y="${238 + index * 58}" font-size="50" font-weight="740" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${contentStartY + index * 60}" font-size="54" font-weight="720" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
     )
     .join("");
+  const accentMarkup = buildAccentPhraseMarkup({
+    lines: wrapSvgText(content.highlightText || extractHighlightCandidate(content.headline), 18, 2),
+    brandKit,
+    x: bounds.contentLeft,
+    startY: contentStartY + headlineLines.length * 60 + 28,
+    fontSize: 28,
+    lineHeight: 46,
+    maxWidth: bounds.contentWidth,
+    textColor,
+    accentColor,
+  });
+  const bulletPoints = (content.bulletPoints?.length ? content.bulletPoints : [content.supportingText || "Lead with one hard truth, then make the next move obvious."])
+    .slice(0, 3);
   const bulletMarkup = bulletPoints
     .map((point, index) => {
-      const y = 470 + index * 118;
+      const y = accentMarkup.endY + 46 + index * 112;
       return `
-        <rect x="88" y="${y - 46}" width="848" height="88" rx="24" fill="rgba(255,255,255,0.08)" />
-        <circle cx="126" cy="${y - 2}" r="8" fill="${accentColor}" />
-        <text x="152" y="${y + 8}" font-size="34" font-weight="620" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}">${escapeSvg(point)}</text>
+        <rect x="${bounds.contentLeft}" y="${y - 44}" width="${bounds.contentWidth}" height="88" rx="24" fill="#FFFFFF" opacity="${brandKit.backgroundStyle === "light" ? "0.54" : "0.08"}" />
+        <circle cx="${bounds.contentLeft + 32}" cy="${y}" r="8" fill="${accentColor}" />
+        <text x="${bounds.contentLeft + 58}" y="${y + 10}" font-size="32" font-weight="620" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}">${escapeSvg(point)}</text>
       `;
     })
     .join("");
-  const highlightWidth = Math.min(420, estimateTextWidth(highlightText, 28, 0.54) + 42);
 
   return `
     <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
       ${buildBackgroundFill(brandKit.backgroundStyle, brandKit.primaryColor, brandKit.secondaryColor)}
-      <rect x="70" y="70" width="884" height="884" rx="42" fill="none" stroke="${accentColor}" stroke-width="2" opacity="0.14" />
-      ${buildBrandMarkMarkup(brandMarkLabel, accentColor, brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#121212")}
-      <text x="164" y="114" font-size="22" letter-spacing="4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg(content.eyebrowText || "INSIGHT CARD")}</text>
+      ${buildAtmosphereMarkup(brandKit, accentColor)}
+      ${buildFrameMarkup(bounds, accentColor)}
+      ${buildBrandSignatureMarkup({
+        brandKit,
+        bounds,
+        brandLabel: content.footerText || content.eyebrowText || "FounderContent",
+        brandMarkLabel,
+        accentColor,
+        textColor,
+      })}
+      <text x="${bounds.contentLeft}" y="${contentStartY - 38}" font-size="18" letter-spacing="4.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg((content.eyebrowText || "INSIGHT CARD").toUpperCase())}</text>
       ${headlineMarkup}
-      <rect x="88" y="352" width="${highlightWidth}" height="48" rx="18" fill="${accentColor}" />
-      <text x="110" y="384" font-size="28" font-weight="760" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#121212"}">${escapeSvg(highlightText)}</text>
+      ${accentMarkup.markup}
       ${bulletMarkup}
-      ${buildFooterMarkup(content.footerText, textColor)}
     </svg>
   `.trim();
+}
+
+function buildPromptWithBranding(
+  basePrompt: string,
+  brandingPolicy: ReturnType<typeof resolveBrandingPolicy>,
+): string {
+  return brandingPolicy.watermarkApplied
+    ? `${basePrompt}\n\nBRANDING:\nInclude a subtle watermark that reads "${brandingPolicy.watermarkText}". Keep it aligned to the composition edge, restrained, and never centered at the bottom.`
+    : basePrompt;
+}
+
+async function generateSingleVisualAsset(input: {
+  templateType: VisualTemplateType;
+  content: VisualPromptContent;
+  brandKit: GenerateVisualResponse["brandKit"];
+  brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
+  businessContext: BusinessVisualContext | null;
+  captionFooterCredit?: string;
+}): Promise<GenerateVisualResponse> {
+  const basePrompt = buildVisualPrompt({
+    templateType: input.templateType,
+    content: input.content,
+    brandKit: input.brandKit,
+  });
+  const prompt = buildPromptWithBranding(basePrompt, input.brandingPolicy);
+  const brandConsistency = evaluateBrandConsistency({
+    templateType: input.templateType,
+    brandKit: input.brandKit,
+    businessContext: input.businessContext,
+    brandingPolicy: input.brandingPolicy,
+    contents: [input.content],
+  });
+
+  try {
+    const image = await generateImage({
+      prompt,
+      size: "1024x1024",
+    });
+
+    return {
+      templateType: input.templateType,
+      prompt,
+      provider: "openai",
+      imageDataUrl: image.imageDataUrl,
+      mimeType: image.mimeType,
+      brandKit: input.brandKit,
+      brandConsistency,
+      watermarkApplied: input.brandingPolicy.watermarkApplied,
+      watermarkText: input.brandingPolicy.watermarkApplied ? input.brandingPolicy.watermarkText : undefined,
+      captionFooterCredit: input.captionFooterCredit?.trim() || input.brandingPolicy.captionFooterCredit,
+    };
+  } catch (error) {
+    if (!shouldUseSvgFallback(error)) {
+      throw error;
+    }
+
+    logWarn("Falling back to SVG visual generation.", toErrorContext(error));
+    return buildFallbackImage(
+      input.templateType,
+      input.content,
+      input.brandKit,
+      input.brandingPolicy,
+      input.businessContext,
+    );
+  }
+}
+
+function formatCarouselNarrativeLabel(value: ContentNarrativeType): string {
+  if (value === "framework") {
+    return "Framework";
+  }
+
+  if (value === "contrarian") {
+    return "Contrarian";
+  }
+
+  return "Story";
+}
+
+function normalizeNarrativeSlide(
+  slide: ContentNarrativeSlide,
+  fallbackRole: ContentNarrativeSlide["role"],
+): ContentNarrativeSlide {
+  return {
+    role: sanitizePhrase(typeof slide.role === "string" ? slide.role : undefined, 32) || fallbackRole,
+    headline: sanitizePhrase(slide.headline, 84),
+    supportingText: sanitizePhrase(slide.supportingText, 140) || undefined,
+    bulletPoints: (slide.bulletPoints ?? [])
+      .map((point) => sanitizePhrase(point, 88))
+      .filter(Boolean)
+      .slice(0, 3),
+    highlightText: sanitizePhrase(slide.highlightText, 64) || undefined,
+    eyebrowText: sanitizePhrase(slide.eyebrowText, 36) || undefined,
+    footerText: sanitizePhrase(slide.footerText, 42) || undefined,
+    closingText: sanitizePhrase(slide.closingText, 72) || undefined,
+    assetId: slide.assetId?.trim() || undefined,
+    imageDataUrl: slide.imageDataUrl?.trim() || undefined,
+    mimeType: slide.mimeType?.trim() || undefined,
+  };
+}
+
+function normalizeContentNarrative(input: ContentNarrative): ContentNarrative {
+  return {
+    format: "carousel",
+    type: input.type,
+    title: sanitizePhrase(input.title, 84) || "Founder narrative",
+    subtitle: sanitizePhrase(input.subtitle, 140) || "",
+    sourceText: input.sourceText?.trim() || undefined,
+    slides: (input.slides ?? [])
+      .map((slide, index) => normalizeNarrativeSlide(slide, `slide_${index + 1}`))
+      .filter((slide) => slide.headline)
+      .slice(0, 5),
+  };
+}
+
+function resolveContentNarrative(
+  input: GenerateVisualRequest,
+  content: VisualPromptContent,
+): ContentNarrative {
+  const normalizedInputNarrative =
+    input.narrative?.format === "carousel"
+      ? normalizeContentNarrative(input.narrative)
+      : null;
+
+  if (normalizedInputNarrative && normalizedInputNarrative.slides.length > 0) {
+    return normalizedInputNarrative;
+  }
+
+  if (input.narrative?.format === "carousel") {
+    return generateNarrative({
+      narrativeType: normalizedInputNarrative?.type,
+      sourceText:
+        normalizedInputNarrative?.sourceText
+        || [
+          content.headline,
+          content.supportingText,
+          ...(content.bulletPoints ?? []),
+          content.closingText,
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      title: normalizedInputNarrative?.title || content.headline,
+      subtitle: normalizedInputNarrative?.subtitle || content.supportingText,
+    });
+  }
+
+  const sourceText = input.carousel?.sourceText?.trim()
+    || [
+      content.headline,
+      content.supportingText,
+      ...(content.bulletPoints ?? []),
+      content.closingText,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+  return generateNarrative({
+    narrativeType: input.carousel?.narrativeType,
+    slideCount: input.carousel?.slideCount,
+    sourceText,
+    title: input.carousel?.title?.trim() || content.headline,
+    subtitle: input.carousel?.subtitle?.trim() || content.supportingText,
+    slides: input.carousel?.slides?.map((slide, index) => ({
+      role: slide.narrativeRole || `slide_${index + 1}`,
+      headline: slide.headline,
+      supportingText: slide.supportingText,
+      bulletPoints: slide.bulletPoints,
+      highlightText: slide.highlightText,
+      eyebrowText: slide.eyebrowText,
+      footerText: slide.footerText,
+      closingText: slide.closingText,
+    })),
+  });
+}
+
+async function generateCarouselAsset(input: {
+  request: GenerateVisualRequest;
+  content: VisualPromptContent;
+  brandKit: GenerateVisualResponse["brandKit"];
+  brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
+  businessContext: BusinessVisualContext | null;
+}): Promise<GenerateVisualResponse> {
+  const narrative = resolveContentNarrative(input.request, input.content);
+  const footerText = input.businessContext?.domainLabel || input.businessContext?.brandName;
+  const renderedNarrativeSlides = await Promise.all(
+    narrative.slides.map(async (slide, index) => {
+      const eyebrowText = slide.eyebrowText || `${formatCarouselNarrativeLabel(narrative.type)} ${index + 1}/${narrative.slides.length}`;
+      const slideContent = normalizeContent(
+        {
+          ...slide,
+          eyebrowText,
+          footerText: slide.footerText || footerText,
+        },
+        {
+          eyebrowText,
+          footerText,
+        },
+      );
+
+      const rendered = await generateSingleVisualAsset({
+        templateType: "carousel",
+        content: slideContent,
+        brandKit: input.brandKit,
+        brandingPolicy: input.brandingPolicy,
+        businessContext: input.businessContext,
+        captionFooterCredit: input.request.captionFooterCredit,
+      });
+
+      return {
+        ...slide,
+        role: slide.role,
+        imageDataUrl: rendered.imageDataUrl,
+        mimeType: rendered.mimeType,
+        headline: slideContent.headline,
+        supportingText: slideContent.supportingText,
+        bulletPoints: slideContent.bulletPoints,
+        highlightText: slideContent.highlightText,
+        eyebrowText: slideContent.eyebrowText,
+        footerText: slideContent.footerText,
+        closingText: slideContent.closingText,
+        prompt: rendered.prompt,
+        provider: rendered.provider,
+      } as ContentNarrativeSlide & { prompt: string; provider: GenerateVisualResponse["provider"] };
+    }),
+  );
+
+  const firstSlide = renderedNarrativeSlides[0];
+
+  if (!firstSlide) {
+    throw new HttpError(500, "visual_generation_failed", "Unable to build carousel slides.");
+  }
+
+  const renderedNarrative: ContentNarrative = {
+    format: "carousel",
+    type: narrative.type,
+    title: narrative.title,
+    subtitle: narrative.subtitle,
+    sourceText: narrative.sourceText,
+    slides: renderedNarrativeSlides.map(({ prompt: _prompt, provider: _provider, ...slide }) => ({
+      ...slide,
+    })),
+  };
+  const legacyCarousel = {
+    narrativeType: renderedNarrative.type,
+    slides: renderedNarrativeSlides.map((slide, index) => ({
+      index,
+      prompt: slide.prompt,
+      provider: slide.provider,
+      imageDataUrl: slide.imageDataUrl || "",
+      mimeType: slide.mimeType || "image/png",
+      content: {
+        headline: slide.headline,
+        supportingText: slide.supportingText,
+        bulletPoints: slide.bulletPoints,
+        highlightText: slide.highlightText,
+        eyebrowText: slide.eyebrowText,
+        footerText: slide.footerText,
+        closingText: slide.closingText,
+        narrativeRole: slide.role,
+      },
+    })),
+  };
+  const brandConsistency = evaluateBrandConsistency({
+    templateType: "carousel",
+    brandKit: input.brandKit,
+    businessContext: input.businessContext,
+    brandingPolicy: input.brandingPolicy,
+    contents: legacyCarousel.slides.map((slide) => slide.content),
+  });
+
+  return {
+    templateType: "carousel",
+    prompt: firstSlide.prompt,
+    provider: firstSlide.provider,
+    imageDataUrl: firstSlide.imageDataUrl || "",
+    mimeType: firstSlide.mimeType || "image/png",
+    brandKit: input.brandKit,
+    brandConsistency,
+    watermarkApplied: input.brandingPolicy.watermarkApplied,
+    watermarkText: input.brandingPolicy.watermarkApplied ? input.brandingPolicy.watermarkText : undefined,
+    captionFooterCredit: input.request.captionFooterCredit?.trim() || input.brandingPolicy.captionFooterCredit,
+    narrative: renderedNarrative,
+    carousel: legacyCarousel,
+  };
 }
 
 function buildFallbackImage(
@@ -510,12 +1455,23 @@ function buildFallbackImage(
   businessContext: BusinessVisualContext | null,
 ): GenerateVisualResponse {
   const brandMarkLabel = buildBrandMarkLabel(businessContext, brandingPolicy);
-  const footerText = content.footerText || businessContext?.domainLabel || businessContext?.brandName || brandingPolicy.watermarkText;
+  const brandLabel =
+    content.footerText ||
+    businessContext?.domainLabel ||
+    businessContext?.brandName ||
+    brandingPolicy.watermarkText;
   const svgContent = {
     ...content,
     eyebrowText: content.eyebrowText || businessContext?.brandName || undefined,
-    footerText,
+    footerText: brandLabel,
   };
+  const brandConsistency = evaluateBrandConsistency({
+    templateType,
+    brandKit,
+    businessContext,
+    brandingPolicy,
+    contents: [svgContent],
+  });
   let svg = "";
 
   switch (templateType) {
@@ -545,6 +1501,7 @@ function buildFallbackImage(
     imageDataUrl: `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
     mimeType: "image/svg+xml",
     brandKit,
+    brandConsistency,
     watermarkApplied: brandingPolicy.watermarkApplied,
     watermarkText: brandingPolicy.watermarkApplied ? brandingPolicy.watermarkText : undefined,
     captionFooterCredit: brandingPolicy.captionFooterCredit,
@@ -577,38 +1534,23 @@ export async function generateVisualAsset(
     eyebrowText: businessContext?.brandName,
     footerText: businessContext?.domainLabel || businessContext?.brandName,
   });
-  const basePrompt = buildVisualPrompt({
+
+  if (input.templateType === "carousel") {
+    return generateCarouselAsset({
+      request: input,
+      content,
+      brandKit,
+      brandingPolicy,
+      businessContext,
+    });
+  }
+
+  return generateSingleVisualAsset({
     templateType: input.templateType,
     content,
     brandKit,
+    brandingPolicy,
+    businessContext,
+    captionFooterCredit: input.captionFooterCredit,
   });
-  const prompt = brandingPolicy.watermarkApplied
-    ? `${basePrompt}\n\nBRANDING:\nInclude a subtle footer watermark that reads "${brandingPolicy.watermarkText}". Keep it professional and LinkedIn-safe.`
-    : basePrompt;
-
-  try {
-    const image = await generateImage({
-      prompt,
-      size: "1024x1024",
-    });
-
-    return {
-      templateType: input.templateType,
-      prompt,
-      provider: "openai",
-      imageDataUrl: image.imageDataUrl,
-      mimeType: image.mimeType,
-      brandKit,
-      watermarkApplied: brandingPolicy.watermarkApplied,
-      watermarkText: brandingPolicy.watermarkApplied ? brandingPolicy.watermarkText : undefined,
-      captionFooterCredit: input.captionFooterCredit?.trim() || brandingPolicy.captionFooterCredit,
-    };
-  } catch (error) {
-    if (!shouldUseSvgFallback(error)) {
-      throw error;
-    }
-
-    logWarn("Falling back to SVG visual generation.", toErrorContext(error));
-    return buildFallbackImage(input.templateType, content, brandKit, brandingPolicy, businessContext);
-  }
 }

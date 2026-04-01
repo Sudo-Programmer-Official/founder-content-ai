@@ -7,6 +7,7 @@ import {
   deletePipelineItem,
   duplicatePipelineItem,
   getDashboardLoop,
+  listContentGenerationSuggestions,
   getPipelineItem,
   previewPipelineAiEdit,
   updatePipelineItem,
@@ -15,6 +16,11 @@ import {
 export const controlDashboardRoute = Router();
 
 controlDashboardRoute.get("/api/control-dashboard", requireAuth(), getDashboardLoop);
+controlDashboardRoute.get(
+  "/api/content-generation-suggestions",
+  requireAuth(),
+  listContentGenerationSuggestions,
+);
 controlDashboardRoute.get("/api/content-pipeline/:assetId", requireAuth(), getPipelineItem);
 controlDashboardRoute.post("/api/content-pipeline", requireAuth(), createPipelineItem);
 controlDashboardRoute.post("/api/content-pipeline/:assetId/duplicate", requireAuth(), duplicatePipelineItem);

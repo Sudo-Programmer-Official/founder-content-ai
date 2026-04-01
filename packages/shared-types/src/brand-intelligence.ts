@@ -110,3 +110,16 @@ export interface RefreshWorkspaceKnowledgeRequest {
 }
 
 export interface RefreshWorkspaceKnowledgeResponse extends WorkspaceKnowledgeResponse {}
+
+export interface UpdateWorkspaceKnowledgeProfileRequest {
+  businessId: string;
+  voiceSummary?: string;
+  audienceSummary?: string;
+  positioningSummary?: string;
+  beliefs?: string[];
+  topicClusters?: string[];
+}
+
+export interface UpdateWorkspaceKnowledgeProfileResponse extends WorkspaceKnowledgeResponse {
+  profile: WorkspaceKnowledgeProfile;
+}

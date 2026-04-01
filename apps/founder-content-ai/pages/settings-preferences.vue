@@ -3,6 +3,11 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
   AiAssistLevel,
+  BrandKit,
+  BrandKitAccentStyle,
+  BrandKitBackgroundStyle,
+  BrandKitBrandPlacement,
+  BrandKitTone,
   BrandCompetitorReference,
   BrandProfile,
   BrandSignalSummary,
@@ -27,9 +32,14 @@ import {
   requestCreateWorkspaceKnowledgeSource,
   requestBrandProfile,
   requestRefreshWorkspaceKnowledge,
+  requestUpdateWorkspaceKnowledgeProfile,
   requestUpdateBrandProfile,
   requestWorkspaceKnowledge,
 } from "../services/brand-profile-service";
+import {
+  requestBrandKit,
+  requestUpdateBrandKit,
+} from "../services/brand-kit-service";
 import {
   requestContentIngestionPreview,
   requestSavedContentSources,
@@ -51,6 +61,70 @@ interface WorkspaceChannelDefinition {
   availability: "live" | "coming_soon";
 }
 
+type BrandThemePresetKey =
+  | "minimal"
+  | "bold"
+  | "editorial"
+  | "high-contrast"
+  | "modern-saas";
+
+interface BrandThemePreset {
+  key: BrandThemePresetKey;
+  label: string;
+  description: string;
+  primaryColor: string;
+  secondaryColor: string;
+  backgroundStyle: BrandKitBackgroundStyle;
+  tone: BrandKitTone;
+  accentStyle: BrandKitAccentStyle;
+  brandPlacement: BrandKitBrandPlacement;
+}
+
+interface BrandThemePreviewCard {
+  key: "quote" | "framework" | "carousel";
+  label: string;
+  eyebrow: string;
+  title: string;
+  accent: string;
+  body?: string;
+  bullets?: string[];
+  meta?: string;
+}
+
+interface BrandThemeConsistencyCheck {
+  key: "contrast" | "accent" | "brand" | "placement";
+  label: string;
+  tone: "pass" | "warn";
+  detail: string;
+}
+
+interface PublicVoiceChecklistItem {
+  key: "positioning" | "audience" | "tone" | "angles" | "narrative";
+  label: string;
+  tone: "pass" | "warn";
+  detail: string;
+}
+
+const FOUNDER_VOICE_STARTER = {
+  positioning: "Founder Content AI helps founders turn ideas into consistent, high-quality content without overthinking.",
+  audience: "Early-stage founders, indie builders, and developers trying to grow through content but struggling with consistency.",
+  tone: "Direct, system-thinking, insight-driven, no fluff, slightly contrarian",
+  writingStyle: "Short paragraphs, sharp hooks, practical breakdowns, and clear takeaways.",
+  visualStyle: "LinkedIn-first, text-first, editorial minimal, bold contrast, edge-locked branding.",
+  contentAngles: [
+    "Content systems instead of vague creativity",
+    "Founder struggles and execution friction",
+    "Build-in-public lessons from shipping product",
+    "Product thinking behind feature decisions",
+    "Before vs after content transformation",
+  ],
+  narrativePatterns: [
+    "Hook -> insight -> breakdown -> takeaway",
+    "Lead with the problem before introducing the system",
+    "Prefer direct lessons over generic inspiration",
+  ],
+} as const;
+
 const { preferences, isSaving, errorMessage, updatePreferences } = usePreferenceContext();
 const { bootstrap } = useProductAccessContext();
 const route = useRoute();
@@ -70,6 +144,8 @@ const selectedCompetitorsInput = ref<BrandCompetitorReference[]>([]);
 const toneInput = ref("");
 const writingStyleInput = ref("");
 const visualStyleInput = ref("");
+const brandPositioningInput = ref("");
+const brandAudienceInput = ref("");
 const topicsInput = ref("");
 const patternsInput = ref("");
 const customCompetitorLabelInput = ref("");
@@ -78,6 +154,17 @@ const isLoadingBrandContext = ref(false);
 const isSavingBrandContext = ref(false);
 const brandContextFeedback = ref("");
 const brandContextError = ref("");
+const brandTheme = ref<BrandKit | null>(null);
+const brandThemePrimaryColorInput = ref("");
+const brandThemeSecondaryColorInput = ref("");
+const brandThemeBackgroundStyleInput = ref<BrandKitBackgroundStyle>("dark");
+const brandThemeToneInput = ref<BrandKitTone>("professional");
+const brandThemeAccentStyleInput = ref<BrandKitAccentStyle>("highlight_box");
+const brandThemeBrandPlacementInput = ref<BrandKitBrandPlacement>("top_left");
+const isLoadingBrandTheme = ref(false);
+const isSavingBrandTheme = ref(false);
+const brandThemeFeedback = ref("");
+const brandThemeError = ref("");
 const competitorSelectionFeedback = ref("");
 const competitorSelectionError = ref("");
 const savedSources = ref<SavedContentSource[]>([]);
@@ -122,6 +209,64 @@ const workspaceChannelDefinitions: WorkspaceChannelDefinition[] = [
     availability: "coming_soon",
   },
 ];
+
+const BRAND_THEME_PRESETS: readonly BrandThemePreset[] = [
+  {
+    key: "minimal",
+    label: "Minimal",
+    description: "Quiet, premium, and restrained. Best when the copy should do the heavy lifting.",
+    primaryColor: "#111827",
+    secondaryColor: "#F8FAFC",
+    backgroundStyle: "dark",
+    tone: "professional",
+    accentStyle: "underline",
+    brandPlacement: "top_left",
+  },
+  {
+    key: "bold",
+    label: "Bold",
+    description: "Sharper contrast and stronger emphasis for founder POV posts that need to hit harder.",
+    primaryColor: "#101418",
+    secondaryColor: "#F97316",
+    backgroundStyle: "dark",
+    tone: "bold",
+    accentStyle: "highlight_box",
+    brandPlacement: "top_left",
+  },
+  {
+    key: "editorial",
+    label: "Editorial",
+    description: "Clean light surfaces with restrained accents for polished operator content.",
+    primaryColor: "#F7F0E6",
+    secondaryColor: "#1F2937",
+    backgroundStyle: "light",
+    tone: "professional",
+    accentStyle: "underline",
+    brandPlacement: "top_left",
+  },
+  {
+    key: "high-contrast",
+    label: "High Contrast",
+    description: "Aggressive hierarchy, obvious signature, and a more conversion-focused finish.",
+    primaryColor: "#111111",
+    secondaryColor: "#FACC15",
+    backgroundStyle: "dark",
+    tone: "bold",
+    accentStyle: "bold",
+    brandPlacement: "bottom_right",
+  },
+  {
+    key: "modern-saas",
+    label: "Modern SaaS",
+    description: "Controlled gradient energy with enough structure to still feel product-led.",
+    primaryColor: "#0F172A",
+    secondaryColor: "#14B8A6",
+    backgroundStyle: "gradient",
+    tone: "professional",
+    accentStyle: "highlight_box",
+    brandPlacement: "side_label",
+  },
+] as const;
 
 const themeModel = computed<UiTheme>({
   get: () => preferences.value.theme,
@@ -267,15 +412,21 @@ const workspaceChannels = computed(() =>
 );
 const hasBrandProfile = computed(() => {
   const profile = brandProfile.value;
+  const hasPositioning = brandPositioningInput.value.trim() !== "";
+  const hasAudience = brandAudienceInput.value.trim() !== "";
 
   return Boolean(
-    profile &&
-      (
-        profile.tone ||
-        profile.writingStyle ||
-        profile.visualStyle ||
-        profile.topics.length > 0 ||
-        profile.patterns.length > 0
+    hasPositioning
+      || hasAudience
+      || (
+        profile &&
+          (
+            profile.tone ||
+            profile.writingStyle ||
+            profile.visualStyle ||
+            profile.topics.length > 0 ||
+            profile.patterns.length > 0
+          )
       ),
   );
 });
@@ -286,11 +437,193 @@ const brandContextChips = computed(() =>
     visualStyleInput.value ? `Visuals: ${visualStyleInput.value}` : "",
   ].filter((value) => value !== ""),
 );
+const publicVoiceChecklist = computed<PublicVoiceChecklistItem[]>(() => {
+  const angles = parseList(topicsInput.value);
+  const patterns = parseList(patternsInput.value);
+
+  return [
+    {
+      key: "positioning",
+      label: "Positioning",
+      tone: brandPositioningInput.value.trim() !== "" ? "pass" : "warn",
+      detail:
+        brandPositioningInput.value.trim() !== ""
+          ? "The workspace has a clear public promise."
+          : "Add one sentence that explains the problem you solve and the outcome you create.",
+    },
+    {
+      key: "audience",
+      label: "Audience",
+      tone: brandAudienceInput.value.trim() !== "" ? "pass" : "warn",
+      detail:
+        brandAudienceInput.value.trim() !== ""
+          ? "The system knows who this workspace is talking to."
+          : "Define the specific people this workspace wants to reach in public.",
+    },
+    {
+      key: "tone",
+      label: "Tone",
+      tone: toneInput.value.trim() !== "" && writingStyleInput.value.trim() !== "" ? "pass" : "warn",
+      detail:
+        toneInput.value.trim() !== "" && writingStyleInput.value.trim() !== ""
+          ? "Voice and writing style are both locked."
+          : "Add a clear tone and a practical writing style so outputs stop drifting.",
+    },
+    {
+      key: "angles",
+      label: "Content angles",
+      tone: angles.length >= 3 ? "pass" : "warn",
+      detail:
+        angles.length >= 3
+          ? `${angles.length} repeatable angles are ready for generation.`
+          : "Add at least 3 repeatable content angles so the workspace has a real engine.",
+    },
+    {
+      key: "narrative",
+      label: "Narrative system",
+      tone: patterns.length > 0 ? "pass" : "warn",
+      detail:
+        patterns.length > 0
+          ? "Default narrative guidance is set for create and repurpose."
+          : "Save at least one narrative pattern, such as hook -> insight -> breakdown -> takeaway.",
+    },
+  ];
+});
+const brandContextTopicPreview = computed(() => {
+  const parsed = parseList(topicsInput.value);
+  return parsed.length > 0 ? parsed : (brandProfile.value?.topics ?? []);
+});
+const brandContextPatternPreview = computed(() => {
+  const parsed = parseList(patternsInput.value);
+  return parsed.length > 0 ? parsed : (brandProfile.value?.patterns ?? []);
+});
+const brandThemeChips = computed(() =>
+  [
+    `Background: ${formatBrandThemeBackgroundStyle(brandThemeBackgroundStyleInput.value)}`,
+    `Accent: ${formatBrandThemeAccentStyle(brandThemeAccentStyleInput.value)}`,
+    `Placement: ${formatBrandThemePlacement(brandThemeBrandPlacementInput.value)}`,
+    `Tone: ${formatBrandThemeTone(brandThemeToneInput.value)}`,
+  ].filter((value) => value !== ""),
+);
 const effectiveMarketReferencePreview = computed(() =>
   selectedCompetitorsInput.value.length > 0
     ? selectedCompetitorsInput.value
     : suggestedCompetitors.value.slice(0, 3),
 );
+const brandThemeDomainPreview = computed(() =>
+  resolveBrandSourceDefaultUrl("website") || "",
+);
+const brandThemeSignatureLabel = computed(() =>
+  brandThemeDomainPreview.value || "yourbrand.com",
+);
+const brandThemePreviewStyles = computed<Record<string, string>>(() => {
+  const primaryColor = normalizeHexColor(brandThemePrimaryColorInput.value) || "#111827";
+  const secondaryColor = normalizeHexColor(brandThemeSecondaryColorInput.value) || "#F8FAFC";
+  const background =
+    brandThemeBackgroundStyleInput.value === "gradient"
+      ? `linear-gradient(135deg, ${primaryColor} 0%, ${secondaryColor} 100%)`
+      : brandThemeBackgroundStyleInput.value === "light"
+        ? "#FFF8F1"
+        : primaryColor;
+
+  return {
+    background,
+    color: brandThemeBackgroundStyleInput.value === "light" ? "#161616" : "#FFF8F1",
+    "--brand-theme-primary": primaryColor,
+    "--brand-theme-secondary": secondaryColor,
+  };
+});
+const activeBrandThemePresetKey = computed<BrandThemePresetKey | null>(() => {
+  const primaryColor = normalizeHexColor(brandThemePrimaryColorInput.value);
+  const secondaryColor = normalizeHexColor(brandThemeSecondaryColorInput.value);
+  const match = BRAND_THEME_PRESETS.find((preset) =>
+    primaryColor === preset.primaryColor
+    && secondaryColor === preset.secondaryColor
+    && brandThemeBackgroundStyleInput.value === preset.backgroundStyle
+    && brandThemeToneInput.value === preset.tone
+    && brandThemeAccentStyleInput.value === preset.accentStyle
+    && brandThemeBrandPlacementInput.value === preset.brandPlacement,
+  );
+
+  return match?.key ?? null;
+});
+const brandThemePreviewCards = computed<BrandThemePreviewCard[]>(() => [
+  {
+    key: "quote",
+    label: "Quote card",
+    eyebrow: "QUOTE CARD",
+    title: "Content creation",
+    accent: "shouldn't feel like guesswork",
+    body: "Lead with the strongest thought and let the brand stay quietly recognizable.",
+  },
+  {
+    key: "framework",
+    label: "Framework card",
+    eyebrow: "FRAMEWORK CARD",
+    title: "What happens next",
+    accent: "make the system recognizable",
+    bullets: [
+      "Lock the brand to one edge",
+      "Keep spacing predictable",
+      "Reuse the same accent logic",
+    ],
+  },
+  {
+    key: "carousel",
+    label: "Carousel slide",
+    eyebrow: "CAROUSEL SLIDE",
+    title: "One idea",
+    accent: "one signature system",
+    body: "Slide 1 should feel obviously related to slide 5 even when the content changes.",
+    meta: "1 / 5",
+  },
+]);
+const brandThemeConsistencyChecks = computed<BrandThemeConsistencyCheck[]>(() => {
+  const primaryColor = normalizeHexColor(brandThemePrimaryColorInput.value) || "#111827";
+  const secondaryColor = normalizeHexColor(brandThemeSecondaryColorInput.value) || "#F8FAFC";
+  const previewBackground =
+    brandThemeBackgroundStyleInput.value === "light" ? "#FFF8F1" : primaryColor;
+  const previewText = brandThemeBackgroundStyleInput.value === "light" ? "#161616" : "#FFF8F1";
+  const contrastRatioValue = calculateContrastRatio(previewBackground, previewText);
+  const accentDistance = calculateColorDistance(primaryColor, secondaryColor);
+  const hasConnectedBrandSurface = brandThemeDomainPreview.value.trim() !== "";
+  const placementLabel = formatBrandThemePlacement(brandThemeBrandPlacementInput.value);
+
+  return [
+    {
+      key: "contrast",
+      label: "Contrast",
+      tone: contrastRatioValue >= 4.5 ? "pass" : "warn",
+      detail:
+        contrastRatioValue >= 4.5
+          ? "Text remains readable across locked preview formats."
+          : "Primary and text color are too close. Increase separation before saving.",
+    },
+    {
+      key: "accent",
+      label: "Accent separation",
+      tone: accentDistance >= 90 ? "pass" : "warn",
+      detail:
+        accentDistance >= 90
+          ? "Highlight treatment is distinct enough to stay visible without overpowering the layout."
+          : "Primary and accent colors are too similar. The highlight treatment may disappear in feeds.",
+    },
+    {
+      key: "brand",
+      label: "Brand surface",
+      tone: hasConnectedBrandSurface ? "pass" : "warn",
+      detail: hasConnectedBrandSurface
+        ? `Signature will resolve to ${brandThemeSignatureLabel.value}.`
+        : "Connect a website in Brand Sources so previews stop falling back to a placeholder domain.",
+    },
+    {
+      key: "placement",
+      label: "Placement",
+      tone: "pass",
+      detail: `${placementLabel} stays locked to the edge across quote, framework, and carousel formats.`,
+    },
+  ];
+});
 const workspaceKnowledgeReadySources = computed(() =>
   workspaceKnowledgeSources.value.filter((source) => source.processingStatus === "completed"),
 );
@@ -318,6 +651,113 @@ const workspaceKnowledgeInsightChips = computed(() =>
   ].filter((value) => value !== ""),
 );
 
+function normalizeHexColor(value: string): string {
+  const normalized = value.trim().toUpperCase();
+  return /^#[0-9A-F]{6}$/.test(normalized) ? normalized : "";
+}
+
+function parseHexColorChannels(value: string): [number, number, number] | null {
+  const normalized = normalizeHexColor(value);
+
+  if (!normalized) {
+    return null;
+  }
+
+  return [
+    Number.parseInt(normalized.slice(1, 3), 16),
+    Number.parseInt(normalized.slice(3, 5), 16),
+    Number.parseInt(normalized.slice(5, 7), 16),
+  ];
+}
+
+function normalizeChannelForLuminance(value: number): number {
+  const channel = value / 255;
+  return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+}
+
+function calculateRelativeLuminance(value: string): number {
+  const channels = parseHexColorChannels(value);
+
+  if (!channels) {
+    return 0;
+  }
+
+  const [red, green, blue] = channels.map((channel) => normalizeChannelForLuminance(channel));
+  return (0.2126 * red) + (0.7152 * green) + (0.0722 * blue);
+}
+
+function calculateContrastRatio(left: string, right: string): number {
+  const leftLuminance = calculateRelativeLuminance(left);
+  const rightLuminance = calculateRelativeLuminance(right);
+  const brightest = Math.max(leftLuminance, rightLuminance);
+  const darkest = Math.min(leftLuminance, rightLuminance);
+
+  return (brightest + 0.05) / (darkest + 0.05);
+}
+
+function calculateColorDistance(left: string, right: string): number {
+  const leftChannels = parseHexColorChannels(left);
+  const rightChannels = parseHexColorChannels(right);
+
+  if (!leftChannels || !rightChannels) {
+    return 0;
+  }
+
+  return Math.sqrt(
+    ((leftChannels[0] - rightChannels[0]) ** 2)
+    + ((leftChannels[1] - rightChannels[1]) ** 2)
+    + ((leftChannels[2] - rightChannels[2]) ** 2),
+  );
+}
+
+function formatBrandThemeBackgroundStyle(value: BrandKitBackgroundStyle): string {
+  if (value === "light") {
+    return "Light";
+  }
+
+  if (value === "gradient") {
+    return "Gradient";
+  }
+
+  return "Dark";
+}
+
+function formatBrandThemeAccentStyle(value: BrandKitAccentStyle): string {
+  if (value === "underline") {
+    return "Underline";
+  }
+
+  if (value === "bold") {
+    return "Bold emphasis";
+  }
+
+  return "Highlight box";
+}
+
+function formatBrandThemePlacement(value: BrandKitBrandPlacement): string {
+  if (value === "bottom_right") {
+    return "Bottom right";
+  }
+
+  if (value === "side_label") {
+    return "Side label";
+  }
+
+  return "Top left";
+}
+
+function formatBrandThemeTone(value: BrandKitTone): string {
+  if (value === "bold") {
+    return "Bold";
+  }
+
+  if (value === "friendly") {
+    return "Friendly";
+  }
+
+  return "Professional";
+}
+
 function joinList(values: string[]): string {
   return values.join(", ");
 }
@@ -344,6 +784,50 @@ function hydrateBrandContextForm(profile: BrandProfile | null): void {
   visualStyleInput.value = profile?.visualStyle ?? "";
   topicsInput.value = joinList(profile?.topics ?? []);
   patternsInput.value = joinList(profile?.patterns ?? []);
+}
+
+function hydratePublicVoiceForm(profile: WorkspaceKnowledgeProfile | null | undefined): void {
+  brandAudienceInput.value = profile?.audienceSummary ?? "";
+  brandPositioningInput.value = profile?.positioningSummary ?? "";
+}
+
+function hydrateBrandThemeForm(nextBrandKit: BrandKit | null): void {
+  brandTheme.value = nextBrandKit;
+  brandThemePrimaryColorInput.value = nextBrandKit?.primaryColor ?? "#111827";
+  brandThemeSecondaryColorInput.value = nextBrandKit?.secondaryColor ?? "#F8FAFC";
+  brandThemeBackgroundStyleInput.value = nextBrandKit?.backgroundStyle ?? "dark";
+  brandThemeToneInput.value = nextBrandKit?.tone ?? "professional";
+  brandThemeAccentStyleInput.value = nextBrandKit?.accentStyle ?? "highlight_box";
+  brandThemeBrandPlacementInput.value = nextBrandKit?.brandPlacement ?? "top_left";
+}
+
+function applyBrandThemePreset(key: BrandThemePresetKey): void {
+  const preset = BRAND_THEME_PRESETS.find((candidate) => candidate.key === key);
+
+  if (!preset) {
+    return;
+  }
+
+  brandThemePrimaryColorInput.value = preset.primaryColor;
+  brandThemeSecondaryColorInput.value = preset.secondaryColor;
+  brandThemeBackgroundStyleInput.value = preset.backgroundStyle;
+  brandThemeToneInput.value = preset.tone;
+  brandThemeAccentStyleInput.value = preset.accentStyle;
+  brandThemeBrandPlacementInput.value = preset.brandPlacement;
+  brandThemeFeedback.value = "";
+  brandThemeError.value = "";
+}
+
+function applyFounderVoiceStarter(): void {
+  toneInput.value = FOUNDER_VOICE_STARTER.tone;
+  writingStyleInput.value = FOUNDER_VOICE_STARTER.writingStyle;
+  visualStyleInput.value = FOUNDER_VOICE_STARTER.visualStyle;
+  brandPositioningInput.value = FOUNDER_VOICE_STARTER.positioning;
+  brandAudienceInput.value = FOUNDER_VOICE_STARTER.audience;
+  topicsInput.value = joinList([...FOUNDER_VOICE_STARTER.contentAngles]);
+  patternsInput.value = joinList([...FOUNDER_VOICE_STARTER.narrativePatterns]);
+  brandContextFeedback.value = "";
+  brandContextError.value = "";
 }
 
 function competitorKey(reference: Pick<BrandCompetitorReference, "id" | "label" | "url">): string {
@@ -633,21 +1117,31 @@ async function handleBrandContextSave(): Promise<void> {
   brandContextError.value = "";
 
   try {
-    const response = await requestUpdateBrandProfile({
-      businessId,
-      tone: toneInput.value.trim(),
-      writingStyle: writingStyleInput.value.trim(),
-      visualStyle: visualStyleInput.value.trim(),
-      topics: parseList(topicsInput.value),
-      patterns: parseList(patternsInput.value),
-      selectedCompetitors: selectedCompetitorsInput.value,
-      refreshFromSignals: false,
-    });
-    brandProfile.value = response.brandProfile;
-    brandSignalSummary.value = response.signalSummary;
-    hydrateBrandContextForm(response.brandProfile);
-    hydrateCompetitorState(response.brandProfile, response.suggestedCompetitors);
-    brandContextFeedback.value = "Brand context saved for this workspace.";
+    const [brandResponse, knowledgeResponse] = await Promise.all([
+      requestUpdateBrandProfile({
+        businessId,
+        tone: toneInput.value.trim(),
+        writingStyle: writingStyleInput.value.trim(),
+        visualStyle: visualStyleInput.value.trim(),
+        topics: parseList(topicsInput.value),
+        patterns: parseList(patternsInput.value),
+        selectedCompetitors: selectedCompetitorsInput.value,
+        refreshFromSignals: false,
+      }),
+      requestUpdateWorkspaceKnowledgeProfile({
+        businessId,
+        audienceSummary: brandAudienceInput.value.trim(),
+        positioningSummary: brandPositioningInput.value.trim(),
+      }),
+    ]);
+    brandProfile.value = brandResponse.brandProfile;
+    brandSignalSummary.value = brandResponse.signalSummary;
+    hydrateBrandContextForm(brandResponse.brandProfile);
+    hydrateCompetitorState(brandResponse.brandProfile, brandResponse.suggestedCompetitors);
+    workspaceKnowledgeProfile.value = knowledgeResponse.profile ?? null;
+    workspaceKnowledgeSources.value = knowledgeResponse.sources;
+    hydratePublicVoiceForm(knowledgeResponse.profile);
+    brandContextFeedback.value = "Public voice saved for this workspace.";
   } catch (error) {
     brandContextError.value =
       error instanceof Error ? error.message : "Unable to save brand context.";
@@ -665,12 +1159,78 @@ async function handleBrandContextRefresh(): Promise<void> {
   }
 }
 
+async function loadBrandTheme(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    hydrateBrandThemeForm(null);
+    return;
+  }
+
+  isLoadingBrandTheme.value = true;
+  brandThemeError.value = "";
+
+  try {
+    const response = await requestBrandKit(businessId);
+    hydrateBrandThemeForm(response.brandKit);
+  } catch (error) {
+    hydrateBrandThemeForm(null);
+    brandThemeError.value =
+      error instanceof Error ? error.message : "Unable to load the workspace brand theme.";
+  } finally {
+    isLoadingBrandTheme.value = false;
+  }
+}
+
+async function handleBrandThemeSave(): Promise<void> {
+  const businessId = activeBusinessId.value;
+
+  if (!businessId) {
+    return;
+  }
+
+  const primaryColor = normalizeHexColor(brandThemePrimaryColorInput.value);
+  const secondaryColor = normalizeHexColor(brandThemeSecondaryColorInput.value);
+
+  if (!primaryColor || !secondaryColor) {
+    brandThemeError.value = "Use full hex colors like #111827 and #F8FAFC.";
+    brandThemeFeedback.value = "";
+    return;
+  }
+
+  isSavingBrandTheme.value = true;
+  brandThemeFeedback.value = "";
+  brandThemeError.value = "";
+
+  try {
+    const response = await requestUpdateBrandKit({
+      businessId,
+      brandKit: {
+        primaryColor,
+        secondaryColor,
+        backgroundStyle: brandThemeBackgroundStyleInput.value,
+        tone: brandThemeToneInput.value,
+        accentStyle: brandThemeAccentStyleInput.value,
+        brandPlacement: brandThemeBrandPlacementInput.value,
+      },
+    });
+    hydrateBrandThemeForm(response.brandKit);
+    brandThemeFeedback.value = "Brand theme saved. New visuals will reuse this system automatically.";
+  } catch (error) {
+    brandThemeError.value =
+      error instanceof Error ? error.message : "Unable to save the workspace brand theme.";
+  } finally {
+    isSavingBrandTheme.value = false;
+  }
+}
+
 async function loadWorkspaceKnowledge(): Promise<void> {
   const businessId = activeBusinessId.value;
 
   if (!businessId) {
     workspaceKnowledgeProfile.value = null;
     workspaceKnowledgeSources.value = [];
+    hydratePublicVoiceForm(null);
     return;
   }
 
@@ -681,9 +1241,11 @@ async function loadWorkspaceKnowledge(): Promise<void> {
     const response = await requestWorkspaceKnowledge(businessId);
     workspaceKnowledgeProfile.value = response.profile ?? null;
     workspaceKnowledgeSources.value = response.sources;
+    hydratePublicVoiceForm(response.profile);
   } catch (error) {
     workspaceKnowledgeProfile.value = null;
     workspaceKnowledgeSources.value = [];
+    hydratePublicVoiceForm(null);
     workspaceKnowledgeError.value =
       error instanceof Error ? error.message : "Unable to load workspace knowledge.";
   } finally {
@@ -712,6 +1274,7 @@ async function handleWorkspaceKnowledgeSave(): Promise<void> {
     });
     workspaceKnowledgeProfile.value = response.profile ?? null;
     workspaceKnowledgeSources.value = response.sources;
+    hydratePublicVoiceForm(response.profile);
     knowledgeTitleInput.value = "";
     knowledgeUrlInput.value = "";
     knowledgeNoteInput.value = "";
@@ -744,6 +1307,7 @@ async function handleWorkspaceKnowledgeRefresh(): Promise<void> {
     });
     workspaceKnowledgeProfile.value = response.profile ?? null;
     workspaceKnowledgeSources.value = response.sources;
+    hydratePublicVoiceForm(response.profile);
     workspaceKnowledgeFeedback.value = "Workspace knowledge queued for a fresh rebuild.";
   } catch (error) {
     workspaceKnowledgeError.value =
@@ -853,10 +1417,12 @@ watch(
   activeBusinessId,
   () => {
     channelFeedback.value = "";
+    brandThemeFeedback.value = "";
     brandContextFeedback.value = "";
     brandSourcesFeedback.value = "";
     workspaceKnowledgeFeedback.value = "";
     void loadWorkspaceChannels();
+    void loadBrandTheme();
     void loadBrandContext();
     void loadBrandSources();
     void loadWorkspaceKnowledge();
@@ -1137,6 +1703,229 @@ watch(
       </div>
     </section>
 
+    <section class="dashboard-panel brand-theme-panel">
+      <div class="brand-context-panel-header">
+        <div>
+          <p class="panel-meta">Brand Theme</p>
+          <h2>Lock visuals to one recognizable system instead of a generic template.</h2>
+        </div>
+        <span class="usage-badge">
+          {{ activeBusinessId ? "Applied in visual generation" : "Select a workspace first" }}
+        </span>
+      </div>
+
+      <p class="dashboard-description">
+        This theme controls the repeatable visual rules behind generated images. Logo stays connected through the Asset Hub, and domain stays connected through Brand Sources.
+      </p>
+
+      <p v-if="brandThemeFeedback" class="dashboard-feedback">{{ brandThemeFeedback }}</p>
+      <p v-if="brandThemeError" class="dashboard-feedback error">{{ brandThemeError }}</p>
+
+      <div class="brand-context-layout">
+        <div class="brand-context-form">
+          <div class="brand-theme-preset-grid">
+            <button
+              v-for="preset in BRAND_THEME_PRESETS"
+              :key="preset.key"
+              type="button"
+              class="brand-theme-preset-button"
+              :data-active="activeBrandThemePresetKey === preset.key"
+              :disabled="isLoadingBrandTheme || isSavingBrandTheme || !activeBusinessId"
+              @click="applyBrandThemePreset(preset.key)"
+            >
+              <span class="brand-theme-preset-title">{{ preset.label }}</span>
+              <span class="brand-theme-preset-copy">{{ preset.description }}</span>
+            </button>
+          </div>
+
+          <div class="settings-grid brand-context-grid">
+            <label class="dashboard-field">
+              <span>Primary color</span>
+              <input
+                v-model="brandThemePrimaryColorInput"
+                type="text"
+                :disabled="isLoadingBrandTheme || isSavingBrandTheme || !activeBusinessId"
+                placeholder="#111827"
+              />
+            </label>
+
+            <label class="dashboard-field">
+              <span>Accent color</span>
+              <input
+                v-model="brandThemeSecondaryColorInput"
+                type="text"
+                :disabled="isLoadingBrandTheme || isSavingBrandTheme || !activeBusinessId"
+                placeholder="#F8FAFC"
+              />
+            </label>
+
+            <label class="dashboard-field">
+              <span>Background style</span>
+              <select
+                v-model="brandThemeBackgroundStyleInput"
+                :disabled="isLoadingBrandTheme || isSavingBrandTheme || !activeBusinessId"
+              >
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+                <option value="gradient">Gradient</option>
+              </select>
+            </label>
+
+            <label class="dashboard-field">
+              <span>Tone</span>
+              <select
+                v-model="brandThemeToneInput"
+                :disabled="isLoadingBrandTheme || isSavingBrandTheme || !activeBusinessId"
+              >
+                <option value="professional">Professional</option>
+                <option value="bold">Bold</option>
+                <option value="friendly">Friendly</option>
+              </select>
+            </label>
+
+            <label class="dashboard-field">
+              <span>Accent style</span>
+              <select
+                v-model="brandThemeAccentStyleInput"
+                :disabled="isLoadingBrandTheme || isSavingBrandTheme || !activeBusinessId"
+              >
+                <option value="highlight_box">Highlight box</option>
+                <option value="underline">Underline</option>
+                <option value="bold">Bold emphasis</option>
+              </select>
+            </label>
+
+            <label class="dashboard-field">
+              <span>Brand placement</span>
+              <select
+                v-model="brandThemeBrandPlacementInput"
+                :disabled="isLoadingBrandTheme || isSavingBrandTheme || !activeBusinessId"
+              >
+                <option value="top_left">Top left</option>
+                <option value="bottom_right">Bottom right</option>
+                <option value="side_label">Side label</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="channel-actions">
+            <button
+              type="button"
+              class="dashboard-button"
+              :disabled="isSavingBrandTheme || isLoadingBrandTheme || !activeBusinessId || isReadOnly"
+              @click="void handleBrandThemeSave()"
+            >
+              {{ isSavingBrandTheme ? "Saving..." : "Save brand theme" }}
+            </button>
+
+            <router-link class="dashboard-button secondary link-button" :to="appRoutes.appAssets">
+              Open asset hub
+            </router-link>
+          </div>
+        </div>
+
+        <aside class="brand-context-preview">
+          <div>
+            <p class="panel-meta">Visual system preview</p>
+            <h3>Generated images now inherit this signature automatically.</h3>
+            <p class="dashboard-description">
+              The renderer keeps the brand off the bottom center, aligns brand padding with content padding, and reuses the same accent treatment every time.
+            </p>
+          </div>
+
+          <div class="brand-theme-swatches">
+            <article class="brand-theme-swatch-card">
+              <div class="brand-theme-swatch-chip" :style="{ background: brandThemePrimaryColorInput || '#111827' }"></div>
+              <strong>{{ brandThemePrimaryColorInput || "#111827" }}</strong>
+              <span>Primary</span>
+            </article>
+            <article class="brand-theme-swatch-card">
+              <div class="brand-theme-swatch-chip" :style="{ background: brandThemeSecondaryColorInput || '#F8FAFC' }"></div>
+              <strong>{{ brandThemeSecondaryColorInput || "#F8FAFC" }}</strong>
+              <span>Accent</span>
+            </article>
+          </div>
+
+          <div class="brand-theme-preview-grid">
+            <article
+              v-for="preview in brandThemePreviewCards"
+              :key="preview.key"
+              class="brand-theme-preview-shell"
+              :data-format="preview.key"
+              :style="brandThemePreviewStyles"
+            >
+              <div class="brand-theme-preview-header">
+                <span class="brand-theme-preview-format">{{ preview.label }}</span>
+                <span v-if="preview.meta" class="brand-theme-preview-meta">{{ preview.meta }}</span>
+              </div>
+              <div
+                class="brand-theme-preview-brand"
+                :class="`placement-${brandThemeBrandPlacementInput}`"
+              >
+                {{ brandThemeSignatureLabel }}
+              </div>
+              <p class="brand-theme-preview-eyebrow">{{ preview.eyebrow }}</p>
+              <h4>{{ preview.title }}</h4>
+              <p
+                class="brand-theme-preview-accent"
+                :class="`accent-${brandThemeAccentStyleInput}`"
+              >
+                {{ preview.accent }}
+              </p>
+              <p v-if="preview.body" class="brand-theme-preview-copy">{{ preview.body }}</p>
+              <ul v-if="preview.bullets?.length" class="brand-theme-preview-bullets">
+                <li v-for="bullet in preview.bullets" :key="bullet">{{ bullet }}</li>
+              </ul>
+            </article>
+          </div>
+
+          <div v-if="brandThemeChips.length > 0" class="saved-source-list">
+            <span
+              v-for="chip in brandThemeChips"
+              :key="chip"
+              class="saved-source-chip"
+            >
+              {{ chip }}
+            </span>
+          </div>
+
+          <div class="brand-theme-consistency-panel">
+            <p class="panel-meta">Theme health</p>
+            <div class="brand-theme-consistency-list">
+              <article
+                v-for="check in brandThemeConsistencyChecks"
+                :key="check.key"
+                class="brand-theme-consistency-card"
+                :data-tone="check.tone"
+              >
+                <div class="brand-theme-consistency-header">
+                  <strong>{{ check.label }}</strong>
+                  <span class="brand-theme-consistency-badge">
+                    {{ check.tone === "pass" ? "Pass" : "Review" }}
+                  </span>
+                </div>
+                <p>{{ check.detail }}</p>
+              </article>
+            </div>
+          </div>
+
+          <div class="brand-preview-block">
+            <p class="panel-meta">Connected brand surfaces</p>
+            <ul class="brand-preview-list">
+              <li>
+                <strong>Logo:</strong>
+                {{ brandTheme?.logoUrl ? "Connected through the Asset Hub." : "Not connected yet. Add it in the Asset Hub." }}
+              </li>
+              <li>
+                <strong>Domain:</strong>
+                {{ brandThemeDomainPreview || "Not connected yet. Add a website in Brand Sources." }}
+              </li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </section>
+
     <section class="dashboard-panel brand-sources-panel">
       <div class="brand-context-panel-header">
         <div>
@@ -1294,14 +2083,54 @@ watch(
 
       <div class="brand-context-layout">
         <div class="brand-context-form">
+          <section class="brand-context-starter-card">
+            <div>
+              <p class="panel-meta">Minimal setup</p>
+              <h3>Treat this workspace like your public voice system.</h3>
+              <p class="dashboard-description">
+                Start with one sharp positioning line, a specific audience, 3 to 5 repeatable angles, and one default narrative pattern. That is enough to make generation feel intentional.
+              </p>
+            </div>
+            <div class="channel-actions">
+              <button
+                type="button"
+                class="dashboard-button secondary"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                @click="applyFounderVoiceStarter()"
+              >
+                Apply founder starter
+              </button>
+            </div>
+          </section>
+
           <div class="settings-grid brand-context-grid">
+            <label class="dashboard-field brand-context-field-wide">
+              <span>Public positioning</span>
+              <textarea
+                v-model="brandPositioningInput"
+                rows="3"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                placeholder="Founder Content AI helps founders turn ideas into consistent, high-quality content without overthinking."
+              />
+            </label>
+
+            <label class="dashboard-field brand-context-field-wide">
+              <span>Target audience</span>
+              <textarea
+                v-model="brandAudienceInput"
+                rows="3"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+                placeholder="Early-stage founders, indie builders, and developers trying to grow through content but struggling with consistency."
+              />
+            </label>
+
             <label class="dashboard-field">
               <span>Brand tone</span>
               <input
                 v-model="toneInput"
                 type="text"
                 :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
-                placeholder="Founder-led, sharp, practical"
+                placeholder="Direct, system-thinking, insight-driven, no fluff"
               />
             </label>
 
@@ -1311,7 +2140,7 @@ watch(
                 v-model="writingStyleInput"
                 type="text"
                 :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
-                placeholder="Short paragraphs with punchy takeaways"
+                placeholder="Short paragraphs, sharp hooks, practical breakdowns"
               />
             </label>
 
@@ -1326,22 +2155,22 @@ watch(
             </label>
 
             <label class="dashboard-field brand-context-field-wide">
-              <span>Topics</span>
+              <span>Content angles</span>
               <textarea
                 v-model="topicsInput"
                 rows="3"
                 :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
-                placeholder="AI tools, founder workflows, product systems"
+                placeholder="Content systems, founder struggles, build-in-public lessons, product thinking, before vs after transformations"
               />
             </label>
 
             <label class="dashboard-field brand-context-field-wide">
-              <span>Messaging patterns</span>
+              <span>Default narrative pattern and messaging cues</span>
               <textarea
                 v-model="patternsInput"
                 rows="3"
                 :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
-                placeholder="Contrarian hook, practical lesson, direct takeaway"
+                placeholder="Hook -> insight -> breakdown -> takeaway"
               />
             </label>
           </div>
@@ -1491,11 +2320,51 @@ watch(
             </span>
           </div>
 
-          <div v-if="brandProfile?.topics?.length" class="brand-preview-block">
-            <p class="panel-meta">Topics in rotation</p>
+          <div
+            v-if="brandPositioningInput || workspaceKnowledgeProfile?.positioningSummary"
+            class="brand-preview-block"
+          >
+            <p class="panel-meta">Positioning</p>
+            <p class="market-reference-note">
+              {{ brandPositioningInput || workspaceKnowledgeProfile?.positioningSummary }}
+            </p>
+          </div>
+
+          <div
+            v-if="brandAudienceInput || workspaceKnowledgeProfile?.audienceSummary"
+            class="brand-preview-block"
+          >
+            <p class="panel-meta">Audience</p>
+            <p class="market-reference-note">
+              {{ brandAudienceInput || workspaceKnowledgeProfile?.audienceSummary }}
+            </p>
+          </div>
+
+          <div class="brand-context-checklist">
+            <p class="panel-meta">Ready to post checklist</p>
+            <div class="brand-context-checklist-grid">
+              <article
+                v-for="item in publicVoiceChecklist"
+                :key="item.key"
+                class="brand-context-checklist-card"
+                :data-tone="item.tone"
+              >
+                <div class="brand-context-checklist-header">
+                  <strong>{{ item.label }}</strong>
+                  <span class="brand-context-checklist-badge">
+                    {{ item.tone === "pass" ? "Ready" : "Needs input" }}
+                  </span>
+                </div>
+                <p>{{ item.detail }}</p>
+              </article>
+            </div>
+          </div>
+
+          <div v-if="brandContextTopicPreview.length > 0" class="brand-preview-block">
+            <p class="panel-meta">Angles in rotation</p>
             <div class="saved-source-list">
               <span
-                v-for="topic in brandProfile.topics"
+                v-for="topic in brandContextTopicPreview"
                 :key="topic"
                 class="saved-source-chip"
               >
@@ -1504,10 +2373,10 @@ watch(
             </div>
           </div>
 
-          <div v-if="brandProfile?.patterns?.length" class="brand-preview-block">
-            <p class="panel-meta">Messaging cues</p>
+          <div v-if="brandContextPatternPreview.length > 0" class="brand-preview-block">
+            <p class="panel-meta">Narrative cues</p>
             <ul class="brand-preview-list">
-              <li v-for="pattern in brandProfile.patterns" :key="pattern">{{ pattern }}</li>
+              <li v-for="pattern in brandContextPatternPreview" :key="pattern">{{ pattern }}</li>
             </ul>
           </div>
 
@@ -1821,6 +2690,12 @@ watch(
   margin-top: 18px;
 }
 
+.brand-theme-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
 .brand-sources-panel {
   display: grid;
   gap: 18px;
@@ -2031,6 +2906,19 @@ watch(
   margin: 0;
 }
 
+.brand-context-starter-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 84%, var(--fc-surface-muted));
+}
+
+.brand-context-starter-card h3 {
+  margin: 0;
+}
+
 .brand-context-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -2162,6 +3050,416 @@ watch(
   gap: 10px;
 }
 
+.brand-context-checklist {
+  display: grid;
+  gap: 12px;
+}
+
+.brand-context-checklist-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.brand-context-checklist-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 88%, white 12%);
+}
+
+.brand-context-checklist-card[data-tone="pass"] {
+  border-color: color-mix(in srgb, var(--fc-success-text, #2c6b35) 18%, var(--fc-border));
+}
+
+.brand-context-checklist-card[data-tone="warn"] {
+  border-color: color-mix(in srgb, var(--fc-warning-text, #8a5200) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-warning-bg, #f8b84e) 18%, var(--fc-panel-bg));
+}
+
+.brand-context-checklist-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brand-context-checklist-header strong {
+  font-size: 0.92rem;
+}
+
+.brand-context-checklist-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--fc-surface-subtle);
+  color: var(--fc-text-muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.brand-context-checklist-card[data-tone="pass"] .brand-context-checklist-badge {
+  background: color-mix(in srgb, var(--fc-success-bg, rgba(56, 142, 60, 0.12)) 82%, var(--fc-panel-bg));
+  color: var(--fc-success-text, #2c6b35);
+}
+
+.brand-context-checklist-card[data-tone="warn"] .brand-context-checklist-badge {
+  background: var(--fc-warning-bg, #f8b84e);
+  color: var(--fc-warning-text, #8a5200);
+}
+
+.brand-context-checklist-card p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.5;
+}
+
+.brand-theme-swatches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.brand-theme-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.brand-theme-preset-button {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 86%, var(--fc-surface-muted));
+  color: var(--fc-text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.brand-theme-preset-button:hover:enabled,
+.brand-theme-preset-button:focus-visible {
+  border-color: color-mix(in srgb, var(--fc-accent) 28%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft, var(--fc-panel-bg)) 18%, var(--fc-panel-bg));
+  transform: translateY(-1px);
+}
+
+.brand-theme-preset-button[data-active="true"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 34%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft, var(--fc-panel-bg)) 28%, var(--fc-panel-bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fc-accent) 18%, transparent);
+}
+
+.brand-theme-preset-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+
+.brand-theme-preset-title {
+  font-size: 0.94rem;
+  font-weight: 800;
+}
+
+.brand-theme-preset-copy {
+  color: var(--fc-text-muted);
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.brand-theme-swatch-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 86%, white 14%);
+}
+
+.brand-theme-swatch-card strong {
+  font-size: 0.95rem;
+}
+
+.brand-theme-swatch-card span {
+  color: var(--fc-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.brand-theme-swatch-chip {
+  width: 100%;
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 72%, transparent);
+}
+
+.brand-theme-preview-shell {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  min-height: 260px;
+  padding: 24px;
+  border-radius: 22px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-theme-secondary, var(--fc-border)) 22%, transparent);
+}
+
+.brand-theme-preview-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.brand-theme-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.brand-theme-preview-format,
+.brand-theme-preview-meta {
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.82;
+}
+
+.brand-theme-preview-brand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand-theme-secondary, #F8FAFC) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand-theme-secondary, #F8FAFC) 36%, transparent);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.brand-theme-preview-brand.placement-top_left {
+  justify-self: start;
+}
+
+.brand-theme-preview-brand.placement-bottom_right {
+  justify-self: end;
+  align-self: end;
+  margin-top: auto;
+}
+
+.brand-theme-preview-brand.placement-side_label {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%) rotate(90deg);
+  transform-origin: center;
+}
+
+.brand-theme-preview-eyebrow {
+  margin: 0;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  opacity: 0.82;
+}
+
+.brand-theme-preview-shell h4 {
+  margin: 0;
+  max-width: 12ch;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 0.96;
+}
+
+.brand-theme-preview-accent {
+  margin: 8px 0 0;
+  max-width: fit-content;
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
+.brand-theme-preview-accent.accent-highlight_box {
+  padding: 10px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--brand-theme-secondary, #F8FAFC) 88%, white 12%);
+  color: #101826;
+}
+
+.brand-theme-preview-accent.accent-underline {
+  padding-bottom: 8px;
+  border-bottom: 6px solid var(--brand-theme-secondary, #F8FAFC);
+}
+
+.brand-theme-preview-accent.accent-bold {
+  color: var(--brand-theme-secondary, #F8FAFC);
+  font-size: 1.3rem;
+  letter-spacing: 0.02em;
+}
+
+.brand-theme-preview-copy {
+  margin: 0;
+  max-width: 28ch;
+  line-height: 1.5;
+  opacity: 0.92;
+}
+
+.brand-theme-preview-bullets {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.brand-theme-preview-bullets li {
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--brand-theme-secondary, #F8FAFC) 18%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--brand-theme-secondary, #F8FAFC) 9%, transparent);
+  line-height: 1.45;
+}
+
+.brand-theme-preview-shell[data-format="quote"] {
+  justify-content: start;
+}
+
+.brand-theme-preview-shell[data-format="quote"] .brand-theme-preview-header {
+  order: 2;
+  margin-top: auto;
+}
+
+.brand-theme-preview-shell[data-format="quote"] .brand-theme-preview-brand.placement-bottom_right {
+  margin-top: 0;
+}
+
+.brand-theme-preview-shell[data-format="framework"] {
+  align-content: start;
+}
+
+.brand-theme-preview-shell[data-format="framework"] h4 {
+  max-width: 10ch;
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+  line-height: 1.02;
+}
+
+.brand-theme-preview-shell[data-format="framework"] .brand-theme-preview-accent {
+  margin-top: 2px;
+  font-size: 1rem;
+}
+
+.brand-theme-preview-shell[data-format="framework"] .brand-theme-preview-copy {
+  max-width: 24ch;
+}
+
+.brand-theme-preview-shell[data-format="carousel"] {
+  min-height: 240px;
+  padding-right: 56px;
+}
+
+.brand-theme-preview-shell[data-format="carousel"]::after {
+  content: "";
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 18px;
+  height: 4px;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      to right,
+      var(--brand-theme-secondary, #F8FAFC) 0%,
+      var(--brand-theme-secondary, #F8FAFC) 22%,
+      color-mix(in srgb, var(--brand-theme-secondary, #F8FAFC) 20%, transparent) 22%,
+      color-mix(in srgb, var(--brand-theme-secondary, #F8FAFC) 20%, transparent) 100%
+    );
+}
+
+.brand-theme-preview-shell[data-format="carousel"] h4 {
+  max-width: 9ch;
+  font-size: clamp(1.5rem, 3vw, 2rem);
+}
+
+.brand-theme-preview-shell[data-format="carousel"] .brand-theme-preview-copy {
+  max-width: 25ch;
+}
+
+.brand-theme-consistency-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.brand-theme-consistency-list {
+  display: grid;
+  gap: 10px;
+}
+
+.brand-theme-consistency-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 88%, white 12%);
+}
+
+.brand-theme-consistency-card[data-tone="pass"] {
+  border-color: color-mix(in srgb, var(--fc-success-text) 18%, var(--fc-border));
+}
+
+.brand-theme-consistency-card[data-tone="warn"] {
+  border-color: color-mix(in srgb, var(--fc-warning-text) 22%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-warning-bg) 42%, var(--fc-panel-bg));
+}
+
+.brand-theme-consistency-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brand-theme-consistency-header strong {
+  font-size: 0.92rem;
+}
+
+.brand-theme-consistency-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--fc-surface-subtle);
+  color: var(--fc-text-muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.brand-theme-consistency-card[data-tone="pass"] .brand-theme-consistency-badge {
+  background: color-mix(in srgb, var(--fc-success-bg) 82%, var(--fc-panel-bg));
+  color: var(--fc-success-text);
+}
+
+.brand-theme-consistency-card[data-tone="warn"] .brand-theme-consistency-badge {
+  background: var(--fc-warning-bg);
+  color: var(--fc-warning-text);
+}
+
+.brand-theme-consistency-card p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.5;
+}
+
 .knowledge-source-list {
   display: grid;
   gap: 12px;
@@ -2286,7 +3584,9 @@ watch(
   .brand-context-grid,
   .brand-signal-grid,
   .brand-competitor-grid,
-  .competitor-suggestion-grid {
+  .competitor-suggestion-grid,
+  .brand-theme-swatches,
+  .brand-theme-preset-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -5,7 +5,8 @@ import type {
   ContentAssetLengthBucket,
   ContentAssetStatus,
 } from "./analytics.ts";
-import type { RecommendedPostTimeSlot } from "./social-publishing.ts";
+import type { RepurposeStrategy } from "./repurpose.ts";
+import type { PostPerformanceLabel, RecommendedPostTimeSlot } from "./social-publishing.ts";
 
 export type IdeaInboxStatus = "new" | "converted" | "archived";
 export type IdeaInboxInputType = "text" | "voice" | "image" | "link";
@@ -124,6 +125,26 @@ export interface DashboardNextAction {
   route: string;
 }
 
+export interface ContentGenerationSuggestion {
+  id: string;
+  title: string;
+  description: string;
+  rationale: string;
+  strategy: RepurposeStrategy;
+  sourceAssetId: string;
+  sourceTitle: string;
+  sourceStage?: ContentPipelineStage;
+  sourceText: string;
+  previewText: string;
+  recommended: boolean;
+  performanceLabel?: PostPerformanceLabel;
+}
+
+export interface ListContentGenerationSuggestionsResponse {
+  businessId: string;
+  suggestions: ContentGenerationSuggestion[];
+}
+
 export interface ControlDashboardResponse {
   businessId: string;
   today: DashboardTodaySummary;
@@ -137,6 +158,10 @@ export interface ControlDashboardResponse {
 }
 
 export interface ControlDashboardQuery {
+  businessId: string;
+}
+
+export interface ListContentGenerationSuggestionsQuery {
   businessId: string;
 }
 
@@ -167,6 +192,7 @@ export interface UpdateContentPipelineItemRequest {
   title?: string;
   textContent?: string;
   status?: ContentPipelineStage;
+  contentBody?: Record<string, unknown>;
 }
 
 export interface UpdateContentPipelineItemResponse {

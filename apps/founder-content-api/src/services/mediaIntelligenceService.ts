@@ -1154,7 +1154,7 @@ function getMediaSuggestionLabel(mediaType: MediaSuggestionType): string {
     case "stat_card":
       return "Stat card";
     case "framework_card":
-      return "Framework card";
+      return "Carousel";
     case "photo_overlay":
       return "Photo overlay";
     case "screenshot_highlight":
@@ -1573,7 +1573,7 @@ export async function getMediaRecommendations(
       description: `Use the ${preset.uiLabel || preset.name} preset to create a safe, context-aware visual.`,
       reason:
         mediaType === "framework_card"
-          ? "This content is structured enough to benefit from a scan-friendly framework card."
+          ? "This content is structured enough to become a 3-5 slide carousel with a clear narrative flow."
           : mediaType === "stat_card"
             ? "A compact stat-style visual can add proof without making the post feel overproduced."
             : "A quote-style card keeps the message text-first and brand-safe.",

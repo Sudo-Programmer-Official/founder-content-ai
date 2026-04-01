@@ -349,6 +349,30 @@ function normalizeOptionalEmail(value: string | undefined): string | null {
   return normalized ? normalized : null;
 }
 
+function normalizeDomainNameInput(value: string | undefined | null): string | null {
+  const normalized = value?.trim().toLowerCase();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const emailDomain = extractEmailDomain(normalized);
+
+  if (emailDomain) {
+    return emailDomain.replace(/^www\./, "").replace(/\.$/, "");
+  }
+
+  const withoutProtocol = normalized.replace(/^[a-z]+:\/\//i, "");
+  const urlCandidate = /^[a-z]+:\/\//i.test(normalized) ? normalized : `https://${withoutProtocol}`;
+
+  try {
+    return new URL(urlCandidate).hostname.replace(/^www\./, "").replace(/\.$/, "");
+  } catch {
+    const candidate = withoutProtocol.split(/[/?#]/)[0]?.replace(/^www\./, "").replace(/\.$/, "") || "";
+    return candidate || null;
+  }
+}
+
 function normalizeOptionalHttpUrl(value: string | undefined | null): string | null {
   const normalized = value?.trim();
 
@@ -3607,13 +3631,16 @@ export async function createEmailDomain(
   businessId: string,
   input: CreateEmailDomainRequest,
 ): Promise<CreateEmailDomainResponse> {
-  const domainName = input.domainName.trim().toLowerCase();
   const fromEmail = normalizeOptionalEmail(input.fromEmail);
   const replyToEmail = normalizeOptionalEmail(input.replyToEmail);
   const signatureText = input.signatureText?.trim() || null;
+  const domainName =
+    normalizeDomainNameInput(input.domainName) ||
+    normalizeDomainNameInput(fromEmail) ||
+    null;
 
-  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domainName)) {
-    throw new HttpError(400, "email_domain_invalid", "A valid domain is required.");
+  if (!domainName || !/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(domainName)) {
+    throw new HttpError(400, "email_domain_invalid", "A valid domain is required. Use a root domain like yourbrand.com.");
   }
 
   assertValidOptionalEmail(fromEmail, "email_from_invalid", "A valid from email is required.");

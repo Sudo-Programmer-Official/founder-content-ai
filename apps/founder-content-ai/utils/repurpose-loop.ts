@@ -1,9 +1,17 @@
+import {
+  DEFAULT_REPURPOSE_STRATEGY,
+  isRepurposeStrategy,
+  type RepurposeStrategy,
+} from "../../../packages/shared-types";
+
 export type GrowthDistributionFormat = "thread" | "carousel" | "video" | "email";
 
 export interface RepurposeSeedPayload {
   text: string;
   title?: string;
   format?: GrowthDistributionFormat;
+  strategy?: RepurposeStrategy;
+  autoGenerate?: boolean;
   source: "dashboard" | "variation" | "history" | "result";
 }
 
@@ -60,6 +68,8 @@ export function consumeRepurposeSeed(): RepurposeSeedPayload | null {
       text: parsed.text.trim(),
       title: typeof parsed.title === "string" ? parsed.title.trim() : undefined,
       format: parsed.format,
+      strategy: isRepurposeStrategy(parsed.strategy) ? parsed.strategy : DEFAULT_REPURPOSE_STRATEGY,
+      autoGenerate: parsed.autoGenerate === true,
       source: parsed.source,
     };
   } catch {

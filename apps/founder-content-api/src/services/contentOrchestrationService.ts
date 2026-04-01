@@ -15,6 +15,7 @@ import type {
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { generatePostsWithAI } from "./aiService.ts";
 import { createContentAssetRecord, safeLogContentGeneration, safeLogEvent } from "./analytics/eventLoggingService.ts";
+import { resolveContentGenerationTone } from "./contentGenerationToneService.ts";
 import { queryDb, withDbTransaction } from "./db/client.ts";
 import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "./governanceService.ts";
 import { createScheduledPost } from "./scheduledPostService.ts";
@@ -526,7 +527,10 @@ export async function generateContentBatch(
   const days = normalizeDays(input.days);
   const lane = input.lane;
   const primaryChannel = input.primaryChannel;
-  const tone = input.tone?.trim() || "storytelling";
+  const tone = await resolveContentGenerationTone({
+    requestedTone: input.tone,
+    businessId,
+  });
   const length = input.length?.trim() || "medium";
   const defaultAudienceTimezone = normalizeTimezone(input.audienceTimezone);
   const defaultScheduledTime = normalizeTime(input.defaultScheduledTime, "09:00");

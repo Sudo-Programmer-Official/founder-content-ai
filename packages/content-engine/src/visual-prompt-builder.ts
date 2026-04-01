@@ -1,6 +1,8 @@
 import type {
   BrandKit,
+  BrandKitAccentStyle,
   BrandKitBackgroundStyle,
+  BrandKitBrandPlacement,
   BrandKitFontStyle,
   BrandKitInput,
   BrandKitTone,
@@ -16,6 +18,8 @@ const DEFAULT_BRAND_KIT: Omit<BrandKit, "id" | "businessId" | "createdAt" | "upd
   fontStyle: "bold",
   visualStyle: "minimal",
   tone: "professional",
+  accentStyle: "highlight_box",
+  brandPlacement: "top_left",
   logoUrl: undefined,
 };
 
@@ -167,6 +171,11 @@ function resolveStyleBlock(brandKit: BrandKitInput): string {
     ["minimal", "luxury", "playful"],
     DEFAULT_BRAND_KIT.visualStyle,
   );
+  const accentStyle = sanitizeEnum<BrandKitAccentStyle>(
+    brandKit.accentStyle,
+    ["highlight_box", "underline", "bold"],
+    DEFAULT_BRAND_KIT.accentStyle,
+  );
   const colorPalette = resolveDefaultColors(backgroundStyle);
   const primaryColor = sanitizeColor(brandKit.primaryColor, colorPalette.primaryColor);
   const secondaryColor = sanitizeColor(brandKit.secondaryColor, colorPalette.secondaryColor);
@@ -188,25 +197,55 @@ function resolveStyleBlock(brandKit: BrandKitInput): string {
     luxury: "premium minimalism with refined balance and elevated finish",
     playful: "expressive composition with a confident modern edge",
   };
+  const accentDescriptions: Record<BrandKitAccentStyle, string> = {
+    highlight_box: "highlight phrases land inside a restrained contrast block",
+    underline: "highlight phrases use a sharp underline rather than a box",
+    bold: "highlight phrases rely on oversized bold emphasis instead of extra containers",
+  };
 
   return [
     backgroundDescriptions[backgroundStyle],
     fontDescriptions[fontStyle],
     visualDescriptions[visualStyle],
+    accentDescriptions[accentStyle],
     `color palette led by ${primaryColor} and ${secondaryColor}`,
   ].join(", ");
 }
 
-function resolveLayoutBlock(templateType: VisualTemplateType): string {
+function resolveLayoutBlock(
+  templateType: VisualTemplateType,
+  brandKit: BrandKitInput,
+): string {
+  const brandPlacement = sanitizeEnum<BrandKitBrandPlacement>(
+    brandKit.brandPlacement,
+    ["top_left", "bottom_right", "side_label"],
+    DEFAULT_BRAND_KIT.brandPlacement,
+  );
+  const accentStyle = sanitizeEnum<BrandKitAccentStyle>(
+    brandKit.accentStyle,
+    ["highlight_box", "underline", "bold"],
+    DEFAULT_BRAND_KIT.accentStyle,
+  );
+  const brandPlacementDescription: Record<BrandKitBrandPlacement, string> = {
+    top_left: "small brand signature locked to the top-left corner",
+    bottom_right: "small brand signature locked to the bottom-right corner",
+    side_label: "vertical side label locked to one edge",
+  };
+  const accentDescription: Record<BrandKitAccentStyle, string> = {
+    highlight_box: "one highlighted phrase inside a contrast box",
+    underline: "one highlighted phrase with an accent underline",
+    bold: "one highlighted phrase using oversized bold emphasis",
+  };
+
   switch (templateType) {
     case "quote":
-      return "contrast quote card, small brand mark at the top, neutral intro line, one highlighted phrase in an accent block, optional closing line below, maximum 4 text blocks";
+      return `contrast quote card, ${brandPlacementDescription[brandPlacement]}, neutral intro line, ${accentDescription[accentStyle]}, optional closing line below, maximum 4 text blocks, keep content padding and brand padding aligned`;
     case "insight":
-      return "editorial insight card, title at top, 2 to 3 short bullet insights below, one emphasized key phrase, clean grid spacing, obvious scan hierarchy";
+      return `editorial insight card, ${brandPlacementDescription[brandPlacement]}, title at top, 2 to 3 short bullet insights below, one emphasized key phrase, clean grid spacing, obvious scan hierarchy, keep the brand off the bottom center`;
     case "contrarian":
-      return "split emphasis layout, quiet setup copy on one side, oversized emphasis phrase on the opposite side, hard contrast, built to stop scroll on mobile";
+      return `split emphasis layout, ${brandPlacementDescription[brandPlacement]}, quiet setup copy on one side, oversized emphasis phrase on the opposite side, hard contrast, built to stop scroll on mobile`;
     case "carousel":
-      return "minimal brand card, one huge idea first, short accent line, tiny footer brand or domain, structured like a premium LinkedIn carousel cover";
+      return `premium LinkedIn carousel slide, ${brandPlacementDescription[brandPlacement]}, one dominant headline, optional supporting line, optional 2 to 3 compact bullets, controlled spacing, same typography system across every slide, tiny brand signature rather than a footer watermark`;
     default:
       return "clean social-first layout with clear hierarchy";
   }
@@ -248,6 +287,9 @@ function resolveContentBlock(
       `Headline: "${headline}"`,
       highlightText ? `Accent phrase: "${highlightText}"` : undefined,
       supportingText ? `Subtext: "${supportingText}"` : undefined,
+      bulletPoints.length > 0
+        ? `Bullets: ${bulletPoints.map((point) => `- ${point}`).join(" ")}`
+        : undefined,
       footerText ? `Footer: "${footerText}"` : undefined,
     ]
       .filter(Boolean)
@@ -298,6 +340,16 @@ function resolveBrandBlock(brandKit: BrandKitInput): string {
     ["professional", "bold", "friendly"],
     DEFAULT_BRAND_KIT.tone,
   );
+  const accentStyle = sanitizeEnum<BrandKitAccentStyle>(
+    brandKit.accentStyle,
+    ["highlight_box", "underline", "bold"],
+    DEFAULT_BRAND_KIT.accentStyle,
+  );
+  const brandPlacement = sanitizeEnum<BrandKitBrandPlacement>(
+    brandKit.brandPlacement,
+    ["top_left", "bottom_right", "side_label"],
+    DEFAULT_BRAND_KIT.brandPlacement,
+  );
   const colorPalette = resolveDefaultColors(backgroundStyle);
   const primaryColor = sanitizeColor(brandKit.primaryColor, colorPalette.primaryColor);
   const secondaryColor = sanitizeColor(brandKit.secondaryColor, colorPalette.secondaryColor);
@@ -307,10 +359,14 @@ function resolveBrandBlock(brandKit: BrandKitInput): string {
     `${visualStyle} visual system`,
     `${backgroundStyle} background treatment`,
     `${fontStyle} type direction`,
+    `${accentStyle} accent treatment`,
+    `${brandPlacement} brand placement`,
     `use ${primaryColor} as the dominant brand color`,
     `use ${secondaryColor} for contrast or accent`,
-    brandKit.logoUrl ? "include a small restrained brand mark or logo if space allows" : "use a tiny brand mark rather than a large logo",
-    "LinkedIn-native composition, control attention flow through contrast and hierarchy, no random decorative clutter",
+    brandKit.logoUrl
+      ? "include a small restrained brand mark or logo in the chosen placement"
+      : "use a tiny brand mark rather than a large logo",
+    "LinkedIn-native composition, control attention flow through contrast and hierarchy, align brand spacing with content spacing, never place the brand centered at the bottom",
   ].join(", ");
 }
 
@@ -346,6 +402,16 @@ export function resolveBrandKit(
       ["professional", "bold", "friendly"],
       DEFAULT_BRAND_KIT.tone,
     ),
+    accentStyle: sanitizeEnum<BrandKitAccentStyle>(
+      input.accentStyle,
+      ["highlight_box", "underline", "bold"],
+      DEFAULT_BRAND_KIT.accentStyle,
+    ),
+    brandPlacement: sanitizeEnum<BrandKitBrandPlacement>(
+      input.brandPlacement,
+      ["top_left", "bottom_right", "side_label"],
+      DEFAULT_BRAND_KIT.brandPlacement,
+    ),
     logoUrl: collapseWhitespace(input.logoUrl) || undefined,
     createdAt: overrides.createdAt ?? new Date(0).toISOString(),
     updatedAt: overrides.updatedAt ?? new Date(0).toISOString(),
@@ -364,7 +430,7 @@ export function buildVisualPrompt(input: {
     resolveStyleBlock(resolvedBrandKit),
     "",
     "LAYOUT:",
-    resolveLayoutBlock(input.templateType),
+    resolveLayoutBlock(input.templateType, resolvedBrandKit),
     "",
     "CONTENT:",
     resolveContentBlock(input.templateType, input.content),
@@ -373,6 +439,6 @@ export function buildVisualPrompt(input: {
     resolveBrandBlock(resolvedBrandKit),
     "",
     "QUALITY:",
-    "ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint",
+    "ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding",
   ].join("\n");
 }

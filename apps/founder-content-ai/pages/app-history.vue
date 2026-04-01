@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import type {
   BusinessMembership,
   PostPerformanceLabel,
+  RepurposeStrategy,
   ScheduledPost,
   SchedulingSafetyWarning,
   ScheduledPostStatus,
@@ -19,6 +20,10 @@ import {
   requestUpdateScheduledPostPerformance,
 } from "../services/publishing-service";
 import { saveRepurposeSeed } from "../utils/repurpose-loop";
+import {
+  DEFAULT_REPURPOSE_STRATEGY,
+  REPURPOSE_STRATEGY_OPTIONS,
+} from "../utils/repurpose-strategies";
 import { appRoutes } from "../utils/routes";
 import {
   formatScheduledPostDispatchWindow,
@@ -48,6 +53,9 @@ const PERFORMANCE_OPTIONS: { value: PostPerformanceLabel; label: string }[] = [
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
 ];
+const FOLLOW_UP_STRATEGY_OPTIONS = REPURPOSE_STRATEGY_OPTIONS.filter(
+  (option) => option.value !== DEFAULT_REPURPOSE_STRATEGY,
+);
 
 const route = useRoute();
 const router = useRouter();
@@ -655,20 +663,19 @@ async function saveSelectedPostPerformance(performanceLabel: PostPerformanceLabe
   }
 }
 
-function openRepurpose(post: ScheduledPost): void {
+function continueWritingFromHistory(
+  post: ScheduledPost,
+  strategy: RepurposeStrategy = DEFAULT_REPURPOSE_STRATEGY,
+): void {
   saveRepurposeSeed({
     text: post.contentText,
     title: getDisplayTitle(post),
+    strategy,
+    autoGenerate: true,
     source: "history",
   });
 
-  void router.push({
-    path: appRoutes.appCreate,
-    query: {
-      mode: "repurpose",
-    },
-    hash: "#repurpose-panel",
-  });
+  void router.push(appRoutes.appCreate);
 }
 
 function openDraftEditor(assetId?: string): void {
@@ -1058,10 +1065,24 @@ onMounted(() => {
             <button
               type="button"
               class="workspace-secondary-button"
-              @click="openRepurpose(selectedScheduledPost)"
+              @click="continueWritingFromHistory(selectedScheduledPost)"
             >
-              Repurpose
+              Continue writing
             </button>
+            <div class="history-strategy-actions">
+              <p class="panel-meta">One-click angles</p>
+              <div class="history-strategy-row">
+                <button
+                  v-for="option in FOLLOW_UP_STRATEGY_OPTIONS"
+                  :key="option.value"
+                  type="button"
+                  class="workspace-secondary-button compact"
+                  @click="continueWritingFromHistory(selectedScheduledPost, option.value)"
+                >
+                  {{ option.shortLabel }}
+                </button>
+              </div>
+            </div>
             <button
               v-if="selectedScheduledPostCanPublishNow"
               type="button"
@@ -1189,9 +1210,16 @@ onMounted(() => {
 }
 
 .history-toolbar-actions,
-.history-list-meta {
+.history-list-meta,
+.history-strategy-actions {
   display: grid;
   gap: 1rem;
+}
+
+.history-strategy-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 .history-overview-grid {

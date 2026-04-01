@@ -37,6 +37,7 @@ import type {
   SocialAccount,
   VisualTemplateType,
 } from "../../../packages/shared-types";
+import { DEFAULT_GENERATION_TONE } from "../../../packages/shared-types";
 import type { GrowthDistributionFormat } from "../utils/repurpose-loop";
 import { appRoutes } from "../utils/routes";
 import { consumeRepurposeSeed } from "../utils/repurpose-loop";
@@ -52,7 +53,7 @@ const {
 } = useProductAccessContext();
 
 const topic = ref("startup failure lesson");
-const tone = ref("storytelling");
+const tone = ref("");
 const length = ref("medium");
 const selectedHook = ref("");
 const variations = ref<LinkedInPostVariation[]>([]);
@@ -73,6 +74,9 @@ const memberships = ref<BusinessMembership[]>([]);
 const selectedBusinessId = ref("");
 const socialAccounts = ref<SocialAccount[]>([]);
 const scheduledPosts = ref<ScheduledPost[]>([]);
+const effectiveTone = computed(() => tone.value.trim() || DEFAULT_GENERATION_TONE);
+const requestedTone = computed(() => tone.value.trim() || undefined);
+const analyticsTone = computed(() => requestedTone.value ?? "workspace_default");
 
 function extractSchedulingWarnings(error: unknown): SchedulingSafetyWarning[] {
   if (!(error instanceof ApiRequestError) || error.code !== "scheduling_safety_warning") {
@@ -418,37 +422,36 @@ function updateManualVisualHighlight(key: string, value: string) {
 }
 
 function resolveBrandKitPreset(preset: VisualStylePreset): BrandKitInput {
-  const baseTone = resolveBrandTone(tone.value);
+  const baseTone = resolveBrandTone(effectiveTone.value);
 
   if (preset === "editorial-light") {
     return {
-      primaryColor: "#F8F2EA",
-      secondaryColor: "#1F2937",
       backgroundStyle: "light",
       fontStyle: "modern",
       visualStyle: "minimal",
       tone: baseTone,
+      accentStyle: "underline",
+      brandPlacement: "top_left",
     };
   }
 
   if (preset === "high-contrast") {
     return {
-      primaryColor: "#111111",
-      secondaryColor: "#FACC15",
       backgroundStyle: "dark",
       fontStyle: "bold",
       visualStyle: "minimal",
       tone: "bold",
+      accentStyle: "bold",
+      brandPlacement: "bottom_right",
     };
   }
 
   return {
-    primaryColor: "#161617",
-    secondaryColor: "#F28C28",
-    backgroundStyle: "dark",
     fontStyle: "bold",
     visualStyle: "minimal",
     tone: baseTone,
+    accentStyle: "highlight_box",
+    brandPlacement: "top_left",
   };
 }
 
@@ -458,9 +461,9 @@ const selectedBusiness = computed(
 
 function resolveVisualEyebrow(variation: LinkedInPostVariation): string | undefined {
   return (
+    variation.angle ||
     selectedBusiness.value?.business.brandName ||
-    selectedBusiness.value?.business.name ||
-    variation.angle
+    selectedBusiness.value?.business.name
   )?.trim();
 }
 
@@ -495,7 +498,7 @@ function buildVisualRequest(
   const key = getVariationKey(variation);
   const lines = extractLines(variation.content);
   const headline = summarizeSentence(lines[0] ?? topic.value, templateType === "contrarian" ? 88 : templateType === "carousel" ? 82 : 108);
-  const supportingText = summarizeSentence(lines[1] ?? `${tone.value} LinkedIn insight`, 88);
+  const supportingText = summarizeSentence(lines[1] ?? `${effectiveTone.value} LinkedIn insight`, 88);
   const footerText = resolveVisualFooter();
   const eyebrowText = resolveVisualEyebrow(variation);
   const highlightText = resolveVisualHighlight(key, headline, supportingText);
@@ -1037,7 +1040,7 @@ async function handleRepurposeSubmit() {
       url: repurposeInputType.value === "url" ? repurposeUrl.value : undefined,
       voiceTranscript:
         repurposeInputType.value === "voice" ? repurposeVoiceTranscript.value : undefined,
-      tone: tone.value,
+      tone: requestedTone.value,
     });
 
     repurposeResult.value = response;
@@ -1056,7 +1059,7 @@ async function handleRepurposeSubmit() {
         metadata: {
           source: "repurpose-engine",
           contentType: "post",
-          tone: tone.value,
+          tone: analyticsTone.value,
           inputType: response.inputType,
         },
       });
@@ -1088,7 +1091,7 @@ async function handleSubmit() {
   try {
     const response = await requestLinkedInPostGeneration({
       topic: topic.value,
-      tone: tone.value,
+      tone: requestedTone.value,
       length: length.value,
       selectedHook: selectedHook.value || undefined,
       businessId: selectedBusinessId.value || undefined,
@@ -1107,7 +1110,7 @@ async function handleSubmit() {
         metadata: {
           source: "linkedin-post-generator",
           contentType: "post",
-          tone: tone.value,
+          tone: analyticsTone.value,
         },
       });
     } catch {
@@ -1139,7 +1142,7 @@ async function copyVariation(content: string) {
       metadata: {
         source: "linkedin-post-generator",
         contentType: "post",
-        tone: tone.value,
+        tone: analyticsTone.value,
         preview: content.slice(0, 140),
       },
     });
@@ -1278,7 +1281,7 @@ async function copyAndShareVariation(variation: LinkedInPostVariation) {
       metadata: {
         source: "copy-share",
         contentType: "post",
-        tone: tone.value,
+        tone: analyticsTone.value,
         branded: true,
         preview: shareCaption.slice(0, 140),
       },
@@ -1314,7 +1317,7 @@ async function postVariationToLinkedIn(variation: LinkedInPostVariation) {
       metadata: {
         source: "post-on-linkedin",
         contentType: "post",
-        tone: tone.value,
+        tone: analyticsTone.value,
         branded: true,
         preview: shareCaption.slice(0, 140),
       },
@@ -1707,7 +1710,7 @@ onMounted(async () => {
 
       <label>
         <span>Tone</span>
-        <input v-model="tone" type="text" placeholder="storytelling" />
+        <input v-model="tone" type="text" placeholder="direct" />
       </label>
 
       <label>
@@ -1943,6 +1946,12 @@ onMounted(async () => {
             class="description small"
           >
             Watermark applied: {{ generatedVisuals[getVariationKey(variation)].watermarkText }}
+          </p>
+          <p
+            v-if="generatedVisuals[getVariationKey(variation)].brandConsistency.tone === 'review'"
+            class="description small"
+          >
+            Brand check: {{ generatedVisuals[getVariationKey(variation)].brandConsistency.summary }}
           </p>
         </section>
       </article>

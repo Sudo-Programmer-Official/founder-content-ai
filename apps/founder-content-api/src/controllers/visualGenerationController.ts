@@ -65,6 +65,55 @@ export async function generateVisualController(
         footerText: request.body.content.footerText?.trim() || undefined,
         closingText: request.body.content.closingText?.trim() || undefined,
       },
+      narrative: request.body.narrative
+        ? {
+            format: "carousel",
+            type: request.body.narrative.type,
+            title: request.body.narrative.title?.trim() ?? "",
+            subtitle: request.body.narrative.subtitle?.trim() ?? "",
+            sourceText: request.body.narrative.sourceText?.trim() || undefined,
+            slides: Array.isArray(request.body.narrative.slides)
+              ? request.body.narrative.slides
+                .map((slide) => ({
+                  role: slide.role?.trim() || "insight",
+                  headline: slide.headline?.trim() ?? "",
+                  supportingText: slide.supportingText?.trim() || undefined,
+                  bulletPoints: Array.isArray(slide.bulletPoints) ? slide.bulletPoints : undefined,
+                  highlightText: slide.highlightText?.trim() || undefined,
+                  eyebrowText: slide.eyebrowText?.trim() || undefined,
+                  footerText: slide.footerText?.trim() || undefined,
+                  closingText: slide.closingText?.trim() || undefined,
+                  assetId: slide.assetId?.trim() || undefined,
+                  imageDataUrl: slide.imageDataUrl?.trim() || undefined,
+                  mimeType: slide.mimeType?.trim() || undefined,
+                }))
+                .filter((slide) => slide.headline)
+              : [],
+          }
+        : undefined,
+      carousel: request.body.carousel
+        ? {
+            narrativeType: request.body.carousel.narrativeType,
+            slideCount: request.body.carousel.slideCount,
+            sourceText: request.body.carousel.sourceText?.trim() || undefined,
+            title: request.body.carousel.title?.trim() || undefined,
+            subtitle: request.body.carousel.subtitle?.trim() || undefined,
+            slides: Array.isArray(request.body.carousel.slides)
+              ? request.body.carousel.slides
+                .map((slide) => ({
+                  headline: slide.headline?.trim() ?? "",
+                  supportingText: slide.supportingText?.trim() || undefined,
+                  bulletPoints: Array.isArray(slide.bulletPoints) ? slide.bulletPoints : undefined,
+                  highlightText: slide.highlightText?.trim() || undefined,
+                  eyebrowText: slide.eyebrowText?.trim() || undefined,
+                  footerText: slide.footerText?.trim() || undefined,
+                  closingText: slide.closingText?.trim() || undefined,
+                  narrativeRole: slide.narrativeRole?.trim() || undefined,
+                }))
+                .filter((slide) => slide.headline)
+              : undefined,
+          }
+        : undefined,
       brandKit: request.body.brandKit
         ? {
             primaryColor: request.body.brandKit.primaryColor?.trim(),
@@ -73,6 +122,8 @@ export async function generateVisualController(
             fontStyle: request.body.brandKit.fontStyle,
             visualStyle: request.body.brandKit.visualStyle,
             tone: request.body.brandKit.tone,
+            accentStyle: request.body.brandKit.accentStyle,
+            brandPlacement: request.body.brandKit.brandPlacement,
             logoUrl: request.body.brandKit.logoUrl?.trim(),
           }
         : undefined,
@@ -107,6 +158,7 @@ export async function generateVisualController(
             mimeType: generatedAsset.mimeType,
             templateType: generatedAsset.templateType,
             watermarkApplied: generatedAsset.watermarkApplied,
+            brandConsistency: generatedAsset.brandConsistency,
           },
           status: "completed",
         });

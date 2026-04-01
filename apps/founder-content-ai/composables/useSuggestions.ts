@@ -138,10 +138,10 @@ function buildRepurposeSuggestion(context: AIRailContext): AISuggestion | null {
 
   return {
     type: "repurpose",
-    title: "Repurpose a recent winner",
+    title: "Continue from a recent winner",
     description: "Turn one recent post into a carousel or remix it into a stronger angle.",
     action: "repurpose",
-    actionLabel: "Repurpose",
+    actionLabel: "Continue writing",
     priority: 74,
     severity: "optional",
     assetId: candidate.id,
@@ -230,10 +230,10 @@ function buildPrimaryRecommendation(context: AIRailContext, dailyIdea?: IdeaOpti
 
   return {
     type: "repurpose",
-    title: "Repurpose your latest content",
+    title: "Continue from your latest content",
     description: "Use your recent content while the angle is still fresh.",
     action: "repurpose",
-    actionLabel: "Repurpose",
+    actionLabel: "Continue writing",
     priority: 100,
     recommended: true,
     severity: "optional",

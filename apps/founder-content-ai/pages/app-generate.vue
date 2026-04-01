@@ -3,10 +3,19 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
   BrandProfile,
+  ContentGenerationSuggestion,
   ContentIngestionItem,
+  GenerationToneMode,
+  RepurposeSuggestionSelection,
+  RepurposeStrategy,
   RepurposeSourceUrlInput,
   SavedContentSource,
   SocialAccount,
+} from "../../../packages/shared-types";
+import {
+  DEFAULT_REPURPOSE_STRATEGY,
+  DEFAULT_GENERATION_TONE,
+  resolveGenerationToneMode,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import VoiceRecorder from "../components/VoiceRecorder.vue";
@@ -20,9 +29,17 @@ import {
   getActivationDraft,
   saveActivationDraft,
 } from "../services/activation-flow-service";
-import { requestPipelineItem } from "../services/control-dashboard-service";
+import {
+  requestContentGenerationSuggestions,
+  requestPipelineItem,
+} from "../services/control-dashboard-service";
 import { requestSocialAccounts } from "../services/publishing-service";
-import { consumeRepurposeSeed } from "../utils/repurpose-loop";
+import { consumeRepurposeSeed, type RepurposeSeedPayload } from "../utils/repurpose-loop";
+import {
+  REPURPOSE_STRATEGY_OPTIONS,
+  getRepurposeStrategyOption,
+  resolveRepurposeStrategySubmitLabel,
+} from "../utils/repurpose-strategies";
 import { appRoutes } from "../utils/routes";
 
 const exampleIdeas = [
@@ -39,12 +56,14 @@ const toneOptions = [
 
 const route = useRoute();
 const router = useRouter();
-const { bootstrap } = useProductAccessContext();
+const { bootstrap, isReady: isProductAccessReady } = useProductAccessContext();
 
 type GenerationSourceMode = "fresh" | "feed";
 
 const input = ref("");
-const tone = ref<(typeof toneOptions)[number]["value"]>("direct");
+const tone = ref<GenerationToneMode>(DEFAULT_GENERATION_TONE);
+const generationStrategy = ref<RepurposeStrategy>(DEFAULT_REPURPOSE_STRATEGY);
+const hasToneOverride = ref(false);
 const isLoading = ref(false);
 const errorMessage = ref("");
 const helperMessage = ref("Paste a thought, saved post, or rough idea. Voice works too.");
@@ -65,8 +84,13 @@ const brandProfile = ref<BrandProfile | null>(null);
 const isLoadingBrandProfile = ref(false);
 const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingSocialAccounts = ref(false);
+const generationSuggestions = ref<ContentGenerationSuggestion[]>([]);
+const isLoadingGenerationSuggestions = ref(false);
+const generationSuggestionError = ref("");
 const isHydratingFeedDefaults = ref(false);
 const hydratedSourceBusinessId = ref("");
+const seededRepurposeSource = ref<RepurposeSeedPayload["source"] | "">("");
+const pendingAutoGenerate = ref(false);
 
 const pageTitle = computed(() =>
   improvementSourceId.value ? "Improve the post you already have" : "Create your next post",
@@ -76,14 +100,43 @@ const pageDescription = computed(() =>
     ? "We will use your previous draft as input and tighten the hook, structure, and clarity."
     : "Write from scratch or repurpose existing content in one place. Generate, refine, and move toward publishing without switching tools.",
 );
-const submitLabel = computed(() => (isLoading.value ? "Generating..." : "Generate post"));
+const isStrategyFlow = computed(
+  () => !improvementSourceId.value && sourceMode.value === "fresh" && seededRepurposeSource.value !== "",
+);
+const showSuggestionPanel = computed(
+  () =>
+    !improvementSourceId.value &&
+    sourceMode.value === "fresh" &&
+    seededRepurposeSource.value === "" &&
+    hasActiveWorkspace.value &&
+    input.value.trim() === "",
+);
+const activeStrategyOption = computed(() => getRepurposeStrategyOption(generationStrategy.value));
+const recommendedGenerationSuggestion = computed(
+  () => generationSuggestions.value.find((suggestion) => suggestion.recommended) ?? generationSuggestions.value[0] ?? null,
+);
+const submitLabel = computed(() => {
+  if (isLoading.value) {
+    return "Generating...";
+  }
+
+  return isStrategyFlow.value
+    ? resolveRepurposeStrategySubmitLabel(generationStrategy.value)
+    : "Generate post";
+});
 const sourceInputLabel = computed(() =>
-  sourceMode.value === "feed" ? "Repurpose with context" : "Bring one idea",
+  isStrategyFlow.value
+    ? activeStrategyOption.value.label
+    : sourceMode.value === "feed"
+      ? "Repurpose with context"
+      : "Bring one idea",
 );
 const sourceInputPlaceholder = computed(() =>
-  sourceMode.value === "feed"
-    ? "Example: turn these sources into a founder post about customer trust, product lessons, and practical proof. Your saved brand context will still shape the result."
-    : "Paste your idea, tweet, thought, or rough note here...",
+  isStrategyFlow.value
+    ? "Review the seeded post, tighten the framing if needed, then generate the next move."
+    : sourceMode.value === "feed"
+      ? "Example: turn these sources into a founder post about customer trust, product lessons, and practical proof. Your saved brand context will still shape the result."
+      : "Paste your idea, tweet, thought, or rough note here...",
 );
 const hasFeedSources = computed(() => buildFeedSourceUrls().length > 0);
 const isFeedPreviewReady = computed(() => feedPreviewText.value.trim() !== "" && !isFeedPreviewDirty.value);
@@ -118,6 +171,49 @@ const brandContextChips = computed(() => {
 });
 const brandContextTopics = computed(() => brandProfile.value?.topics.slice(0, 4) ?? []);
 const brandContextPatterns = computed(() => brandProfile.value?.patterns.slice(0, 2) ?? []);
+const brandContextNarrativeFlow = computed(() => {
+  const pattern = brandProfile.value?.patterns[0]?.trim() ?? "";
+
+  if (!pattern) {
+    return [];
+  }
+
+  const tokens = pattern
+    .split(/\s*(?:->|=>|→|\||\/|,|\n)\s*/g)
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean);
+  const beats = tokens
+    .map((token) => {
+      if (/\b(takeaway|cta|close|closing|punchline|conclusion|invite|action)\b/.test(token)) {
+        return "Takeaway";
+      }
+
+      if (/\b(breakdown|proof|example|steps?|framework|system|process|playbook|tactical)\b/.test(token)) {
+        return "Breakdown";
+      }
+
+      if (/\b(insight|lesson|belief|reframe|answer|angle|thesis|point|observation)\b/.test(token)) {
+        return "Insight";
+      }
+
+      if (/\b(hook|opening|opener|lead|setup|headline|story|question|challenge|contrarian|curiosity)\b/.test(token)) {
+        return "Hook";
+      }
+
+      return "";
+    })
+    .filter((beat) => beat !== "");
+
+  if (beats.length === 0) {
+    return [];
+  }
+
+  return ["Hook", ...beats.filter((beat) => beat !== "Hook" && beat !== "Takeaway"), "Takeaway"]
+    .filter((beat, index, values) => values.indexOf(beat) === index);
+});
+const workspaceDefaultGenerationTone = computed(() =>
+  resolveGenerationToneMode(brandProfile.value?.tone ?? brandProfile.value?.preferredTone),
+);
 const connectedLinkedInAccount = computed(() =>
   socialAccounts.value.find((account) => account.platform === "linkedin" && account.status === "connected"),
 );
@@ -252,6 +348,30 @@ async function loadSocialAccounts(): Promise<void> {
   }
 }
 
+async function loadGenerationSuggestions(): Promise<void> {
+  const businessId = bootstrap.value?.activeBusinessId;
+
+  if (!businessId) {
+    generationSuggestions.value = [];
+    generationSuggestionError.value = "";
+    return;
+  }
+
+  isLoadingGenerationSuggestions.value = true;
+  generationSuggestionError.value = "";
+
+  try {
+    const response = await requestContentGenerationSuggestions(businessId);
+    generationSuggestions.value = response.suggestions;
+  } catch (error) {
+    generationSuggestions.value = [];
+    generationSuggestionError.value =
+      error instanceof Error ? error.message : "Unable to load suggestion candidates right now.";
+  } finally {
+    isLoadingGenerationSuggestions.value = false;
+  }
+}
+
 async function hydrateImprovementState(): Promise<void> {
   const improveId = resolveActivePostIdFromRoute();
 
@@ -259,15 +379,19 @@ async function hydrateImprovementState(): Promise<void> {
     const repurposeSeed = consumeRepurposeSeed();
 
     improvementSourceId.value = "";
+    pendingAutoGenerate.value = false;
 
     if (repurposeSeed) {
       sourceMode.value = "fresh";
       input.value = repurposeSeed.text;
+      seededRepurposeSource.value = repurposeSeed.source;
+      generationStrategy.value = repurposeSeed.strategy ?? DEFAULT_REPURPOSE_STRATEGY;
+      pendingAutoGenerate.value = repurposeSeed.autoGenerate === true;
       helperMessage.value =
         repurposeSeed.source === "history"
-          ? "Published post loaded. Sharpen it or turn it into a new draft."
+          ? "History post loaded. Continue writing, deepen the point, or take a sharper next angle."
           : repurposeSeed.source === "result"
-            ? "Saved draft loaded. Repurpose it into a stronger next version."
+            ? "Saved draft loaded. Continue writing from it or push it into a stronger next version."
             : "Workspace seed loaded. Expand it into a fresh draft.";
 
       const nextQuery = { ...route.query };
@@ -279,6 +403,8 @@ async function hydrateImprovementState(): Promise<void> {
       return;
     }
 
+    seededRepurposeSource.value = "";
+    generationStrategy.value = DEFAULT_REPURPOSE_STRATEGY;
     sourceMode.value = resolveSourceModeFromRoute();
     input.value = typeof route.query.prefill === "string" ? route.query.prefill : "";
     if (!route.query.prefill && helperMessage.value.includes("improving")) {
@@ -288,6 +414,9 @@ async function hydrateImprovementState(): Promise<void> {
   }
 
   improvementSourceId.value = improveId;
+  seededRepurposeSource.value = "";
+  generationStrategy.value = DEFAULT_REPURPOSE_STRATEGY;
+  pendingAutoGenerate.value = false;
   sourceMode.value = "fresh";
 
   if (bootstrap.value?.activeBusinessId) {
@@ -318,6 +447,12 @@ function setSourceMode(nextMode: GenerationSourceMode): void {
 
   if (improvementSourceId.value) {
     return;
+  }
+
+  if (nextMode !== "fresh" || seededRepurposeSource.value) {
+    seededRepurposeSource.value = "";
+    generationStrategy.value = DEFAULT_REPURPOSE_STRATEGY;
+    pendingAutoGenerate.value = false;
   }
 
   const nextQuery = { ...route.query };
@@ -422,7 +557,7 @@ async function previewFeedSources(): Promise<void> {
   }
 }
 
-async function generatePost(): Promise<void> {
+async function generatePost(selectedSuggestion?: RepurposeSuggestionSelection): Promise<void> {
   if (sourceMode.value === "fresh" && !input.value.trim()) {
     errorMessage.value = "Add one idea before generating.";
     return;
@@ -448,10 +583,13 @@ async function generatePost(): Promise<void> {
 
   try {
     const usingFeedSources = !improvementSourceId.value && sourceMode.value === "feed";
+    const usingSeededReference = isStrategyFlow.value;
     const response = await requestRepurposeContent({
       inputType: "text",
-      intent: improvementSourceId.value || usingFeedSources ? "reference" : "capture",
+      intent: improvementSourceId.value || usingFeedSources || usingSeededReference ? "reference" : "capture",
+      strategy: isStrategyFlow.value ? generationStrategy.value : undefined,
       assetId: improvementSourceId.value || undefined,
+      selectedSuggestion,
       text: usingFeedSources ? feedPreviewText.value.trim() : input.value.trim() || undefined,
       tone: tone.value,
       businessId: bootstrap.value?.activeBusinessId ?? undefined,
@@ -480,14 +618,33 @@ async function generatePost(): Promise<void> {
   }
 }
 
+async function runSuggestedGeneration(suggestion: ContentGenerationSuggestion): Promise<void> {
+  sourceMode.value = "fresh";
+  seededRepurposeSource.value = "dashboard";
+  generationStrategy.value = suggestion.strategy;
+  input.value = suggestion.sourceText;
+  helperMessage.value = suggestion.rationale;
+  pendingAutoGenerate.value = false;
+  errorMessage.value = "";
+  await generatePost({
+    suggestionId: suggestion.id,
+    sourceAssetId: suggestion.sourceAssetId,
+    origin: "generate_for_me",
+  });
+}
+
 function applyExample(value: string): void {
   input.value = value;
+  seededRepurposeSource.value = "";
+  pendingAutoGenerate.value = false;
   errorMessage.value = "";
 }
 
 function handleVoiceTranscript(value: string): void {
   sourceMode.value = "fresh";
   input.value = value;
+  seededRepurposeSource.value = "";
+  pendingAutoGenerate.value = false;
   helperMessage.value = "Transcript ready. Review it, then generate your post.";
   errorMessage.value = "";
 }
@@ -538,9 +695,33 @@ watch(
 watch(
   () => bootstrap.value?.activeBusinessId,
   () => {
+    void loadGenerationSuggestions();
     void loadSavedSources();
     void loadBrandProfile();
     void loadSocialAccounts();
+  },
+  { immediate: true },
+);
+
+watch(
+  workspaceDefaultGenerationTone,
+  (nextTone) => {
+    if (!hasToneOverride.value) {
+      tone.value = nextTone ?? DEFAULT_GENERATION_TONE;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  [pendingAutoGenerate, isProductAccessReady],
+  ([shouldAutoGenerate, productAccessReady]) => {
+    if (!shouldAutoGenerate || !productAccessReady || isLoading.value) {
+      return;
+    }
+
+    pendingAutoGenerate.value = false;
+    void generatePost();
   },
   { immediate: true },
 );
@@ -668,6 +849,84 @@ onBeforeUnmount(() => {
               <li v-for="pattern in brandContextPatterns" :key="pattern">{{ pattern }}</li>
             </ul>
           </div>
+
+          <div v-if="brandContextNarrativeFlow.length > 0" class="brand-context-block">
+            <p class="panel-meta">Narrative flow</p>
+            <div class="saved-source-list">
+              <span
+                v-for="beat in brandContextNarrativeFlow"
+                :key="beat"
+                class="saved-source-chip"
+              >
+                {{ beat }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="showSuggestionPanel" class="suggestion-launch-panel">
+        <div class="suggestion-launch-header">
+          <div class="suggestion-launch-copy">
+            <p class="panel-meta">Generate for me</p>
+            <h2>Pick the next best post without starting from scratch</h2>
+            <p class="activation-helper">
+              These suggestions are built from recent workspace posts, stronger winners, and the same shared content engine.
+            </p>
+          </div>
+          <button
+            v-if="recommendedGenerationSuggestion"
+            type="button"
+            class="primary-action suggestion-generate-button"
+            :disabled="isLoading"
+            @click="void runSuggestedGeneration(recommendedGenerationSuggestion)"
+          >
+            {{ isLoading ? "Generating..." : "Generate for me" }}
+          </button>
+        </div>
+
+        <p v-if="generationSuggestionError" class="activation-feedback error">
+          {{ generationSuggestionError }}
+        </p>
+        <p v-else-if="isLoadingGenerationSuggestions" class="activation-feedback">
+          Loading suggestion candidates...
+        </p>
+        <p v-else-if="generationSuggestions.length === 0" class="activation-feedback">
+          No strong history-based suggestions yet. Publish or save a few posts and this panel will start proposing the next move automatically.
+        </p>
+
+        <div v-else class="generation-suggestion-grid">
+          <article
+            v-for="suggestion in generationSuggestions"
+            :key="suggestion.id"
+            class="generation-suggestion-card"
+          >
+            <div class="generation-suggestion-topline">
+              <span class="activation-chip">
+                {{ suggestion.recommended ? "Recommended" : "Suggested" }}
+              </span>
+              <span class="saved-source-chip">
+                {{ getRepurposeStrategyOption(suggestion.strategy).shortLabel }}
+              </span>
+              <span v-if="suggestion.performanceLabel" class="saved-source-chip">
+                {{ suggestion.performanceLabel }} signal
+              </span>
+            </div>
+            <strong>{{ suggestion.title }}</strong>
+            <p>{{ suggestion.description }}</p>
+            <p class="activation-helper">{{ suggestion.rationale }}</p>
+            <p class="generation-suggestion-preview">
+              {{ suggestion.previewText }}
+            </p>
+            <button
+              type="button"
+              class="secondary-action"
+              :disabled="isLoading"
+              @click="void runSuggestedGeneration(suggestion)"
+            >
+              Generate this
+            </button>
+          </article>
         </div>
       </div>
     </section>
@@ -704,9 +963,31 @@ onBeforeUnmount(() => {
             type="button"
             class="tone-chip"
             :class="{ active: tone === option.value }"
-            @click="tone = option.value"
+            @click="hasToneOverride = true; tone = option.value"
           >
             {{ option.label }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="isStrategyFlow" class="strategy-panel">
+        <div class="strategy-panel-copy">
+          <p class="panel-meta">Next move</p>
+          <h3>Pick how this follow-up should evolve</h3>
+          <p class="activation-helper">
+            {{ activeStrategyOption.summary }}
+          </p>
+        </div>
+        <div class="strategy-selector">
+          <button
+            v-for="option in REPURPOSE_STRATEGY_OPTIONS"
+            :key="option.value"
+            type="button"
+            class="tone-chip"
+            :class="{ active: generationStrategy === option.value }"
+            @click="pendingAutoGenerate = false; generationStrategy = option.value"
+          >
+            {{ option.shortLabel }}
           </button>
         </div>
       </div>
@@ -899,7 +1180,7 @@ onBeforeUnmount(() => {
           type="button"
           class="primary-action"
           :disabled="isLoading || (!improvementSourceId && sourceMode === 'feed' && (!isFeedPreviewReady || isPreviewingFeed))"
-          @click="generatePost"
+          @click="void generatePost()"
         >
           {{ submitLabel }}
         </button>
@@ -986,6 +1267,78 @@ onBeforeUnmount(() => {
   border: 1px solid var(--fc-border);
   border-radius: 22px;
   background: color-mix(in srgb, var(--fc-panel-bg) 84%, var(--fc-surface-subtle));
+}
+
+.suggestion-launch-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  border-radius: 24px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--fc-surface) 92%, var(--fc-accent) 8%) 0%,
+    color-mix(in srgb, var(--fc-surface-subtle) 88%, var(--fc-accent) 12%) 100%
+  );
+}
+
+.suggestion-launch-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.suggestion-launch-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.suggestion-launch-copy h2 {
+  margin: 0;
+  font-size: clamp(1.1rem, 2.2vw, 1.45rem);
+  line-height: 1.1;
+}
+
+.suggestion-generate-button {
+  flex: 0 0 auto;
+}
+
+.generation-suggestion-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.generation-suggestion-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--fc-surface) 92%, white 8%);
+}
+
+.generation-suggestion-card strong {
+  font-size: 1rem;
+  line-height: 1.35;
+}
+
+.generation-suggestion-card p {
+  margin: 0;
+}
+
+.generation-suggestion-topline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.generation-suggestion-preview {
+  color: var(--fc-text-muted);
+  font-size: 0.92rem;
+  line-height: 1.6;
 }
 
 .brand-context-header {
@@ -1151,6 +1504,32 @@ onBeforeUnmount(() => {
   border: 1px solid var(--fc-border);
   border-radius: 20px;
   background: color-mix(in srgb, var(--fc-surface-subtle) 82%, var(--fc-surface));
+}
+
+.strategy-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 16%, var(--fc-border));
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--fc-accent) 6%, var(--fc-surface));
+}
+
+.strategy-panel-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.strategy-panel-copy h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.strategy-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .saved-sources-header {
@@ -1324,6 +1703,7 @@ onBeforeUnmount(() => {
 @media (max-width: 720px) {
   .channel-context-panel,
   .brand-context-header,
+  .suggestion-launch-header,
   .activation-helper-row {
     flex-direction: column;
   }
@@ -1347,6 +1727,7 @@ onBeforeUnmount(() => {
     align-items: stretch;
   }
 
+  .generation-suggestion-grid,
   .brand-context-grid,
   .source-grid {
     grid-template-columns: 1fr;

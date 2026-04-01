@@ -2,6 +2,7 @@ import type {
   CreateContentPipelineItemResponse,
   DeleteContentPipelineItemResponse,
   DuplicateContentPipelineItemResponse,
+  ListContentGenerationSuggestionsResponse,
   PreviewContentAiEditResponse,
   ControlDashboardResponse,
   ConvertIdeaToContentResponse,
@@ -69,6 +70,7 @@ export async function requestUpdatePipelineItem(input: {
   title?: string;
   textContent?: string;
   status?: "draft" | "review" | "scheduled" | "posted";
+  contentBody?: Record<string, unknown>;
 }): Promise<UpdateContentPipelineItemResponse> {
   return apiPatch<
     {
@@ -76,6 +78,7 @@ export async function requestUpdatePipelineItem(input: {
       title?: string;
       textContent?: string;
       status?: "draft" | "review" | "scheduled" | "posted";
+      contentBody?: Record<string, unknown>;
     },
     UpdateContentPipelineItemResponse
   >(`/content-pipeline/${encodeURIComponent(input.assetId)}`, {
@@ -83,6 +86,7 @@ export async function requestUpdatePipelineItem(input: {
     title: input.title,
     textContent: input.textContent,
     status: input.status,
+    contentBody: input.contentBody,
   });
 }
 
@@ -94,6 +98,15 @@ export async function requestPipelineItem(
   const encodedAssetId = encodeURIComponent(assetId);
   return apiGet<GetContentPipelineItemResponse>(
     `/content-pipeline/${encodedAssetId}?businessId=${encodedBusinessId}`,
+  );
+}
+
+export async function requestContentGenerationSuggestions(
+  businessId: string,
+): Promise<ListContentGenerationSuggestionsResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiGet<ListContentGenerationSuggestionsResponse>(
+    `/content-generation-suggestions?businessId=${encodedBusinessId}`,
   );
 }
 

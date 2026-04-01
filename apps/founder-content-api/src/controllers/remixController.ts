@@ -10,6 +10,7 @@ import {
   safeLogContentGeneration,
   safeLogEvent,
 } from "../services/analytics/eventLoggingService.ts";
+import { resolveContentGenerationTone } from "../services/contentGenerationToneService.ts";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
 
@@ -18,8 +19,12 @@ export async function remixContent(
   response: Response<RemixContentResponse | ApiError>,
 ): Promise<void> {
   const referenceText = request.body?.referenceText?.trim();
-  const tone = request.body?.tone?.trim() || "storytelling";
   const businessId = request.body?.businessId?.trim();
+  const tone = await resolveContentGenerationTone({
+    requestedTone: request.body?.tone,
+    businessId,
+  });
+  const strategy = request.body?.strategy;
   const startedAt = Date.now();
 
   if (!referenceText) {
@@ -44,6 +49,7 @@ export async function remixContent(
     const remixedContent = await generateRemixedContentWithAI({
       rawInputText: referenceText,
       tone,
+      strategy,
       businessId,
     });
     const latencyMs = Date.now() - startedAt;
@@ -60,7 +66,7 @@ export async function remixContent(
         userId: request.auth?.userId,
         businessId,
         inputType: "link",
-        inputPayload: { referenceText, tone },
+        inputPayload: { referenceText, tone, strategy },
         outputPayload: remixedContent,
         success: true,
         latencyMs,
@@ -93,7 +99,7 @@ export async function remixContent(
         userId: request.auth?.userId,
         businessId,
         inputType: "link",
-        inputPayload: { referenceText, tone },
+        inputPayload: { referenceText, tone, strategy },
         success: false,
         latencyMs,
       }),

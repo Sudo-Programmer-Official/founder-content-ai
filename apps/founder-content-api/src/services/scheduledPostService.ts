@@ -46,6 +46,11 @@ import {
   publishLinkedInMultiImagePost,
   publishLinkedInTextPost,
 } from "./publishingService.ts";
+import {
+  safeRecordContentGenerationSuggestionPerformance,
+  safeRecordContentGenerationSuggestionPublished,
+  safeRecordContentGenerationSuggestionScheduled,
+} from "./contentGenerationFeedbackService.ts";
 import { recordDerivedMediaPerformanceFromPostFeedback } from "./mediaIntelligenceService.ts";
 import { sendScheduledPostPublishedNotification } from "./scheduledPostNotificationService.ts";
 import { HttpError } from "../utils/http.ts";
@@ -1024,11 +1029,20 @@ async function markScheduledPostPublished(
   await recordPublicationEvent(scheduledPostId, "published", publishResult.response);
 
   if (businessId) {
-    await syncLinkedContentAssetStage({
-      businessId,
-      linkedAssetId,
-      stage: "posted",
-    });
+    await Promise.all([
+      syncLinkedContentAssetStage({
+        businessId,
+        linkedAssetId,
+        stage: "posted",
+      }),
+      linkedAssetId
+        ? safeRecordContentGenerationSuggestionPublished({
+            businessId,
+            assetId: linkedAssetId,
+            scheduledPostId,
+          })
+        : Promise.resolve(),
+    ]);
   }
 }
 
@@ -1671,6 +1685,14 @@ export async function createScheduledPost(
     linkedAssetId,
     stage: "scheduled",
   });
+  if (linkedAssetId) {
+    await safeRecordContentGenerationSuggestionScheduled({
+      businessId,
+      assetId: linkedAssetId,
+      scheduledPostId: createdScheduledPostId,
+      scheduledAt: scheduledAt.toISOString(),
+    });
+  }
   const createdRow = await loadScheduledPostRow(businessId, createdScheduledPostId);
   const linkedAssetsMap = await loadLinkedPostAssetsMap([createdRow]);
   const metricsMap = await loadPostMetricsMap([createdRow]);
@@ -1804,6 +1826,13 @@ export async function publishPostNow(
     );
 
     await recordPublicationEvent(historyResult.rows[0].id, "published", publishResult.response);
+    if (input.assetId?.trim()) {
+      await safeRecordContentGenerationSuggestionPublished({
+        businessId,
+        assetId: input.assetId.trim(),
+        scheduledPostId: historyResult.rows[0].id,
+      });
+    }
   } catch (error) {
     logWarn("LinkedIn post published but the local history row was not recorded.", {
       businessId,
@@ -1952,6 +1981,12 @@ export async function updateScheduledPostPerformance(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+
+  await safeRecordContentGenerationSuggestionPerformance({
+    businessId,
+    scheduledPostId,
+    performanceLabel,
+  });
 
   const updatedRow = await loadScheduledPostRow(businessId, existing.id);
   const linkedAssetsMap = await loadLinkedPostAssetsMap([updatedRow]);

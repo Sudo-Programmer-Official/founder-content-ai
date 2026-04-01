@@ -4,6 +4,8 @@ import type {
   CreateWorkspaceKnowledgeSourceResponse,
   RefreshWorkspaceKnowledgeRequest,
   RefreshWorkspaceKnowledgeResponse,
+  UpdateWorkspaceKnowledgeProfileRequest,
+  UpdateWorkspaceKnowledgeProfileResponse,
   WorkspaceKnowledgeQuery,
   WorkspaceKnowledgeResponse,
 } from "../../../../packages/shared-types/index.ts";
@@ -12,6 +14,7 @@ import {
   createWorkspaceKnowledgeSource,
   getWorkspaceKnowledge,
   refreshWorkspaceKnowledge,
+  updateWorkspaceKnowledgeProfile,
 } from "../services/brandIntelligence/workspaceKnowledgeService.ts";
 import {
   enforceWorkspaceReadAccess,
@@ -123,6 +126,51 @@ export async function postWorkspaceKnowledgeRefreshController(
       code: "workspace_knowledge_refresh_failed",
       message: "Unable to refresh workspace knowledge.",
       logMessage: "Failed to refresh workspace knowledge.",
+    });
+  }
+}
+
+export async function postWorkspaceKnowledgeProfileController(
+  request: Request<unknown, UpdateWorkspaceKnowledgeProfileResponse | ApiError, Partial<UpdateWorkspaceKnowledgeProfileRequest>>,
+  response: Response<UpdateWorkspaceKnowledgeProfileResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "brand_intelligence",
+    });
+    response.json(await updateWorkspaceKnowledgeProfile(request.auth, {
+      businessId,
+      voiceSummary: typeof request.body?.voiceSummary === "string" ? request.body.voiceSummary : undefined,
+      audienceSummary: typeof request.body?.audienceSummary === "string" ? request.body.audienceSummary : undefined,
+      positioningSummary:
+        typeof request.body?.positioningSummary === "string" ? request.body.positioningSummary : undefined,
+      beliefs: Array.isArray(request.body?.beliefs)
+        ? request.body.beliefs.filter((value): value is string => typeof value === "string")
+        : undefined,
+      topicClusters: Array.isArray(request.body?.topicClusters)
+        ? request.body.topicClusters.filter((value): value is string => typeof value === "string")
+        : undefined,
+    }));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "workspace_knowledge_profile_update_failed",
+      message: "Unable to save workspace knowledge profile.",
+      logMessage: "Failed to save workspace knowledge profile.",
     });
   }
 }

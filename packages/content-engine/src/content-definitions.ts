@@ -11,8 +11,13 @@ import type {
   BrandPromptContext,
   IdeaOption,
   LinkedInPostVariation,
+  RepurposeStrategy,
   StructuredContentResponse,
 } from "../../shared-types/index.ts";
+import {
+  serializeNarrativePattern,
+  serializeNarrativePatternContext,
+} from "./narrative-pattern.ts";
 
 interface ContentDefinition<TFormat extends ContentFormat> {
   promptPath: string | ((request: GenerateContentRequest<TFormat>) => string);
@@ -329,6 +334,53 @@ function serializePovContext(input: {
   return lines.join("\n");
 }
 
+function resolveRepurposeStrategy(
+  value: string | undefined,
+): RepurposeStrategy | undefined {
+  switch (value) {
+    case "continue":
+    case "deepen":
+    case "contrarian":
+    case "tactical":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function serializeRepurposeStrategyContext(
+  strategy: RepurposeStrategy | undefined,
+): string | undefined {
+  switch (strategy) {
+    case "continue":
+      return [
+        "Treat the source as the previous chapter, not the final answer.",
+        "Generate the next logical post that advances the narrative with a fresh angle, lesson, or founder observation.",
+        "Do not rewrite the same post with light paraphrasing.",
+      ].join("\n");
+    case "deepen":
+      return [
+        "Keep the same core topic, but go deeper into the mechanism, stakes, or lesson.",
+        "Favor depth, specificity, and stronger founder reality over broader summary.",
+        "Make the post feel like a sharper second layer, not a duplicate.",
+      ].join("\n");
+    case "contrarian":
+      return [
+        "Use the source to take a clearer, sharper stance that challenges safe default advice.",
+        "Lean into tension, tradeoffs, or why common founder behavior is wrong or incomplete.",
+        "Stay grounded in the source instead of manufacturing empty hot takes.",
+      ].join("\n");
+    case "tactical":
+      return [
+        "Turn the source insight into a practical, usable post.",
+        "Translate the lesson into clear actions, decisions, or operational rules founders can apply this week.",
+        "Keep it concrete and direct instead of abstract.",
+      ].join("\n");
+    default:
+      return undefined;
+  }
+}
+
 function resolveRawInputText(variables: ContentVariables): string | undefined {
   return (
     variables.rawInputText ??
@@ -390,10 +442,15 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
         const selectedHook = variables.selectedHook ?? variables.selected_hook;
         const topic = requireField(variables, "topic", "topic is required.");
         const tone = request.tone?.trim() || variables.tone || "storytelling";
+        const strategy = resolveRepurposeStrategy(variables.strategy);
 
         return {
           topic,
           tone,
+          strategy,
+          strategy_context: serializeRepurposeStrategyContext(strategy),
+          narrative_pattern: serializeNarrativePattern(request.brandContext),
+          narrative_pattern_context: serializeNarrativePatternContext(request.brandContext),
           length: variables.length || "medium",
           selected_hook: selectedHook,
           brand_context: serializeBrandContext(request.brandContext),
@@ -422,10 +479,15 @@ const contentDefinitions: Record<ContentChannel, ChannelContentDefinitions> = {
           "raw input text is required.",
         );
         const tone = request.tone?.trim() || variables.tone || "storytelling";
+        const strategy = resolveRepurposeStrategy(variables.strategy);
 
         return {
           raw_input_text: rawInputText,
           tone,
+          strategy,
+          strategy_context: serializeRepurposeStrategyContext(strategy),
+          narrative_pattern: serializeNarrativePattern(request.brandContext),
+          narrative_pattern_context: serializeNarrativePatternContext(request.brandContext),
           intent: resolveIntent(request.intent),
           brand_context: serializeBrandContext(request.brandContext),
           platform_context: serializePlatformContext(request.platformContext),

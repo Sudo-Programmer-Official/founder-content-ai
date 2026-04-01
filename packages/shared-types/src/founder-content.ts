@@ -1,4 +1,5 @@
 import type { ContentPovProfile, ContentQualityScore } from "./analytics.ts";
+import type { RepurposeStrategy } from "./repurpose.ts";
 
 export interface IdeaGenerationRequest {
   industry: string;
@@ -18,6 +19,7 @@ export interface IdeaGenerationResponse {
 export interface StructuredContentGenerationRequest {
   rawInputText: string;
   tone?: string;
+  strategy?: RepurposeStrategy;
   businessId?: string;
 }
 
@@ -40,7 +42,8 @@ export interface HookGenerationResponse {
 
 export interface LinkedInPostGenerationRequest {
   topic: string;
-  tone: string;
+  tone?: string;
+  strategy?: RepurposeStrategy;
   length: string;
   selectedHook?: string;
   businessId?: string;
@@ -62,6 +65,7 @@ export interface CaptureContentRequest {
   image?: string;
   source?: "text" | "image" | "voice";
   tone?: string;
+  strategy?: RepurposeStrategy;
   businessId?: string;
 }
 
@@ -70,6 +74,7 @@ export interface CaptureContentResponse extends StructuredContentResponse {}
 export interface RemixContentRequest {
   referenceText: string;
   tone?: string;
+  strategy?: RepurposeStrategy;
   businessId?: string;
 }
 

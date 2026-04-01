@@ -1,23 +1,33 @@
 import type {
   CarouselDraft,
-  CaptureContentResponse,
+  ContentNarrative,
   ContentAsset,
-  LinkedInPostGenerationResponse,
   RepurposeContentRequest,
   RepurposeContentResponse,
   RepurposeIntent,
   RepurposeInputType,
 } from "../../../../packages/shared-types/index.ts";
+import {
+  DEFAULT_REPURPOSE_STRATEGY,
+  normalizeRepurposeStrategy,
+} from "../../../../packages/shared-types/index.ts";
+import { generateNarrative } from "../../../../packages/content-engine/src/index.ts";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { generateCapturedContentWithAI, generatePostsWithAI, generateRemixedContentWithAI } from "./aiService.ts";
+import { getBrandPromptContextForBusiness } from "./brandIntelligence/brandProfileService.ts";
 import {
   createContentAssetRecord,
   safeLogContentGeneration,
   safeLogEvent,
 } from "./analytics/eventLoggingService.ts";
 import { appendCaptionFooterCredit, resolveBrandingPolicy } from "./brandingService.ts";
+import { resolveContentGenerationTone } from "./contentGenerationToneService.ts";
 import { previewContentIngestion } from "./content/ingestionService.ts";
 import { isDatabaseConfigured, queryDb } from "./db/client.ts";
+import {
+  safeRecordContentGenerationSuggestionEdited,
+  safeRecordContentGenerationSuggestionSelection,
+} from "./contentGenerationFeedbackService.ts";
 import { HttpError } from "../utils/http.ts";
 import { logError } from "../utils/logger.ts";
 import { recordStyleSignal } from "./styleProfileService.ts";
@@ -54,6 +64,27 @@ function truncateText(value: string, maxLength: number): string {
   const truncated = value.slice(0, maxLength);
   const lastSpaceIndex = truncated.lastIndexOf(" ");
   return (lastSpaceIndex > 120 ? truncated.slice(0, lastSpaceIndex) : truncated).trim();
+}
+
+function normalizeSelectedSuggestion(
+  value: RepurposeContentRequest["selectedSuggestion"],
+): RepurposeContentRequest["selectedSuggestion"] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const suggestionId = value.suggestionId?.trim();
+  const sourceAssetId = value.sourceAssetId?.trim();
+
+  if (!suggestionId || !sourceAssetId) {
+    return undefined;
+  }
+
+  return {
+    suggestionId,
+    sourceAssetId,
+    origin: value.origin ?? "generate_for_me",
+  };
 }
 
 async function resolveSourceText(input: RepurposeContentRequest): Promise<{
@@ -124,33 +155,19 @@ function toGenerationInputType(inputType: RepurposeInputType): "idea" | "link" |
 }
 
 function buildCarouselDraft(
-  source: CaptureContentResponse,
-  variations: LinkedInPostGenerationResponse["variations"],
+  narrative: ContentNarrative,
 ): CarouselDraft {
-  const primaryVariation = variations[0]?.content || source.post;
-  const paragraphs = primaryVariation
-    .split(/\n+/)
-    .map((line) => normalizeWhitespace(line.replace(/^[-*•]\s*/, "")))
-    .filter((line) => line.length > 0);
-
-  const title = source.idea.title;
-  const subtitle = source.idea.angle;
-  const slides = [
-    {
-      headline: truncateText(source.hooks[0] ?? title, 72),
-      supportingText: truncateText(subtitle, 120),
-      bulletPoints: [],
-    },
-    ...paragraphs.slice(0, 4).map((paragraph) => ({
-      headline: truncateText(paragraph, 72),
-      supportingText: truncateText(paragraph, 120),
-      bulletPoints: [],
-    })),
-  ].slice(0, 5);
+  const slides = narrative.slides.map((slide) => ({
+    headline: truncateText(slide.headline, 72),
+    supportingText: truncateText(slide.supportingText || narrative.subtitle, 120),
+    bulletPoints: (slide.bulletPoints ?? []).map((point) => truncateText(point, 72)).slice(0, 3),
+    narrativeRole: slide.role,
+  }));
 
   return {
-    title,
-    subtitle,
+    title: narrative.title,
+    subtitle: narrative.subtitle,
+    narrativeType: narrative.type,
     slides,
   };
 }
@@ -311,7 +328,15 @@ export async function repurposeContent(
   principal?: AuthenticatedPrincipal,
 ): Promise<RepurposeContentResponse> {
   const businessId = input.businessId?.trim() || undefined;
-  const tone = input.tone?.trim() || "storytelling";
+  const selectedSuggestion = normalizeSelectedSuggestion(input.selectedSuggestion);
+  const [tone, brandContext] = await Promise.all([
+    resolveContentGenerationTone({
+      requestedTone: input.tone,
+      businessId,
+    }),
+    getBrandPromptContextForBusiness(businessId),
+  ]);
+  const strategy = normalizeRepurposeStrategy(input.strategy) ?? DEFAULT_REPURPOSE_STRATEGY;
   const intent: RepurposeIntent =
     input.intent ?? (input.inputType === "url" ? "reference" : "capture");
   const { sourceText, inputType, sourceCount } = await resolveSourceText(input);
@@ -326,32 +351,43 @@ export async function repurposeContent(
       ? await generateRemixedContentWithAI({
           rawInputText: sourceText,
           tone,
+          strategy,
           businessId,
         })
       : await generateCapturedContentWithAI({
           rawInputText: sourceText,
           tone,
+          strategy,
           businessId,
         });
 
   const variations = await generatePostsWithAI({
     topic: structuredContent.idea.title,
     tone,
+    strategy,
     length: "medium",
     selectedHook: structuredContent.hooks[0],
     businessId,
   });
 
-  const carouselDraft = buildCarouselDraft(structuredContent, variations.variations);
+  const visualNarrative = generateNarrative({
+    sourceText: variations.variations[0]?.content || structuredContent.post,
+    title: structuredContent.idea.title,
+    subtitle: structuredContent.idea.angle,
+    narrativePattern: brandContext?.patterns,
+  });
+  const carouselDraft = buildCarouselDraft(visualNarrative);
   const quickSignals = resolveQuickSignals(inputType, carouselDraft, sourceCount);
   const responseBase: Omit<RepurposeContentResponse, "asset"> = {
     inputType,
     intent,
+    strategy,
     sourceText,
     idea: structuredContent.idea,
     hooks: structuredContent.hooks.slice(0, 5),
     post: structuredContent.post,
     variations: variations.variations,
+    visualNarrative,
     carouselDraft,
     quickSignals,
     captionFooterCredit: brandingPolicy.captionFooterCredit,
@@ -364,12 +400,23 @@ export async function repurposeContent(
       route: "/api/repurpose",
         inputType,
         intent,
+        strategy,
         sourceCount,
       }),
+    selectedSuggestion
+      ? safeLogEvent("content_selected", principal?.userId, businessId, {
+          route: "/api/repurpose",
+          source: selectedSuggestion.origin ?? "generate_for_me",
+          suggestionId: selectedSuggestion.suggestionId,
+          sourceAssetId: selectedSuggestion.sourceAssetId,
+          strategy,
+        })
+      : Promise.resolve(null),
     safeLogEvent("post_generated", principal?.userId, businessId, {
       route: "/api/repurpose",
         inputType,
         intent,
+        strategy,
         sourceCount,
       }),
     safeLogContentGeneration({
@@ -380,6 +427,7 @@ export async function repurposeContent(
           inputType,
           intent,
           tone,
+          strategy,
           sourceText,
           sourceCount,
         },
@@ -398,6 +446,7 @@ export async function repurposeContent(
           route: "/api/repurpose",
           assetId: input.assetId.trim(),
           intent,
+          strategy,
           inputType,
         })
       : Promise.resolve(null),
@@ -422,6 +471,26 @@ export async function repurposeContent(
       },
       sourceKind: intent === "reference" ? "remix" : "capture",
     });
+
+    await Promise.all([
+      selectedSuggestion
+        ? safeRecordContentGenerationSuggestionSelection({
+            businessId,
+            userId: principal.userId,
+            generatedAssetId: asset.id,
+            sourceAssetId: selectedSuggestion.sourceAssetId,
+            suggestionId: selectedSuggestion.suggestionId,
+            strategy,
+            origin: selectedSuggestion.origin,
+          })
+        : Promise.resolve(),
+      input.assetId?.trim()
+        ? safeRecordContentGenerationSuggestionEdited({
+            businessId,
+            assetId: input.assetId.trim(),
+          })
+        : Promise.resolve(),
+    ]);
 
     return {
       ...responseBase,

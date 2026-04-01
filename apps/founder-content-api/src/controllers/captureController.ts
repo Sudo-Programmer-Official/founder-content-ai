@@ -10,6 +10,7 @@ import {
   safeLogContentGeneration,
   safeLogEvent,
 } from "../services/analytics/eventLoggingService.ts";
+import { resolveContentGenerationTone } from "../services/contentGenerationToneService.ts";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
 
@@ -39,8 +40,12 @@ export async function captureContent(
   response: Response<CaptureContentResponse | ApiError>,
 ): Promise<void> {
   const rawInputText = normalizeCaptureInput(request.body ?? {});
-  const tone = request.body?.tone?.trim() || "storytelling";
   const businessId = request.body?.businessId?.trim();
+  const tone = await resolveContentGenerationTone({
+    requestedTone: request.body?.tone,
+    businessId,
+  });
+  const strategy = request.body?.strategy;
   const inputType =
     request.body?.source === "voice" ? "voice" : request.body?.image ? "upload" : "idea";
   const startedAt = Date.now();
@@ -67,6 +72,7 @@ export async function captureContent(
     const generatedContent = await generateCapturedContentWithAI({
       rawInputText,
       tone,
+      strategy,
       businessId,
     });
     const latencyMs = Date.now() - startedAt;
@@ -84,7 +90,7 @@ export async function captureContent(
         userId: request.auth?.userId,
         businessId,
         inputType,
-        inputPayload: { rawInputText, tone, source: request.body?.source ?? "text" },
+        inputPayload: { rawInputText, tone, strategy, source: request.body?.source ?? "text" },
         outputPayload: generatedContent,
         success: true,
         latencyMs,
@@ -117,7 +123,7 @@ export async function captureContent(
         userId: request.auth?.userId,
         businessId,
         inputType,
-        inputPayload: { rawInputText, tone, source: request.body?.source ?? "text" },
+        inputPayload: { rawInputText, tone, strategy, source: request.body?.source ?? "text" },
         success: false,
         latencyMs,
       }),

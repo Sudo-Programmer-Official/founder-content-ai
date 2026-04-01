@@ -1137,7 +1137,6 @@ async function convertIdeaToDraft(idea: IdeaInboxItem) {
     const response = await requestConvertIdeaToContent({
       businessId: selectedBusinessId.value,
       ideaId: idea.id,
-      tone: "storytelling",
       length: "medium",
     });
 

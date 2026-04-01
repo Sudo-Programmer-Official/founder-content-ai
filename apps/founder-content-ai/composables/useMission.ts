@@ -72,9 +72,9 @@ function buildMissionTasks(asset: ContentAsset | undefined, bestTimeLabel: strin
     });
   } else if (asset.pipelineStage === "scheduled") {
     tasks.push({
-      label: "Repurpose after posting",
+      label: "Continue writing after posting",
       action: "repurpose",
-      actionLabel: "Repurpose",
+      actionLabel: "Continue writing",
       hint: "Turn this into a carousel or follow-up angle right after it runs.",
     });
   }
