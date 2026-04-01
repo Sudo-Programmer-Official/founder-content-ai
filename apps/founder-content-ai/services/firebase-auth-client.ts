@@ -106,15 +106,23 @@ function resolveFirebaseApiKey(): string {
 
 function toStoredAuthSession(
   response: FirebaseAuthResponse,
-  existingSession?: StoredAuthSession | null,
+  options?: {
+    existingSession?: StoredAuthSession | null;
+    fallbackEmail?: string;
+    fallbackDisplayName?: string;
+  },
 ): StoredAuthSession {
-  const idToken = response.idToken ?? response.id_token;
-  const refreshToken = response.refreshToken ?? response.refresh_token;
+  const existingSession = options?.existingSession;
+  const idToken = response.idToken ?? response.id_token ?? existingSession?.idToken;
+  const refreshToken = response.refreshToken ?? response.refresh_token ?? existingSession?.refreshToken;
   const localId = response.localId ?? response.local_id ?? existingSession?.localId;
-  const email = response.email ?? existingSession?.email;
+  const email = response.email ?? options?.fallbackEmail ?? existingSession?.email;
   const expiresInRaw = response.expiresIn ?? response.expires_in;
-  const expiresInSeconds = Number(expiresInRaw ?? 3600);
-  const expiresAtMs = Date.now() + (Number.isFinite(expiresInSeconds) ? expiresInSeconds : 3600) * 1000;
+  const expiresInSeconds = expiresInRaw === undefined || expiresInRaw === null ? NaN : Number(expiresInRaw);
+  const expiresAt =
+    Number.isFinite(expiresInSeconds)
+      ? new Date(Date.now() + expiresInSeconds * 1000).toISOString()
+      : existingSession?.expiresAt ?? new Date(Date.now() + 3600 * 1000).toISOString();
 
   if (!idToken || !refreshToken || !localId || !email) {
     throw new Error("Authentication succeeded, but the session payload was incomplete.");
@@ -123,10 +131,13 @@ function toStoredAuthSession(
   return {
     idToken,
     refreshToken,
-    expiresAt: new Date(expiresAtMs).toISOString(),
+    expiresAt,
     email,
     localId,
-    displayName: response.displayName?.trim() || existingSession?.displayName,
+    displayName:
+      response.displayName?.trim() ||
+      options?.fallbackDisplayName?.trim() ||
+      existingSession?.displayName,
   };
 }
 
@@ -263,16 +274,19 @@ export async function signInWithEmailPassword(
     rememberBrowser?: boolean;
   },
 ): Promise<StoredAuthSession> {
+  const normalizedEmail = email.trim();
   const response = await postJson<FirebaseAuthResponse>(
     `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${resolveFirebaseApiKey()}`,
     {
-      email,
+      email: normalizedEmail,
       password,
       returnSecureToken: true,
     },
   );
 
-  const session = toStoredAuthSession(response);
+  const session = toStoredAuthSession(response, {
+    fallbackEmail: normalizedEmail,
+  });
   persistAuthSession(session, options?.rememberBrowser === false ? "session" : "local");
   return session;
 }
@@ -282,20 +296,36 @@ export async function signUpWithEmailPassword(
   password: string,
   displayName?: string,
 ): Promise<StoredAuthSession> {
+  const normalizedEmail = email.trim();
+  const normalizedDisplayName = displayName?.trim() || undefined;
   const signUpResponse = await postJson<FirebaseAuthResponse>(
     `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${resolveFirebaseApiKey()}`,
     {
-      email,
+      email: normalizedEmail,
       password,
       returnSecureToken: true,
     },
   );
 
-  let session = toStoredAuthSession(signUpResponse);
+  let session = toStoredAuthSession(signUpResponse, {
+    fallbackEmail: normalizedEmail,
+    fallbackDisplayName: normalizedDisplayName,
+  });
 
-  if (displayName?.trim()) {
-    const profileResponse = await updateDisplayName(signUpResponse.idToken, displayName.trim());
-    session = toStoredAuthSession(profileResponse, session);
+  if (normalizedDisplayName) {
+    try {
+      const profileResponse = await updateDisplayName(session.idToken, normalizedDisplayName);
+      session = toStoredAuthSession(profileResponse, {
+        existingSession: session,
+        fallbackEmail: normalizedEmail,
+        fallbackDisplayName: normalizedDisplayName,
+      });
+    } catch {
+      session = {
+        ...session,
+        displayName: normalizedDisplayName,
+      };
+    }
   }
 
   persistAuthSession(session);
