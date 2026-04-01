@@ -890,6 +890,17 @@ export async function createWorkspaceKnowledgeSource(
           '{}'::jsonb,
           'queued'
         )
+        on conflict (business_id, source_url)
+        where source_url is not null
+        do update set
+          title = coalesce(excluded.title, workspace_knowledge_sources.title),
+          raw_text = case
+            when excluded.raw_text <> '' then excluded.raw_text
+            else workspace_knowledge_sources.raw_text
+          end,
+          processing_status = 'queued',
+          processing_error = null,
+          updated_at = now()
         returning
           id,
           business_id,
@@ -928,6 +939,15 @@ export async function createWorkspaceKnowledgeSource(
       client,
     });
 
+    const sourceCountResult = await client.query<{ source_count: string }>(
+      `
+        select count(*)::text as source_count
+        from workspace_knowledge_sources
+        where business_id = $1::uuid
+      `,
+      [input.businessId],
+    );
+
     await client.query(
       `
         update workspace_knowledge_sources
@@ -942,6 +962,7 @@ export async function createWorkspaceKnowledgeSource(
     await upsertWorkspaceKnowledgeProfile(
       input.businessId,
       {
+        sourceCount: toNumber(sourceCountResult.rows[0]?.source_count),
         processingStatus: "queued",
         processingError: undefined,
       },
