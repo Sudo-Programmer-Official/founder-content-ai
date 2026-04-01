@@ -610,6 +610,9 @@ async function goToAdmin(): Promise<void> {
 }
 
 .route-gate-shell {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
   min-height: 100vh;
   display: grid;
   place-items: center;
