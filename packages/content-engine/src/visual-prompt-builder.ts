@@ -215,6 +215,10 @@ function resolveStyleBlock(brandKit: BrandKitInput): string {
 function resolveLayoutBlock(
   templateType: VisualTemplateType,
   brandKit: BrandKitInput,
+  options?: {
+    brandSignatureMode?: "subtle" | "closing";
+    slideVisualRole?: "hook" | "problem" | "story" | "breakdown" | "takeaway";
+  },
 ): string {
   const brandPlacement = sanitizeEnum<BrandKitBrandPlacement>(
     brandKit.brandPlacement,
@@ -236,6 +240,18 @@ function resolveLayoutBlock(
     underline: "one highlighted phrase with an accent underline",
     bold: "one highlighted phrase using oversized bold emphasis",
   };
+  const carouselRoleDescription: Record<
+    NonNullable<typeof options>["slideVisualRole"] extends infer TValue
+      ? Exclude<TValue, undefined>
+      : never,
+    string
+  > = {
+    hook: "hook slide with oversized headline, highest contrast, and minimal supporting copy",
+    problem: "problem slide with a bold tension statement and concise support",
+    story: "story slide with smaller text, more whitespace, and calmer pacing",
+    breakdown: "breakdown slide with structured layout and restrained emphasis",
+    takeaway: "takeaway slide with a strong close and decisive finish",
+  };
 
   switch (templateType) {
     case "quote":
@@ -245,7 +261,7 @@ function resolveLayoutBlock(
     case "contrarian":
       return `split emphasis layout, ${brandPlacementDescription[brandPlacement]}, quiet setup copy on one side, oversized emphasis phrase on the opposite side, hard contrast, built to stop scroll on mobile`;
     case "carousel":
-      return `premium LinkedIn carousel slide, ${brandPlacementDescription[brandPlacement]}, one dominant headline, optional supporting line, optional 2 to 3 compact bullets, controlled spacing, same typography system across every slide, tiny brand signature rather than a footer watermark`;
+      return `premium LinkedIn carousel slide, ${brandPlacementDescription[brandPlacement]}, ${options?.slideVisualRole ? carouselRoleDescription[options.slideVisualRole] : "one dominant headline, optional supporting line, optional 2 to 3 compact bullets"}, controlled spacing, same typography system across every slide, subtle brand signature present on every slide, maximum one accent phrase and some slides can skip the accent entirely, tiny brand signature rather than a footer watermark${options?.brandSignatureMode === "closing" ? ", this is the final slide so keep the same placement but make the brand signature slightly stronger without overpowering the copy" : ""}`;
     default:
       return "clean social-first layout with clear hierarchy";
   }
@@ -319,7 +335,13 @@ function resolveContentBlock(
     .join(" ");
 }
 
-function resolveBrandBlock(brandKit: BrandKitInput): string {
+function resolveBrandBlock(
+  brandKit: BrandKitInput,
+  options?: {
+    brandSignatureMode?: "subtle" | "closing";
+    slideVisualRole?: "hook" | "problem" | "story" | "breakdown" | "takeaway";
+  },
+): string {
   const backgroundStyle = sanitizeEnum<BrandKitBackgroundStyle>(
     brandKit.backgroundStyle,
     ["dark", "light", "gradient"],
@@ -366,8 +388,18 @@ function resolveBrandBlock(brandKit: BrandKitInput): string {
     brandKit.logoUrl
       ? "include a small restrained brand mark or logo in the chosen placement"
       : "use a tiny brand mark rather than a large logo",
+    options?.brandSignatureMode === "closing"
+      ? "keep branding consistent with the rest of the deck, but let this closing slide carry a slightly stronger brand signature"
+      : "keep branding low-prominence, consistent, and present on every slide without turning it into a watermark",
+    options?.slideVisualRole === "story"
+      ? "story slides should protect whitespace and readability over decorative treatment"
+      : options?.slideVisualRole === "breakdown"
+        ? "breakdown slides should feel structured and easy to scan"
+        : undefined,
     "LinkedIn-native composition, control attention flow through contrast and hierarchy, align brand spacing with content spacing, never place the brand centered at the bottom",
-  ].join(", ");
+  ]
+    .filter(Boolean)
+    .join(", ");
 }
 
 export function resolveBrandKit(
@@ -422,6 +454,11 @@ export function buildVisualPrompt(input: {
   templateType: VisualTemplateType;
   content: VisualPromptContent;
   brandKit?: BrandKitInput;
+  renderContext?: {
+    brandSignatureMode?: "subtle" | "closing";
+    slideVisualRole?: "hook" | "problem" | "story" | "breakdown" | "takeaway";
+    highlightMode?: "none" | "single";
+  };
 }): string {
   const resolvedBrandKit = resolveBrandKit(input.brandKit);
 
@@ -430,15 +467,17 @@ export function buildVisualPrompt(input: {
     resolveStyleBlock(resolvedBrandKit),
     "",
     "LAYOUT:",
-    resolveLayoutBlock(input.templateType, resolvedBrandKit),
+    resolveLayoutBlock(input.templateType, resolvedBrandKit, input.renderContext),
     "",
     "CONTENT:",
     resolveContentBlock(input.templateType, input.content),
     "",
     "BRAND:",
-    resolveBrandBlock(resolvedBrandKit),
+    resolveBrandBlock(resolvedBrandKit, input.renderContext),
     "",
     "QUALITY:",
-    "ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding",
+    input.templateType === "carousel"
+      ? `ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding, subtle branding on every slide, maximum one accent phrase per slide${input.renderContext?.highlightMode === "none" ? ", do not add a highlight treatment on this slide" : ""}`
+      : "ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding",
   ].join("\n");
 }

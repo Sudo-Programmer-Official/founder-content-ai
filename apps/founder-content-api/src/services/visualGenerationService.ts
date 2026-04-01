@@ -52,6 +52,41 @@ interface AccentMarkupResult {
   endY: number;
 }
 
+type BrandSignatureMode = "subtle" | "closing";
+type CarouselSlideVisualRole = "hook" | "problem" | "story" | "breakdown" | "takeaway";
+
+interface CarouselSlideRenderProfile {
+  visualRole: CarouselSlideVisualRole;
+  eyebrowLabel: string;
+  allowDerivedHighlight: boolean;
+  suppressHighlight: boolean;
+  highlightMode: "none" | "single";
+  brandSignatureMode: BrandSignatureMode;
+}
+
+interface CarouselSvgLayoutProfile {
+  contentStartOffset: number;
+  headlineFontSize: number;
+  headlineLineHeight: number;
+  headlineMaxLineLength: number;
+  headlineMaxLines: number;
+  accentFontSize: number;
+  accentLineHeight: number;
+  accentMaxLineLength: number;
+  accentMaxLines: number;
+  supportFontSize: number;
+  supportLineHeight: number;
+  supportMaxLineLength: number;
+  supportMaxLines: number;
+  supportStartGap: number;
+  bulletStartGap: number;
+  bulletCardHeight: number;
+  bulletRowHeight: number;
+  bulletFontSize: number;
+  bulletOpacityDark: string;
+  bulletOpacityLight: string;
+}
+
 interface ResolvedBrandSignatureLabel {
   label: string;
   source: "domain" | "brand_name" | "footer" | "watermark" | "fallback";
@@ -229,6 +264,7 @@ function normalizeContent(
   defaults?: {
     footerText?: string;
     eyebrowText?: string;
+    allowDerivedHighlight?: boolean;
   },
 ): VisualPromptContent {
   const headline = content.headline?.trim();
@@ -237,6 +273,12 @@ function normalizeContent(
     throw new HttpError(400, "bad_request", "content.headline is required.");
   }
 
+  const explicitHighlight = sanitizePhrase(content.highlightText, 64) || undefined;
+  const derivedHighlight =
+    defaults?.allowDerivedHighlight === false
+      ? undefined
+      : sanitizePhrase(extractHighlightCandidate(content.headline || content.supportingText || ""), 64) || undefined;
+
   return {
     headline,
     supportingText: content.supportingText?.trim() || undefined,
@@ -244,10 +286,7 @@ function normalizeContent(
       .map((point) => point.trim())
       .filter((point) => point.length > 0)
       .slice(0, 3),
-    highlightText:
-      sanitizePhrase(content.highlightText, 64) ||
-      sanitizePhrase(extractHighlightCandidate(content.headline || content.supportingText || ""), 64) ||
-      undefined,
+    highlightText: explicitHighlight || derivedHighlight,
     eyebrowText:
       sanitizePhrase(content.eyebrowText, 36) ||
       sanitizePhrase(defaults?.eyebrowText, 36) ||
@@ -780,8 +819,10 @@ function buildBrandSignatureMarkup(input: {
   brandMarkLabel: string;
   accentColor: string;
   textColor: string;
+  signatureMode?: BrandSignatureMode;
 }): string {
   const { brandKit, bounds, brandLabel, brandMarkLabel, accentColor, textColor } = input;
+  const closingMode = input.signatureMode === "closing";
   const rawLabel =
     sanitizePhrase(
       brandLabel,
@@ -792,9 +833,13 @@ function buildBrandSignatureMarkup(input: {
   if (brandKit.brandPlacement === "bottom_right") {
     const x = bounds.contentRight;
     const y = bounds.contentBottom - 10;
+    const lineStartX = x - (closingMode ? 156 : 132);
+    const lineEndX = x - 40;
+    const fontSize = closingMode ? 28 : 24;
+    const opacity = closingMode ? 0.94 : 0.86;
     return `
-      <line x1="${x - 132}" y1="${y - 18}" x2="${x - 40}" y2="${y - 18}" stroke="${accentColor}" stroke-width="4" stroke-linecap="round" opacity="0.88" />
-      <text x="${x}" y="${y}" text-anchor="end" font-size="24" letter-spacing="1.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.86">${safeLabel}</text>
+      <line x1="${lineStartX}" y1="${y - 18}" x2="${lineEndX}" y2="${y - 18}" stroke="${accentColor}" stroke-width="${closingMode ? 5 : 4}" stroke-linecap="round" opacity="${closingMode ? "0.94" : "0.88"}" />
+      <text x="${x}" y="${y}" text-anchor="end" font-size="${fontSize}" letter-spacing="1.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="${opacity}">${safeLabel}</text>
     `;
   }
 
@@ -803,8 +848,8 @@ function buildBrandSignatureMarkup(input: {
     const railY = 512;
     return `
       <g transform="translate(${railX} ${railY}) rotate(90)">
-        <line x1="-168" y1="-24" x2="-70" y2="-24" stroke="${accentColor}" stroke-width="4" stroke-linecap="round" opacity="0.82" />
-        <text x="0" y="0" text-anchor="middle" font-size="22" letter-spacing="6" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.84">${safeLabel}</text>
+        <line x1="-${closingMode ? 184 : 168}" y1="-24" x2="-70" y2="-24" stroke="${accentColor}" stroke-width="${closingMode ? 5 : 4}" stroke-linecap="round" opacity="${closingMode ? "0.9" : "0.82"}" />
+        <text x="0" y="0" text-anchor="middle" font-size="${closingMode ? 24 : 22}" letter-spacing="6" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="${closingMode ? "0.9" : "0.84"}">${safeLabel}</text>
       </g>
     `;
   }
@@ -812,13 +857,228 @@ function buildBrandSignatureMarkup(input: {
   const x = bounds.contentLeft;
   const y = bounds.contentTop;
   const markTextColor = brandKit.backgroundStyle === "light" ? "#FFF8F1" : "#121212";
+  const markSize = closingMode ? 54 : 48;
+  const markRadius = closingMode ? 17 : 15;
+  const markCenter = x + markSize / 2;
+  const markTextY = y + (closingMode ? 35 : 31);
+  const labelFontSize = closingMode ? 18 : 16;
+  const labelLineEnd = x + (closingMode ? 198 : 182);
 
   return `
-    <rect x="${x}" y="${y}" width="48" height="48" rx="15" fill="${accentColor}" />
-    <text x="${x + 24}" y="${y + 31}" text-anchor="middle" font-size="22" font-weight="750" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${markTextColor}">${escapeSvg(brandMarkLabel)}</text>
-    <text x="${x + 64}" y="${y + 20}" font-size="16" letter-spacing="3.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg(rawLabel.toUpperCase())}</text>
-    <line x1="${x + 64}" y1="${y + 34}" x2="${x + 182}" y2="${y + 34}" stroke="${accentColor}" stroke-width="4" stroke-linecap="round" opacity="0.78" />
+    <rect x="${x}" y="${y}" width="${markSize}" height="${markSize}" rx="${markRadius}" fill="${accentColor}" />
+    <text x="${markCenter}" y="${markTextY}" text-anchor="middle" font-size="${closingMode ? 24 : 22}" font-weight="750" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${markTextColor}">${escapeSvg(brandMarkLabel)}</text>
+    <text x="${x + 70}" y="${y + 20}" font-size="${labelFontSize}" letter-spacing="${closingMode ? "3.5" : "3.2"}" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="${closingMode ? "0.96" : "0.92"}">${escapeSvg(rawLabel.toUpperCase())}</text>
+    <line x1="${x + 70}" y1="${y + 34}" x2="${labelLineEnd}" y2="${y + 34}" stroke="${accentColor}" stroke-width="${closingMode ? 5 : 4}" stroke-linecap="round" opacity="${closingMode ? "0.88" : "0.78"}" />
   `;
+}
+
+function resolveCarouselSlideVisualRole(
+  slide: ContentNarrativeSlide,
+  index: number,
+  totalSlides: number,
+): CarouselSlideVisualRole {
+  const role = collapseWhitespace(typeof slide.role === "string" ? slide.role : "").toLowerCase();
+  const bulletCount = slide.bulletPoints?.filter(Boolean).length ?? 0;
+
+  if (index === 0 || role === "hook") {
+    return "hook";
+  }
+
+  if (index === totalSlides - 1 || /^(cta|takeaway)$/i.test(role)) {
+    return "takeaway";
+  }
+
+  if (/^(pattern_break|challenge|insight|reframe|problem)$/i.test(role)) {
+    return "problem";
+  }
+
+  if (/^(lesson|belief|story)$/i.test(role)) {
+    return "story";
+  }
+
+  if (/^(proof|step_1|step_2|step_3|breakdown)$/i.test(role) || bulletCount > 0) {
+    return "breakdown";
+  }
+
+  return index <= 1 ? "problem" : bulletCount > 0 ? "breakdown" : "story";
+}
+
+function resolveCarouselSlideRenderProfile(
+  slide: ContentNarrativeSlide,
+  index: number,
+  totalSlides: number,
+): CarouselSlideRenderProfile {
+  const visualRole = resolveCarouselSlideVisualRole(slide, index, totalSlides);
+
+  switch (visualRole) {
+    case "hook":
+      return {
+        visualRole,
+        eyebrowLabel: "HOOK",
+        allowDerivedHighlight: true,
+        suppressHighlight: false,
+        highlightMode: "single",
+        brandSignatureMode: index === totalSlides - 1 ? "closing" : "subtle",
+      };
+    case "problem":
+      return {
+        visualRole,
+        eyebrowLabel: "PROBLEM",
+        allowDerivedHighlight: false,
+        suppressHighlight: false,
+        highlightMode: "single",
+        brandSignatureMode: index === totalSlides - 1 ? "closing" : "subtle",
+      };
+    case "story":
+      return {
+        visualRole,
+        eyebrowLabel: "STORY",
+        allowDerivedHighlight: false,
+        suppressHighlight: true,
+        highlightMode: "none",
+        brandSignatureMode: index === totalSlides - 1 ? "closing" : "subtle",
+      };
+    case "breakdown":
+      return {
+        visualRole,
+        eyebrowLabel: "BREAKDOWN",
+        allowDerivedHighlight: false,
+        suppressHighlight: false,
+        highlightMode: "single",
+        brandSignatureMode: index === totalSlides - 1 ? "closing" : "subtle",
+      };
+    case "takeaway":
+    default:
+      return {
+        visualRole: "takeaway",
+        eyebrowLabel: "TAKEAWAY",
+        allowDerivedHighlight: true,
+        suppressHighlight: false,
+        highlightMode: "single",
+        brandSignatureMode: index === totalSlides - 1 ? "closing" : "subtle",
+      };
+  }
+}
+
+function resolveCarouselSvgLayoutProfile(visualRole: CarouselSlideVisualRole): CarouselSvgLayoutProfile {
+  switch (visualRole) {
+    case "hook":
+      return {
+        contentStartOffset: 18,
+        headlineFontSize: 94,
+        headlineLineHeight: 100,
+        headlineMaxLineLength: 12,
+        headlineMaxLines: 3,
+        accentFontSize: 34,
+        accentLineHeight: 50,
+        accentMaxLineLength: 18,
+        accentMaxLines: 1,
+        supportFontSize: 30,
+        supportLineHeight: 38,
+        supportMaxLineLength: 20,
+        supportMaxLines: 1,
+        supportStartGap: 44,
+        bulletStartGap: 40,
+        bulletCardHeight: 74,
+        bulletRowHeight: 88,
+        bulletFontSize: 28,
+        bulletOpacityDark: "0.08",
+        bulletOpacityLight: "0.54",
+      };
+    case "problem":
+      return {
+        contentStartOffset: 22,
+        headlineFontSize: 88,
+        headlineLineHeight: 94,
+        headlineMaxLineLength: 12,
+        headlineMaxLines: 4,
+        accentFontSize: 30,
+        accentLineHeight: 46,
+        accentMaxLineLength: 18,
+        accentMaxLines: 1,
+        supportFontSize: 30,
+        supportLineHeight: 40,
+        supportMaxLineLength: 20,
+        supportMaxLines: 2,
+        supportStartGap: 44,
+        bulletStartGap: 42,
+        bulletCardHeight: 74,
+        bulletRowHeight: 88,
+        bulletFontSize: 28,
+        bulletOpacityDark: "0.08",
+        bulletOpacityLight: "0.54",
+      };
+    case "story":
+      return {
+        contentStartOffset: 54,
+        headlineFontSize: 70,
+        headlineLineHeight: 80,
+        headlineMaxLineLength: 16,
+        headlineMaxLines: 5,
+        accentFontSize: 0,
+        accentLineHeight: 0,
+        accentMaxLineLength: 0,
+        accentMaxLines: 0,
+        supportFontSize: 30,
+        supportLineHeight: 44,
+        supportMaxLineLength: 22,
+        supportMaxLines: 4,
+        supportStartGap: 56,
+        bulletStartGap: 48,
+        bulletCardHeight: 74,
+        bulletRowHeight: 88,
+        bulletFontSize: 28,
+        bulletOpacityDark: "0.08",
+        bulletOpacityLight: "0.54",
+      };
+    case "takeaway":
+      return {
+        contentStartOffset: 26,
+        headlineFontSize: 82,
+        headlineLineHeight: 88,
+        headlineMaxLineLength: 12,
+        headlineMaxLines: 3,
+        accentFontSize: 32,
+        accentLineHeight: 48,
+        accentMaxLineLength: 18,
+        accentMaxLines: 1,
+        supportFontSize: 30,
+        supportLineHeight: 42,
+        supportMaxLineLength: 20,
+        supportMaxLines: 2,
+        supportStartGap: 46,
+        bulletStartGap: 42,
+        bulletCardHeight: 74,
+        bulletRowHeight: 88,
+        bulletFontSize: 28,
+        bulletOpacityDark: "0.08",
+        bulletOpacityLight: "0.54",
+      };
+    case "breakdown":
+    default:
+      return {
+        contentStartOffset: 28,
+        headlineFontSize: 74,
+        headlineLineHeight: 82,
+        headlineMaxLineLength: 14,
+        headlineMaxLines: 3,
+        accentFontSize: 28,
+        accentLineHeight: 44,
+        accentMaxLineLength: 18,
+        accentMaxLines: 1,
+        supportFontSize: 28,
+        supportLineHeight: 38,
+        supportMaxLineLength: 20,
+        supportMaxLines: 2,
+        supportStartGap: 40,
+        bulletStartGap: 44,
+        bulletCardHeight: 78,
+        bulletRowHeight: 92,
+        bulletFontSize: 30,
+        bulletOpacityDark: "0.12",
+        bulletOpacityLight: "0.6",
+      };
+  }
 }
 
 function buildAccentPhraseMarkup(input: {
@@ -1020,58 +1280,83 @@ function buildMinimalBrandFallbackSvg(
   content: VisualPromptContent,
   brandKit: GenerateVisualResponse["brandKit"],
   brandMarkLabel: string,
+  signatureMode: BrandSignatureMode = "subtle",
+  visualRole: CarouselSlideVisualRole = "breakdown",
 ): string {
   const bounds = resolveCanvasBounds(brandKit);
   const textColor = resolveTextColor(brandKit.backgroundStyle);
   const accentColor = resolveAccentColor(brandKit);
-  const contentStartY = resolveContentStartY(brandKit) + 18;
+  const layout = resolveCarouselSvgLayoutProfile(visualRole);
+  const maxHeadlineLength =
+    brandKit.brandPlacement === "side_label"
+      ? Math.max(8, layout.headlineMaxLineLength - 2)
+      : layout.headlineMaxLineLength;
+  const maxSupportLength =
+    brandKit.brandPlacement === "side_label"
+      ? Math.max(14, layout.supportMaxLineLength - 2)
+      : layout.supportMaxLineLength;
+  const contentStartY = resolveContentStartY(brandKit) + layout.contentStartOffset;
   const headlineLines = wrapSvgText(
     content.headline,
-    brandKit.brandPlacement === "side_label" ? 10 : 12,
-    4,
+    maxHeadlineLength,
+    layout.headlineMaxLines,
   );
   const headlineMarkup = headlineLines
     .map(
       (line, index) =>
-        `<text x="${bounds.contentLeft}" y="${contentStartY + index * 92}" font-size="86" font-weight="820" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${contentStartY + index * layout.headlineLineHeight}" font-size="${layout.headlineFontSize}" font-weight="820" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
     )
     .join("");
-  const accentLines = wrapSvgText(
-    content.highlightText || extractHighlightCandidate(content.headline),
-    18,
-    2,
-  );
-  const accentMarkup = buildAccentPhraseMarkup({
-    lines: accentLines,
-    brandKit,
-    x: bounds.contentLeft,
-    startY: contentStartY + headlineLines.length * 92 + 8,
-    fontSize: 30,
-    lineHeight: 46,
-    maxWidth: bounds.contentWidth,
-    textColor,
-    accentColor,
-  });
+  const accentStartY = contentStartY + headlineLines.length * layout.headlineLineHeight + 8;
+  const accentLines =
+    content.highlightText && layout.accentMaxLines > 0
+      ? wrapSvgText(content.highlightText, layout.accentMaxLineLength, layout.accentMaxLines)
+      : [];
+  const accentMarkup = accentLines.length > 0
+    ? buildAccentPhraseMarkup({
+        lines: accentLines,
+        brandKit,
+        x: bounds.contentLeft,
+        startY: accentStartY,
+        fontSize: layout.accentFontSize,
+        lineHeight: layout.accentLineHeight,
+        maxWidth: bounds.contentWidth,
+        textColor,
+        accentColor,
+      })
+    : {
+        markup: "",
+        endY: accentStartY,
+      };
   const supportLines = wrapSvgText(
     content.supportingText || content.closingText || "",
-    brandKit.brandPlacement === "side_label" ? 16 : 20,
-    2,
+    maxSupportLength,
+    layout.supportMaxLines,
   );
+  const supportStartY =
+    (accentLines.length > 0 ? accentMarkup.endY : contentStartY + headlineLines.length * layout.headlineLineHeight)
+    + layout.supportStartGap;
   const supportMarkup = supportLines
     .map(
       (line, index) =>
-        `<text x="${bounds.contentLeft}" y="${accentMarkup.endY + 48 + index * 42}" font-size="32" font-weight="560" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.84">${escapeSvg(line)}</text>`,
+        `<text x="${bounds.contentLeft}" y="${supportStartY + index * layout.supportLineHeight}" font-size="${layout.supportFontSize}" font-weight="560" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.84">${escapeSvg(line)}</text>`,
     )
     .join("");
-  const bulletStartY = accentMarkup.endY + (supportLines.length > 0 ? 144 : 54);
+  const bulletAnchorY =
+    supportLines.length > 0
+      ? supportStartY + supportLines.length * layout.supportLineHeight
+      : accentLines.length > 0
+        ? accentMarkup.endY
+        : contentStartY + headlineLines.length * layout.headlineLineHeight;
+  const bulletStartY = bulletAnchorY + layout.bulletStartGap;
   const bulletMarkup = (content.bulletPoints ?? [])
     .slice(0, 3)
     .map((point, index) => {
-      const y = bulletStartY + index * 88;
+      const y = bulletStartY + index * layout.bulletRowHeight;
       return `
-        <rect x="${bounds.contentLeft}" y="${y - 38}" width="${bounds.contentWidth}" height="74" rx="22" fill="#FFFFFF" opacity="${brandKit.backgroundStyle === "light" ? "0.54" : "0.08"}" />
+        <rect x="${bounds.contentLeft}" y="${y - 38}" width="${bounds.contentWidth}" height="${layout.bulletCardHeight}" rx="22" fill="#FFFFFF" opacity="${brandKit.backgroundStyle === "light" ? layout.bulletOpacityLight : layout.bulletOpacityDark}" />
         <circle cx="${bounds.contentLeft + 28}" cy="${y - 2}" r="7" fill="${accentColor}" />
-        <text x="${bounds.contentLeft + 52}" y="${y + 8}" font-size="28" font-weight="600" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.88">${escapeSvg(point)}</text>
+        <text x="${bounds.contentLeft + 52}" y="${y + 8}" font-size="${layout.bulletFontSize}" font-weight="600" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${textColor}" opacity="0.88">${escapeSvg(point)}</text>
       `;
     })
     .join("");
@@ -1088,6 +1373,7 @@ function buildMinimalBrandFallbackSvg(
         brandMarkLabel,
         accentColor,
         textColor,
+        signatureMode,
       })}
       <text x="${bounds.contentLeft}" y="${contentStartY - 42}" font-size="18" letter-spacing="4.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg((content.eyebrowText || "CAROUSEL COVER").toUpperCase())}</text>
       ${headlineMarkup}
@@ -1179,11 +1465,17 @@ async function generateSingleVisualAsset(input: {
   brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
   businessContext: BusinessVisualContext | null;
   captionFooterCredit?: string;
+  renderContext?: {
+    brandSignatureMode?: BrandSignatureMode;
+    slideVisualRole?: CarouselSlideVisualRole;
+    highlightMode?: "none" | "single";
+  };
 }): Promise<GenerateVisualResponse> {
   const basePrompt = buildVisualPrompt({
     templateType: input.templateType,
     content: input.content,
     brandKit: input.brandKit,
+    renderContext: input.renderContext,
   });
   const prompt = buildPromptWithBranding(basePrompt, input.brandingPolicy);
   const brandConsistency = evaluateBrandConsistency({
@@ -1224,6 +1516,7 @@ async function generateSingleVisualAsset(input: {
       input.brandKit,
       input.brandingPolicy,
       input.businessContext,
+      input.renderContext,
     );
   }
 }
@@ -1276,6 +1569,64 @@ function normalizeContentNarrative(input: ContentNarrative): ContentNarrative {
   };
 }
 
+function normalizeStructuredNarrativeRole(value: string | undefined): string {
+  return collapseWhitespace(value).toLowerCase();
+}
+
+function normalizeComparableNarrativeText(value: string | undefined): string {
+  return collapseWhitespace(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasDuplicateNarrativeText(slides: ContentNarrativeSlide[]): boolean {
+  const seen = new Set<string>();
+
+  for (const slide of slides) {
+    for (const value of [
+      slide.headline,
+      slide.supportingText,
+      ...(slide.bulletPoints ?? []),
+    ]) {
+      const normalized = normalizeComparableNarrativeText(value);
+
+      if (!normalized) {
+        continue;
+      }
+
+      if (seen.has(normalized)) {
+        return true;
+      }
+
+      seen.add(normalized);
+    }
+  }
+
+  return false;
+}
+
+function shouldRebuildStructuredNarrative(narrative: ContentNarrative): boolean {
+  const expectedRoles = ["hook", "problem", "story", "breakdown", "takeaway"];
+
+  if (narrative.slides.length !== expectedRoles.length) {
+    return true;
+  }
+
+  if (hasDuplicateNarrativeText(narrative.slides)) {
+    return true;
+  }
+
+  if (narrative.slides[2]?.highlightText) {
+    return true;
+  }
+
+  return narrative.slides.some((slide, index) =>
+    normalizeStructuredNarrativeRole(typeof slide.role === "string" ? slide.role : undefined) !== expectedRoles[index],
+  );
+}
+
 function resolveContentNarrative(
   input: GenerateVisualRequest,
   content: VisualPromptContent,
@@ -1286,7 +1637,9 @@ function resolveContentNarrative(
       : null;
 
   if (normalizedInputNarrative && normalizedInputNarrative.slides.length > 0) {
-    return normalizedInputNarrative;
+    if (!shouldRebuildStructuredNarrative(normalizedInputNarrative)) {
+      return normalizedInputNarrative;
+    }
   }
 
   if (input.narrative?.format === "carousel") {
@@ -1316,23 +1669,38 @@ function resolveContentNarrative(
     ]
       .filter(Boolean)
       .join("\n\n");
+  const explicitCarouselSlides = input.carousel?.slides?.map((slide, index) => ({
+    role: slide.narrativeRole || `slide_${index + 1}`,
+    headline: slide.headline,
+    supportingText: slide.supportingText,
+    bulletPoints: slide.bulletPoints,
+    highlightText: slide.highlightText,
+    eyebrowText: slide.eyebrowText,
+    footerText: slide.footerText,
+    closingText: slide.closingText,
+  }));
+  const normalizedCarouselNarrative =
+    explicitCarouselSlides && explicitCarouselSlides.length > 0
+      ? normalizeContentNarrative({
+          format: "carousel",
+          type: input.carousel?.narrativeType || "story",
+          title: input.carousel?.title?.trim() || content.headline,
+          subtitle: input.carousel?.subtitle?.trim() || content.supportingText || "",
+          sourceText,
+          slides: explicitCarouselSlides,
+        })
+      : null;
+
+  if (normalizedCarouselNarrative && !shouldRebuildStructuredNarrative(normalizedCarouselNarrative)) {
+    return normalizedCarouselNarrative;
+  }
 
   return generateNarrative({
     narrativeType: input.carousel?.narrativeType,
-    slideCount: input.carousel?.slideCount,
+    slideCount: 5,
     sourceText,
     title: input.carousel?.title?.trim() || content.headline,
     subtitle: input.carousel?.subtitle?.trim() || content.supportingText,
-    slides: input.carousel?.slides?.map((slide, index) => ({
-      role: slide.narrativeRole || `slide_${index + 1}`,
-      headline: slide.headline,
-      supportingText: slide.supportingText,
-      bulletPoints: slide.bulletPoints,
-      highlightText: slide.highlightText,
-      eyebrowText: slide.eyebrowText,
-      footerText: slide.footerText,
-      closingText: slide.closingText,
-    })),
   });
 }
 
@@ -1347,8 +1715,9 @@ async function generateCarouselAsset(input: {
   const footerText = input.businessContext?.domainLabel || input.businessContext?.brandName;
   const renderedNarrativeSlides = await Promise.all(
     narrative.slides.map(async (slide, index) => {
-      const eyebrowText = slide.eyebrowText || `${formatCarouselNarrativeLabel(narrative.type)} ${index + 1}/${narrative.slides.length}`;
-      const slideContent = normalizeContent(
+      const renderProfile = resolveCarouselSlideRenderProfile(slide, index, narrative.slides.length);
+      const eyebrowText = slide.eyebrowText || `${renderProfile.eyebrowLabel} ${index + 1}/${narrative.slides.length}`;
+      const normalizedSlideContent = normalizeContent(
         {
           ...slide,
           eyebrowText,
@@ -1357,8 +1726,16 @@ async function generateCarouselAsset(input: {
         {
           eyebrowText,
           footerText,
+          allowDerivedHighlight: renderProfile.allowDerivedHighlight,
         },
       );
+      const slideContent =
+        renderProfile.suppressHighlight
+          ? {
+              ...normalizedSlideContent,
+              highlightText: undefined,
+            }
+          : normalizedSlideContent;
 
       const rendered = await generateSingleVisualAsset({
         templateType: "carousel",
@@ -1367,6 +1744,11 @@ async function generateCarouselAsset(input: {
         brandingPolicy: input.brandingPolicy,
         businessContext: input.businessContext,
         captionFooterCredit: input.request.captionFooterCredit,
+        renderContext: {
+          brandSignatureMode: renderProfile.brandSignatureMode,
+          slideVisualRole: renderProfile.visualRole,
+          highlightMode: renderProfile.highlightMode,
+        },
       });
 
       return {
@@ -1453,6 +1835,11 @@ function buildFallbackImage(
   brandKit: GenerateVisualResponse["brandKit"],
   brandingPolicy: ReturnType<typeof resolveBrandingPolicy>,
   businessContext: BusinessVisualContext | null,
+  renderContext?: {
+    brandSignatureMode?: BrandSignatureMode;
+    slideVisualRole?: CarouselSlideVisualRole;
+    highlightMode?: "none" | "single";
+  },
 ): GenerateVisualResponse {
   const brandMarkLabel = buildBrandMarkLabel(businessContext, brandingPolicy);
   const brandLabel =
@@ -1482,7 +1869,13 @@ function buildFallbackImage(
       svg = buildSplitEmphasisFallbackSvg(svgContent, brandKit, brandMarkLabel);
       break;
     case "carousel":
-      svg = buildMinimalBrandFallbackSvg(svgContent, brandKit, brandMarkLabel);
+      svg = buildMinimalBrandFallbackSvg(
+        svgContent,
+        brandKit,
+        brandMarkLabel,
+        renderContext?.brandSignatureMode ?? "subtle",
+        renderContext?.slideVisualRole ?? "breakdown",
+      );
       break;
     case "insight":
     default:
@@ -1496,6 +1889,7 @@ function buildFallbackImage(
       templateType,
       content: svgContent,
       brandKit,
+      renderContext,
     }),
     provider: "svg_fallback",
     imageDataUrl: `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,

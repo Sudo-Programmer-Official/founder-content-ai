@@ -27,6 +27,11 @@ export interface CarouselNarrativeDeck {
 
 const DEFAULT_CTA_HEADLINE = "Follow for more founder insights";
 const DEFAULT_CTA_SUPPORTING = "Turn ideas into trusted distribution.";
+const DEFAULT_BREAKDOWN_BULLETS = [
+  "Start from one sharp hook",
+  "Explain the real founder tension",
+  "Close with one usable takeaway",
+];
 
 function normalizeLine(value: string | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -150,6 +155,246 @@ function splitHeadlineAndSupport(
     headline: firstSentence,
     supportingText: remainder ? truncateLine(remainder, 120) : undefined,
   };
+}
+
+function normalizeComparableText(value: string | undefined): string {
+  return normalizeLine(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function markTextUsed(used: Set<string>, ...values: Array<string | undefined>): void {
+  for (const value of values) {
+    const normalized = normalizeComparableText(value);
+
+    if (normalized) {
+      used.add(normalized);
+    }
+  }
+}
+
+function isDistinctText(value: string | undefined, used: Set<string>): boolean {
+  const normalized = normalizeComparableText(value);
+  return normalized !== "" && !used.has(normalized);
+}
+
+function takeDistinctCandidate(
+  candidates: string[],
+  used: Set<string>,
+  predicate?: (candidate: string) => boolean,
+): string | undefined {
+  for (const candidate of candidates) {
+    if (!isDistinctText(candidate, used)) {
+      continue;
+    }
+
+    if (predicate && !predicate(candidate)) {
+      continue;
+    }
+
+    markTextUsed(used, candidate);
+    return candidate;
+  }
+
+  return undefined;
+}
+
+function takeDistinctCandidates(
+  candidates: string[],
+  used: Set<string>,
+  count: number,
+  predicate?: (candidate: string) => boolean,
+): string[] {
+  const selected: string[] = [];
+
+  for (const candidate of candidates) {
+    if (selected.length >= count) {
+      break;
+    }
+
+    if (!isDistinctText(candidate, used)) {
+      continue;
+    }
+
+    if (predicate && !predicate(candidate)) {
+      continue;
+    }
+
+    markTextUsed(used, candidate);
+    selected.push(candidate);
+  }
+
+  return selected;
+}
+
+function fallbackHeadlineForRole(role: ContentNarrativeSlide["role"]): string {
+  switch (role) {
+    case "hook":
+      return "Most founders have ideas worth sharing";
+    case "problem":
+      return "The real blocker is consistency";
+    case "story":
+      return "I learned this the hard way";
+    case "breakdown":
+      return "The fix is a repeatable content system";
+    case "takeaway":
+    default:
+      return "Build the system before you chase more ideas";
+  }
+}
+
+function dedupeSlideCopy(slides: ContentNarrativeSlide[]): ContentNarrativeSlide[] {
+  const used = new Set<string>();
+
+  return slides.map((slide) => {
+    const normalized = normalizeSlide(slide);
+    const role = normalized.role || "insight";
+    const headline =
+      isDistinctText(normalized.headline, used)
+        ? normalized.headline
+        : fallbackHeadlineForRole(role);
+    markTextUsed(used, headline);
+
+    const supportingText =
+      isDistinctText(normalized.supportingText, used)
+        ? normalized.supportingText
+        : undefined;
+    markTextUsed(used, supportingText);
+
+    const bulletPoints = (normalized.bulletPoints ?? []).filter((point) => {
+      if (!isDistinctText(point, used)) {
+        return false;
+      }
+
+      markTextUsed(used, point);
+      return true;
+    });
+
+    const highlightText =
+      isDistinctText(normalized.highlightText, used)
+        ? normalized.highlightText
+        : undefined;
+    markTextUsed(used, highlightText);
+
+    return normalizeSlide({
+      ...normalized,
+      role,
+      headline,
+      supportingText,
+      bulletPoints,
+      highlightText,
+    });
+  });
+}
+
+function buildStructuredFiveSlides(
+  input: BuildContentNarrativeInput,
+): ContentNarrativeSlide[] {
+  const lines = splitLines(input.sourceText);
+  const paragraphs = splitParagraphs(input.sourceText);
+  const sentences = splitSentences(input.sourceText);
+  const candidates = dedupeLines([
+    ...sentences,
+    ...paragraphs,
+    ...lines,
+    normalizeLine(input.title),
+    normalizeLine(input.subtitle),
+  ]).filter(Boolean);
+  const used = new Set<string>();
+  const problemPattern =
+    /\b(struggle|stuck|hard|difficult|guesswork|frustration|problem|challenge|consistent|consistency|void|noise|flat|resonate|share|overthink)\b/i;
+  const storyPattern = /\b(i|we|my|our)\b/i;
+  const breakdownPattern =
+    /\b(system|process|framework|playbook|repeatable|because|how|what changed|structure|signal|proof|mechanism|workflow|distribution)\b/i;
+
+  const hookSource = takeDistinctCandidate(
+    [...sentences, ...paragraphs, normalizeLine(input.title), normalizeLine(input.subtitle)].filter(Boolean),
+    used,
+  );
+  const hookHeadline = summarizeSentence(hookSource, 84) || fallbackHeadlineForRole("hook");
+
+  const problemSource = takeDistinctCandidate(
+    candidates,
+    used,
+    (candidate) => problemPattern.test(candidate),
+  ) || takeDistinctCandidate(candidates, used);
+  const problemSplit = splitHeadlineAndSupport(problemSource || "", 78);
+  const problemHeadline = problemSplit.headline || fallbackHeadlineForRole("problem");
+
+  const storySource = takeDistinctCandidate(
+    [...sentences, ...paragraphs, ...lines],
+    used,
+    (candidate) => storyPattern.test(candidate),
+  ) || takeDistinctCandidate(candidates, used);
+  const storySplit = splitHeadlineAndSupport(storySource || "", 76);
+  const storySupport =
+    storySplit.supportingText
+    || summarizeSentence(
+      takeDistinctCandidate(candidates, used, (candidate) => !problemPattern.test(candidate)),
+      120,
+    )
+    || "Good ideas still stall when the system is missing.";
+
+  const breakdownSource = takeDistinctCandidate(
+    candidates,
+    used,
+    (candidate) => breakdownPattern.test(candidate),
+  ) || takeDistinctCandidate(candidates, used);
+  const breakdownSplit = splitHeadlineAndSupport(breakdownSource || "", 78);
+  const breakdownBulletCandidates = takeDistinctCandidates(
+    candidates,
+    used,
+    3,
+    (candidate) => !storyPattern.test(candidate),
+  );
+  const breakdownBullets = breakdownBulletCandidates
+    .map((candidate) => summarizeSentence(candidate, 80))
+    .filter(Boolean)
+    .slice(0, 3);
+
+  const takeawaySource = takeDistinctCandidate(
+    [...candidates].reverse(),
+    used,
+  );
+  const takeawaySplit = splitHeadlineAndSupport(takeawaySource || "", 78);
+  const takeawayHeadline = takeawaySplit.headline || fallbackHeadlineForRole("takeaway");
+  const takeawaySupport =
+    takeawaySplit.supportingText
+    || (takeawayHeadline === DEFAULT_CTA_HEADLINE ? DEFAULT_CTA_SUPPORTING : "Make the next post easier by making the system obvious.");
+
+  return dedupeSlideCopy([
+    {
+      role: "hook",
+      headline: hookHeadline,
+      bulletPoints: [],
+    },
+    {
+      role: "problem",
+      headline: problemHeadline,
+      supportingText: problemSplit.supportingText,
+      bulletPoints: [],
+    },
+    {
+      role: "story",
+      headline: storySplit.headline || fallbackHeadlineForRole("story"),
+      supportingText: storySupport,
+      bulletPoints: [],
+    },
+    {
+      role: "breakdown",
+      headline: breakdownSplit.headline || fallbackHeadlineForRole("breakdown"),
+      supportingText: breakdownBullets.length === 0 ? breakdownSplit.supportingText : undefined,
+      bulletPoints: breakdownBullets.length > 0 ? breakdownBullets : DEFAULT_BREAKDOWN_BULLETS,
+    },
+    {
+      role: "takeaway",
+      headline: takeawayHeadline,
+      supportingText: takeawaySupport,
+      bulletPoints: [],
+    },
+  ]);
 }
 
 function inferNarrativeType(input: BuildContentNarrativeInput): ContentNarrativeType {
@@ -499,14 +744,7 @@ export function generateNarrative(input: BuildContentNarrativeInput): ContentNar
   }
 
   const narrativeType = input.narrativeType ?? inferNarrativeType(input);
-  const slides =
-    resolvedPattern
-      ? buildPatternDrivenSlides(input, slideCount, resolvedPattern.beats)
-      : narrativeType === "framework"
-      ? buildFrameworkSlides(input, slideCount)
-      : narrativeType === "contrarian"
-        ? buildContrarianSlides(input, slideCount)
-        : buildContrarianSlides(input, slideCount, true);
+  const slides = buildStructuredFiveSlides(input).slice(0, slideCount);
 
   return {
     format: "carousel",
