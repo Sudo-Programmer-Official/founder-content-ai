@@ -53,6 +53,10 @@ CONSTRAINTS
 - Open with a short first line that can stop the scroll. Do not waste the first sentence on context-setting filler.
 - Format the post for LinkedIn readability: use short paragraphs, frequent line breaks, and avoid dense blocks of text.
 - Most paragraphs should be one sentence or one to two short lines, not long walls of copy.
+- Never start a line with punctuation. Do not begin any paragraph with a comma, semicolon, colon, or dash.
+- Avoid semicolons entirely. Prefer full stops, clean sentence breaks, or line breaks.
+- Write in natural spoken rhythm, not perfectly balanced grammar. Mix short punchy lines with slightly longer ones.
+- Keep the post within a readable LinkedIn range: if `length` is `short`, aim for 5 to 7 short paragraphs; if `medium`, aim for 6 to 9 short paragraphs; if `long`, aim for 8 to 11 short paragraphs without turning into a wall of text.
 - Each variation should follow a strong rhythm: hook, insight, concrete example or founder reality, then a punchy close.
 - Keep the narrative beats obvious on the page. A reader should be able to feel where the hook ends, the insight lands, the breakdown starts, and the takeaway closes.
 - Prefer point of view, tension, and specificity over neutral educational summary.

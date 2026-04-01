@@ -1,3 +1,5 @@
+import { humanizeLines } from "./text-humanizer.ts";
+
 function collapseInlineWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -35,14 +37,14 @@ function findReadableBreakpoint(value: string): number {
     "; ",
     " - ",
     " — ",
-    ", but ",
-    ", and ",
-    ", so ",
-    ", because ",
-    ", which ",
-    ", that ",
-    ", when ",
-    ", while ",
+    " but ",
+    " and ",
+    " so ",
+    " because ",
+    " which ",
+    " that ",
+    " when ",
+    " while ",
   ];
   const minIndex = Math.floor(normalized.length * 0.32);
   const maxIndex = Math.ceil(normalized.length * 0.72);
@@ -162,5 +164,5 @@ export function formatLinkedInPostForReadability(value: string): string {
     dedupedParagraphs.push(paragraph);
   }
 
-  return dedupedParagraphs.join("\n\n");
+  return humanizeLines(dedupedParagraphs.join("\n\n"));
 }
