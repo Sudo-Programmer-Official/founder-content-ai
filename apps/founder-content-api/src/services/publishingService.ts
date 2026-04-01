@@ -307,8 +307,7 @@ export async function publishLinkedInImagePost(input: {
           multiImage: {
             images: uploadedAssets.map((asset) => ({
               id: asset.imageUrn,
-              ...(asset.altText ? { altText: asset.altText.slice(0, 4086) } : {}),
-              taggedEntities: [],
+              ...(asset.altText ? { altText: asset.altText.slice(0, 4086) } : {})
             })),
           },
         };
