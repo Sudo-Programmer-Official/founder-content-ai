@@ -407,6 +407,17 @@ function formatBrandPlacementLabel(
   return "top-left";
 }
 
+function resolveBrandPlacementLabelForConsistency(
+  templateType: VisualTemplateType,
+  brandPlacement: GenerateVisualResponse["brandKit"]["brandPlacement"],
+): string {
+  if (templateType === "carousel") {
+    return "bottom-right footer";
+  }
+
+  return formatBrandPlacementLabel(brandPlacement);
+}
+
 function isContentTextDense(input: {
   templateType: VisualTemplateType;
   brandKit: GenerateVisualResponse["brandKit"];
@@ -506,7 +517,10 @@ function evaluateBrandConsistency(input: {
     businessContext: input.businessContext,
     brandingPolicy: input.brandingPolicy,
   });
-  const placementLabel = formatBrandPlacementLabel(input.brandKit.brandPlacement);
+  const placementLabel = resolveBrandPlacementLabelForConsistency(
+    input.templateType,
+    input.brandKit.brandPlacement,
+  );
   const brandVisibilityCheck: GenerateVisualResponse["brandConsistency"]["checks"][number] =
     brandSignature.source === "domain"
       ? {
@@ -869,6 +883,43 @@ function buildBrandSignatureMarkup(input: {
     <text x="${markCenter}" y="${markTextY}" text-anchor="middle" font-size="${closingMode ? 24 : 22}" font-weight="750" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${markTextColor}">${escapeSvg(brandMarkLabel)}</text>
     <text x="${x + 70}" y="${y + 20}" font-size="${labelFontSize}" letter-spacing="${closingMode ? "3.5" : "3.2"}" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="${closingMode ? "0.96" : "0.92"}">${escapeSvg(rawLabel.toUpperCase())}</text>
     <line x1="${x + 70}" y1="${y + 34}" x2="${labelLineEnd}" y2="${y + 34}" stroke="${accentColor}" stroke-width="${closingMode ? 5 : 4}" stroke-linecap="round" opacity="${closingMode ? "0.88" : "0.78"}" />
+  `;
+}
+
+function buildCarouselFooterBrandingMarkup(input: {
+  bounds: CanvasBounds;
+  brandLabel: string;
+  accentColor: string;
+  textColor: string;
+  backgroundStyle: GenerateVisualResponse["brandKit"]["backgroundStyle"];
+  signatureMode?: BrandSignatureMode;
+}): string {
+  const closingMode = input.signatureMode === "closing";
+  const rawLabel = sanitizePhrase(input.brandLabel, closingMode ? 34 : 30) || "Founder Content";
+  const safeLabel = escapeSvg(rawLabel);
+  const fontSize = closingMode ? 24 : 18;
+  const baselineY = input.bounds.frameY + input.bounds.frameHeight - (closingMode ? 24 : 26);
+  const textX = input.bounds.frameX + input.bounds.frameWidth - 34;
+  const estimatedLabelWidth = estimateTextWidth(rawLabel, fontSize, 0.46);
+  const lineEndX = textX - estimatedLabelWidth - 16;
+  const lineStartX = lineEndX - (closingMode ? 74 : 48);
+  const fill = closingMode ? input.accentColor : input.textColor;
+  const textOpacity =
+    closingMode
+      ? "0.94"
+      : input.backgroundStyle === "light"
+        ? "0.54"
+        : "0.48";
+  const lineOpacity =
+    closingMode
+      ? "0.74"
+      : input.backgroundStyle === "light"
+        ? "0.18"
+        : "0.22";
+
+  return `
+    <line x1="${lineStartX}" y1="${baselineY - 12}" x2="${lineEndX}" y2="${baselineY - 12}" stroke="${closingMode ? input.accentColor : input.textColor}" stroke-width="${closingMode ? 4 : 2}" stroke-linecap="round" opacity="${lineOpacity}" />
+    <text x="${textX}" y="${baselineY}" text-anchor="end" font-size="${fontSize}" letter-spacing="${closingMode ? "0.8" : "0.5"}" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${fill}" opacity="${textOpacity}">${safeLabel}</text>
   `;
 }
 
@@ -1286,6 +1337,14 @@ function buildMinimalBrandFallbackSvg(
   const bounds = resolveCanvasBounds(brandKit);
   const textColor = resolveTextColor(brandKit.backgroundStyle);
   const accentColor = resolveAccentColor(brandKit);
+  const footerBrandingMarkup = buildCarouselFooterBrandingMarkup({
+    bounds,
+    brandLabel: content.footerText || "Founder Content",
+    accentColor,
+    textColor,
+    backgroundStyle: brandKit.backgroundStyle,
+    signatureMode,
+  });
   const layout = resolveCarouselSvgLayoutProfile(visualRole);
   const hookSplit = visualRole === "hook"
     ? splitTextAroundHighlight(content.headline, content.highlightText)
@@ -1400,15 +1459,7 @@ function buildMinimalBrandFallbackSvg(
       ${buildBackgroundFill(brandKit.backgroundStyle, brandKit.primaryColor, brandKit.secondaryColor)}
       ${buildAtmosphereMarkup(brandKit, accentColor)}
       ${buildFrameMarkup(bounds, accentColor)}
-      ${buildBrandSignatureMarkup({
-        brandKit,
-        bounds,
-        brandLabel: content.footerText || content.eyebrowText || "FounderContent",
-        brandMarkLabel,
-        accentColor,
-        textColor,
-        signatureMode,
-      })}
+      ${footerBrandingMarkup}
       <text x="${bounds.contentLeft}" y="${contentStartY - 42}" font-size="18" letter-spacing="4.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg((content.eyebrowText || "CAROUSEL COVER").toUpperCase())}</text>
       ${headlineMarkup}
       ${dividerMarkup}
@@ -1747,7 +1798,15 @@ async function generateCarouselAsset(input: {
   businessContext: BusinessVisualContext | null;
 }): Promise<GenerateVisualResponse> {
   const narrative = resolveContentNarrative(input.request, input.content);
-  const footerText = input.businessContext?.domainLabel || input.businessContext?.brandName;
+  const footerText =
+    resolveBrandSignatureLabel({
+      content: input.content,
+      businessContext: input.businessContext,
+      brandingPolicy: input.brandingPolicy,
+    }).label
+    || input.businessContext?.domainLabel
+    || input.businessContext?.brandName
+    || input.brandingPolicy.watermarkText;
   const renderedNarrativeSlides = await Promise.all(
     narrative.slides.map(async (slide, index) => {
       const renderProfile = resolveCarouselSlideRenderProfile(slide, index, narrative.slides.length);
@@ -1756,7 +1815,7 @@ async function generateCarouselAsset(input: {
         {
           ...slide,
           eyebrowText,
-          footerText: slide.footerText || footerText,
+          footerText,
         },
         {
           eyebrowText,

@@ -261,7 +261,7 @@ function resolveLayoutBlock(
     case "contrarian":
       return `split emphasis layout, ${brandPlacementDescription[brandPlacement]}, quiet setup copy on one side, oversized emphasis phrase on the opposite side, hard contrast, built to stop scroll on mobile`;
     case "carousel":
-      return `premium LinkedIn carousel slide, ${brandPlacementDescription[brandPlacement]}, ${options?.slideVisualRole ? carouselRoleDescription[options.slideVisualRole] : "one dominant headline, optional supporting line, optional 2 to 3 compact bullets"}, controlled spacing, same typography system across every slide, subtle brand signature present on every slide, maximum one accent phrase and some slides can skip the accent entirely, tiny brand signature rather than a footer watermark${options?.slideVisualRole === "hook" ? ", keep the divider elegant: 1 to 2 pixels, low opacity, and roughly half the text width rather than full bleed" : ""}${options?.brandSignatureMode === "closing" ? ", this is the final slide so keep the same placement but make the brand signature slightly stronger without overpowering the copy" : ""}`;
+      return `premium LinkedIn carousel slide, footer brand signature locked to the bottom-right corner on every slide, ${options?.slideVisualRole ? carouselRoleDescription[options.slideVisualRole] : "one dominant headline, optional supporting line, optional 2 to 3 compact bullets"}, controlled spacing, same typography system across every slide, subtle footer branding on every slide using the workspace brand label, maximum one accent phrase and some slides can skip the accent entirely, footer branding must stay low-prominence and clear of the main content area${options?.slideVisualRole === "hook" ? ", keep the divider elegant: 1 to 2 pixels, low opacity, and roughly half the text width rather than full bleed" : ""}${options?.brandSignatureMode === "closing" ? ", this is the final slide so keep the footer in the same bottom-right position but make it slightly larger, higher-contrast, and accent-led without overpowering the copy" : ""}`;
     default:
       return "clean social-first layout with clear hierarchy";
   }
@@ -306,7 +306,7 @@ function resolveContentBlock(
       bulletPoints.length > 0
         ? `Bullets: ${bulletPoints.map((point) => `- ${point}`).join(" ")}`
         : undefined,
-      footerText ? `Footer: "${footerText}"` : undefined,
+      footerText ? `Mandatory footer brand label (bottom-right): "${footerText}"` : undefined,
     ]
       .filter(Boolean)
       .join(" ");
@@ -382,15 +382,17 @@ function resolveBrandBlock(
     `${backgroundStyle} background treatment`,
     `${fontStyle} type direction`,
     `${accentStyle} accent treatment`,
-    `${brandPlacement} brand placement`,
+    options?.slideVisualRole
+      ? "carousel footer branding locked to the bottom-right"
+      : `${brandPlacement} brand placement`,
     `use ${primaryColor} as the dominant brand color`,
     `use ${secondaryColor} for contrast or accent`,
     brandKit.logoUrl
       ? "include a small restrained brand mark or logo in the chosen placement"
       : "use a tiny brand mark rather than a large logo",
     options?.brandSignatureMode === "closing"
-      ? "keep branding consistent with the rest of the deck, but let this closing slide carry a slightly stronger brand signature"
-      : "keep branding low-prominence, consistent, and present on every slide without turning it into a watermark",
+      ? "keep branding consistent with the rest of the deck, but let this closing slide carry a slightly stronger bottom-right footer signature"
+      : "keep branding low-prominence, consistent, and present on every slide as a subtle bottom-right footer rather than a watermark",
     options?.slideVisualRole === "story"
       ? "story slides should protect whitespace and readability over decorative treatment"
       : options?.slideVisualRole === "breakdown"
