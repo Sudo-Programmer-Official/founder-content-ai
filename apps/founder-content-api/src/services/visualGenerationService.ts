@@ -1287,6 +1287,13 @@ function buildMinimalBrandFallbackSvg(
   const textColor = resolveTextColor(brandKit.backgroundStyle);
   const accentColor = resolveAccentColor(brandKit);
   const layout = resolveCarouselSvgLayoutProfile(visualRole);
+  const hookSplit = visualRole === "hook"
+    ? splitTextAroundHighlight(content.headline, content.highlightText)
+    : null;
+  const resolvedHeadline = hookSplit?.before || content.headline;
+  const resolvedHighlight = hookSplit?.highlight || content.highlightText || "";
+  const resolvedSupportText =
+    hookSplit?.after || content.supportingText || content.closingText || "";
   const maxHeadlineLength =
     brandKit.brandPlacement === "side_label"
       ? Math.max(8, layout.headlineMaxLineLength - 2)
@@ -1297,7 +1304,7 @@ function buildMinimalBrandFallbackSvg(
       : layout.supportMaxLineLength;
   const contentStartY = resolveContentStartY(brandKit) + layout.contentStartOffset;
   const headlineLines = wrapSvgText(
-    content.headline,
+    resolvedHeadline,
     maxHeadlineLength,
     layout.headlineMaxLines,
   );
@@ -1307,11 +1314,38 @@ function buildMinimalBrandFallbackSvg(
         `<text x="${bounds.contentLeft}" y="${contentStartY + index * layout.headlineLineHeight}" font-size="${layout.headlineFontSize}" font-weight="820" font-family="'Arial Black', 'Avenir Next', Arial, sans-serif" fill="${textColor}">${escapeSvg(line)}</text>`,
     )
     .join("");
-  const accentStartY = contentStartY + headlineLines.length * layout.headlineLineHeight + 8;
   const accentLines =
-    content.highlightText && layout.accentMaxLines > 0
-      ? wrapSvgText(content.highlightText, layout.accentMaxLineLength, layout.accentMaxLines)
+    resolvedHighlight && layout.accentMaxLines > 0
+      ? wrapSvgText(resolvedHighlight, layout.accentMaxLineLength, layout.accentMaxLines)
       : [];
+  const shouldRenderHookDivider =
+    visualRole === "hook" &&
+    headlineLines.length > 0 &&
+    accentLines.length > 0 &&
+    collapseWhitespace(headlineLines.join(" ")).toLowerCase() !== collapseWhitespace(accentLines.join(" ")).toLowerCase();
+  const headlineBottomY = contentStartY + headlineLines.length * layout.headlineLineHeight;
+  const dividerReferenceLine = headlineLines.reduce<string>(
+    (longestLine, line) =>
+      estimateTextWidth(line, layout.headlineFontSize, 0.48) >
+      estimateTextWidth(longestLine, layout.headlineFontSize, 0.48)
+        ? line
+        : longestLine,
+    headlineLines[0] ?? resolvedHeadline,
+  );
+  const dividerWidth = Math.round(
+    Math.min(
+      bounds.contentWidth * 0.58,
+      Math.max(
+        bounds.contentWidth * 0.42,
+        estimateTextWidth(dividerReferenceLine, layout.headlineFontSize, 0.48) * 0.56,
+      ),
+    ),
+  );
+  const dividerY = headlineBottomY + 14;
+  const dividerMarkup = shouldRenderHookDivider
+    ? `<line x1="${bounds.contentLeft}" y1="${dividerY}" x2="${bounds.contentLeft + dividerWidth}" y2="${dividerY}" stroke="${textColor}" stroke-width="2" stroke-linecap="round" opacity="${brandKit.backgroundStyle === "light" ? "0.28" : "0.38"}" />`
+    : "";
+  const accentStartY = shouldRenderHookDivider ? dividerY + 36 : headlineBottomY + 8;
   const accentMarkup = accentLines.length > 0
     ? buildAccentPhraseMarkup({
         lines: accentLines,
@@ -1329,7 +1363,7 @@ function buildMinimalBrandFallbackSvg(
         endY: accentStartY,
       };
   const supportLines = wrapSvgText(
-    content.supportingText || content.closingText || "",
+    resolvedSupportText,
     maxSupportLength,
     layout.supportMaxLines,
   );
@@ -1377,6 +1411,7 @@ function buildMinimalBrandFallbackSvg(
       })}
       <text x="${bounds.contentLeft}" y="${contentStartY - 42}" font-size="18" letter-spacing="4.2" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${accentColor}" opacity="0.92">${escapeSvg((content.eyebrowText || "CAROUSEL COVER").toUpperCase())}</text>
       ${headlineMarkup}
+      ${dividerMarkup}
       ${accentMarkup.markup}
       ${supportMarkup}
       ${bulletMarkup}

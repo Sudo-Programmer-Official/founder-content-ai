@@ -246,7 +246,7 @@ function resolveLayoutBlock(
       : never,
     string
   > = {
-    hook: "hook slide with oversized headline, highest contrast, and minimal supporting copy",
+    hook: "hook slide with oversized headline, highest contrast, minimal supporting copy, and when the hook splits into setup and punchline use a thin low-opacity divider line between the two text blocks",
     problem: "problem slide with a bold tension statement and concise support",
     story: "story slide with smaller text, more whitespace, and calmer pacing",
     breakdown: "breakdown slide with structured layout and restrained emphasis",
@@ -261,7 +261,7 @@ function resolveLayoutBlock(
     case "contrarian":
       return `split emphasis layout, ${brandPlacementDescription[brandPlacement]}, quiet setup copy on one side, oversized emphasis phrase on the opposite side, hard contrast, built to stop scroll on mobile`;
     case "carousel":
-      return `premium LinkedIn carousel slide, ${brandPlacementDescription[brandPlacement]}, ${options?.slideVisualRole ? carouselRoleDescription[options.slideVisualRole] : "one dominant headline, optional supporting line, optional 2 to 3 compact bullets"}, controlled spacing, same typography system across every slide, subtle brand signature present on every slide, maximum one accent phrase and some slides can skip the accent entirely, tiny brand signature rather than a footer watermark${options?.brandSignatureMode === "closing" ? ", this is the final slide so keep the same placement but make the brand signature slightly stronger without overpowering the copy" : ""}`;
+      return `premium LinkedIn carousel slide, ${brandPlacementDescription[brandPlacement]}, ${options?.slideVisualRole ? carouselRoleDescription[options.slideVisualRole] : "one dominant headline, optional supporting line, optional 2 to 3 compact bullets"}, controlled spacing, same typography system across every slide, subtle brand signature present on every slide, maximum one accent phrase and some slides can skip the accent entirely, tiny brand signature rather than a footer watermark${options?.slideVisualRole === "hook" ? ", keep the divider elegant: 1 to 2 pixels, low opacity, and roughly half the text width rather than full bleed" : ""}${options?.brandSignatureMode === "closing" ? ", this is the final slide so keep the same placement but make the brand signature slightly stronger without overpowering the copy" : ""}`;
     default:
       return "clean social-first layout with clear hierarchy";
   }

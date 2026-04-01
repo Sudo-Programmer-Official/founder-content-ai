@@ -18,6 +18,7 @@ import {
   serializeNarrativePattern,
   serializeNarrativePatternContext,
 } from "./narrative-pattern.ts";
+import { formatLinkedInPostForReadability } from "./linkedin-formatting.ts";
 
 interface ContentDefinition<TFormat extends ContentFormat> {
   promptPath: string | ((request: GenerateContentRequest<TFormat>) => string);
@@ -251,20 +252,20 @@ function normalizeVariations(variations: unknown): LinkedInPostVariation[] {
         angle === "story" || angle === "lesson" || angle === "build-in-public"
           ? angle
           : fallbackAngles[index] ?? "build-in-public",
-      content,
+      content: formatLinkedInPostForReadability(content),
     };
   });
 }
 
 function normalizePost(post: unknown): string {
   if (typeof post === "string" && post.trim() !== "") {
-    return post.trim();
+    return formatLinkedInPostForReadability(post.trim());
   }
 
   const entry = (post ?? {}) as { content?: unknown };
 
   if (typeof entry.content === "string" && entry.content.trim() !== "") {
-    return entry.content.trim();
+    return formatLinkedInPostForReadability(entry.content.trim());
   }
 
   throw new Error("Structured content generation returned an invalid post payload.");
