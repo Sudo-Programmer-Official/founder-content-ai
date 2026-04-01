@@ -27,8 +27,11 @@ const usesWorkspaceShell = computed(
 const currentWorkspaceId = computed(
   () => bootstrap.value?.activeBusinessId?.trim() || activeBusinessId.value?.trim() || "",
 );
+const currentSessionUserId = computed(
+  () => auth.currentUser.value?.id?.trim() || auth.authSession.value?.localId?.trim() || "",
+);
 const canAccessAdmin = computed(() => {
-  const currentAuthUserId = auth.authSession.value?.localId ?? "";
+  const currentAuthUserId = currentSessionUserId.value;
 
   if (!currentAuthUserId || !auth.isAuthenticated.value) {
     return false;
@@ -146,7 +149,7 @@ watch(sidebarCollapsed, (value) => {
 });
 
 watch(
-  () => auth.authSession.value?.localId ?? "",
+  () => currentSessionUserId.value,
   (nextUserId, previousUserId) => {
     if (nextUserId !== previousUserId) {
       lastKnownPlatformAdminUserId.value = "";
@@ -157,7 +160,7 @@ watch(
 watch(
   () => bootstrap.value?.isPlatformAdmin ?? false,
   (isPlatformAdmin) => {
-    const currentAuthUserId = auth.authSession.value?.localId ?? "";
+    const currentAuthUserId = currentSessionUserId.value;
 
     if (isPlatformAdmin && currentAuthUserId) {
       lastKnownPlatformAdminUserId.value = currentAuthUserId;
@@ -311,8 +314,34 @@ async function goToAdmin(): Promise<void> {
           <router-link class="sidebar-footer-link" :to="appRoutes.settingsPreferences">
             Usage & billing
           </router-link>
+          <template v-if="userLabel && !sidebarCollapsed">
+            <div class="sidebar-user-card">
+              <span class="sidebar-user-avatar">{{ userInitial }}</span>
+              <div>
+                <strong>{{ userLabel }}</strong>
+                <small>Account</small>
+              </div>
+            </div>
+            <div class="sidebar-footer-actions">
+              <button
+                v-if="canAccessAdmin"
+                type="button"
+                class="sidebar-footer-action"
+                @click="void goToAdmin()"
+              >
+                Admin
+              </button>
+              <button
+                class="sidebar-logout-button"
+                type="button"
+                @click="void handleLogout()"
+              >
+                Logout
+              </button>
+            </div>
+          </template>
           <div
-            v-if="userLabel"
+            v-else-if="userLabel"
             class="sidebar-account-shell"
             :class="{ compact: sidebarCollapsed, open: accountMenuOpen }"
           >
@@ -577,6 +606,7 @@ async function goToAdmin(): Promise<void> {
 }
 
 .header-secondary-button,
+.sidebar-footer-action,
 .sidebar-logout-button {
   display: inline-flex;
   align-items: center;
@@ -590,6 +620,11 @@ async function goToAdmin(): Promise<void> {
   font: inherit;
   font-weight: 700;
   cursor: pointer;
+}
+
+.sidebar-footer-action {
+  width: 100%;
+  text-decoration: none;
 }
 
 .header-user-pill {
@@ -677,6 +712,8 @@ async function goToAdmin(): Promise<void> {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--fc-surface) 90%, white 10%) 0%, color-mix(in srgb, var(--fc-surface-subtle) 94%, white 6%) 100%);
   box-shadow: 24px 0 48px rgba(64, 44, 28, 0.06);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   transition: width 180ms ease, padding 180ms ease, box-shadow 180ms ease;
 }
 
@@ -749,6 +786,11 @@ async function goToAdmin(): Promise<void> {
   font-size: 0.92rem;
   font-weight: 700;
   text-decoration: none;
+}
+
+.sidebar-footer-actions {
+  display: grid;
+  gap: 10px;
 }
 
 .sidebar-account-shell {
@@ -990,6 +1032,7 @@ async function goToAdmin(): Promise<void> {
   padding: 20px 18px;
   background: color-mix(in srgb, var(--fc-surface) 92%, white 8%);
   box-shadow: 28px 0 44px rgba(40, 27, 18, 0.16);
+  overflow-y: auto;
 }
 
 .mobile-sidebar-header {
