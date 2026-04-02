@@ -1017,7 +1017,15 @@ function buildInstagramNormalizedStorageKey(asset: Pick<PostAsset, "storageKey" 
   return `${directory}/instagram-normalized/${asset.id}.jpg`;
 }
 
-async function createInstagramReadyImageUrl(asset: PostAsset): Promise<string> {
+interface InstagramReadyImageTarget {
+  originalUrl: string;
+  finalUrl: string;
+  sourceMimeType: string;
+  publishMimeType: string;
+  normalized: boolean;
+}
+
+async function createInstagramReadyImageUrl(asset: PostAsset): Promise<InstagramReadyImageTarget> {
   if (asset.type !== "image") {
     throw new HttpError(
       400,
@@ -1026,12 +1034,20 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<string> {
     );
   }
 
+  const originalUrl = resolveInstagramAssetUrl(
+    asset,
+    "Instagram publishing requires a stable public HTTPS image URL.",
+    "instagram_image_url_not_public",
+  );
+
   if (isAcceptedInstagramImageMimeType(asset.mimeType)) {
-    return resolveInstagramAssetUrl(
-      asset,
-      "Instagram publishing requires a stable public HTTPS image URL.",
-      "instagram_image_url_not_public",
-    );
+    return {
+      originalUrl,
+      finalUrl: originalUrl,
+      sourceMimeType: asset.mimeType,
+      publishMimeType: asset.mimeType,
+      normalized: false,
+    };
   }
 
   logInfo("Normalizing non-JPEG image for Instagram publishing.", {
@@ -1055,11 +1071,27 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<string> {
     mimeType: "image/jpeg",
   });
 
-  return resolveInstagramAssetUrl(
+  const finalUrl = resolveInstagramAssetUrl(
     { storageKey: normalizedStorageKey },
     "Instagram publishing requires a stable public HTTPS image URL.",
     "instagram_image_url_not_public",
   );
+
+  logInfo("Prepared normalized Instagram image asset.", {
+    assetId: asset.id,
+    sourceMimeType: asset.mimeType,
+    publishMimeType: "image/jpeg",
+    originalUrl: normalizeAssetUrlForLogs(originalUrl),
+    finalUrl: normalizeAssetUrlForLogs(finalUrl),
+  });
+
+  return {
+    originalUrl,
+    finalUrl,
+    sourceMimeType: asset.mimeType,
+    publishMimeType: "image/jpeg",
+    normalized: true,
+  };
 }
 
 async function assertMetaCanFetchAssetUrl(
@@ -1228,13 +1260,24 @@ async function createInstagramImageContainer(input: {
   caption?: string;
   isCarouselItem?: boolean;
 }): Promise<string> {
-  const imageUrl = await createInstagramReadyImageUrl(input.asset);
-  await assertMetaCanFetchAssetUrl(imageUrl, "image", "instagram_media_invalid");
+  const imageTarget = await createInstagramReadyImageUrl(input.asset);
+
+  logInfo("Resolved Instagram publish media target.", {
+    assetId: input.asset.id,
+    originalUrl: normalizeAssetUrlForLogs(imageTarget.originalUrl),
+    finalUrl: normalizeAssetUrlForLogs(imageTarget.finalUrl),
+    sourceMimeType: input.asset.mimeType,
+    publishMimeType: imageTarget.publishMimeType,
+    normalized: imageTarget.normalized,
+    isCarouselItem: Boolean(input.isCarouselItem),
+  });
+
+  await assertMetaCanFetchAssetUrl(imageTarget.finalUrl, "image", "instagram_media_invalid");
   const creation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
     `${input.instagramUserId}/media`,
     input.accessToken,
     {
-      image_url: imageUrl,
+      image_url: imageTarget.finalUrl,
       caption: input.caption?.trim() || undefined,
       is_carousel_item: input.isCarouselItem ? "true" : undefined,
     },
@@ -1242,7 +1285,7 @@ async function createInstagramImageContainer(input: {
       errorCode: "instagram_post_failed",
       fallbackMessage: "Instagram media container creation failed.",
     },
-  ).catch((error) => normalizeInstagramMediaFetchError(error, imageUrl));
+  ).catch((error) => normalizeInstagramMediaFetchError(error, imageTarget.finalUrl));
   const creationId = creation.id?.trim();
 
   if (!creationId) {
