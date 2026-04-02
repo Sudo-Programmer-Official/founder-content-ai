@@ -1227,6 +1227,7 @@ async function goToAdmin(): Promise<void> {
 
 .mobile-menu-button {
   display: none;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
@@ -1252,6 +1253,10 @@ async function goToAdmin(): Promise<void> {
 
 .close-button span {
   position: absolute;
+}
+
+.close-button span:nth-child(2) {
+  opacity: 0;
 }
 
 .close-button span:first-child {

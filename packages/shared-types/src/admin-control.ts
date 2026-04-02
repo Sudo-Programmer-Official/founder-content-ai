@@ -24,6 +24,8 @@ export type AdminWorkspaceAccessAction =
 
 export interface AdminWorkspaceLimitSnapshot {
   date: string;
+  generationsLimit: number;
+  generationsUsed: number;
   postsLimit: number;
   postsUsed: number;
   emailsLimit: number;

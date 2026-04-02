@@ -2165,7 +2165,7 @@ export async function convertIdeaInboxItemToContent(
     principal,
     businessId,
     featureKey: "control_dashboard",
-    usageMetric: "posts",
+    usageMetric: "generations",
   });
   await requireBusinessMembership(principal, businessId);
 
@@ -2659,7 +2659,7 @@ export async function previewContentPipelineAiEdit(
     principal,
     businessId,
     featureKey: "content_generation",
-    usageMetric: "posts",
+    usageMetric: "generations",
   });
   await requireBusinessMembership(principal, businessId);
 

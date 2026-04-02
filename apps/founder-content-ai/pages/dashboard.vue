@@ -130,16 +130,28 @@ const repurposeEnabled = computed(
 const accessLimits = computed(() =>
   accessMatchesSelectedBusiness.value ? productAccess.value?.limits : undefined,
 );
-const postsRemaining = computed(() => accessLimits.value?.postsRemaining ?? null);
+const generationDailyRemaining = computed(() => accessLimits.value?.generationDailyRemaining ?? null);
+const generationMonthlyRemaining = computed(() => accessLimits.value?.generationMonthlyRemaining ?? null);
+const generationLimitMessage = computed(() => {
+  if (generationDailyRemaining.value === 0) {
+    return "You've reached today's AI generation limit. Upgrade to keep generating instantly.";
+  }
+
+  if (generationMonthlyRemaining.value === 0) {
+    return "You've reached this month's AI generation limit. Upgrade to keep generating.";
+  }
+
+  return "";
+});
 const canCreateContent = computed(
   () =>
     contentGenerationEnabled.value &&
-    (postsRemaining.value === null || postsRemaining.value > 0),
+    generationLimitMessage.value === "",
 );
 const canUseRepurpose = computed(
   () =>
     repurposeEnabled.value &&
-    (postsRemaining.value === null || postsRemaining.value > 0),
+    generationLimitMessage.value === "",
 );
 const workspaceAccessMessage = computed(() => {
   if (!selectedBusinessId.value || !accessMatchesSelectedBusiness.value) {
@@ -154,8 +166,8 @@ const workspaceAccessMessage = computed(() => {
     return "Dashboard access is not enabled for this workspace yet.";
   }
 
-  if (postsRemaining.value === 0) {
-    return "You've reached your daily post limit. Upgrade or try tomorrow.";
+  if (generationLimitMessage.value) {
+    return generationLimitMessage.value;
   }
 
   return "";
@@ -1115,9 +1127,7 @@ async function convertIdeaToDraft(idea: IdeaInboxItem) {
 
   if (!canCreateContent.value) {
     ideaFeedback.value =
-      postsRemaining.value === 0
-        ? "You've reached your daily post limit. Upgrade or try tomorrow."
-        : "Content generation is not enabled for this workspace.";
+      generationLimitMessage.value || "Content generation is not enabled for this workspace.";
     return;
   }
 
@@ -1397,9 +1407,7 @@ function handlePipelineSummaryClick(stage: string) {
 function handleQuickCreateAction(action: QuickCreateAction) {
   if ((action === "write" || action === "daily-idea") && !canCreateContent.value) {
     ideaFeedback.value =
-      postsRemaining.value === 0
-        ? "You've reached your daily post limit. Upgrade or try tomorrow."
-        : "Content generation is not enabled for this workspace.";
+      generationLimitMessage.value || "Content generation is not enabled for this workspace.";
     return;
   }
 
@@ -1411,9 +1419,7 @@ function handleQuickCreateAction(action: QuickCreateAction) {
   if (action === "repurpose") {
     if (!canUseRepurpose.value) {
       ideaFeedback.value =
-        postsRemaining.value === 0
-          ? "You've reached your daily post limit. Upgrade or try tomorrow."
-          : "Repurpose is not enabled for this workspace.";
+        generationLimitMessage.value || "Repurpose is not enabled for this workspace.";
       return;
     }
 
@@ -1553,9 +1559,7 @@ async function generateDailyIdea() {
 
   if (!canCreateContent.value) {
     ideaFeedback.value =
-      postsRemaining.value === 0
-        ? "You've reached your daily post limit. Upgrade or try tomorrow."
-        : "Content generation is not enabled for this workspace.";
+      generationLimitMessage.value || "Content generation is not enabled for this workspace.";
     return;
   }
 

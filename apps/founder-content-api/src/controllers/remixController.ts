@@ -13,6 +13,7 @@ import {
 import { resolveContentGenerationTone } from "../services/contentGenerationToneService.ts";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
+import { handleApiError } from "../utils/http.ts";
 
 export async function remixContent(
   request: Request<unknown, RemixContentResponse | ApiError, Partial<RemixContentRequest>>,
@@ -43,7 +44,7 @@ export async function remixContent(
       principal: request.auth,
       businessId,
       featureKey: "capture_remix",
-      usageMetric: "posts",
+      usageMetric: "generations",
     });
 
     const remixedContent = await generateRemixedContentWithAI({
@@ -105,12 +106,11 @@ export async function remixContent(
       }),
     ]);
 
-    response.status(500).json({
-      ok: false,
-      error: {
-        code: "remix_generation_failed",
-        message: error instanceof Error ? error.message : "Remix generation failed.",
-      },
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "remix_generation_failed",
+      message: "Remix generation failed.",
+      logMessage: "Failed to remix content.",
     });
   }
 }

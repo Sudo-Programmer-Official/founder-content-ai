@@ -13,6 +13,7 @@ import {
 import { resolveContentGenerationTone } from "../services/contentGenerationToneService.ts";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
+import { handleApiError } from "../utils/http.ts";
 
 export async function generatePost(
   request: Request<
@@ -49,7 +50,7 @@ export async function generatePost(
       principal: request.auth,
       businessId,
       featureKey: "content_generation",
-      usageMetric: "posts",
+      usageMetric: "generations",
     });
 
     const generatedPosts = await generatePostsWithAI({
@@ -111,12 +112,11 @@ export async function generatePost(
       }),
     ]);
 
-    response.status(500).json({
-      ok: false,
-      error: {
-        code: "post_generation_failed",
-        message: error instanceof Error ? error.message : "Post generation failed.",
-      },
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "post_generation_failed",
+      message: "Post generation failed.",
+      logMessage: "Failed to generate post.",
     });
   }
 }

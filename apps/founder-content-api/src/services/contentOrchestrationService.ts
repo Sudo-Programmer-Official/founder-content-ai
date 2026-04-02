@@ -795,7 +795,8 @@ export async function generateContentBatch(
     principal,
     businessId,
     featureKey: "content_generation",
-    usageMetric: "posts",
+    usageMetric: "generations",
+    usageQuantity: days,
   });
 
   const recentDrafts: string[] = [];

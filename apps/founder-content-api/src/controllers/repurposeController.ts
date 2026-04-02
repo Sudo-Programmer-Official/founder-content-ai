@@ -18,7 +18,7 @@ export async function repurposeContentController(
       principal: request.auth,
       businessId: request.body?.businessId?.trim() || undefined,
       featureKey: "capture_remix",
-      usageMetric: "posts",
+      usageMetric: "generations",
     });
 
     const repurposed = await repurposeContent(

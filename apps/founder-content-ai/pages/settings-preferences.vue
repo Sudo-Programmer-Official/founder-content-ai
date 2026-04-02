@@ -375,22 +375,30 @@ const usageCards = computed(() => {
 
   return [
     {
-      label: "Posts",
-      remaining: usageLimits.value.postsRemaining,
-      used: usageLimits.value.postsUsed,
-      limit: usageLimits.value.postsLimit,
+      label: "Generations today",
+      remainingLabel: `${usageLimits.value.generationDailyRemaining} left`,
+      detail: `${usageLimits.value.generationDailyUsed} used of ${usageLimits.value.generationDailyLimit} today`,
+    },
+    {
+      label: "Generations this month",
+      remainingLabel:
+        usageLimits.value.generationMonthlyRemaining === null
+          ? "Custom workspace cap"
+          : `${usageLimits.value.generationMonthlyRemaining} left`,
+      detail:
+        usageLimits.value.generationMonthlyLimit === null
+          ? `${usageLimits.value.generationMonthlyUsed} used this month`
+          : `${usageLimits.value.generationMonthlyUsed} used of ${usageLimits.value.generationMonthlyLimit} this month`,
     },
     {
       label: "Emails",
-      remaining: usageLimits.value.emailsRemaining,
-      used: usageLimits.value.emailsUsed,
-      limit: usageLimits.value.emailsLimit,
+      remainingLabel: `${usageLimits.value.emailsRemaining} left`,
+      detail: `${usageLimits.value.emailsUsed} used of ${usageLimits.value.emailsLimit} total today`,
     },
     {
       label: "Outreach",
-      remaining: usageLimits.value.outreachRemaining,
-      used: usageLimits.value.outreachUsed,
-      limit: usageLimits.value.outreachLimit,
+      remainingLabel: `${usageLimits.value.outreachRemaining} left`,
+      detail: `${usageLimits.value.outreachUsed} used of ${usageLimits.value.outreachLimit} total today`,
     },
   ];
 });
@@ -2768,8 +2776,8 @@ watch(
       <div v-if="usageCards.length > 0" class="usage-grid">
         <article v-for="card in usageCards" :key="card.label" class="usage-card">
           <p class="dashboard-card-label">{{ card.label }}</p>
-          <strong>{{ card.remaining }} left</strong>
-          <p>{{ card.used }} used of {{ card.limit }} total today</p>
+          <strong>{{ card.remainingLabel }}</strong>
+          <p>{{ card.detail }}</p>
         </article>
       </div>
 

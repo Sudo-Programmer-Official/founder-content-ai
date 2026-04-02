@@ -12,6 +12,7 @@ import {
 } from "../services/analytics/eventLoggingService.ts";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
+import { handleApiError } from "../utils/http.ts";
 
 export async function generateHook(
   request: Request<unknown, HookGenerationResponse | ApiError, Partial<HookGenerationRequest>>,
@@ -37,7 +38,7 @@ export async function generateHook(
       principal: request.auth,
       businessId,
       featureKey: "content_generation",
-      usageMetric: "posts",
+      usageMetric: "generations",
     });
 
     const generatedHooks = await generateHooksWithAI({ topic, businessId });
@@ -92,12 +93,11 @@ export async function generateHook(
       }),
     ]);
 
-    response.status(500).json({
-      ok: false,
-      error: {
-        code: "hook_generation_failed",
-        message: error instanceof Error ? error.message : "Hook generation failed.",
-      },
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "hook_generation_failed",
+      message: "Hook generation failed.",
+      logMessage: "Failed to generate hooks.",
     });
   }
 }

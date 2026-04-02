@@ -49,7 +49,7 @@ export async function generateVisualController(
       principal: request.auth,
       businessId,
       featureKey: "visual_generation",
-      usageMetric: "posts",
+      usageMetric: "generations",
     });
     accessGranted = true;
 

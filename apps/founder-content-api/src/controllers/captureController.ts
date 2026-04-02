@@ -13,6 +13,7 @@ import {
 import { resolveContentGenerationTone } from "../services/contentGenerationToneService.ts";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
+import { handleApiError } from "../utils/http.ts";
 
 function extractTextFromImagePlaceholder(image: string): string {
   const normalizedImage = image.trim();
@@ -66,7 +67,7 @@ export async function captureContent(
       principal: request.auth,
       businessId,
       featureKey: "capture_remix",
-      usageMetric: "posts",
+      usageMetric: "generations",
     });
 
     const generatedContent = await generateCapturedContentWithAI({
@@ -129,12 +130,11 @@ export async function captureContent(
       }),
     ]);
 
-    response.status(500).json({
-      ok: false,
-      error: {
-        code: "capture_generation_failed",
-        message: error instanceof Error ? error.message : "Capture generation failed.",
-      },
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "capture_generation_failed",
+      message: "Capture generation failed.",
+      logMessage: "Failed to capture content.",
     });
   }
 }

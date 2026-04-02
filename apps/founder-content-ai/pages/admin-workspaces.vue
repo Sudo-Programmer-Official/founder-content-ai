@@ -128,8 +128,8 @@ onMounted(() => {
 
         <div class="workspace-limits-grid">
           <article class="workspace-limit-chip">
-            <span>Posts</span>
-            <strong>{{ workspace.access.dailyLimits.postsUsed }} / {{ workspace.access.dailyLimits.postsLimit }}</strong>
+            <span>Generations</span>
+            <strong>{{ workspace.access.dailyLimits.generationsUsed }} / {{ workspace.access.dailyLimits.generationsLimit }}</strong>
           </article>
           <article class="workspace-limit-chip">
             <span>Emails</span>

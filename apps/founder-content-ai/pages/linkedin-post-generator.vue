@@ -551,6 +551,19 @@ const schedulerEnabled = computed(
 const accessLimits = computed(() =>
   accessMatchesSelectedBusiness.value ? productAccess.value?.limits : undefined,
 );
+const generationDailyRemaining = computed(() => accessLimits.value?.generationDailyRemaining ?? null);
+const generationMonthlyRemaining = computed(() => accessLimits.value?.generationMonthlyRemaining ?? null);
+const generationLimitMessage = computed(() => {
+  if (generationDailyRemaining.value === 0) {
+    return "You've reached today's AI generation limit. Upgrade to keep generating instantly.";
+  }
+
+  if (generationMonthlyRemaining.value === 0) {
+    return "You've reached this month's AI generation limit. Upgrade to keep generating.";
+  }
+
+  return "";
+});
 const postsRemaining = computed(() => accessLimits.value?.postsRemaining ?? null);
 const scheduledQueueLimit = computed(() => accessLimits.value?.scheduledQueueLimit ?? null);
 const scheduledQueueRemaining = computed(() => accessLimits.value?.scheduledQueueRemaining ?? null);
@@ -561,17 +574,17 @@ const queueLimitReached = computed(
 const canGeneratePosts = computed(
   () =>
     contentGenerationEnabled.value &&
-    (postsRemaining.value === null || postsRemaining.value > 0),
+    generationLimitMessage.value === "",
 );
 const canRepurposeContent = computed(
   () =>
     repurposeEnabled.value &&
-    (postsRemaining.value === null || postsRemaining.value > 0),
+    generationLimitMessage.value === "",
 );
 const canGenerateVisuals = computed(
   () =>
     visualGenerationEnabled.value &&
-    (postsRemaining.value === null || postsRemaining.value > 0),
+    generationLimitMessage.value === "",
 );
 const limitPills = computed(() => {
   if (!accessLimits.value) {
@@ -579,7 +592,7 @@ const limitPills = computed(() => {
   }
 
   return [
-    `Posts left ${accessLimits.value.postsRemaining}`,
+    `Generations left ${accessLimits.value.generationDailyRemaining}`,
     `Emails left ${accessLimits.value.emailsRemaining}`,
   ];
 });
@@ -1020,9 +1033,7 @@ function applyRepurposeSeed() {
 async function handleRepurposeSubmit() {
   if (!canRepurposeContent.value) {
     repurposeError.value =
-      postsRemaining.value === 0
-        ? "You've reached your daily post limit. Upgrade or try tomorrow."
-        : "Repurpose is not enabled for this workspace.";
+      generationLimitMessage.value || "Repurpose is not enabled for this workspace.";
     return;
   }
 
@@ -1077,9 +1088,7 @@ async function handleRepurposeSubmit() {
 async function handleSubmit() {
   if (!canGeneratePosts.value) {
     errorMessage.value =
-      postsRemaining.value === 0
-        ? "You've reached your daily post limit. Upgrade or try tomorrow."
-        : "Content generation is not enabled for this workspace.";
+      generationLimitMessage.value || "Content generation is not enabled for this workspace.";
     return;
   }
 
@@ -1355,9 +1364,7 @@ async function generateVisual(variation: LinkedInPostVariation) {
     visualErrors.value = {
       ...visualErrors.value,
       [getVariationKey(variation)]:
-        postsRemaining.value === 0
-          ? "You've reached your daily post limit. Upgrade or try tomorrow."
-          : "Visual generation is not enabled for this workspace.",
+        generationLimitMessage.value || "Visual generation is not enabled for this workspace.",
     };
     return;
   }

@@ -2,6 +2,7 @@ import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { requireBusinessMembership } from "./authBusinessService.ts";
 import {
   getBusinessAccessState,
+  incrementBusinessGenerationUsage,
   incrementBusinessDailyUsage,
   isFeatureEnabled,
 } from "./adminControlService.ts";
@@ -17,7 +18,7 @@ export type WorkspaceFeatureKey =
   | "outreach"
   | "email_campaigns";
 
-export type WorkspaceUsageMetric = "posts" | "emails" | "outreach";
+export type WorkspaceUsageMetric = "generations" | "posts" | "emails" | "outreach";
 
 function isFutureTimestamp(value: string | undefined): boolean {
   if (!value) {
@@ -81,8 +82,9 @@ export async function enforceWorkspaceWriteAccess(input: {
   businessId?: string;
   featureKey: WorkspaceFeatureKey;
   usageMetric?: WorkspaceUsageMetric;
+  usageQuantity?: number;
 }): Promise<void> {
-  const { principal, businessId, featureKey, usageMetric } = input;
+  const { principal, businessId, featureKey, usageMetric, usageQuantity } = input;
 
   if (!businessId) {
     return;
@@ -109,6 +111,11 @@ export async function enforceWorkspaceWriteAccess(input: {
   }
 
   if (usageMetric) {
-    await incrementBusinessDailyUsage(businessId, usageMetric);
+    if (usageMetric === "generations") {
+      await incrementBusinessGenerationUsage(businessId, usageQuantity);
+      return;
+    }
+
+    await incrementBusinessDailyUsage(businessId, usageMetric, usageQuantity);
   }
 }

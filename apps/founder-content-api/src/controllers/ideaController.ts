@@ -11,6 +11,7 @@ import {
 } from "../services/analytics/eventLoggingService.ts";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
+import { handleApiError } from "../utils/http.ts";
 
 export async function generateIdeas(
   request: Request<unknown, IdeaGenerationResponse | ApiError, Partial<IdeaGenerationRequest>>,
@@ -37,7 +38,7 @@ export async function generateIdeas(
       principal: request.auth,
       businessId,
       featureKey: "content_generation",
-      usageMetric: "posts",
+      usageMetric: "generations",
     });
 
     const generatedIdeas = await generateIdeasWithAI({ industry, stage, businessId });
@@ -84,12 +85,11 @@ export async function generateIdeas(
       }),
     ]);
 
-    response.status(500).json({
-      ok: false,
-      error: {
-        code: "idea_generation_failed",
-        message: error instanceof Error ? error.message : "Idea generation failed.",
-      },
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "idea_generation_failed",
+      message: "Idea generation failed.",
+      logMessage: "Failed to generate ideas.",
     });
   }
 }

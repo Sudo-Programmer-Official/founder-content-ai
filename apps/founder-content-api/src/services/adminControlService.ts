@@ -33,12 +33,24 @@ interface UsageLimitRow extends QueryResultRow {
   id: string;
   business_id: string;
   date: string;
+  generations_limit: string | number;
+  generations_used: string | number;
   posts_limit: string | number;
   posts_used: string | number;
   emails_limit: string | number;
   emails_used: string | number;
   outreach_limit: string | number;
   outreach_used: string | number;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+interface MonthlyGenerationLimitRow extends QueryResultRow {
+  id: string;
+  business_id: string;
+  month_start: string;
+  generations_limit: string | number;
+  generations_used: string | number;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -82,28 +94,39 @@ interface FeatureFlagTargetRow extends QueryResultRow {
 
 const PLAN_LIMIT_DEFAULTS: Record<
   BusinessPlanCode,
-  Omit<AdminWorkspaceLimitSnapshot, "date" | "postsUsed" | "emailsUsed" | "outreachUsed">
+  Omit<AdminWorkspaceLimitSnapshot, "date" | "generationsUsed" | "postsUsed" | "emailsUsed" | "outreachUsed">
 > = {
   free: {
+    generationsLimit: 3,
     postsLimit: 2,
     emailsLimit: 20,
     outreachLimit: 20,
   },
   pro: {
+    generationsLimit: 10,
     postsLimit: 5,
     emailsLimit: 200,
     outreachLimit: 100,
   },
   growth: {
+    generationsLimit: 100000,
     postsLimit: 100000,
     emailsLimit: 500,
     outreachLimit: 250,
   },
   custom: {
+    generationsLimit: 100000,
     postsLimit: 100000,
     emailsLimit: 2500,
     outreachLimit: 500,
   },
+};
+
+const PLAN_MONTHLY_GENERATION_LIMITS: Record<BusinessPlanCode, number | null> = {
+  free: 45,
+  pro: 300,
+  growth: 100000,
+  custom: 100000,
 };
 
 const PLAN_SCHEDULED_QUEUE_LIMITS: Record<BusinessPlanCode, number | null> = {
@@ -123,6 +146,10 @@ function toIsoString(value: Date | string | null | undefined): string | undefine
 
 function toDateKey(date = new Date()): string {
   return date.toISOString().slice(0, 10);
+}
+
+function toMonthStartKey(date = new Date()): string {
+  return `${date.toISOString().slice(0, 7)}-01`;
 }
 
 function toNumber(value: string | number | null | undefined): number {
@@ -163,6 +190,8 @@ async function executeQuery<TRow extends QueryResultRow>(
 function mapLimitSnapshot(row: UsageLimitRow): AdminWorkspaceLimitSnapshot {
   return {
     date: row.date,
+    generationsLimit: toNumber(row.generations_limit),
+    generationsUsed: toNumber(row.generations_used),
     postsLimit: toNumber(row.posts_limit),
     postsUsed: toNumber(row.posts_used),
     emailsLimit: toNumber(row.emails_limit),
@@ -170,6 +199,16 @@ function mapLimitSnapshot(row: UsageLimitRow): AdminWorkspaceLimitSnapshot {
     outreachLimit: toNumber(row.outreach_limit),
     outreachUsed: toNumber(row.outreach_used),
   };
+}
+
+function resolveMonthlyGenerationLimit(planCode: BusinessPlanCode): number | null {
+  return PLAN_MONTHLY_GENERATION_LIMITS[planCode] ?? PLAN_MONTHLY_GENERATION_LIMITS.free;
+}
+
+interface MonthlyGenerationUsageSnapshot {
+  monthStart: string;
+  generationsLimit: number | null;
+  generationsUsed: number;
 }
 
 async function getWorkspaceAccessRow(
@@ -239,6 +278,8 @@ async function ensureDailyUsageLimitSnapshot(
         id,
         business_id,
         date::text as date,
+        generations_limit,
+        generations_used,
         posts_limit,
         posts_used,
         emails_limit,
@@ -260,6 +301,7 @@ async function ensureDailyUsageLimitSnapshot(
 
   if (existing) {
     if (
+      toNumber(existing.generations_limit) !== defaults.generationsLimit ||
       toNumber(existing.posts_limit) !== defaults.postsLimit ||
       toNumber(existing.emails_limit) !== defaults.emailsLimit ||
       toNumber(existing.outreach_limit) !== defaults.outreachLimit
@@ -268,9 +310,10 @@ async function ensureDailyUsageLimitSnapshot(
         `
           update usage_limits_daily
           set
-            posts_limit = $3,
-            emails_limit = $4,
-            outreach_limit = $5,
+            generations_limit = $3,
+            posts_limit = $4,
+            emails_limit = $5,
+            outreach_limit = $6,
             updated_at = now()
           where business_id = $1
             and date = $2::date
@@ -278,6 +321,8 @@ async function ensureDailyUsageLimitSnapshot(
             id,
             business_id,
             date::text as date,
+            generations_limit,
+            generations_used,
             posts_limit,
             posts_used,
             emails_limit,
@@ -287,7 +332,14 @@ async function ensureDailyUsageLimitSnapshot(
             created_at,
             updated_at
         `,
-        [businessId, dateKey, defaults.postsLimit, defaults.emailsLimit, defaults.outreachLimit],
+        [
+          businessId,
+          dateKey,
+          defaults.generationsLimit,
+          defaults.postsLimit,
+          defaults.emailsLimit,
+          defaults.outreachLimit,
+        ],
         client,
       );
 
@@ -302,6 +354,7 @@ async function ensureDailyUsageLimitSnapshot(
       insert into usage_limits_daily (
         business_id,
         date,
+        generations_limit,
         posts_limit,
         emails_limit,
         outreach_limit
@@ -310,15 +363,18 @@ async function ensureDailyUsageLimitSnapshot(
         $2::date,
         $3,
         $4,
-        $5
+        $5,
+        $6
       )
       on conflict (business_id, date)
       do update set
-        posts_limit = usage_limits_daily.posts_limit
+        generations_limit = usage_limits_daily.generations_limit
       returning
         id,
         business_id,
         date::text as date,
+        generations_limit,
+        generations_used,
         posts_limit,
         posts_used,
         emails_limit,
@@ -331,6 +387,7 @@ async function ensureDailyUsageLimitSnapshot(
     [
       businessId,
       dateKey,
+      defaults.generationsLimit,
       defaults.postsLimit,
       defaults.emailsLimit,
       defaults.outreachLimit,
@@ -339,6 +396,105 @@ async function ensureDailyUsageLimitSnapshot(
   );
 
   return mapLimitSnapshot(insertedResult.rows[0]);
+}
+
+async function ensureMonthlyGenerationUsageSnapshot(
+  businessId: string,
+  client?: PoolClient,
+): Promise<MonthlyGenerationUsageSnapshot> {
+  const monthStart = toMonthStartKey();
+  const access = await getWorkspaceAccessRow(businessId, client);
+  const expectedLimit = resolveMonthlyGenerationLimit(access.plan_code) ?? 0;
+  const existingResult = await executeQuery<MonthlyGenerationLimitRow>(
+    `
+      select
+        id,
+        business_id,
+        month_start::text as month_start,
+        generations_limit,
+        generations_used,
+        created_at,
+        updated_at
+      from usage_limits_monthly
+      where business_id = $1
+        and month_start = $2::date
+      limit 1
+    `,
+    [businessId, monthStart],
+    client,
+  );
+
+  const existing = existingResult.rows[0];
+
+  if (existing) {
+    if (toNumber(existing.generations_limit) !== expectedLimit) {
+      const syncedResult = await executeQuery<MonthlyGenerationLimitRow>(
+        `
+          update usage_limits_monthly
+          set
+            generations_limit = $3,
+            updated_at = now()
+          where business_id = $1
+            and month_start = $2::date
+          returning
+            id,
+            business_id,
+            month_start::text as month_start,
+            generations_limit,
+            generations_used,
+            created_at,
+            updated_at
+        `,
+        [businessId, monthStart, expectedLimit],
+        client,
+      );
+
+      return {
+        monthStart: syncedResult.rows[0].month_start,
+        generationsLimit: toNumber(syncedResult.rows[0].generations_limit),
+        generationsUsed: toNumber(syncedResult.rows[0].generations_used),
+      };
+    }
+
+    return {
+      monthStart: existing.month_start,
+      generationsLimit: toNumber(existing.generations_limit),
+      generationsUsed: toNumber(existing.generations_used),
+    };
+  }
+
+  const insertedResult = await executeQuery<MonthlyGenerationLimitRow>(
+    `
+      insert into usage_limits_monthly (
+        business_id,
+        month_start,
+        generations_limit
+      ) values (
+        $1,
+        $2::date,
+        $3
+      )
+      on conflict (business_id, month_start)
+      do update set
+        generations_limit = usage_limits_monthly.generations_limit
+      returning
+        id,
+        business_id,
+        month_start::text as month_start,
+        generations_limit,
+        generations_used,
+        created_at,
+        updated_at
+    `,
+    [businessId, monthStart, expectedLimit],
+    client,
+  );
+
+  return {
+    monthStart: insertedResult.rows[0].month_start,
+    generationsLimit: toNumber(insertedResult.rows[0].generations_limit),
+    generationsUsed: toNumber(insertedResult.rows[0].generations_used),
+  };
 }
 
 async function logAdminAction(
@@ -651,10 +807,12 @@ export async function updateAdminWorkspaceAccess(
         break;
       case "reset_limits": {
         const limits = await ensureDailyUsageLimitSnapshot(businessId, client);
+        const monthlyUsage = await ensureMonthlyGenerationUsageSnapshot(businessId, client);
         await executeQuery(
           `
             update usage_limits_daily
             set
+              generations_used = 0,
               posts_used = 0,
               emails_used = 0,
               outreach_used = 0,
@@ -663,6 +821,18 @@ export async function updateAdminWorkspaceAccess(
               and date = $2::date
           `,
           [businessId, limits.date],
+          client,
+        );
+        await executeQuery(
+          `
+            update usage_limits_monthly
+            set
+              generations_used = 0,
+              updated_at = now()
+            where business_id = $1
+              and month_start = $2::date
+          `,
+          [businessId, monthlyUsage.monthStart],
           client,
         );
         break;
@@ -744,6 +914,8 @@ export async function incrementBusinessDailyUsage(
           id,
           business_id,
           date::text as date,
+          generations_limit,
+          generations_used,
           posts_limit,
           posts_used,
           emails_limit,
@@ -764,6 +936,106 @@ export async function incrementBusinessDailyUsage(
     }
 
     return mapLimitSnapshot(updated);
+  });
+}
+
+export async function getBusinessGenerationUsageSnapshot(
+  businessId: string,
+  client?: PoolClient,
+): Promise<MonthlyGenerationUsageSnapshot> {
+  return ensureMonthlyGenerationUsageSnapshot(businessId, client);
+}
+
+export async function incrementBusinessGenerationUsage(
+  businessId: string,
+  quantity = 1,
+): Promise<{
+  daily: AdminWorkspaceLimitSnapshot;
+  monthly: MonthlyGenerationUsageSnapshot;
+}> {
+  return withDbTransaction(async (client) => {
+    const dailySnapshot = await ensureDailyUsageLimitSnapshot(businessId, client);
+    const monthlySnapshot = await ensureMonthlyGenerationUsageSnapshot(businessId, client);
+    const incrementBy = Math.max(1, Math.floor(quantity));
+
+    const dailyResult = await executeQuery<UsageLimitRow>(
+      `
+        update usage_limits_daily
+        set
+          generations_used = generations_used + $3,
+          updated_at = now()
+        where business_id = $1
+          and date = $2::date
+          and generations_used + $3 <= generations_limit
+        returning
+          id,
+          business_id,
+          date::text as date,
+          generations_limit,
+          generations_used,
+          posts_limit,
+          posts_used,
+          emails_limit,
+          emails_used,
+          outreach_limit,
+          outreach_used,
+          created_at,
+          updated_at
+      `,
+      [businessId, dailySnapshot.date, incrementBy],
+      client,
+    );
+
+    const updatedDaily = dailyResult.rows[0];
+
+    if (!updatedDaily) {
+      throw new HttpError(
+        429,
+        "generation_daily_limit_reached",
+        "You've reached today's AI generation limit. Upgrade to keep generating instantly.",
+      );
+    }
+
+    const monthlyResult = await executeQuery<MonthlyGenerationLimitRow>(
+      `
+        update usage_limits_monthly
+        set
+          generations_used = generations_used + $3,
+          updated_at = now()
+        where business_id = $1
+          and month_start = $2::date
+          and generations_used + $3 <= generations_limit
+        returning
+          id,
+          business_id,
+          month_start::text as month_start,
+          generations_limit,
+          generations_used,
+          created_at,
+          updated_at
+      `,
+      [businessId, monthlySnapshot.monthStart, incrementBy],
+      client,
+    );
+
+    const updatedMonthly = monthlyResult.rows[0];
+
+    if (!updatedMonthly) {
+      throw new HttpError(
+        429,
+        "generation_monthly_limit_reached",
+        "You've reached this month's AI generation limit. Upgrade to keep generating.",
+      );
+    }
+
+    return {
+      daily: mapLimitSnapshot(updatedDaily),
+      monthly: {
+        monthStart: updatedMonthly.month_start,
+        generationsLimit: toNumber(updatedMonthly.generations_limit),
+        generationsUsed: toNumber(updatedMonthly.generations_used),
+      },
+    };
   });
 }
 

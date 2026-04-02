@@ -14,6 +14,12 @@ export type ProductFeatureKey =
 export type ProductFeatureMap = Record<ProductFeatureKey, boolean>;
 
 export interface ProductAccessLimits {
+  generationDailyLimit: number;
+  generationDailyUsed: number;
+  generationDailyRemaining: number;
+  generationMonthlyLimit: number | null;
+  generationMonthlyUsed: number;
+  generationMonthlyRemaining: number | null;
   postsLimit: number;
   postsUsed: number;
   postsRemaining: number;

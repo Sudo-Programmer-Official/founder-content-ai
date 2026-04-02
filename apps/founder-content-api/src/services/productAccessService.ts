@@ -12,6 +12,7 @@ import type {
 import { getAppSession } from "./authBusinessService.ts";
 import {
   getBusinessAccessState,
+  getBusinessGenerationUsageSnapshot,
   isFeatureEnabled,
   resolveScheduledQueueLimit,
 } from "./adminControlService.ts";
@@ -68,10 +69,23 @@ async function loadScheduledQueueUsage(businessId: string): Promise<number> {
 function mapLimits(
   access: ProductAccessState,
   scheduledQueueUsed: number,
+  generationUsage: { generationsLimit: number | null; generationsUsed: number },
 ): ProductAccessLimits {
   const scheduledQueueLimit = resolveScheduledQueueLimit(access.planCode);
 
   return {
+    generationDailyLimit: access.dailyLimits.generationsLimit,
+    generationDailyUsed: access.dailyLimits.generationsUsed,
+    generationDailyRemaining: Math.max(
+      0,
+      access.dailyLimits.generationsLimit - access.dailyLimits.generationsUsed,
+    ),
+    generationMonthlyLimit: generationUsage.generationsLimit,
+    generationMonthlyUsed: generationUsage.generationsUsed,
+    generationMonthlyRemaining:
+      generationUsage.generationsLimit === null
+        ? null
+        : Math.max(0, generationUsage.generationsLimit - generationUsage.generationsUsed),
     postsLimit: access.dailyLimits.postsLimit,
     postsUsed: access.dailyLimits.postsUsed,
     postsRemaining: Math.max(0, access.dailyLimits.postsLimit - access.dailyLimits.postsUsed),
@@ -138,9 +152,10 @@ export async function getProductAccessBootstrap(
   );
   const readOnly = featureEntries.find(([key]) => key === "system_read_only")?.[1] ?? false;
   const featureMap = Object.fromEntries(featureEntries) as ProductFeatureMap;
-  const [workspaceAccess, scheduledQueueUsed] = await Promise.all([
+  const [workspaceAccess, scheduledQueueUsed, generationUsage] = await Promise.all([
     getBusinessAccessState(businessId),
     loadScheduledQueueUsage(businessId),
+    getBusinessGenerationUsageSnapshot(businessId),
   ]);
   const access: ProductAccessState = {
     ...workspaceAccess,
@@ -152,7 +167,7 @@ export async function getProductAccessBootstrap(
     activeBusinessId: businessId,
     isPlatformAdmin: principal.isSuperAdmin,
     features: featureMap,
-    limits: mapLimits(access, scheduledQueueUsed),
+    limits: mapLimits(access, scheduledQueueUsed, generationUsage),
     access,
   };
 }

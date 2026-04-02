@@ -47,9 +47,17 @@ const usageCards = computed(() => {
 
   return [
     {
-      label: "Posts today",
-      value: `${limits.postsUsed} / ${formatLimit(limits.postsLimit)}`,
-      detail: `${limits.postsRemaining} remaining before the daily cap resets.`,
+      label: "Generations today",
+      value: `${limits.generationDailyUsed} / ${formatLimit(limits.generationDailyLimit)}`,
+      detail: `${limits.generationDailyRemaining} remaining before the daily cap resets.`,
+    },
+    {
+      label: "Generations this month",
+      value: `${limits.generationMonthlyUsed} / ${formatLimit(limits.generationMonthlyLimit)}`,
+      detail:
+        limits.generationMonthlyRemaining === null
+          ? "Custom monthly generation allocation."
+          : `${limits.generationMonthlyRemaining} remaining this billing month.`,
     },
     {
       label: "Scheduled queue",
