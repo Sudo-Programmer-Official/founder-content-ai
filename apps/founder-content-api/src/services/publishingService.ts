@@ -983,22 +983,24 @@ function resolveMediaContentType(response: Response): string {
 }
 
 function resolveMediaContentLength(response: Response): number | null {
+  const contentRange = response.headers.get("content-range")?.trim() || "";
+  const totalBytesMatch = contentRange.match(/\/(\d+)\s*$/);
+
+  if (totalBytesMatch) {
+    const totalBytes = Number.parseInt(totalBytesMatch[1], 10);
+
+    if (Number.isFinite(totalBytes) && totalBytes > 0) {
+      return totalBytes;
+    }
+  }
+
   const contentLengthHeader = response.headers.get("content-length")?.trim() || "";
   const contentLength = Number.parseInt(contentLengthHeader, 10);
 
   if (Number.isFinite(contentLength) && contentLength > 0) {
     return contentLength;
   }
-
-  const contentRange = response.headers.get("content-range")?.trim() || "";
-  const totalBytesMatch = contentRange.match(/\/(\d+)\s*$/);
-
-  if (!totalBytesMatch) {
-    return null;
-  }
-
-  const totalBytes = Number.parseInt(totalBytesMatch[1], 10);
-  return Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : null;
+  return null;
 }
 
 function isAcceptedInstagramMediaContentType(
@@ -1310,7 +1312,26 @@ async function createInstagramImageContainer(input: {
         primaryUrl: normalizeAssetUrlForLogs(imageTarget.finalUrl),
         fallbackUrl: normalizeAssetUrlForLogs(imageTarget.fallbackUrl),
       });
-      await assertMetaCanFetchAssetUrl(imageTarget.fallbackUrl, "image", "instagram_media_invalid");
+      try {
+        await assertMetaCanFetchAssetUrl(imageTarget.fallbackUrl, "image", "instagram_media_invalid");
+      } catch (fallbackPreflightError) {
+        logWarn("Instagram direct S3 fallback preflight failed.", {
+          assetId: input.asset.id,
+          primaryUrl: normalizeAssetUrlForLogs(imageTarget.finalUrl),
+          fallbackUrl: normalizeAssetUrlForLogs(imageTarget.fallbackUrl),
+          message: fallbackPreflightError instanceof Error ? fallbackPreflightError.message : "Unknown error",
+        });
+
+        throw new HttpError(
+          422,
+          "instagram_media_invalid",
+          "Instagram rejected the CDN media URL, and the direct S3 origin is not publicly readable. Check CloudFront or CDN rules for Meta crawlers, or make the fallback origin public.",
+          {
+            primaryUrl: normalizeAssetUrlForLogs(imageTarget.finalUrl),
+            fallbackUrl: normalizeAssetUrlForLogs(imageTarget.fallbackUrl),
+          },
+        );
+      }
       try {
         creation = await createContainer(imageTarget.fallbackUrl);
       } catch (fallbackError) {
