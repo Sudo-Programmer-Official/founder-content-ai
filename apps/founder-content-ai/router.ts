@@ -28,8 +28,11 @@ import LinkedInPostIdeasForFoundersPage from "./pages/linkedin-post-ideas-for-fo
 import LoginPage from "./pages/login.vue";
 import OnboardingPage from "./pages/onboarding.vue";
 import OnboardingWorkspacePage from "./pages/onboarding-workspace.vue";
+import PrivacyPage from "./pages/privacy.vue";
 import SettingsPreferencesPage from "./pages/settings-preferences.vue";
 import SignupPage from "./pages/signup.vue";
+import TermsPage from "./pages/terms.vue";
+import DataDeletionPage from "./pages/data-deletion.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -54,6 +57,30 @@ const router = createRouter({
       path: "/signup",
       name: "signup",
       component: SignupPage,
+      meta: {
+        shell: "public",
+      },
+    },
+    {
+      path: "/privacy",
+      name: "privacy",
+      component: PrivacyPage,
+      meta: {
+        shell: "public",
+      },
+    },
+    {
+      path: "/terms",
+      name: "terms",
+      component: TermsPage,
+      meta: {
+        shell: "public",
+      },
+    },
+    {
+      path: "/data-deletion",
+      name: "data-deletion",
+      component: DataDeletionPage,
       meta: {
         shell: "public",
       },

@@ -28,6 +28,9 @@ export const appRoutes = {
   login: "/login",
   onboarding: "/onboarding",
   onboardingWorkspace: "/onboarding/workspace",
+  privacy: "/privacy",
   settingsPreferences: "/settings/preferences",
   signup: "/signup",
+  terms: "/terms",
+  dataDeletion: "/data-deletion",
 } as const;

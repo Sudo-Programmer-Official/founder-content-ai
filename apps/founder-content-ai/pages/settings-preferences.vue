@@ -57,6 +57,7 @@ import {
   resolveInstagramIdentity,
   resolvePublishingDescriptor,
 } from "../utils/social-platforms";
+import { toFriendlySocialAuthMessage } from "../utils/social-auth-errors";
 
 type WorkspaceChannelKey = "linkedin" | "facebook" | "instagram" | "reddit";
 
@@ -1529,8 +1530,8 @@ watch(
       await loadWorkspaceChannels();
     } else if (linkedInStatus === "error") {
       channelError.value = typeof message === "string" && message.trim() !== ""
-        ? message
-        : "LinkedIn connection failed.";
+        ? toFriendlySocialAuthMessage(message, "linkedin")
+        : toFriendlySocialAuthMessage(undefined, "linkedin");
     }
 
     if (metaStatus === "connected") {
@@ -1543,8 +1544,8 @@ watch(
     } else if (metaStatus === "error") {
       channelError.value =
         typeof message === "string" && message.trim() !== ""
-          ? message
-          : "Meta connection failed.";
+          ? toFriendlySocialAuthMessage(message, pendingMetaPlatform.value)
+          : toFriendlySocialAuthMessage(undefined, pendingMetaPlatform.value);
     } else if (metaStatus === "select_page" && typeof session === "string" && session.trim() !== "") {
       pendingMetaSession.value = session.trim();
       isMetaSelectionModalOpen.value = true;

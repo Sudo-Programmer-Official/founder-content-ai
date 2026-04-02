@@ -47,6 +47,7 @@ import {
   resolveSocialPlatformLabel,
   resolveSocialPlatformShortLabel,
 } from "../utils/social-platforms";
+import { toFriendlySocialAuthMessage } from "../utils/social-auth-errors";
 
 type HistoryTab = "published" | "scheduled" | "failed" | "all";
 
@@ -843,8 +844,8 @@ watch(
     } else if (linkedInStatus === "error") {
       errorMessage.value =
         typeof message === "string" && message.trim() !== ""
-          ? message
-          : "LinkedIn connection failed.";
+          ? toFriendlySocialAuthMessage(message, "linkedin")
+          : toFriendlySocialAuthMessage(undefined, "linkedin");
     }
 
     if (metaStatus === "connected") {
@@ -853,8 +854,8 @@ watch(
     } else if (metaStatus === "error") {
       errorMessage.value =
         typeof message === "string" && message.trim() !== ""
-          ? message
-          : "Meta connection failed.";
+          ? toFriendlySocialAuthMessage(message, pendingMetaPlatform.value)
+          : toFriendlySocialAuthMessage(undefined, pendingMetaPlatform.value);
       isConnectingMeta.value = false;
     } else if (metaStatus === "select_page" && typeof session === "string" && session.trim() !== "") {
       pendingMetaSession.value = session.trim();

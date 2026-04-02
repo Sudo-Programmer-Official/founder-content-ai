@@ -273,6 +273,15 @@ const pricingPlans = [
         <a class="secondary-cta" href="/#pricing">See pricing</a>
       </div>
     </section>
+
+    <footer class="site-footer">
+      <p>Founder Content helps teams generate, organize, and distribute content without mixing workspace data.</p>
+      <div class="footer-links">
+        <router-link :to="appRoutes.privacy">Privacy</router-link>
+        <router-link :to="appRoutes.terms">Terms</router-link>
+        <router-link :to="appRoutes.dataDeletion">Data deletion</router-link>
+      </div>
+    </footer>
   </main>
 </template>
 
@@ -293,7 +302,8 @@ const pricingPlans = [
 
 .hero-copy,
 .content-section,
-.final-cta {
+.final-cta,
+.site-footer {
   border: 1px solid rgba(112, 84, 62, 0.14);
   border-radius: 32px;
   background: rgba(255, 250, 245, 0.82);
@@ -305,6 +315,39 @@ const pricingPlans = [
   padding: 40px;
   position: relative;
   overflow: hidden;
+}
+
+.site-footer {
+  margin-top: 28px;
+  padding: 24px 28px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+}
+
+.site-footer p {
+  margin: 0;
+  max-width: 54ch;
+  color: #5b4f47;
+  line-height: 1.7;
+}
+
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.footer-links a {
+  color: #1f1814;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.footer-links a:hover {
+  color: #b94b24;
 }
 
 .hero-copy::before {

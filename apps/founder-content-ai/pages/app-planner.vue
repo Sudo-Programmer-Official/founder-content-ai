@@ -57,6 +57,7 @@ import {
   resolveSocialPlatformLabel,
   type PublishableSocialPlatform,
 } from "../utils/social-platforms";
+import { toFriendlySocialAuthMessage } from "../utils/social-auth-errors";
 import { toFriendlyMediaStorageMessage } from "../services/media-storage-errors";
 
 interface PlannerDayModel {
@@ -1488,8 +1489,8 @@ watch(
     } else if (linkedInStatus === "error") {
       errorMessage.value =
         typeof message === "string" && message.trim() !== ""
-          ? message
-          : "LinkedIn connection failed.";
+          ? toFriendlySocialAuthMessage(message, "linkedin")
+          : toFriendlySocialAuthMessage(undefined, "linkedin");
     }
 
     if (metaStatus === "connected") {
@@ -1501,8 +1502,8 @@ watch(
     } else if (metaStatus === "error") {
       errorMessage.value =
         typeof message === "string" && message.trim() !== ""
-          ? message
-          : "Meta connection failed.";
+          ? toFriendlySocialAuthMessage(message, selectedSchedulingPlatform.value === "facebook" ? "facebook" : "instagram")
+          : toFriendlySocialAuthMessage(undefined, selectedSchedulingPlatform.value === "facebook" ? "facebook" : "instagram");
     } else if (metaStatus === "select_page" && typeof session === "string" && session.trim() !== "") {
       pendingMetaSession.value = session.trim();
       isMetaSelectionModalOpen.value = true;
