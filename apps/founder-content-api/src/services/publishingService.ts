@@ -8,6 +8,7 @@ import {
   createPostAssetDirectS3Url,
   createPostAssetDownloadUrl,
   createPostAssetPublicUrl,
+  createPostAssetPublicUrlForBase,
   downloadPostAssetBytes,
   uploadPostAssetBytesToStorage,
 } from "./postAssetService.ts";
@@ -1053,6 +1054,21 @@ function buildInstagramPublicStorageKey(asset: Pick<PostAsset, "businessId" | "p
   ].join("/");
 }
 
+function resolveInstagramPublishBaseUrl(): string | undefined {
+  const configuredBaseUrl = process.env.S3_INSTAGRAM_PUBLIC_BASE_URL?.trim();
+  return configuredBaseUrl ? configuredBaseUrl.replace(/\/+$/g, "") : undefined;
+}
+
+function createInstagramPublishUrl(storageKey: string): string {
+  const publishBaseUrl = resolveInstagramPublishBaseUrl();
+
+  if (publishBaseUrl) {
+    return createPostAssetPublicUrlForBase({ storageKey }, publishBaseUrl);
+  }
+
+  return createPostAssetDirectS3Url({ storageKey });
+}
+
 interface InstagramReadyImageTarget {
   originalUrl: string;
   finalUrl: string;
@@ -1114,7 +1130,7 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
     mimeType: "image/jpeg",
   });
 
-  const finalUrl = createPostAssetDirectS3Url({ storageKey: normalizedStorageKey });
+  const finalUrl = createInstagramPublishUrl(normalizedStorageKey);
 
   logInfo("Prepared Instagram-ready public image asset.", {
     assetId: asset.id,

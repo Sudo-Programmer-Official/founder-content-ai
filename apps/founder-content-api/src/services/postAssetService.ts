@@ -586,6 +586,10 @@ function buildPublicUrl(storageKey: string): string {
   return `${publicBaseUrl}/${encodeS3Path(storageKey)}`;
 }
 
+function buildPublicUrlForBase(storageKey: string, publicBaseUrl: string): string {
+  return `${publicBaseUrl.replace(/\/+$/g, "")}/${encodeS3Path(storageKey)}`;
+}
+
 function buildPreviewUrl(storageKey: string): string | undefined {
   try {
     return createS3PresignedUrl({
@@ -1155,6 +1159,13 @@ export function createPostAssetDownloadUrl(
 
 export function createPostAssetPublicUrl(asset: Pick<PostAsset, "storageKey">): string {
   return buildPublicUrl(asset.storageKey);
+}
+
+export function createPostAssetPublicUrlForBase(
+  asset: Pick<PostAsset, "storageKey">,
+  publicBaseUrl: string,
+): string {
+  return buildPublicUrlForBase(asset.storageKey, publicBaseUrl);
 }
 
 export function createPostAssetDirectS3Url(asset: Pick<PostAsset, "storageKey">): string {
