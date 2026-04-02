@@ -42,6 +42,10 @@ interface LinkedInPostCreationResult {
 
 interface MetaGraphErrorPayload {
   error?: {
+    code?: number;
+    error_subcode?: number;
+    type?: string;
+    fbtrace_id?: string;
     message?: string;
     error_user_msg?: string;
   };
@@ -359,6 +363,17 @@ async function postMetaGraphForm<TPayload extends MetaGraphErrorPayload>(
   const payload = (await response.json().catch(() => ({}))) as TPayload;
 
   if (!response.ok || payload.error?.message) {
+    logWarn("Meta Graph form request failed.", {
+      path,
+      statusCode: response.status,
+      errorCode: payload.error?.code,
+      errorSubcode: payload.error?.error_subcode,
+      errorType: payload.error?.type,
+      errorMessage: payload.error?.message,
+      errorUserMessage: payload.error?.error_user_msg,
+      fbTraceId: payload.error?.fbtrace_id,
+    });
+
     throw new HttpError(
       502,
       options?.errorCode ?? "instagram_post_failed",
@@ -392,6 +407,17 @@ async function getMetaGraphJson<TPayload extends MetaGraphErrorPayload>(
   const payload = (await response.json().catch(() => ({}))) as TPayload;
 
   if (!response.ok || payload.error?.message) {
+    logWarn("Meta Graph JSON request failed.", {
+      path,
+      statusCode: response.status,
+      errorCode: payload.error?.code,
+      errorSubcode: payload.error?.error_subcode,
+      errorType: payload.error?.type,
+      errorMessage: payload.error?.message,
+      errorUserMessage: payload.error?.error_user_msg,
+      fbTraceId: payload.error?.fbtrace_id,
+    });
+
     throw new HttpError(
       502,
       options?.errorCode ?? "instagram_post_failed",
@@ -1061,10 +1087,13 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
     .flatten({ background: "#ffffff" })
     .jpeg({
       quality: 90,
-      mozjpeg: true,
+      mozjpeg: false,
+      progressive: false,
+      chromaSubsampling: "4:4:4",
     })
     .toBuffer();
   const normalizedStorageKey = buildInstagramPublicStorageKey(asset);
+  const normalizedMetadata = await sharp(normalizedBytes).metadata();
 
   logInfo("Preparing public Instagram-ready image asset.", {
     assetId: asset.id,
@@ -1072,6 +1101,10 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
     publishMimeType: "image/jpeg",
     originalUrl: normalizeAssetUrlForLogs(originalUrl),
     publicStorageKey: normalizedStorageKey,
+    width: normalizedMetadata.width,
+    height: normalizedMetadata.height,
+    sizeBytes: normalizedBytes.byteLength,
+    progressive: normalizedMetadata.isProgressive ?? false,
   });
 
   await uploadPostAssetBytesToStorage({
