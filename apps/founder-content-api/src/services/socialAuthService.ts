@@ -369,7 +369,7 @@ function resolveMetaGraphVersion(): string {
 function resolveMetaScopes(): string[] {
   return (
     process.env.META_SCOPE ??
-    "business_management pages_show_list pages_read_engagement pages_manage_posts instagram_basic instagram_content_publish"
+    "business_management pages_show_list pages_read_engagement pages_manage_posts pages_manage_metadata instagram_basic instagram_content_publish"
   )
     .split(/\s+/)
     .map((scope) => scope.trim())
@@ -553,6 +553,18 @@ function resolveStateSecret(): string {
   );
 }
 
+function resolveMetaAuthSessionSecretName(): string {
+  if (process.env[META_AUTH_SESSION_SECRET_NAME]?.trim()) {
+    return META_AUTH_SESSION_SECRET_NAME;
+  }
+
+  if (process.env[SOCIAL_AUTH_STATE_SECRET_NAME]?.trim()) {
+    return SOCIAL_AUTH_STATE_SECRET_NAME;
+  }
+
+  return META_AUTH_SESSION_SECRET_NAME;
+}
+
 function signState(payload: string): string {
   const secret = resolveStateSecret();
 
@@ -568,7 +580,7 @@ function signState(payload: string): string {
 }
 
 function encodeMetaAuthSession(payload: MetaAuthSessionPayload): string {
-  return encryptSecret(JSON.stringify(payload), META_AUTH_SESSION_SECRET_NAME);
+  return encryptSecret(JSON.stringify(payload), resolveMetaAuthSessionSecretName());
 }
 
 function decodeMetaAuthSession(session: string): MetaAuthSessionPayload {
@@ -576,7 +588,7 @@ function decodeMetaAuthSession(session: string): MetaAuthSessionPayload {
 
   try {
     payload = JSON.parse(
-      decryptSecret(session, META_AUTH_SESSION_SECRET_NAME),
+      decryptSecret(session, resolveMetaAuthSessionSecretName()),
     ) as MetaAuthSessionPayload;
   } catch {
     throw new HttpError(400, "invalid_meta_session", "Meta page selection session is invalid.");
