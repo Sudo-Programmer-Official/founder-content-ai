@@ -926,6 +926,23 @@ function normalizeAssetUrlForLogs(assetUrl: string): string {
   }
 }
 
+function looksLikeRawS3AssetUrl(assetUrl: string): boolean {
+  try {
+    const parsed = new URL(assetUrl);
+    return /\.s3[.-][a-z0-9-]+\.amazonaws\.com$/i.test(parsed.hostname) || /\.s3\.amazonaws\.com$/i.test(parsed.hostname);
+  } catch {
+    return /amazonaws\.com/i.test(assetUrl);
+  }
+}
+
+function buildInstagramMediaAccessFailureMessage(assetUrl: string): string {
+  if (looksLikeRawS3AssetUrl(assetUrl)) {
+    return "Instagram could not access the current S3 asset URL. Configure S3_MEDIA_PUBLIC_BASE_URL to a truly public CDN or bucket URL, and ensure the object returns 200 without auth.";
+  }
+
+  return "The selected media URL is not publicly accessible. Configure a stable public HTTPS media URL with no auth or redirects.";
+}
+
 function hasSignedMediaUrlSignature(assetUrl: string): boolean {
   try {
     const parsed = new URL(assetUrl);
@@ -1067,10 +1084,18 @@ async function assertMetaCanFetchAssetUrl(
   }
 
   if (!isSuccessfulMediaPreflightStatus(response.status)) {
+    logWarn("Instagram media URL preflight failed.", {
+      mediaUrl: safeUrl,
+      expectedKind,
+      statusCode: response.status,
+      preflightMethod: shouldRetryWithRangeGet ? "GET" : "HEAD",
+      contentType: resolveMediaContentType(response),
+    });
+
     throw new HttpError(
       422,
       errorCode,
-      "The selected media URL is not publicly accessible. Configure a stable public media URL instead of an expiring signed URL.",
+      buildInstagramMediaAccessFailureMessage(assetUrl),
       { mediaUrl: safeUrl, statusCode: response.status },
     );
   }
