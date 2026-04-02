@@ -1156,3 +1156,9 @@ export function createPostAssetDownloadUrl(
 export function createPostAssetPublicUrl(asset: Pick<PostAsset, "storageKey">): string {
   return buildPublicUrl(asset.storageKey);
 }
+
+export function createPostAssetDirectS3Url(asset: Pick<PostAsset, "storageKey">): string {
+  const bucket = resolveMediaBucket();
+  const region = resolveAwsRegion();
+  return `https://${bucket}.s3.${region}.amazonaws.com/${encodeS3Path(asset.storageKey)}`;
+}

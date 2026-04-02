@@ -5,6 +5,7 @@ import type { PostAsset, ScheduledPostSlide } from "../../../../packages/shared-
 import { HttpError } from "../utils/http.ts";
 import { logInfo, logWarn } from "../utils/logger.ts";
 import {
+  createPostAssetDirectS3Url,
   createPostAssetDownloadUrl,
   createPostAssetPublicUrl,
   downloadPostAssetBytes,
@@ -18,6 +19,7 @@ import {
 const LINKEDIN_IMAGES_API_URL = "https://api.linkedin.com/rest/images";
 const LINKEDIN_POSTS_API_URL = "https://api.linkedin.com/rest/posts";
 const META_GRAPH_BASE_URL = "https://graph.facebook.com";
+const META_FETCH_USER_AGENT = "facebookexternalhit/1.1";
 
 interface LinkedInImageInitializationResponse {
   value?: {
@@ -972,6 +974,10 @@ function isSuccessfulMediaPreflightStatus(statusCode: number): boolean {
   return statusCode >= 200 && statusCode < 300;
 }
 
+function isRedirectStatus(statusCode: number): boolean {
+  return statusCode >= 300 && statusCode < 400;
+}
+
 function resolveMediaContentType(response: Response): string {
   return response.headers.get("content-type")?.trim().toLowerCase().split(";")[0] || "";
 }
@@ -1020,9 +1026,15 @@ function buildInstagramNormalizedStorageKey(asset: Pick<PostAsset, "storageKey" 
 interface InstagramReadyImageTarget {
   originalUrl: string;
   finalUrl: string;
+  fallbackUrl?: string;
   sourceMimeType: string;
   publishMimeType: string;
   normalized: boolean;
+}
+
+function resolveInstagramFallbackUrl(storageKey: string, currentUrl: string): string | undefined {
+  const directS3Url = createPostAssetDirectS3Url({ storageKey });
+  return directS3Url === currentUrl ? undefined : directS3Url;
 }
 
 async function createInstagramReadyImageUrl(asset: PostAsset): Promise<InstagramReadyImageTarget> {
@@ -1044,6 +1056,7 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
     return {
       originalUrl,
       finalUrl: originalUrl,
+      fallbackUrl: resolveInstagramFallbackUrl(asset.storageKey, originalUrl),
       sourceMimeType: asset.mimeType,
       publishMimeType: asset.mimeType,
       normalized: false,
@@ -1088,6 +1101,7 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
   return {
     originalUrl,
     finalUrl,
+    fallbackUrl: resolveInstagramFallbackUrl(normalizedStorageKey, finalUrl),
     sourceMimeType: asset.mimeType,
     publishMimeType: "image/jpeg",
     normalized: true,
@@ -1117,20 +1131,14 @@ async function assertMetaCanFetchAssetUrl(
 
   const headResponse = await fetch(assetUrl, {
     method: "HEAD",
+    headers: {
+      "User-Agent": META_FETCH_USER_AGENT,
+    },
     redirect: "manual",
     signal: AbortSignal.timeout(5000),
   }).catch(() => null);
 
-  if (!headResponse) {
-    throw new HttpError(
-      422,
-      errorCode,
-      "The selected media URL is not publicly reachable from outside the app.",
-      { mediaUrl: safeUrl },
-    );
-  }
-
-  if (headResponse.status >= 300 && headResponse.status < 400) {
+  if (headResponse && isRedirectStatus(headResponse.status)) {
     throw new HttpError(
       422,
       errorCode,
@@ -1139,22 +1147,15 @@ async function assertMetaCanFetchAssetUrl(
     );
   }
 
-  const headContentType = resolveMediaContentType(headResponse);
-  const headContentLength = resolveMediaContentLength(headResponse);
-  const shouldRetryWithRangeGet = (
-    !isSuccessfulMediaPreflightStatus(headResponse.status)
-    || !headContentLength
-    || !isAcceptedInstagramMediaContentType(headContentType, expectedKind)
-  );
-
-  const response = shouldRetryWithRangeGet
-    ? await fetch(assetUrl, {
-      method: "GET",
-      headers: { Range: "bytes=0-0" },
-      redirect: "manual",
-      signal: AbortSignal.timeout(5000),
-    }).catch(() => null)
-    : headResponse;
+  const response = await fetch(assetUrl, {
+    method: "GET",
+    headers: {
+      Range: "bytes=0-0",
+      "User-Agent": META_FETCH_USER_AGENT,
+    },
+    redirect: "manual",
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => null);
 
   if (!response) {
     throw new HttpError(
@@ -1165,7 +1166,7 @@ async function assertMetaCanFetchAssetUrl(
     );
   }
 
-  if (response.status >= 300 && response.status < 400) {
+  if (isRedirectStatus(response.status)) {
     throw new HttpError(
       422,
       errorCode,
@@ -1178,8 +1179,9 @@ async function assertMetaCanFetchAssetUrl(
     logWarn("Instagram media URL preflight failed.", {
       mediaUrl: safeUrl,
       expectedKind,
-      statusCode: response.status,
-      preflightMethod: shouldRetryWithRangeGet ? "GET" : "HEAD",
+      headStatusCode: headResponse?.status ?? null,
+      getStatusCode: response.status,
+      preflightMethod: "HEAD+GET",
       contentType: resolveMediaContentType(response),
     });
 
@@ -1220,7 +1222,8 @@ async function assertMetaCanFetchAssetUrl(
   logInfo("Instagram media URL passed preflight.", {
     mediaUrl: safeUrl,
     expectedKind,
-    preflightMethod: shouldRetryWithRangeGet ? "GET" : "HEAD",
+    preflightMethod: "HEAD+GET",
+    headStatusCode: headResponse?.status ?? null,
     statusCode: response.status,
     contentType,
     contentLength,
@@ -1231,11 +1234,7 @@ function normalizeInstagramMediaFetchError(
   error: unknown,
   assetUrl: string,
 ): never {
-  if (
-    error instanceof HttpError
-    && error.code === "instagram_post_failed"
-    && /could not be fetched from this uri/i.test(error.message)
-  ) {
+  if (isInstagramMediaFetchFailure(error)) {
     const safeUrl = normalizeAssetUrlForLogs(assetUrl);
 
     logWarn("Instagram could not fetch the supplied media URL.", {
@@ -1253,6 +1252,14 @@ function normalizeInstagramMediaFetchError(
   throw error;
 }
 
+function isInstagramMediaFetchFailure(error: unknown): boolean {
+  return (
+    error instanceof HttpError
+    && error.code === "instagram_post_failed"
+    && /could not be fetched from this uri/i.test(error.message)
+  );
+}
+
 async function createInstagramImageContainer(input: {
   instagramUserId: string;
   accessToken: string;
@@ -1260,6 +1267,21 @@ async function createInstagramImageContainer(input: {
   caption?: string;
   isCarouselItem?: boolean;
 }): Promise<string> {
+  const createContainer = async (imageUrl: string): Promise<{ id?: string } & MetaGraphErrorPayload> =>
+    postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+      `${input.instagramUserId}/media`,
+      input.accessToken,
+      {
+        image_url: imageUrl,
+        caption: input.caption?.trim() || undefined,
+        is_carousel_item: input.isCarouselItem ? "true" : undefined,
+      },
+      {
+        errorCode: "instagram_post_failed",
+        fallbackMessage: "Instagram media container creation failed.",
+      },
+    );
+
   const imageTarget = await createInstagramReadyImageUrl(input.asset);
 
   logInfo("Resolved Instagram publish media target.", {
@@ -1273,19 +1295,32 @@ async function createInstagramImageContainer(input: {
   });
 
   await assertMetaCanFetchAssetUrl(imageTarget.finalUrl, "image", "instagram_media_invalid");
-  const creation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
-    `${input.instagramUserId}/media`,
-    input.accessToken,
-    {
-      image_url: imageTarget.finalUrl,
-      caption: input.caption?.trim() || undefined,
-      is_carousel_item: input.isCarouselItem ? "true" : undefined,
-    },
-    {
-      errorCode: "instagram_post_failed",
-      fallbackMessage: "Instagram media container creation failed.",
-    },
-  ).catch((error) => normalizeInstagramMediaFetchError(error, imageTarget.finalUrl));
+  let creation: { id?: string } & MetaGraphErrorPayload;
+
+  try {
+    creation = await createContainer(imageTarget.finalUrl);
+  } catch (error) {
+    if (
+      isInstagramMediaFetchFailure(error)
+      && imageTarget.fallbackUrl
+      && imageTarget.fallbackUrl !== imageTarget.finalUrl
+    ) {
+      logWarn("Instagram rejected primary media URL. Retrying with direct S3 URL.", {
+        assetId: input.asset.id,
+        primaryUrl: normalizeAssetUrlForLogs(imageTarget.finalUrl),
+        fallbackUrl: normalizeAssetUrlForLogs(imageTarget.fallbackUrl),
+      });
+      await assertMetaCanFetchAssetUrl(imageTarget.fallbackUrl, "image", "instagram_media_invalid");
+      try {
+        creation = await createContainer(imageTarget.fallbackUrl);
+      } catch (fallbackError) {
+        normalizeInstagramMediaFetchError(fallbackError, imageTarget.fallbackUrl);
+      }
+    } else {
+      normalizeInstagramMediaFetchError(error, imageTarget.finalUrl);
+    }
+  }
+
   const creationId = creation.id?.trim();
 
   if (!creationId) {
@@ -1492,7 +1527,12 @@ async function publishInstagram(
       : await (async () => {
         const childCreationIds = [];
 
-        for (const asset of assets) {
+        for (const [index, asset] of assets.entries()) {
+          logInfo("Creating Instagram carousel child container.", {
+            assetId: asset.id,
+            childIndex: index,
+            childCount: assets.length,
+          });
           childCreationIds.push(
             await createInstagramImageContainer({
               instagramUserId,
@@ -1503,6 +1543,9 @@ async function publishInstagram(
           );
         }
 
+        logInfo("Creating Instagram carousel parent container.", {
+          childCount: childCreationIds.length,
+        });
         const parentCreation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
           `${instagramUserId}/media`,
           accessToken,
