@@ -96,6 +96,9 @@ onMounted(() => {
               {{ workspace.access.isActive ? "Active" : "Disabled" }}
             </span>
             <span class="topbar-pill muted">Plan {{ workspace.access.planCode }}</span>
+            <span v-if="workspace.access.unlimitedGenerations" class="topbar-pill" data-state="active">
+              Unlimited AI
+            </span>
           </div>
         </div>
 
@@ -123,6 +126,10 @@ onMounted(() => {
           <div class="workspace-meta-block">
             <strong>Recent override</strong>
             <span>{{ workspace.access.recentAdminActionSummary || "None yet" }}</span>
+          </div>
+          <div class="workspace-meta-block">
+            <strong>AI generation access</strong>
+            <span>{{ workspace.access.unlimitedGenerations ? "Unlimited override" : "Plan-limited" }}</span>
           </div>
         </div>
 
@@ -223,6 +230,28 @@ onMounted(() => {
         </div>
 
         <div class="workspace-action-row">
+          <button
+            type="button"
+            class="dashboard-button secondary"
+            :disabled="isMutating"
+            @click="
+              applyWorkspaceAction(
+                workspace,
+                {
+                  action: 'set_generation_access',
+                  unlimitedGenerations: !workspace.access.unlimitedGenerations,
+                  note: !workspace.access.unlimitedGenerations
+                    ? 'Enabled unlimited AI generations from admin control.'
+                    : 'Restored plan-based AI generation limits from admin control.',
+                },
+                !workspace.access.unlimitedGenerations
+                  ? `${workspace.name} now has unlimited AI generations.`
+                  : `${workspace.name} generation limits restored.`,
+              )
+            "
+          >
+            {{ workspace.access.unlimitedGenerations ? "Restore Generation Limits" : "Allow Unlimited AI" }}
+          </button>
           <button
             type="button"
             class="dashboard-button secondary"

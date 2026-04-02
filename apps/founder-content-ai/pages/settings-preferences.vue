@@ -373,19 +373,29 @@ const usageCards = computed(() => {
     return [];
   }
 
+  const unlimitedGenerations = bootstrap.value?.access?.unlimitedGenerations ?? false;
+
   return [
     {
       label: "Generations today",
-      remainingLabel: `${usageLimits.value.generationDailyRemaining} left`,
-      detail: `${usageLimits.value.generationDailyUsed} used of ${usageLimits.value.generationDailyLimit} today`,
+      remainingLabel: unlimitedGenerations
+        ? "Unlimited override active"
+        : `${usageLimits.value.generationDailyRemaining} left`,
+      detail: unlimitedGenerations
+        ? `${usageLimits.value.generationDailyUsed} generations tracked today`
+        : `${usageLimits.value.generationDailyUsed} used of ${usageLimits.value.generationDailyLimit} today`,
     },
     {
       label: "Generations this month",
-      remainingLabel:
+      remainingLabel: unlimitedGenerations
+        ? "Unlimited override active"
+        :
         usageLimits.value.generationMonthlyRemaining === null
           ? "Custom workspace cap"
           : `${usageLimits.value.generationMonthlyRemaining} left`,
-      detail:
+      detail: unlimitedGenerations
+        ? `${usageLimits.value.generationMonthlyUsed} generations tracked this month`
+        :
         usageLimits.value.generationMonthlyLimit === null
           ? `${usageLimits.value.generationMonthlyUsed} used this month`
           : `${usageLimits.value.generationMonthlyUsed} used of ${usageLimits.value.generationMonthlyLimit} this month`,

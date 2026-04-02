@@ -40,6 +40,7 @@ const emailAddon = computed(() => overview.value?.emailAddon);
 const emailPlanCards = computed(() => overview.value?.emailPlans ?? []);
 const usageCards = computed(() => {
   const limits = overview.value?.usage;
+  const unlimitedGenerations = bootstrap.value?.access?.unlimitedGenerations ?? false;
 
   if (!limits) {
     return [];
@@ -49,12 +50,16 @@ const usageCards = computed(() => {
     {
       label: "Generations today",
       value: `${limits.generationDailyUsed} / ${formatLimit(limits.generationDailyLimit)}`,
-      detail: `${limits.generationDailyRemaining} remaining before the daily cap resets.`,
+      detail: unlimitedGenerations
+        ? "Unlimited admin override active. Usage is still tracked."
+        : `${limits.generationDailyRemaining} remaining before the daily cap resets.`,
     },
     {
       label: "Generations this month",
       value: `${limits.generationMonthlyUsed} / ${formatLimit(limits.generationMonthlyLimit)}`,
-      detail:
+      detail: unlimitedGenerations
+        ? "Unlimited admin override active. Monthly usage is still tracked."
+        :
         limits.generationMonthlyRemaining === null
           ? "Custom monthly generation allocation."
           : `${limits.generationMonthlyRemaining} remaining this billing month.`,

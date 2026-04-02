@@ -551,9 +551,16 @@ const schedulerEnabled = computed(
 const accessLimits = computed(() =>
   accessMatchesSelectedBusiness.value ? productAccess.value?.limits : undefined,
 );
+const hasUnlimitedGenerationAccess = computed(
+  () => accessMatchesSelectedBusiness.value && (productAccess.value?.access?.unlimitedGenerations ?? false),
+);
 const generationDailyRemaining = computed(() => accessLimits.value?.generationDailyRemaining ?? null);
 const generationMonthlyRemaining = computed(() => accessLimits.value?.generationMonthlyRemaining ?? null);
 const generationLimitMessage = computed(() => {
+  if (hasUnlimitedGenerationAccess.value) {
+    return "";
+  }
+
   if (generationDailyRemaining.value === 0) {
     return "You've reached today's AI generation limit. Upgrade to keep generating instantly.";
   }
@@ -564,7 +571,6 @@ const generationLimitMessage = computed(() => {
 
   return "";
 });
-const postsRemaining = computed(() => accessLimits.value?.postsRemaining ?? null);
 const scheduledQueueLimit = computed(() => accessLimits.value?.scheduledQueueLimit ?? null);
 const scheduledQueueRemaining = computed(() => accessLimits.value?.scheduledQueueRemaining ?? null);
 const hasScheduledQueuePreview = computed(() => scheduledQueueLimit.value !== null);
@@ -607,10 +613,6 @@ const schedulerLockedMessage = computed(() => {
 
   if (!schedulerEnabled.value) {
     return "Scheduling is not enabled for this workspace yet.";
-  }
-
-  if (postsRemaining.value === 0) {
-    return "You've reached your daily post limit. Upgrade or try tomorrow.";
   }
 
   if (queueLimitReached.value) {

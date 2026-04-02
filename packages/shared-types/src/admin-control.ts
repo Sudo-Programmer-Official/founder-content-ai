@@ -15,6 +15,7 @@ export type AdminDecisionRuleScope = "global" | "business_type" | "workspace";
 export type AdminWorkspaceAccessAction =
   | "grant_pro_access"
   | "set_plan"
+  | "set_generation_access"
   | "extend_trial"
   | "extend_grace"
   | "reset_limits"
@@ -36,6 +37,7 @@ export interface AdminWorkspaceLimitSnapshot {
 
 export interface AdminWorkspaceAccessState {
   planCode: BusinessPlanCode;
+  unlimitedGenerations: boolean;
   trialEndsAt?: string;
   graceUntil?: string;
   isActive: boolean;
@@ -207,6 +209,7 @@ export interface UpsertAdminDecisionRuleResponse {
 export interface UpdateAdminWorkspaceAccessRequest {
   action: AdminWorkspaceAccessAction;
   planCode?: BusinessPlanCode;
+  unlimitedGenerations?: boolean;
   emailBillingTierCode?: BillingEmailAddonTierCode;
   emailBillingSource?: BillingEmailAddonSource;
   emailSubscriberLimit?: number;

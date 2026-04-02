@@ -5,6 +5,7 @@ import {
   incrementBusinessGenerationUsage,
   incrementBusinessDailyUsage,
   isFeatureEnabled,
+  trackBusinessGenerationUsage,
 } from "./adminControlService.ts";
 import { HttpError } from "../utils/http.ts";
 
@@ -112,6 +113,13 @@ export async function enforceWorkspaceWriteAccess(input: {
 
   if (usageMetric) {
     if (usageMetric === "generations") {
+      const access = await getBusinessAccessState(businessId);
+
+      if (access.unlimitedGenerations) {
+        await trackBusinessGenerationUsage(businessId, usageQuantity);
+        return;
+      }
+
       await incrementBusinessGenerationUsage(businessId, usageQuantity);
       return;
     }

@@ -23,6 +23,7 @@ import {
 interface WorkspaceAccessRow extends QueryResultRow {
   id: string;
   plan_code: BusinessPlanCode;
+  unlimited_generations: boolean;
   trial_ends_at: Date | string | null;
   grace_until: Date | string | null;
   is_active: boolean;
@@ -220,6 +221,7 @@ async function getWorkspaceAccessRow(
       select
         id,
         plan_code,
+        unlimited_generations,
         trial_ends_at,
         grace_until,
         is_active,
@@ -543,6 +545,7 @@ async function buildWorkspaceAccessState(
 
   return {
     planCode: access.plan_code,
+    unlimitedGenerations: access.unlimited_generations,
     trialEndsAt: toIsoString(access.trial_ends_at),
     graceUntil: toIsoString(access.grace_until),
     isActive: access.is_active,
@@ -724,6 +727,27 @@ export async function updateAdminWorkspaceAccess(
           client,
         );
         break;
+      case "set_generation_access":
+        if (typeof input.unlimitedGenerations !== "boolean") {
+          throw new HttpError(
+            400,
+            "unlimited_generations_required",
+            "unlimitedGenerations is required for set_generation_access.",
+          );
+        }
+        await executeQuery(
+          `
+            update businesses
+            set
+              unlimited_generations = $2,
+              admin_override_note = coalesce($3, admin_override_note),
+              updated_at = now()
+            where id = $1
+          `,
+          [businessId, input.unlimitedGenerations, note],
+          client,
+        );
+        break;
       case "set_email_billing":
         if (!input.emailBillingTierCode) {
           throw new HttpError(
@@ -845,6 +869,8 @@ export async function updateAdminWorkspaceAccess(
       note: note ?? undefined,
       planCodeBefore: workspace.plan_code,
       planCodeAfter: input.action === "grant_pro_access" ? "pro" : input.planCode,
+      unlimitedGenerationsBefore: workspace.unlimited_generations,
+      unlimitedGenerationsAfter: input.unlimitedGenerations,
       emailBillingTierCode: input.emailBillingTierCode,
       emailBillingSource: input.emailBillingSource,
       emailSubscriberLimit: input.emailSubscriberLimit,
@@ -1034,6 +1060,77 @@ export async function incrementBusinessGenerationUsage(
         monthStart: updatedMonthly.month_start,
         generationsLimit: toNumber(updatedMonthly.generations_limit),
         generationsUsed: toNumber(updatedMonthly.generations_used),
+      },
+    };
+  });
+}
+
+export async function trackBusinessGenerationUsage(
+  businessId: string,
+  quantity = 1,
+): Promise<{
+  daily: AdminWorkspaceLimitSnapshot;
+  monthly: MonthlyGenerationUsageSnapshot;
+}> {
+  return withDbTransaction(async (client) => {
+    const dailySnapshot = await ensureDailyUsageLimitSnapshot(businessId, client);
+    const monthlySnapshot = await ensureMonthlyGenerationUsageSnapshot(businessId, client);
+    const incrementBy = Math.max(1, Math.floor(quantity));
+
+    const dailyResult = await executeQuery<UsageLimitRow>(
+      `
+        update usage_limits_daily
+        set
+          generations_used = generations_used + $3,
+          updated_at = now()
+        where business_id = $1
+          and date = $2::date
+        returning
+          id,
+          business_id,
+          date::text as date,
+          generations_limit,
+          generations_used,
+          posts_limit,
+          posts_used,
+          emails_limit,
+          emails_used,
+          outreach_limit,
+          outreach_used,
+          created_at,
+          updated_at
+      `,
+      [businessId, dailySnapshot.date, incrementBy],
+      client,
+    );
+
+    const monthlyResult = await executeQuery<MonthlyGenerationLimitRow>(
+      `
+        update usage_limits_monthly
+        set
+          generations_used = generations_used + $3,
+          updated_at = now()
+        where business_id = $1
+          and month_start = $2::date
+        returning
+          id,
+          business_id,
+          month_start::text as month_start,
+          generations_limit,
+          generations_used,
+          created_at,
+          updated_at
+      `,
+      [businessId, monthlySnapshot.monthStart, incrementBy],
+      client,
+    );
+
+    return {
+      daily: mapLimitSnapshot(dailyResult.rows[0]),
+      monthly: {
+        monthStart: monthlyResult.rows[0].month_start,
+        generationsLimit: toNumber(monthlyResult.rows[0].generations_limit),
+        generationsUsed: toNumber(monthlyResult.rows[0].generations_used),
       },
     };
   });
