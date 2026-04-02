@@ -1085,11 +1085,12 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
   const sourceBytes = await downloadPostAssetBytes(asset);
   const normalizedBytes = await sharp(sourceBytes)
     .flatten({ background: "#ffffff" })
+    .toColorspace("srgb")
     .jpeg({
       quality: 90,
       mozjpeg: false,
       progressive: false,
-      chromaSubsampling: "4:4:4",
+      chromaSubsampling: "4:2:0",
     })
     .toBuffer();
   const normalizedStorageKey = buildInstagramPublicStorageKey(asset);
@@ -1175,7 +1176,6 @@ async function assertMetaCanFetchAssetUrl(
   const response = await fetch(assetUrl, {
     method: "GET",
     headers: {
-      Range: "bytes=0-0",
       "User-Agent": META_FETCH_USER_AGENT,
     },
     redirect: "manual",
@@ -1220,6 +1220,8 @@ async function assertMetaCanFetchAssetUrl(
 
   const contentType = resolveMediaContentType(response);
   const contentLength = resolveMediaContentLength(response);
+
+  response.body?.cancel().catch(() => undefined);
 
   if (!isAcceptedInstagramMediaContentType(contentType, expectedKind)) {
     const message =
