@@ -350,7 +350,7 @@ function resolveMetaGraphVersion(): string {
 function resolveMetaScopes(): string[] {
   return (
     process.env.META_SCOPE ??
-    "pages_show_list pages_read_engagement pages_manage_posts instagram_basic instagram_content_publish"
+    "business_management pages_show_list pages_read_engagement pages_manage_posts instagram_basic instagram_content_publish"
   )
     .split(/\s+/)
     .map((scope) => scope.trim())
@@ -1736,7 +1736,25 @@ export async function handleMetaOAuthCallback(input: {
     );
     const pages = await fetchMetaPageSelections(accessToken);
 
+    logInfo("Fetched Meta page selections after OAuth callback.", {
+      platform: callbackState.platform,
+      businessId: callbackState.businessId,
+      userId: callbackState.userId,
+      metaUserId: userProfile.id ?? null,
+      requestedScopes: resolveMetaScopes(),
+      pageCount: pages.length,
+      pageIds: pages.map((page) => page.pageId),
+      instagramLinkedCount: pages.filter((page) => page.instagramBusinessAccountId).length,
+    });
+
     if (pages.length === 0) {
+      logWarn("Meta OAuth returned no publishable Facebook Pages.", {
+        platform: callbackState.platform,
+        businessId: callbackState.businessId,
+        userId: callbackState.userId,
+        metaUserId: userProfile.id ?? null,
+        requestedScopes: resolveMetaScopes(),
+      });
       return buildMetaRedirectUrl(callbackState.returnPath ?? "/app/create", "error", {
         message: "no_pages_found",
         platform: callbackState.platform,
