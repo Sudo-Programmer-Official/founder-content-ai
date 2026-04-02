@@ -22,7 +22,13 @@ import {
   requestWorkspaceMediaIntelligence,
   requestWorkspaceMediaResolution,
 } from "../services/media-intelligence-service";
-import { requestCreateWorkspaceAsset, requestDeleteWorkspaceAsset, requestWorkspaceAssetUploadUrl, requestWorkspaceAssets } from "../services/workspace-assets-service";
+import {
+  requestCreateWorkspaceAsset,
+  requestDeleteWorkspaceAsset,
+  requestWorkspaceAssetDownload,
+  requestWorkspaceAssetUploadUrl,
+  requestWorkspaceAssets,
+} from "../services/workspace-assets-service";
 
 const { bootstrap, isReady } = useProductAccessContext();
 
@@ -61,6 +67,7 @@ const BUSINESS_TYPE_OPTIONS: Array<{ value: BusinessMediaProfileType; label: str
 
 const filteredAssets = computed(() => assets.value);
 const imageCount = computed(() => assets.value.filter((asset) => asset.assetType === "image").length);
+const videoCount = computed(() => assets.value.filter((asset) => asset.assetType === "video").length);
 const logoCount = computed(() => assets.value.filter((asset) => asset.assetType === "logo").length);
 const documentCount = computed(() => assets.value.filter((asset) => asset.assetType === "document").length);
 const totalUsageCount = computed(() =>
@@ -229,6 +236,8 @@ async function handleAssetUpload(event: Event): Promise<void> {
     for (const file of files) {
       const assetType: WorkspaceAssetType = file.type === "application/pdf"
         ? "document"
+        : file.type === "video/mp4"
+          ? "video"
         : file.type.includes("svg")
           ? "logo"
           : "image";
@@ -292,6 +301,21 @@ async function archiveAsset(assetId: string): Promise<void> {
     feedback.value = error instanceof Error ? error.message : "Unable to archive this asset.";
   } finally {
     deletingAssetId.value = "";
+  }
+}
+
+async function downloadAsset(asset: WorkspaceAsset): Promise<void> {
+  if (!activeBusinessId.value || typeof window === "undefined") {
+    return;
+  }
+
+  feedback.value = "";
+
+  try {
+    const response = await requestWorkspaceAssetDownload(activeBusinessId.value, asset.id);
+    window.open(response.downloadUrl, "_blank", "noopener,noreferrer");
+  } catch (error) {
+    feedback.value = error instanceof Error ? error.message : "Unable to prepare asset download.";
   }
 }
 
@@ -488,7 +512,7 @@ watch(
       <label class="assets-upload-button">
         <input
           type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,application/pdf"
+          accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml,video/mp4,application/pdf"
           multiple
           :disabled="isUploading"
           @change="void handleAssetUpload($event)"
@@ -511,6 +535,10 @@ watch(
         <strong>{{ logoCount }}</strong>
       </article>
       <article class="stat-card">
+        <span>Videos</span>
+        <strong>{{ videoCount }}</strong>
+      </article>
+      <article class="stat-card">
         <span>Documents</span>
         <strong>{{ documentCount }}</strong>
       </article>
@@ -531,6 +559,7 @@ watch(
         <select v-model="selectedType">
           <option value="all">All assets</option>
           <option value="image">Images</option>
+          <option value="video">Videos</option>
           <option value="logo">Logos</option>
           <option value="document">Documents</option>
           <option value="screenshot">Screenshots</option>
@@ -870,8 +899,17 @@ watch(
 
     <section v-if="filteredAssets.length > 0" class="asset-grid">
       <article v-for="asset in filteredAssets" :key="asset.id" class="workspace-card asset-card">
+        <video
+          v-if="asset.previewUrl && asset.mimeType.startsWith('video/')"
+          :src="asset.previewUrl"
+          class="asset-preview"
+          controls
+          muted
+          playsinline
+          preload="metadata"
+        />
         <img
-          v-if="asset.previewUrl && asset.mimeType.startsWith('image/')"
+          v-else-if="asset.previewUrl && asset.mimeType.startsWith('image/')"
           :src="asset.previewUrl"
           :alt="asset.title || asset.assetType"
           class="asset-preview"
@@ -902,6 +940,13 @@ watch(
           >
             Open
           </a>
+          <button
+            type="button"
+            class="asset-link asset-download"
+            @click="void downloadAsset(asset)"
+          >
+            Download
+          </button>
           <button
             type="button"
             class="asset-remove"

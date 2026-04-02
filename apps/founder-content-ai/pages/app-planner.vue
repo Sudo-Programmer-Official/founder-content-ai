@@ -4,13 +4,16 @@ import { useRoute, useRouter } from "vue-router";
 import type {
   BusinessMembership,
   ControlDashboardResponse,
+  PostAsset,
   RecommendedPostTimeSlot,
   ScheduledPost,
   SchedulingSafetyWarning,
   ScheduledPostStatus,
+  SocialAccount,
 } from "../../../packages/shared-types";
 import { useAuthContext } from "../auth/auth-context";
 import { useProductAccessContext } from "../access/product-access-context";
+import MetaPageSelectionModal from "../components/MetaPageSelectionModal.vue";
 import PlannerSkeleton from "../components/skeletons/PlannerSkeleton.vue";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
 import { ApiRequestError } from "../services/api-client";
@@ -21,11 +24,14 @@ import {
 } from "../services/control-dashboard-service";
 import {
   requestLinkedInSocialAuthStart,
+  requestMetaSocialAuthStart,
   requestRecommendedPostTimes,
   requestSchedulePost,
   requestScheduledPosts,
+  requestSocialAccounts,
   requestUpdateScheduledPost,
 } from "../services/publishing-service";
+import { requestPostAssets } from "../services/post-assets-service";
 import { appRoutes } from "../utils/routes";
 import {
   addDaysToDateKey,
@@ -42,6 +48,15 @@ import {
   resolveScheduledPostStatusLabel,
   resolveScheduledPostStatusSummary,
 } from "../utils/scheduled-post-status";
+import {
+  findConnectedFacebookAccount,
+  findConnectedInstagramAccount,
+  looksLikeSocialReconnectIssue,
+  resolveExternalPostLabel,
+  resolveScheduledIdentityLabel,
+  resolveSocialPlatformLabel,
+  type PublishableSocialPlatform,
+} from "../utils/social-platforms";
 import { toFriendlyMediaStorageMessage } from "../services/media-storage-errors";
 
 interface PlannerDayModel {
@@ -88,6 +103,8 @@ const COMMON_AUDIENCE_TIMEZONES = [
 const businesses = ref<BusinessMembership[]>([]);
 const dashboard = ref<ControlDashboardResponse | null>(null);
 const scheduledPosts = ref<ScheduledPost[]>([]);
+const socialAccounts = ref<SocialAccount[]>([]);
+const selectedBacklogPostAssets = ref<PostAsset[]>([]);
 const recommendedSlots = ref<RecommendedPostTimeSlot[]>([]);
 const recommendedTimezone = ref("UTC");
 const isLoading = ref(true);
@@ -104,6 +121,16 @@ const selectedBacklogAssetId = ref("");
 const scheduleTime = ref("09:00");
 const audienceTimezone = ref("");
 const isConnectingLinkedIn = ref(false);
+const isConnectingMeta = ref(false);
+const selectedSchedulingPlatform = ref<PublishableSocialPlatform>(
+  route.query.platform === "instagram"
+    ? "instagram"
+    : route.query.platform === "facebook"
+      ? "facebook"
+      : "linkedin",
+);
+const isMetaSelectionModalOpen = ref(false);
+const pendingMetaSession = ref("");
 const draftActionAssetId = ref("");
 const draftActionKind = ref<"duplicate" | "delete" | "">("");
 
@@ -212,6 +239,60 @@ const audienceTimezoneOptions = computed(() => {
     value,
     label: value === workspaceDefaultAudienceTimezone.value ? `${value} · workspace default` : value,
   }));
+});
+
+const connectedFacebookAccount = computed(() => findConnectedFacebookAccount(socialAccounts.value));
+const connectedInstagramAccount = computed(() => findConnectedInstagramAccount(socialAccounts.value));
+const selectedSchedulingPlatformLabel = computed(() => resolveSocialPlatformLabel(selectedSchedulingPlatform.value));
+const selectedSchedulingGuardrail = computed(() => {
+  const readyImageCount = selectedBacklogPostAssets.value.filter((asset) => asset.type === "image").length;
+  const readyVideoCount = selectedBacklogPostAssets.value.filter((asset) => asset.type === "video").length;
+
+  if (readyImageCount > 0 && readyVideoCount > 0) {
+    return "Mixed image and video drafts are not publishable yet. Use only one media type per post.";
+  }
+
+  if (selectedSchedulingPlatform.value === "linkedin" && readyVideoCount > 0) {
+    return "Video is publishable on Instagram and Facebook. LinkedIn video support is coming soon.";
+  }
+
+  if (selectedSchedulingPlatform.value === "facebook" && !connectedFacebookAccount.value) {
+    return "Connect a Facebook Page before queueing Facebook posts.";
+  }
+
+  if (selectedSchedulingPlatform.value === "instagram") {
+    if (!connectedInstagramAccount.value) {
+      return "Connect a Facebook Page with a linked Instagram business account before queueing Instagram posts.";
+    }
+
+    if (!selectedBacklogAsset.value) {
+      return "";
+    }
+
+    if (readyVideoCount > 1) {
+      return "Instagram video scheduling currently supports exactly 1 ready video on the draft.";
+    }
+
+    if (readyVideoCount === 0 && (readyImageCount < 1 || readyImageCount > 10)) {
+      return "Instagram scheduling requires either 1 ready video or between 1 and 10 ready images on the draft.";
+    }
+  }
+
+  if (selectedSchedulingPlatform.value === "facebook") {
+    if (readyVideoCount > 1) {
+      return "Facebook video scheduling currently supports exactly 1 ready video on the draft.";
+    }
+
+    if (readyVideoCount === 0 && readyImageCount > 10) {
+      return "Facebook scheduling supports up to 10 ready images on the draft.";
+    }
+  }
+
+  if (selectedSchedulingPlatform.value === "linkedin" && readyImageCount > 20) {
+    return "LinkedIn image scheduling supports up to 20 ready images on the draft.";
+  }
+
+  return "";
 });
 
 const postsByDayKey = computed(() => {
@@ -469,8 +550,7 @@ const selectedAudienceDateLabel = computed(() => {
 });
 
 const selectedScheduledPostNeedsReconnect = computed(() => {
-  const message = selectedScheduledPost.value?.errorMessage?.toLowerCase() || "";
-  return message.includes("reconnect linkedin") || message.includes("connection expired");
+  return selectedScheduledPost.value ? looksLikeSocialReconnectIssue(selectedScheduledPost.value) : false;
 });
 
 const selectedScheduledPostFriendlyError = computed(() =>
@@ -510,26 +590,6 @@ const selectedScheduledPostErrorContext = computed<{
     tone: "warning",
   };
 });
-
-function resolveIdentityTypeLabel(post: ScheduledPost): string {
-  if (post.selectedIdentityType === "organization") {
-    return "Page";
-  }
-
-  if (post.selectedIdentityType === "person") {
-    return "Personal";
-  }
-
-  return "LinkedIn";
-}
-
-function resolveSelectedIdentityLabel(post: ScheduledPost): string {
-  if (!post.selectedIdentityDisplayName) {
-    return "Workspace LinkedIn identity";
-  }
-
-  return `${post.selectedIdentityDisplayName} · ${resolveIdentityTypeLabel(post)}`;
-}
 
 function extractSchedulingWarnings(error: unknown): SchedulingSafetyWarning[] {
   if (!(error instanceof ApiRequestError) || error.code !== "scheduling_safety_warning") {
@@ -589,6 +649,56 @@ function extractScheduledQueueLimitMessage(error: unknown): string | null {
   return error.message || "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue.";
 }
 
+async function connectInstagram(): Promise<void> {
+  if (!resolvedBusinessId.value) {
+    errorMessage.value = "Pick a workspace before connecting Instagram.";
+    return;
+  }
+
+  isConnectingMeta.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestMetaSocialAuthStart({
+      businessId: resolvedBusinessId.value,
+      platform: "instagram",
+      returnPath: route.fullPath,
+    });
+
+    window.location.assign(response.authorizationUrl);
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to start Meta reconnection.";
+  } finally {
+    isConnectingMeta.value = false;
+  }
+}
+
+async function connectFacebook(): Promise<void> {
+  if (!resolvedBusinessId.value) {
+    errorMessage.value = "Pick a workspace before connecting Facebook.";
+    return;
+  }
+
+  isConnectingMeta.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestMetaSocialAuthStart({
+      businessId: resolvedBusinessId.value,
+      platform: "facebook",
+      returnPath: route.fullPath,
+    });
+
+    window.location.assign(response.authorizationUrl);
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to start Meta reconnection.";
+  } finally {
+    isConnectingMeta.value = false;
+  }
+}
+
 async function reconnectLinkedIn(): Promise<void> {
   if (!resolvedBusinessId.value) {
     errorMessage.value = "Pick a workspace before reconnecting LinkedIn.";
@@ -611,6 +721,43 @@ async function reconnectLinkedIn(): Promise<void> {
   } finally {
     isConnectingLinkedIn.value = false;
   }
+}
+
+async function reconnectSelectedPlatform(): Promise<void> {
+  if (
+    selectedScheduledPost.value?.platform === "instagram"
+    || selectedScheduledPost.value?.platform === "facebook"
+  ) {
+    if (selectedScheduledPost.value?.platform === "facebook") {
+      await connectFacebook();
+      return;
+    }
+
+    await connectInstagram();
+    return;
+  }
+
+  await reconnectLinkedIn();
+}
+
+function closeMetaSelectionModal(): void {
+  isMetaSelectionModalOpen.value = false;
+  pendingMetaSession.value = "";
+  isConnectingMeta.value = false;
+}
+
+async function handleMetaConnected(): Promise<void> {
+  closeMetaSelectionModal();
+  feedbackMessage.value =
+    selectedSchedulingPlatform.value === "facebook"
+      ? "Facebook connected. The planner is ready to queue Facebook posts."
+      : "Instagram connected. The planner is ready to queue Instagram posts.";
+  await loadSocialAccounts();
+}
+
+function handleMetaSelectionError(message: string): void {
+  errorMessage.value = message;
+  isConnectingMeta.value = false;
 }
 
 function getMediaCount(post: ScheduledPost): number {
@@ -711,6 +858,12 @@ function syncSelection(): void {
 
 async function consumeIncomingDraftSelection(): Promise<void> {
   const incomingDraftId = typeof route.query.draftId === "string" ? route.query.draftId.trim() : "";
+  const incomingPlatform =
+    route.query.platform === "instagram"
+      ? "instagram"
+      : route.query.platform === "facebook"
+        ? "facebook"
+        : "linkedin";
 
   if (!incomingDraftId) {
     return;
@@ -718,10 +871,12 @@ async function consumeIncomingDraftSelection(): Promise<void> {
 
   const nextQuery = { ...route.query };
   delete nextQuery.draftId;
+  delete nextQuery.platform;
 
   const matchingDraft = unscheduledBacklog.value.find((asset) => asset.id === incomingDraftId);
 
   if (matchingDraft) {
+    selectedSchedulingPlatform.value = incomingPlatform;
     selectBacklogAsset(matchingDraft.id, selectedGridDateKey.value || toDateKeyInTimezone(new Date(), userTimezone));
     feedbackMessage.value = "Draft loaded from the result page. Pick the slot and schedule it.";
     await router.replace({ query: nextQuery });
@@ -760,11 +915,40 @@ async function loadBusinesses(): Promise<void> {
   }
 }
 
+async function loadSocialAccounts(): Promise<void> {
+  if (!resolvedBusinessId.value) {
+    socialAccounts.value = [];
+    return;
+  }
+
+  try {
+    const response = await requestSocialAccounts(resolvedBusinessId.value);
+    socialAccounts.value = response.accounts;
+  } catch {
+    socialAccounts.value = [];
+  }
+}
+
+async function loadSelectedBacklogPostAssets(): Promise<void> {
+  if (!resolvedBusinessId.value || !selectedBacklogAssetId.value) {
+    selectedBacklogPostAssets.value = [];
+    return;
+  }
+
+  try {
+    const response = await requestPostAssets(resolvedBusinessId.value, selectedBacklogAssetId.value);
+    selectedBacklogPostAssets.value = response.assets.filter((asset) => asset.status === "ready");
+  } catch {
+    selectedBacklogPostAssets.value = [];
+  }
+}
+
 async function loadPlannerData(): Promise<void> {
   if (!auth.isReady.value || !auth.isAuthenticated.value || !resolvedBusinessId.value || !schedulerEnabled.value) {
     dashboard.value = null;
     scheduledPosts.value = [];
     recommendedSlots.value = [];
+    socialAccounts.value = [];
     return;
   }
 
@@ -775,6 +959,7 @@ async function loadPlannerData(): Promise<void> {
       "text",
       audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
     ).catch(() => null),
+    loadSocialAccounts(),
   ]);
 
   scheduledPosts.value = scheduledResponse.scheduledPosts;
@@ -884,6 +1069,7 @@ function selectBacklogAsset(assetId: string, dayKey?: string): void {
   }
 
   feedbackMessage.value = "";
+  void loadSelectedBacklogPostAssets();
 }
 
 function isDraftActionPending(assetId: string, kind?: "duplicate" | "delete"): boolean {
@@ -925,6 +1111,11 @@ async function scheduleSelectedAsset(): Promise<void> {
     return;
   }
 
+  if (selectedSchedulingGuardrail.value) {
+    errorMessage.value = selectedSchedulingGuardrail.value;
+    return;
+  }
+
   const contentText = selectedBacklogAsset.value.textContent?.trim() || "";
 
   if (!contentText) {
@@ -938,7 +1129,7 @@ async function scheduleSelectedAsset(): Promise<void> {
 
   const scheduleRequest = {
     businessId: resolvedBusinessId.value,
-    platform: "linkedin" as const,
+    platform: selectedSchedulingPlatform.value,
     contentText,
     assetGroupId: selectedBacklogAsset.value.id,
     slides: [],
@@ -970,7 +1161,7 @@ async function scheduleSelectedAsset(): Promise<void> {
     }
 
     if (!feedbackMessage.value) {
-      feedbackMessage.value = `Added to ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}.`;
+      feedbackMessage.value = `Added to ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value} for ${selectedSchedulingPlatformLabel.value}.`;
     }
     selectedBacklogAssetId.value = "";
     selectedScheduledPostId.value = response.scheduledPost.id;
@@ -1218,7 +1409,16 @@ watch(
   () => resolvedBusinessId.value,
   () => {
     audienceTimezone.value = workspaceDefaultAudienceTimezone.value;
+    void loadSocialAccounts();
   },
+);
+
+watch(
+  () => [resolvedBusinessId.value, selectedBacklogAssetId.value],
+  () => {
+    void loadSelectedBacklogPostAssets();
+  },
+  { immediate: true },
 );
 
 watch(
@@ -1263,6 +1463,62 @@ watch(
 
     void initializePage();
   },
+);
+
+watch(
+  () => [route.query.linkedin, route.query.meta, route.query.message, route.query.session, route.query.platform],
+  async ([linkedInStatus, metaStatus, message, session, platform]) => {
+    if (
+      typeof linkedInStatus !== "string"
+      && typeof metaStatus !== "string"
+      && typeof message !== "string"
+      && typeof session !== "string"
+      && typeof platform !== "string"
+    ) {
+      return;
+    }
+
+    if (platform === "instagram" || platform === "facebook" || platform === "linkedin") {
+      selectedSchedulingPlatform.value = platform;
+    }
+
+    if (linkedInStatus === "connected") {
+      feedbackMessage.value = "LinkedIn connected. The planner is ready.";
+      await loadSocialAccounts();
+    } else if (linkedInStatus === "error") {
+      errorMessage.value =
+        typeof message === "string" && message.trim() !== ""
+          ? message
+          : "LinkedIn connection failed.";
+    }
+
+    if (metaStatus === "connected") {
+      feedbackMessage.value =
+        selectedSchedulingPlatform.value === "facebook"
+          ? "Facebook connected. The planner is ready."
+          : "Instagram connected. The planner is ready.";
+      await loadSocialAccounts();
+    } else if (metaStatus === "error") {
+      errorMessage.value =
+        typeof message === "string" && message.trim() !== ""
+          ? message
+          : "Meta connection failed.";
+    } else if (metaStatus === "select_page" && typeof session === "string" && session.trim() !== "") {
+      pendingMetaSession.value = session.trim();
+      isMetaSelectionModalOpen.value = true;
+    }
+
+    const nextQuery = { ...route.query };
+    delete nextQuery.linkedin;
+    delete nextQuery.meta;
+    delete nextQuery.message;
+    delete nextQuery.session;
+    delete nextQuery.platform;
+    void router.replace({ query: nextQuery });
+    isConnectingLinkedIn.value = false;
+    isConnectingMeta.value = false;
+  },
+  { immediate: true },
 );
 
 onMounted(() => {
@@ -1465,7 +1721,7 @@ onMounted(() => {
               >
                 <div class="planner-post-pill-header">
                   <div class="planner-pill-stack">
-                    <span class="planner-platform-pill">LinkedIn</span>
+                    <span class="planner-platform-pill">{{ resolveSocialPlatformLabel(post.platform) }}</span>
                     <span v-if="getMediaCount(post) > 0" class="planner-status-pill subtle">
                       📎 {{ getMediaCount(post) }}
                     </span>
@@ -1633,14 +1889,14 @@ onMounted(() => {
                 </article>
                 <article class="planner-detail-meta-card">
                   <span>Identity</span>
-                  <strong>{{ resolveSelectedIdentityLabel(selectedScheduledPost) }}</strong>
+                  <strong>{{ resolveScheduledIdentityLabel(selectedScheduledPost) }}</strong>
                 </article>
               </div>
 
               <article class="planner-preview-card">
                 <div class="planner-preview-card-header">
                   <div>
-                    <p class="workspace-eyebrow">Preview on LinkedIn</p>
+                    <p class="workspace-eyebrow">Preview on {{ resolveSocialPlatformLabel(selectedScheduledPost.platform) }}</p>
                     <h3>What people see first</h3>
                   </div>
                   <p class="workspace-chip planner-preview-attention">
@@ -1651,13 +1907,13 @@ onMounted(() => {
                 <div class="planner-linkedin-preview">
                   <div class="planner-linkedin-preview-header">
                     <div class="planner-linkedin-avatar">
-                      {{ (selectedScheduledPost.selectedIdentityDisplayName || "LI").slice(0, 2).toUpperCase() }}
+                      {{ (selectedScheduledPost.selectedIdentityDisplayName || resolveSocialPlatformLabel(selectedScheduledPost.platform)).slice(0, 2).toUpperCase() }}
                     </div>
 
                     <div class="planner-linkedin-author">
-                      <strong>{{ selectedScheduledPost.selectedIdentityDisplayName || "Workspace LinkedIn identity" }}</strong>
+                      <strong>{{ selectedScheduledPost.selectedIdentityDisplayName || (selectedScheduledPost.platform === "instagram" ? "Workspace Instagram account" : selectedScheduledPost.platform === "facebook" ? "Workspace Facebook page" : "Workspace LinkedIn identity") }}</strong>
                       <span>
-                        {{ resolveIdentityTypeLabel(selectedScheduledPost) }} · {{ resolveScheduledPostStatusSummary(selectedScheduledPost) }}
+                        {{ resolveScheduledIdentityLabel(selectedScheduledPost) }} · {{ resolveScheduledPostStatusSummary(selectedScheduledPost) }}
                       </span>
                     </div>
                   </div>
@@ -1688,7 +1944,7 @@ onMounted(() => {
                 <div class="planner-preview-meta-row">
                   <p class="workspace-chip">{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</p>
                   <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
-                    {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
+                    {{ resolveScheduledIdentityLabel(selectedScheduledPost) }}
                   </p>
                   <p v-if="getMediaCount(selectedScheduledPost) > 0" class="workspace-chip">
                     📎 {{ getMediaCount(selectedScheduledPost) }} image{{ getMediaCount(selectedScheduledPost) === 1 ? "" : "s" }}
@@ -1796,10 +2052,14 @@ onMounted(() => {
                   v-if="selectedScheduledPostNeedsReconnect"
                   type="button"
                   class="workspace-secondary-button"
-                  :disabled="isConnectingLinkedIn"
-                  @click="reconnectLinkedIn"
+                  :disabled="isConnectingLinkedIn || isConnectingMeta"
+                  @click="reconnectSelectedPlatform"
                 >
-                  {{ isConnectingLinkedIn ? "Redirecting..." : "Reconnect LinkedIn" }}
+                  {{
+                    isConnectingLinkedIn || isConnectingMeta
+                      ? "Redirecting..."
+                      : `Reconnect ${resolveSocialPlatformLabel(selectedScheduledPost.platform)}`
+                  }}
                 </button>
                 <button
                   v-if="selectedScheduledPostCanReschedule"
@@ -1835,7 +2095,7 @@ onMounted(() => {
                   target="_blank"
                   rel="noreferrer"
                 >
-                  View on LinkedIn
+                  {{ resolveExternalPostLabel(selectedScheduledPost.platform) }}
                 </a>
               </div>
             </template>
@@ -1845,12 +2105,41 @@ onMounted(() => {
                 <div class="planner-preview-chip-row">
                   <p class="workspace-chip">{{ selectedBacklogAsset.pipelineStage === "review" ? "Ready" : "Draft" }}</p>
                   <p class="workspace-chip">{{ selectedDay?.longLabel || "Selected day" }}</p>
+                  <p class="workspace-chip">{{ selectedSchedulingPlatformLabel }}</p>
                 </div>
                 <strong>{{ selectedBacklogAsset.title || "Untitled draft" }}</strong>
                 <p>{{ buildExcerpt(selectedBacklogAsset.textContent || "", 280) }}</p>
               </article>
 
               <div class="planner-inline-section">
+                <label class="planner-inline-label">Destination</label>
+                <div class="planner-platform-selector">
+                  <button
+                    type="button"
+                    class="workspace-secondary-button compact"
+                    :data-active="selectedSchedulingPlatform === 'linkedin'"
+                    @click="selectedSchedulingPlatform = 'linkedin'"
+                  >
+                    LinkedIn
+                  </button>
+                  <button
+                    type="button"
+                    class="workspace-secondary-button compact"
+                    :data-active="selectedSchedulingPlatform === 'facebook'"
+                    @click="selectedSchedulingPlatform = 'facebook'"
+                  >
+                    Facebook
+                  </button>
+                  <button
+                    type="button"
+                    class="workspace-secondary-button compact"
+                    :data-active="selectedSchedulingPlatform === 'instagram'"
+                    @click="selectedSchedulingPlatform = 'instagram'"
+                  >
+                    Instagram
+                  </button>
+                </div>
+
                 <label class="planner-inline-label">Choose queue time</label>
                 <div class="planner-schedule-grid">
                   <label>
@@ -1877,6 +2166,9 @@ onMounted(() => {
 
                 <p class="workspace-description compact">
                   Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
+                </p>
+                <p v-if="selectedSchedulingGuardrail" class="planner-feedback danger">
+                  {{ selectedSchedulingGuardrail }}
                 </p>
                 <p
                   v-if="hasScheduledQueuePreview"
@@ -1919,7 +2211,7 @@ onMounted(() => {
                 <button
                   type="button"
                   class="workspace-primary-button"
-                  :disabled="isScheduling || !canQueueSelectedAsset"
+                  :disabled="isScheduling || !canQueueSelectedAsset || Boolean(selectedSchedulingGuardrail)"
                   @click="scheduleSelectedAsset"
                 >
                   {{
@@ -1927,13 +2219,23 @@ onMounted(() => {
                       ? "Queue full"
                       : isScheduling
                         ? "Scheduling..."
-                        : "Add to queue"
+                        : `Add to ${selectedSchedulingPlatformLabel}`
                   }}
                 </button>
               </div>
             </template>
           </article>
         </section>
+
+        <MetaPageSelectionModal
+          :open="isMetaSelectionModalOpen"
+          :business-id="resolvedBusinessId"
+          :session="pendingMetaSession"
+          :platform="selectedSchedulingPlatform === 'instagram' ? 'instagram' : 'facebook'"
+          @close="closeMetaSelectionModal"
+          @connected="void handleMetaConnected()"
+          @error="handleMetaSelectionError"
+        />
       </template>
     </template>
   </main>
@@ -2128,6 +2430,18 @@ onMounted(() => {
 .planner-sidebar-actions,
 .planner-card-action-row {
   flex-wrap: wrap;
+}
+
+.planner-platform-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.planner-platform-selector .workspace-secondary-button[data-active="true"] {
+  background: rgba(225, 104, 48, 0.12);
+  border-color: rgba(225, 104, 48, 0.38);
+  color: #b45321;
 }
 
 .planner-card-action-row {

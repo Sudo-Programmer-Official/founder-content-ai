@@ -2577,7 +2577,8 @@ export async function duplicateContentPipelineItem(
           mime_type,
           size_bytes,
           order_index,
-          status
+          status,
+          metadata_json
         )
         select
           $1,
@@ -2589,7 +2590,8 @@ export async function duplicateContentPipelineItem(
           mime_type,
           size_bytes,
           order_index,
-          status
+          status,
+          metadata_json
         from post_assets
         where post_id = $2
       `,

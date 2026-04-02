@@ -15,6 +15,7 @@
   },
   "include": [
     "./server.ts",
+    "./scripts/**/*.ts",
     "./src/**/*.ts",
     "../../packages/shared-types/**/*.ts",
     "../../packages/content-engine/**/*.ts",

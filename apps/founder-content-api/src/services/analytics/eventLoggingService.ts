@@ -7,6 +7,7 @@ import type {
   ContentAsset,
   UsageEvent,
 } from "../../../../../packages/shared-types/index.ts";
+import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import { isDatabaseConfigured, queryDb } from "../db/client.ts";
 import { logError } from "../../utils/logger.ts";
 import { toErrorContext } from "../../utils/http.ts";
@@ -299,13 +300,26 @@ function mapContentAsset(row: ContentAssetRow): ContentAsset {
   };
 }
 
+async function executeAnalyticsQuery<TRow extends QueryResultRow = QueryResultRow>(
+  text: string,
+  values: unknown[],
+  client?: PoolClient,
+): Promise<QueryResult<TRow>> {
+  if (client) {
+    return client.query<TRow>(text, values);
+  }
+
+  return queryDb<TRow>(text, values);
+}
+
 export async function createContentAssetRecord(
   options: ContentAssetOptions,
+  client?: PoolClient,
 ): Promise<ContentAsset> {
   const textContent = extractTextContent(options.contentBody) ?? options.title ?? "";
   const intelligence = options.intelligence ?? buildContentAssetIntelligenceFromText(textContent);
 
-  const result = await queryDb<ContentAssetRow>(
+  const result = await executeAnalyticsQuery<ContentAssetRow>(
     `
       insert into content_assets (
         business_id,
@@ -357,6 +371,7 @@ export async function createContentAssetRecord(
       options.sourceIdeaId ?? null,
       JSON.stringify(intelligence ?? {}),
     ],
+    client,
   );
 
   return mapContentAsset(result.rows[0]);

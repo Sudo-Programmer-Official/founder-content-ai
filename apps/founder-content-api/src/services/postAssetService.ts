@@ -6,11 +6,21 @@ import type {
   CreatePostAssetRequest,
   CreatePostAssetResponse,
   DeletePostAssetResponse,
+  DownloadPostAssetResponse,
+  GetPostAssetResponse,
+  ImagePostAssetMetadata,
+  MotionTemplateMetadata,
+  MotionTemplateAspectRatio,
+  MotionTemplateId,
   ListPostAssetsResponse,
+  PostAssetAspectRatio,
   PostAsset,
+  PostAssetMetadata,
+  PostAssetMetadataSource,
   PostAssetSource,
   PostAssetStatus,
   PostAssetType,
+  VideoPostAssetMetadata,
 } from "../../../../packages/shared-types/index.ts";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { requireBusinessMembership } from "./authBusinessService.ts";
@@ -44,6 +54,7 @@ interface PostAssetRow extends QueryResultRow {
   size_bytes: string | number;
   order_index: number;
   status: PostAssetStatus;
+  metadata_json: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -55,9 +66,14 @@ interface ContentPostRow extends QueryResultRow {
 }
 
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif"]);
+const ALLOWED_VIDEO_TYPES = new Set(["video/mp4"]);
 const DEFAULT_S3_UPLOAD_TTL_SECONDS = 900;
 const DEFAULT_S3_PREVIEW_TTL_SECONDS = 3600;
-const MAX_IMAGE_COUNT = 10;
+const MAX_POST_ASSET_COUNT = 10;
+const POST_ASSET_ASPECT_RATIOS = new Set<PostAssetAspectRatio>(["1:1", "9:16"]);
+const POST_ASSET_METADATA_SOURCES = new Set<PostAssetMetadataSource>(["upload", "motion_template"]);
+const MOTION_TEMPLATE_IDS = new Set<MotionTemplateId>(["subtle_zoom", "caption_pulse", "story_pan"]);
+const MOTION_TEMPLATE_ASPECT_RATIOS = new Set<MotionTemplateAspectRatio>(["square", "portrait"]);
 
 function resolveAwsRegion(): string {
   return process.env.AWS_REGION?.trim() || "us-east-1";
@@ -106,6 +122,11 @@ function resolveMaxImageBytes(): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 5242880;
 }
 
+function resolveMaxVideoBytes(): number {
+  const value = Number(process.env.S3_MAX_VIDEO_BYTES ?? 52428800);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 52428800;
+}
+
 function toIsoString(value: Date | string): string {
   return new Date(value).toISOString();
 }
@@ -113,6 +134,221 @@ function toIsoString(value: Date | string): string {
 function toNumber(value: string | number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function parseOptionalString(value: unknown, fieldName: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "string") {
+    throw new HttpError(400, "invalid_post_asset_metadata", `${fieldName} must be a string.`);
+  }
+
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function parseOptionalPositiveInteger(value: unknown, fieldName: string): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new HttpError(400, "invalid_post_asset_metadata", `${fieldName} must be a positive number.`);
+  }
+
+  return Math.floor(parsed);
+}
+
+function parseOptionalBoolean(value: unknown, fieldName: string): boolean | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new HttpError(400, "invalid_post_asset_metadata", `${fieldName} must be a boolean.`);
+  }
+
+  return value;
+}
+
+function parseOptionalAspectRatio(value: unknown, fieldName: string): PostAssetAspectRatio | undefined {
+  const normalized = parseOptionalString(value, fieldName);
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (!POST_ASSET_ASPECT_RATIOS.has(normalized as PostAssetAspectRatio)) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `${fieldName} must be one of ${Array.from(POST_ASSET_ASPECT_RATIOS).join(", ")}.`,
+    );
+  }
+
+  return normalized as PostAssetAspectRatio;
+}
+
+function parseOptionalMetadataSource(value: unknown, fieldName: string): PostAssetMetadataSource | undefined {
+  const normalized = parseOptionalString(value, fieldName);
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (!POST_ASSET_METADATA_SOURCES.has(normalized as PostAssetMetadataSource)) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `${fieldName} must be one of ${Array.from(POST_ASSET_METADATA_SOURCES).join(", ")}.`,
+    );
+  }
+
+  return normalized as PostAssetMetadataSource;
+}
+
+function parseMotionTemplateMetadata(value: unknown): MotionTemplateMetadata | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "invalid_post_asset_metadata", "motionTemplate must be an object.");
+  }
+
+  const record = normalizeRecord(value);
+  const allowedKeys = new Set([
+    "id",
+    "aspectRatio",
+    "durationMs",
+    "loop",
+    "sourceAssetIds",
+    "sourceSlideCount",
+  ]);
+
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      throw new HttpError(400, "invalid_post_asset_metadata", `Unsupported motionTemplate field "${key}".`);
+    }
+  }
+
+  const id = parseOptionalString(record.id, "motionTemplate.id");
+
+  if (!id || !MOTION_TEMPLATE_IDS.has(id as MotionTemplateId)) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `motionTemplate.id must be one of ${Array.from(MOTION_TEMPLATE_IDS).join(", ")}.`,
+    );
+  }
+
+  const aspectRatio = parseOptionalString(record.aspectRatio, "motionTemplate.aspectRatio");
+
+  if (aspectRatio && !MOTION_TEMPLATE_ASPECT_RATIOS.has(aspectRatio as MotionTemplateAspectRatio)) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `motionTemplate.aspectRatio must be one of ${Array.from(MOTION_TEMPLATE_ASPECT_RATIOS).join(", ")}.`,
+    );
+  }
+
+  const sourceAssetIdsValue = record.sourceAssetIds;
+  let sourceAssetIds: string[] | undefined;
+
+  if (sourceAssetIdsValue !== undefined) {
+    if (!Array.isArray(sourceAssetIdsValue)) {
+      throw new HttpError(400, "invalid_post_asset_metadata", "motionTemplate.sourceAssetIds must be an array.");
+    }
+
+    sourceAssetIds = sourceAssetIdsValue
+      .map((entry) => parseOptionalString(entry, "motionTemplate.sourceAssetIds[]"))
+      .filter((entry): entry is string => Boolean(entry));
+  }
+
+  return {
+    id: id as MotionTemplateId,
+    aspectRatio: aspectRatio as MotionTemplateAspectRatio | undefined,
+    durationMs: parseOptionalPositiveInteger(record.durationMs, "motionTemplate.durationMs"),
+    loop: parseOptionalBoolean(record.loop, "motionTemplate.loop"),
+    sourceAssetIds,
+    sourceSlideCount: parseOptionalPositiveInteger(record.sourceSlideCount, "motionTemplate.sourceSlideCount"),
+  };
+}
+
+function normalizePostAssetMetadata(type: "image", value: unknown): ImagePostAssetMetadata;
+function normalizePostAssetMetadata(type: "video", value: unknown): VideoPostAssetMetadata;
+function normalizePostAssetMetadata(type: PostAssetType, value: unknown): PostAssetMetadata {
+  const record = normalizeRecord(value);
+  const allowedKeys = new Set([
+    "aspectRatio",
+    "source",
+    "durationMs",
+    "width",
+    "height",
+    "motionTemplate",
+    "posterAssetId",
+  ]);
+
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      throw new HttpError(400, "invalid_post_asset_metadata", `Unsupported post asset metadata field "${key}".`);
+    }
+  }
+
+  const aspectRatio = parseOptionalAspectRatio(record.aspectRatio, "metadata.aspectRatio");
+
+  if (type === "image") {
+    if (
+      record.durationMs !== undefined
+      || record.width !== undefined
+      || record.height !== undefined
+      || record.motionTemplate !== undefined
+      || record.posterAssetId !== undefined
+    ) {
+      throw new HttpError(
+        400,
+        "invalid_post_asset_metadata",
+        "Image assets only support aspectRatio and source metadata.",
+      );
+    }
+
+    const source = parseOptionalMetadataSource(record.source, "metadata.source");
+
+    if (source && source !== "upload") {
+      throw new HttpError(
+        400,
+        "invalid_post_asset_metadata",
+        "Image asset metadata.source must be upload.",
+      );
+    }
+
+    return {
+      aspectRatio,
+      source: source === "upload" ? "upload" : undefined,
+    };
+  }
+
+  return {
+    aspectRatio,
+    source: parseOptionalMetadataSource(record.source, "metadata.source"),
+    durationMs: parseOptionalPositiveInteger(record.durationMs, "metadata.durationMs"),
+    width: parseOptionalPositiveInteger(record.width, "metadata.width"),
+    height: parseOptionalPositiveInteger(record.height, "metadata.height"),
+    motionTemplate: parseMotionTemplateMetadata(record.motionTemplate),
+    posterAssetId: parseOptionalString(record.posterAssetId, "metadata.posterAssetId"),
+  };
 }
 
 function toAmzDate(date: Date): string {
@@ -229,12 +465,31 @@ function normalizeMimeType(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function inferAssetType(mimeType: string): PostAssetType {
-  if (ALLOWED_IMAGE_TYPES.has(mimeType)) {
-    return "image";
+function inferAssetType(mimeType: string, requestedType?: PostAssetType): PostAssetType {
+  const inferredType =
+    ALLOWED_IMAGE_TYPES.has(mimeType)
+      ? "image"
+      : ALLOWED_VIDEO_TYPES.has(mimeType)
+        ? "video"
+        : null;
+
+  if (!inferredType) {
+    throw new HttpError(
+      400,
+      "unsupported_media_type",
+      "Only JPG, PNG, GIF, and MP4 media files are supported right now.",
+    );
   }
 
-  throw new HttpError(400, "unsupported_media_type", "Only JPG, PNG, and GIF images are supported right now.");
+  if (requestedType && requestedType !== inferredType) {
+    throw new HttpError(
+      400,
+      "unsupported_media_type",
+      `${requestedType === "video" ? "Video" : "Image"} uploads must use a matching media mime type.`,
+    );
+  }
+
+  return inferredType;
 }
 
 function resolveFileExtension(mimeType: string, fileName?: string): string {
@@ -251,21 +506,34 @@ function resolveFileExtension(mimeType: string, fileName?: string): string {
       return "png";
     case "image/gif":
       return "gif";
+    case "video/mp4":
+      return "mp4";
     default:
       return "bin";
   }
 }
 
-function validateImageInput(mimeType: string, sizeBytes?: number): void {
-  inferAssetType(mimeType);
+function buildPostAssetFileName(asset: Pick<PostAsset, "id" | "type" | "mimeType">): string {
+  return `${asset.type}-${asset.id}.${resolveFileExtension(asset.mimeType)}`;
+}
 
-  if (typeof sizeBytes === "number" && sizeBytes > resolveMaxImageBytes()) {
+function validatePostAssetInput(
+  mimeType: string,
+  sizeBytes?: number,
+  requestedType?: PostAssetType,
+): PostAssetType {
+  const assetType = inferAssetType(mimeType, requestedType);
+  const maxBytes = assetType === "video" ? resolveMaxVideoBytes() : resolveMaxImageBytes();
+
+  if (typeof sizeBytes === "number" && sizeBytes > maxBytes) {
     throw new HttpError(
       400,
       "media_too_large",
-      `Images must be ${Math.floor(resolveMaxImageBytes() / 1024 / 1024)} MB or smaller.`,
+      `${assetType === "video" ? "Videos" : "Images"} must be ${Math.floor(maxBytes / 1024 / 1024)} MB or smaller.`,
     );
   }
+
+  return assetType;
 }
 
 function buildStorageKey(input: {
@@ -309,11 +577,10 @@ function buildPreviewUrl(storageKey: string): string | undefined {
 }
 
 function mapPostAsset(row: PostAssetRow, includePreviewUrl = false): PostAsset {
-  return {
+  const baseAsset = {
     id: row.id,
     businessId: row.business_id,
     postId: row.post_id,
-    type: row.type,
     source: row.source,
     storageKey: row.storage_key,
     storageUrl: row.storage_url,
@@ -324,6 +591,20 @@ function mapPostAsset(row: PostAssetRow, includePreviewUrl = false): PostAsset {
     previewUrl: includePreviewUrl ? buildPreviewUrl(row.storage_key) : undefined,
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
+  };
+
+  if (row.type === "video") {
+    return {
+      ...baseAsset,
+      type: "video",
+      metadata: normalizePostAssetMetadata("video", row.metadata_json),
+    };
+  }
+
+  return {
+    ...baseAsset,
+    type: "image",
+    metadata: normalizePostAssetMetadata("image", row.metadata_json),
   };
 }
 
@@ -391,6 +672,7 @@ async function loadPostAssetRow(
         size_bytes,
         order_index,
         status,
+        metadata_json,
         created_at,
         updated_at
       from post_assets
@@ -411,6 +693,7 @@ export async function createMediaUploadUrl(
   const businessId = input.businessId.trim();
   const postId = input.postId.trim();
   const mimeType = normalizeMimeType(input.fileType);
+  validatePostAssetInput(mimeType, input.sizeBytes, input.assetType);
 
   await enforceWorkspaceWriteAccess({
     principal,
@@ -419,13 +702,12 @@ export async function createMediaUploadUrl(
   });
   await requireBusinessMembership(principal, businessId);
   await ensureContentPostOwnership(businessId, postId);
-  validateImageInput(mimeType, input.sizeBytes);
 
-  if ((await countPostAssets(postId)) >= MAX_IMAGE_COUNT) {
+  if ((await countPostAssets(postId)) >= MAX_POST_ASSET_COUNT) {
     throw new HttpError(
       400,
       "post_asset_limit_reached",
-      `A post can have up to ${MAX_IMAGE_COUNT} images right now.`,
+      `A post can have up to ${MAX_POST_ASSET_COUNT} media assets right now.`,
     );
   }
 
@@ -457,8 +739,12 @@ export async function createPostAsset(
   const businessId = input.businessId.trim();
   const postId = input.postId.trim();
   const mimeType = normalizeMimeType(input.mimeType);
-  const type = input.type ?? inferAssetType(mimeType);
+  const type = validatePostAssetInput(mimeType, input.sizeBytes, input.type);
   const source = input.source ?? "upload";
+  const metadata =
+    type === "video"
+      ? normalizePostAssetMetadata("video", input.metadata)
+      : normalizePostAssetMetadata("image", input.metadata);
 
   await enforceWorkspaceWriteAccess({
     principal,
@@ -467,13 +753,12 @@ export async function createPostAsset(
   });
   await requireBusinessMembership(principal, businessId);
   await ensureContentPostOwnership(businessId, postId);
-  validateImageInput(mimeType, input.sizeBytes);
 
-  if ((await countPostAssets(postId)) >= MAX_IMAGE_COUNT) {
+  if ((await countPostAssets(postId)) >= MAX_POST_ASSET_COUNT) {
     throw new HttpError(
       400,
       "post_asset_limit_reached",
-      `A post can have up to ${MAX_IMAGE_COUNT} images right now.`,
+      `A post can have up to ${MAX_POST_ASSET_COUNT} media assets right now.`,
     );
   }
 
@@ -489,7 +774,8 @@ export async function createPostAsset(
         mime_type,
         size_bytes,
         order_index,
-        status
+        status,
+        metadata_json
       ) values (
         $1,
         $2,
@@ -500,12 +786,16 @@ export async function createPostAsset(
         $7,
         $8,
         $9,
-        'ready'
+        'ready',
+        $10::jsonb
       )
       on conflict (post_id, storage_key)
       do update set
+        type = excluded.type,
+        source = excluded.source,
         mime_type = excluded.mime_type,
         size_bytes = excluded.size_bytes,
+        metadata_json = excluded.metadata_json,
         updated_at = now()
       returning
         id,
@@ -519,6 +809,7 @@ export async function createPostAsset(
         size_bytes,
         order_index,
         status,
+        metadata_json,
         created_at,
         updated_at
     `,
@@ -532,6 +823,7 @@ export async function createPostAsset(
       mimeType,
       input.sizeBytes,
       typeof input.orderIndex === "number" ? input.orderIndex : await resolveNextOrderIndex(postId),
+      JSON.stringify(metadata),
     ],
   );
 
@@ -550,6 +842,7 @@ export async function createPostAsset(
     postId,
     businessId,
     mimeType,
+    assetType: asset.type,
   });
 
   return { asset };
@@ -578,6 +871,7 @@ export async function listPostAssets(
         size_bytes,
         order_index,
         status,
+        metadata_json,
         created_at,
         updated_at
       from post_assets
@@ -590,6 +884,48 @@ export async function listPostAssets(
 
   return {
     assets: result.rows.map((row) => mapPostAsset(row, true)),
+  };
+}
+
+export async function getPostAsset(
+  principal: AuthenticatedPrincipal,
+  businessId: string,
+  assetId: string,
+): Promise<GetPostAssetResponse> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  await requireBusinessMembership(principal, businessId);
+
+  const asset = await loadPostAssetRow(assetId, businessId);
+
+  if (!asset) {
+    throw new HttpError(404, "post_asset_not_found", "Post asset not found.");
+  }
+
+  return {
+    asset: mapPostAsset(asset, true),
+  };
+}
+
+export async function getPostAssetDownload(
+  principal: AuthenticatedPrincipal,
+  businessId: string,
+  assetId: string,
+): Promise<DownloadPostAssetResponse> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  await requireBusinessMembership(principal, businessId);
+
+  const asset = await loadPostAssetRow(assetId, businessId);
+
+  if (!asset) {
+    throw new HttpError(404, "post_asset_not_found", "Post asset not found.");
+  }
+
+  const mappedAsset = mapPostAsset(asset, true);
+
+  return {
+    asset: mappedAsset,
+    downloadUrl: createPostAssetDownloadUrl(mappedAsset, 3600),
+    fileName: buildPostAssetFileName(mappedAsset),
   };
 }
 
@@ -658,6 +994,7 @@ export async function loadPostAssetsByPostIds(
         size_bytes,
         order_index,
         status,
+        metadata_json,
         created_at,
         updated_at
       from post_assets
@@ -678,7 +1015,7 @@ export async function loadPostAssetsByPostIds(
   return grouped;
 }
 
-export async function loadReadyPostImageAssets(
+export async function loadReadyPostAssets(
   businessId: string,
   postId: string,
 ): Promise<PostAsset[]> {
@@ -696,19 +1033,27 @@ export async function loadReadyPostImageAssets(
         size_bytes,
         order_index,
         status,
+        metadata_json,
         created_at,
         updated_at
       from post_assets
       where business_id = $1
         and post_id = $2
         and status = 'ready'
-        and type = 'image'
       order by order_index asc, created_at asc
     `,
     [businessId, postId],
   );
 
   return result.rows.map((row) => mapPostAsset(row, false));
+}
+
+export async function loadReadyPostImageAssets(
+  businessId: string,
+  postId: string,
+): Promise<PostAsset[]> {
+  const assets = await loadReadyPostAssets(businessId, postId);
+  return assets.filter((asset) => asset.type === "image");
 }
 
 export async function downloadPostAssetBytes(asset: Pick<PostAsset, "storageKey" | "mimeType">): Promise<Buffer> {
@@ -739,4 +1084,15 @@ export async function downloadPostAssetBytes(asset: Pick<PostAsset, "storageKey"
 
   const arrayBuffer = await response.arrayBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+export function createPostAssetDownloadUrl(
+  asset: Pick<PostAsset, "storageKey">,
+  expiresInSeconds = 3600,
+): string {
+  return createS3PresignedUrl({
+    method: "GET",
+    key: asset.storageKey,
+    expiresInSeconds,
+  });
 }

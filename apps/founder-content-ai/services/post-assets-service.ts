@@ -4,6 +4,8 @@ import type {
   CreatePostAssetRequest,
   CreatePostAssetResponse,
   DeletePostAssetResponse,
+  DownloadPostAssetResponse,
+  GetPostAssetResponse,
   ListPostAssetsResponse,
 } from "../../../packages/shared-types";
 import { apiDelete, apiGet, apiPost } from "./api-client";
@@ -41,6 +43,24 @@ export async function requestPostAssets(
 
   return apiGet<ListPostAssetsResponse>(
     `/post-assets?businessId=${encodedBusinessId}&postId=${encodedPostId}`,
+  );
+}
+
+export async function requestPostAsset(
+  businessId: string,
+  assetId: string,
+): Promise<GetPostAssetResponse> {
+  return apiGet<GetPostAssetResponse>(
+    `/post-assets/${encodeURIComponent(assetId)}?businessId=${encodeURIComponent(businessId)}`,
+  );
+}
+
+export async function requestPostAssetDownload(
+  businessId: string,
+  assetId: string,
+): Promise<DownloadPostAssetResponse> {
+  return apiGet<DownloadPostAssetResponse>(
+    `/post-assets/${encodeURIComponent(assetId)}/download?businessId=${encodeURIComponent(businessId)}`,
   );
 }
 

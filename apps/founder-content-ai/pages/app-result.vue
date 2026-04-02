@@ -18,6 +18,7 @@ import type {
   SocialAccount,
   WorkspaceAsset,
 } from "../../../packages/shared-types";
+import MetaPageSelectionModal from "../components/MetaPageSelectionModal.vue";
 import WorkspaceAssetPickerModal from "../components/WorkspaceAssetPickerModal.vue";
 import { useAuthContext } from "../auth/auth-context";
 import { useProductAccessContext } from "../access/product-access-context";
@@ -39,6 +40,7 @@ import { requestMediaRecommendations } from "../services/media-intelligence-serv
 import {
   requestGeneratedHashtags,
   requestLinkedInSocialAuthStart,
+  requestMetaSocialAuthStart,
   requestPublishPost,
   requestRecommendedPostTimes,
   requestSchedulePost,
@@ -64,6 +66,16 @@ import {
   DEFAULT_REPURPOSE_STRATEGY,
   REPURPOSE_STRATEGY_OPTIONS,
 } from "../utils/repurpose-strategies";
+import {
+  findConnectedFacebookAccount,
+  findConnectedInstagramAccount,
+  findConnectedLinkedInAccount,
+  resolveExternalPostLabel,
+  resolvePublishingAccountLabel,
+  resolvePublishingDescriptor,
+  resolveSocialPlatformLabel,
+  type PublishableSocialPlatform,
+} from "../utils/social-platforms";
 
 const route = useRoute();
 const router = useRouter();
@@ -78,7 +90,17 @@ const feedbackMessage = ref("");
 const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingChannels = ref(false);
 const isConnectingLinkedIn = ref(false);
+const isConnectingMeta = ref(false);
 const isPublishingToLinkedIn = ref(false);
+const selectedPublishingPlatform = ref<PublishableSocialPlatform>(
+  route.query.platform === "instagram"
+    ? "instagram"
+    : route.query.platform === "facebook"
+      ? "facebook"
+      : "linkedin",
+);
+const isMetaSelectionModalOpen = ref(false);
+const pendingMetaSession = ref("");
 const isLoadingPostAssets = ref(false);
 const isUploadingPostAssets = ref(false);
 const removingPostAssetId = ref("");
@@ -641,63 +663,102 @@ const audienceTimezoneOptions = computed(() => {
           : value,
   }));
 });
-const connectedLinkedInAccount = computed(() =>
-  socialAccounts.value.find(
-    (account) => account.platform === "linkedin" && account.status === "connected",
-  ),
+const connectedLinkedInAccount = computed(() => findConnectedLinkedInAccount(socialAccounts.value));
+const connectedFacebookAccount = computed(() => findConnectedFacebookAccount(socialAccounts.value));
+const connectedInstagramAccount = computed(() => findConnectedInstagramAccount(socialAccounts.value));
+const selectedPublishingPlatformLabel = computed(() => resolveSocialPlatformLabel(selectedPublishingPlatform.value));
+const selectedConnectedAccount = computed(() =>
+  selectedPublishingPlatform.value === "instagram"
+    ? connectedInstagramAccount.value
+    : selectedPublishingPlatform.value === "facebook"
+      ? connectedFacebookAccount.value
+      : connectedLinkedInAccount.value,
 );
-const connectedLinkedInLabel = computed(() => {
-  const account = connectedLinkedInAccount.value;
-
-  if (!account) {
-    return "";
+const selectedConnectedAccountLabel = computed(() =>
+  resolvePublishingAccountLabel(selectedPublishingPlatform.value, selectedConnectedAccount.value),
+);
+const selectedConnectedAccountDescriptor = computed(() =>
+  resolvePublishingDescriptor(selectedPublishingPlatform.value, selectedConnectedAccount.value),
+);
+const readyImageCount = computed(() =>
+  postAssets.value.filter((asset) => asset.type === "image" && asset.status === "ready").length,
+);
+const readyVideoCount = computed(() =>
+  postAssets.value.filter((asset) => asset.type === "video" && asset.status === "ready").length,
+);
+const selectedPublishingGuardrail = computed(() => {
+  if (readyImageCount.value > 0 && readyVideoCount.value > 0) {
+    return "Mixed image and video drafts are not publishable yet. Use only one media type per post.";
   }
 
-  if (account.selectedIdentity?.displayName) {
-    return account.selectedIdentity.displayName;
+  if (selectedPublishingPlatform.value === "linkedin" && readyVideoCount.value > 0) {
+    return "Video is publishable on Instagram and Facebook. LinkedIn video support is coming soon.";
   }
 
-  const linkedInName =
-    typeof account.metadata?.linkedInName === "string" ? account.metadata.linkedInName.trim() : "";
+  if (selectedPublishingPlatform.value === "instagram") {
+    if (!connectedInstagramAccount.value) {
+      return "Connect a Facebook Page with a linked Instagram business account before publishing.";
+    }
 
-  return linkedInName || account.accountEmail || account.platformUserId;
+    if (readyVideoCount.value > 1) {
+      return "Instagram video publishing currently supports exactly 1 ready video.";
+    }
+
+    if (readyVideoCount.value === 0 && (readyImageCount.value < 1 || readyImageCount.value > 10)) {
+      return "Instagram publishing requires either 1 ready video or between 1 and 10 ready images.";
+    }
+  }
+
+  if (selectedPublishingPlatform.value === "facebook" && !connectedFacebookAccount.value) {
+    return "Connect a Facebook Page before publishing.";
+  }
+
+  if (selectedPublishingPlatform.value === "facebook") {
+    if (readyVideoCount.value > 1) {
+      return "Facebook video publishing currently supports exactly 1 ready video.";
+    }
+
+    if (readyVideoCount.value === 0 && readyImageCount.value > 10) {
+      return "Facebook publishing supports up to 10 ready images.";
+    }
+  }
+
+  return "";
 });
-const connectedLinkedInDescriptor = computed(() => {
-  const account = connectedLinkedInAccount.value;
-
-  if (!account) {
-    return "LinkedIn not connected";
-  }
-
-  const typeLabel =
-    account.selectedIdentity?.type === "organization" ? "Company page" : "Personal profile";
-
-  return connectedLinkedInLabel.value
-    ? `${connectedLinkedInLabel.value} · ${typeLabel}`
-    : typeLabel;
-});
-const linkedInPublishingStatus = computed(() => {
+const selectedPublishingStatus = computed(() => {
   if (!activeBusinessId.value) {
     return "Select a workspace to publish.";
   }
 
-  if (connectedLinkedInAccount.value) {
-    return connectedLinkedInLabel.value
-      ? `Posting as ${connectedLinkedInLabel.value}`
-      : "Posting optimized for LinkedIn";
+  if (selectedPublishingGuardrail.value) {
+    return selectedPublishingGuardrail.value;
   }
 
-  return "Connect LinkedIn to publish directly.";
-});
+  if (selectedConnectedAccount.value) {
+    return selectedConnectedAccountLabel.value
+      ? `Posting as ${selectedConnectedAccountLabel.value}`
+      : `Posting optimized for ${selectedPublishingPlatformLabel.value}`;
+  }
 
-function getPublishFailureMessage(error: unknown): string {
+  return selectedPublishingPlatform.value === "instagram"
+    ? "Connect a Facebook Page with a linked Instagram business account to publish directly."
+    : selectedPublishingPlatform.value === "facebook"
+      ? "Connect a Facebook Page to publish directly."
+      : "Connect LinkedIn to publish directly.";
+});
+const isConnectingSelectedPlatform = computed(() =>
+  selectedPublishingPlatform.value === "linkedin" ? isConnectingLinkedIn.value : isConnectingMeta.value,
+);
+
+function getPublishFailureMessage(error: unknown, platform: PublishableSocialPlatform): string {
+  const platformLabel = resolveSocialPlatformLabel(platform);
   const rawMessage =
     error instanceof Error && error.message.trim() !== ""
       ? error.message.trim()
-      : "Unable to publish to LinkedIn right now.";
+      : `Unable to publish to ${platformLabel} right now.`;
 
   if (rawMessage.includes("status 404")) {
-    return "Direct LinkedIn publishing is not live on the backend yet. Redeploy the API and try again.";
+    return `Direct ${platformLabel} publishing is not live on the backend yet. Redeploy the API and try again.`;
   }
 
   return rawMessage;
@@ -739,9 +800,13 @@ const structureSignal = computed(() => {
   return "Dense";
 });
 
-const actionPriorityLabel = computed(() =>
-  canScheduleDraft.value ? "Schedule next" : connectedLinkedInAccount.value ? "Publish now" : "Connect channel",
-);
+const actionPriorityLabel = computed(() => {
+  if (selectedPublishingGuardrail.value) {
+    return selectedPublishingPlatform.value === "instagram" ? "Fix Instagram setup" : "Fix channel setup";
+  }
+
+  return canScheduleDraft.value ? "Schedule next" : selectedConnectedAccount.value ? "Publish now" : "Connect channel";
+});
 const recommendedContentType = computed(() => (postAssets.value.length > 0 ? "image" : "text"));
 const visibleMediaRecommendations = computed(() =>
   mediaRecommendations.value.filter((suggestion) => suggestion.actionType !== "skip"),
@@ -951,6 +1016,8 @@ const feedbackTone = computed(() => {
     message.includes("failed") ||
     message.includes("select a workspace") ||
     message.includes("connect linkedin") ||
+    message.includes("connect a facebook page") ||
+    message.includes("instagram") ||
     message.includes("not live") ||
     message.includes("error")
   ) {
@@ -965,18 +1032,18 @@ const executionStatus = computed(() => {
     return {
       tone: "live",
       label: "Publishing",
-      title: "Sending this post to LinkedIn now",
-      description: linkedInPublishingStatus.value,
-      detail: "If LinkedIn rejects the call, the draft stays in the workspace so you can retry cleanly.",
+      title: `Sending this post to ${selectedPublishingPlatformLabel.value} now`,
+      description: selectedPublishingStatus.value,
+      detail: `If ${selectedPublishingPlatformLabel.value} rejects the call, the draft stays in the workspace so you can retry cleanly.`,
     } as const;
   }
 
-  if (feedbackMessage.value.startsWith("Posted to LinkedIn")) {
+  if (feedbackMessage.value.startsWith("Posted to ")) {
     return {
       tone: "live",
       label: "Published",
       title: "This post is already live",
-      description: "The draft has cleared direct publishing and LinkedIn returned a live post URL.",
+      description: `The draft has cleared direct publishing and ${selectedPublishingPlatformLabel.value} returned a live post URL.`,
       detail: "Use planner for the next slot, or repurpose this post into email and outreach.",
     } as const;
   }
@@ -1006,12 +1073,12 @@ const executionStatus = computed(() => {
     } as const;
   }
 
-  if (connectedLinkedInAccount.value) {
+  if (selectedConnectedAccount.value) {
     return {
       tone: "ready",
       label: "Ready to publish",
       title: "This draft can go live immediately",
-      description: linkedInPublishingStatus.value,
+      description: selectedPublishingStatus.value,
       detail: "Publish now for instant delivery, or route it through planner when timing matters.",
     } as const;
   }
@@ -1019,8 +1086,8 @@ const executionStatus = computed(() => {
   return {
     tone: "warning",
     label: "Connection needed",
-    title: "Connect LinkedIn before direct publishing",
-    description: linkedInPublishingStatus.value,
+    title: `Connect ${selectedPublishingPlatformLabel.value} before direct publishing`,
+    description: selectedPublishingStatus.value,
     detail: "You can still refine the copy, attach media, and queue the next slot while the channel is being connected.",
   } as const;
 });
@@ -1032,7 +1099,7 @@ const executionPanelFacts = computed(() => [
   },
   {
     label: "Publish as",
-    value: connectedLinkedInDescriptor.value,
+    value: selectedConnectedAccountDescriptor.value,
   },
   {
     label: "Best time",
@@ -1058,9 +1125,9 @@ const executionPanelFacts = computed(() => [
 ]);
 
 const executionTimeline = computed(() => {
-  if (feedbackMessage.value.startsWith("Posted to LinkedIn")) {
+  if (feedbackMessage.value.startsWith("Posted to ")) {
     return [
-      "The post is already live on LinkedIn.",
+      `The post is already live on ${selectedPublishingPlatformLabel.value}.`,
       "History will track the publish result and let you repurpose it later.",
       "Use planner to lock the next execution slot while momentum is fresh.",
     ];
@@ -1076,16 +1143,16 @@ const executionTimeline = computed(() => {
     ];
   }
 
-  if (connectedLinkedInAccount.value) {
+  if (selectedConnectedAccount.value) {
     return [
-      "Publish now sends the draft to LinkedIn immediately.",
+      `Publish now sends the draft to ${selectedPublishingPlatformLabel.value} immediately.`,
       "Choose time hands execution to the scheduler and worker loop.",
       "Open planner if you want the draft inside the weekly queue instead of publishing blind.",
     ];
   }
 
   return [
-    "Connect LinkedIn once to unlock direct publishing.",
+    `Connect ${selectedPublishingPlatformLabel.value} once to unlock direct publishing.`,
     "Choose time to route this draft into the safer planner flow.",
     "Keep refining the copy until the timing and hook feel strong enough to push live.",
   ];
@@ -1724,7 +1791,7 @@ async function handleMediaSelection(event: Event): Promise<void> {
     }
 
     await loadPostAssets();
-    mediaFeedback.value = `${files.length} image${files.length === 1 ? "" : "s"} attached to this draft.`;
+    mediaFeedback.value = `${files.length} media asset${files.length === 1 ? "" : "s"} attached to this draft.`;
   } catch (error) {
     mediaFeedback.value =
       error instanceof Error ? error.message : "Unable to attach media right now.";
@@ -1745,6 +1812,7 @@ async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
 
   try {
     const persistedId = await ensurePersistedDraft();
+    let attachedCount = 0;
 
     if (!persistedId) {
       mediaFeedback.value = "Save this draft first, then attach workspace assets.";
@@ -1752,7 +1820,7 @@ async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
     }
 
     for (const asset of assets) {
-      if (!asset.storageKey) {
+      if (!asset.storageKey || (!asset.mimeType.startsWith("image/") && asset.mimeType !== "video/mp4")) {
         continue;
       }
 
@@ -1765,10 +1833,16 @@ async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
         sizeBytes: asset.sizeBytes,
         source: asset.sourceType === "generated" ? "generated" : "upload",
       });
+      attachedCount += 1;
+    }
+
+    if (attachedCount === 0) {
+      mediaFeedback.value = "Only image and MP4 workspace assets can be attached to post drafts right now.";
+      return;
     }
 
     await loadPostAssets();
-    mediaFeedback.value = `${assets.length} workspace asset${assets.length === 1 ? "" : "s"} attached to this draft.`;
+    mediaFeedback.value = `${attachedCount} workspace asset${attachedCount === 1 ? "" : "s"} attached to this draft.`;
     isWorkspaceAssetPickerOpen.value = false;
   } catch (error) {
     mediaFeedback.value =
@@ -2015,6 +2089,11 @@ async function openSchedulePanel(): Promise<void> {
     return;
   }
 
+  if (selectedPublishingGuardrail.value) {
+    feedbackMessage.value = selectedPublishingGuardrail.value;
+    return;
+  }
+
   try {
     const persistedId = await ensurePersistedDraft();
 
@@ -2073,13 +2152,18 @@ async function scheduleDraft(): Promise<void> {
     return;
   }
 
+  if (selectedPublishingGuardrail.value) {
+    scheduleFeedback.value = selectedPublishingGuardrail.value;
+    return;
+  }
+
   isSchedulingDraft.value = true;
   scheduleFeedback.value = "";
   feedbackMessage.value = "";
 
   const scheduleRequest = {
     businessId: activeBusinessId.value,
-    platform: "linkedin" as const,
+    platform: selectedPublishingPlatform.value,
     contentText: postContent.value,
     assetGroupId: draft.value.id,
     slides: [],
@@ -2184,6 +2268,7 @@ async function goToPlanner(): Promise<void> {
       path: appRoutes.appPlanner,
       query: {
         draftId: ensuredPostId,
+        platform: selectedPublishingPlatform.value,
       },
     });
   } catch (error) {
@@ -2354,6 +2439,86 @@ async function connectLinkedIn(): Promise<void> {
   }
 }
 
+async function connectInstagram(): Promise<void> {
+  if (!activeBusinessId.value) {
+    feedbackMessage.value = "Select a workspace before connecting Instagram.";
+    return;
+  }
+
+  isConnectingMeta.value = true;
+  feedbackMessage.value = "";
+
+  try {
+    const response = await requestMetaSocialAuthStart({
+      businessId: activeBusinessId.value,
+      platform: "instagram",
+      returnPath: route.fullPath,
+    });
+    window.location.assign(response.authorizationUrl);
+  } catch (error) {
+    isConnectingMeta.value = false;
+    feedbackMessage.value =
+      error instanceof Error ? error.message : "Unable to start Meta connection.";
+  }
+}
+
+async function connectFacebook(): Promise<void> {
+  if (!activeBusinessId.value) {
+    feedbackMessage.value = "Select a workspace before connecting Facebook.";
+    return;
+  }
+
+  isConnectingMeta.value = true;
+  feedbackMessage.value = "";
+
+  try {
+    const response = await requestMetaSocialAuthStart({
+      businessId: activeBusinessId.value,
+      platform: "facebook",
+      returnPath: route.fullPath,
+    });
+    window.location.assign(response.authorizationUrl);
+  } catch (error) {
+    isConnectingMeta.value = false;
+    feedbackMessage.value =
+      error instanceof Error ? error.message : "Unable to start Meta connection.";
+  }
+}
+
+async function connectSelectedPlatform(): Promise<void> {
+  if (selectedPublishingPlatform.value === "instagram") {
+    await connectInstagram();
+    return;
+  }
+
+  if (selectedPublishingPlatform.value === "facebook") {
+    await connectFacebook();
+    return;
+  }
+
+  await connectLinkedIn();
+}
+
+function closeMetaSelectionModal(): void {
+  isMetaSelectionModalOpen.value = false;
+  pendingMetaSession.value = "";
+  isConnectingMeta.value = false;
+}
+
+async function handleMetaConnected(): Promise<void> {
+  closeMetaSelectionModal();
+  feedbackMessage.value =
+    selectedPublishingPlatform.value === "facebook"
+      ? "Facebook connected. Your post is ready to publish."
+      : "Instagram connected. Your post is ready for image publishing.";
+  await loadWorkspaceChannels();
+}
+
+function handleMetaSelectionError(message: string): void {
+  feedbackMessage.value = message;
+  isConnectingMeta.value = false;
+}
+
 async function publishToLinkedIn(): Promise<void> {
   if (!draft.value) {
     return;
@@ -2364,8 +2529,13 @@ async function publishToLinkedIn(): Promise<void> {
     return;
   }
 
-  if (!connectedLinkedInAccount.value) {
-    await connectLinkedIn();
+  if (selectedPublishingGuardrail.value) {
+    feedbackMessage.value = selectedPublishingGuardrail.value;
+    return;
+  }
+
+  if (!selectedConnectedAccount.value) {
+    await connectSelectedPlatform();
     return;
   }
 
@@ -2373,18 +2543,25 @@ async function publishToLinkedIn(): Promise<void> {
   feedbackMessage.value = "";
 
   try {
+    const ensuredPostId = await ensurePersistedDraft();
+
+    if (!ensuredPostId) {
+      feedbackMessage.value = "Unable to save this draft before publishing it.";
+      return;
+    }
+
     const response = await requestPublishPost({
       businessId: activeBusinessId.value,
-      platform: "linkedin",
+      platform: selectedPublishingPlatform.value,
       contentText: postContent.value,
-      assetId: draft.value.result.asset?.id,
+      assetId: ensuredPostId,
       title: draft.value.result.idea.title,
     });
 
-    feedbackMessage.value = `Posted to LinkedIn. ${response.externalPostUrl}`;
+    feedbackMessage.value = `Posted to ${resolveSocialPlatformLabel(selectedPublishingPlatform.value)}. ${response.externalPostUrl}`;
   } catch (error) {
     const copied = await copyPost({ silent: true });
-    const baseMessage = getPublishFailureMessage(error);
+    const baseMessage = getPublishFailureMessage(error, selectedPublishingPlatform.value);
 
     feedbackMessage.value = copied
       ? `${baseMessage} Optimized caption copied instead.`
@@ -2457,25 +2634,57 @@ watch(
 );
 
 watch(
-  () => [route.query.linkedin, route.query.message],
-  async ([status, message]) => {
-    if (typeof status !== "string" && typeof message !== "string") {
+  () => [route.query.linkedin, route.query.meta, route.query.message, route.query.session, route.query.platform],
+  async ([linkedInStatus, metaStatus, message, session, platform]) => {
+    if (
+      typeof linkedInStatus !== "string"
+      && typeof metaStatus !== "string"
+      && typeof message !== "string"
+      && typeof session !== "string"
+      && typeof platform !== "string"
+    ) {
       return;
     }
 
-    if (status === "connected") {
+    if (platform === "instagram" || platform === "facebook" || platform === "linkedin") {
+      selectedPublishingPlatform.value = platform;
+    }
+
+    if (linkedInStatus === "connected") {
       feedbackMessage.value = "LinkedIn connected. Your post is ready to publish.";
       await loadWorkspaceChannels();
-    } else if (status === "error") {
+    } else if (linkedInStatus === "error") {
       feedbackMessage.value =
         typeof message === "string" && message.trim() !== ""
           ? message
           : "LinkedIn connection failed.";
     }
 
+    if (metaStatus === "connected") {
+      feedbackMessage.value =
+        selectedPublishingPlatform.value === "facebook"
+          ? "Facebook connected. Your post is ready to publish."
+          : "Instagram connected. Your post is ready for image publishing.";
+      await loadWorkspaceChannels();
+      isConnectingMeta.value = false;
+    } else if (metaStatus === "error") {
+      feedbackMessage.value =
+        typeof message === "string" && message.trim() !== ""
+          ? message
+          : "Meta connection failed.";
+      isConnectingMeta.value = false;
+    } else if (metaStatus === "select_page" && typeof session === "string" && session.trim() !== "") {
+      pendingMetaSession.value = session.trim();
+      isMetaSelectionModalOpen.value = true;
+      isConnectingMeta.value = false;
+    }
+
     const nextQuery = { ...route.query };
     delete nextQuery.linkedin;
+    delete nextQuery.meta;
     delete nextQuery.message;
+    delete nextQuery.session;
+    delete nextQuery.platform;
     void router.replace({ query: nextQuery });
     isConnectingLinkedIn.value = false;
   },
@@ -2553,20 +2762,61 @@ onBeforeUnmount(() => {
                 {{
                   canScheduleDraft
                     ? "Lock a slot in planner before the draft loses momentum."
-                    : connectedLinkedInAccount
-                      ? "This draft can publish directly from the workspace."
-                      : "Connect LinkedIn first, or keep refining before publishing."
+                    : selectedConnectedAccount
+                      ? `This draft can publish directly to ${selectedPublishingPlatformLabel} from the workspace.`
+                      : `Connect ${selectedPublishingPlatformLabel} first, or keep refining before publishing.`
                 }}
               </span>
             </article>
           </section>
 
+          <section class="channel-selector-card">
+            <div>
+              <p class="panel-meta">Destination</p>
+              <strong>Choose where this post should go live</strong>
+              <p class="shortcut-note">
+                LinkedIn, Facebook, and Instagram share the same worker path. Instagram requires 1-10 images. Facebook supports text and image sets.
+              </p>
+            </div>
+
+            <div class="channel-selector-row">
+              <button
+                type="button"
+                class="channel-selector-button"
+                :data-active="selectedPublishingPlatform === 'linkedin'"
+                @click="selectedPublishingPlatform = 'linkedin'"
+              >
+                LinkedIn
+              </button>
+              <button
+                type="button"
+                class="channel-selector-button"
+                :data-active="selectedPublishingPlatform === 'facebook'"
+                @click="selectedPublishingPlatform = 'facebook'"
+              >
+                Facebook
+              </button>
+              <button
+                type="button"
+                class="channel-selector-button"
+                :data-active="selectedPublishingPlatform === 'instagram'"
+                @click="selectedPublishingPlatform = 'instagram'"
+              >
+                Instagram
+              </button>
+            </div>
+
+            <p v-if="selectedPublishingGuardrail" class="result-feedback subtle">
+              {{ selectedPublishingGuardrail }}
+            </p>
+          </section>
+
           <section class="linkedin-feed-preview">
             <div class="linkedin-feed-header">
-              <div class="linkedin-feed-avatar">{{ connectedLinkedInLabel ? connectedLinkedInLabel.charAt(0).toUpperCase() : "Y" }}</div>
+              <div class="linkedin-feed-avatar">{{ (selectedConnectedAccountLabel || selectedPublishingPlatformLabel).charAt(0).toUpperCase() }}</div>
               <div class="linkedin-feed-identity">
-                <strong>{{ connectedLinkedInLabel || "Your LinkedIn profile" }}</strong>
-                <p>{{ connectedLinkedInAccount ? "Founder post preview" : "Workspace preview before publishing" }}</p>
+                <strong>{{ selectedConnectedAccountLabel || (selectedPublishingPlatform === "instagram" ? "Your Instagram business account" : selectedPublishingPlatform === "facebook" ? "Your Facebook Page" : "Your LinkedIn profile") }}</strong>
+                <p>{{ selectedConnectedAccount ? `${selectedPublishingPlatformLabel} post preview` : "Workspace preview before publishing" }}</p>
               </div>
             </div>
 
@@ -2574,12 +2824,14 @@ onBeforeUnmount(() => {
               <span v-for="pill in signalPills" :key="pill">{{ pill }}</span>
             </div>
 
-            <div class="linkedin-status-card" :data-connected="Boolean(connectedLinkedInAccount)">
+            <div class="linkedin-status-card" :data-connected="Boolean(selectedConnectedAccount) && !selectedPublishingGuardrail">
               <div>
-                <p class="panel-meta">LinkedIn publishing</p>
+                <p class="panel-meta">{{ selectedPublishingPlatformLabel }} publishing</p>
                 <strong>
                   {{
-                    connectedLinkedInAccount
+                    selectedPublishingGuardrail
+                      ? `${selectedPublishingPlatformLabel} setup needs attention`
+                      : selectedConnectedAccount
                       ? "Execution channel is ready"
                       : "Direct publishing not connected"
                   }}
@@ -2588,9 +2840,9 @@ onBeforeUnmount(() => {
                   {{
                     isLoadingChannels
                       ? "Checking workspace channel..."
-                      : connectedLinkedInAccount
-                        ? connectedLinkedInDescriptor
-                        : linkedInPublishingStatus
+                      : selectedConnectedAccount
+                        ? selectedConnectedAccountDescriptor
+                        : selectedPublishingStatus
                   }}
                 </p>
               </div>
@@ -2671,19 +2923,23 @@ onBeforeUnmount(() => {
               :disabled="
                 isPublishingToLinkedIn ||
                 isConnectingLinkedIn ||
+                isConnectingMeta ||
                 isUploadingPostAssets ||
-                !activeBusinessId
+                !activeBusinessId ||
+                Boolean(selectedPublishingGuardrail) && Boolean(selectedConnectedAccount)
               "
-              @click="connectedLinkedInAccount ? publishToLinkedIn() : connectLinkedIn()"
+              @click="selectedConnectedAccount ? publishToLinkedIn() : connectSelectedPlatform()"
             >
               {{
-                connectedLinkedInAccount
+                selectedPublishingGuardrail && selectedConnectedAccount
+                  ? `${selectedPublishingPlatformLabel} needs valid media`
+                  : selectedConnectedAccount
                   ? isPublishingToLinkedIn
                     ? "Publishing..."
-                    : "Publish now"
-                  : isConnectingLinkedIn
+                    : `Publish to ${selectedPublishingPlatformLabel}`
+                  : isConnectingSelectedPlatform
                     ? "Redirecting..."
-                    : "Connect LinkedIn"
+                    : `Connect ${selectedPublishingPlatformLabel}`
               }}
             </button>
 
@@ -2691,7 +2947,7 @@ onBeforeUnmount(() => {
               v-if="canScheduleDraft"
               type="button"
               class="secondary-action"
-              :disabled="isSchedulingDraft || isUploadingPostAssets"
+              :disabled="isSchedulingDraft || isUploadingPostAssets || Boolean(selectedPublishingGuardrail)"
               @click="void openSchedulePanel()"
             >
               Choose time
@@ -2735,19 +2991,23 @@ onBeforeUnmount(() => {
               :disabled="
                 isPublishingToLinkedIn ||
                 isConnectingLinkedIn ||
+                isConnectingMeta ||
                 isUploadingPostAssets ||
-                !activeBusinessId
+                !activeBusinessId ||
+                Boolean(selectedPublishingGuardrail) && Boolean(selectedConnectedAccount)
               "
-              @click="connectedLinkedInAccount ? publishToLinkedIn() : connectLinkedIn()"
+              @click="selectedConnectedAccount ? publishToLinkedIn() : connectSelectedPlatform()"
             >
               {{
-                connectedLinkedInAccount
+                selectedPublishingGuardrail && selectedConnectedAccount
+                  ? `${selectedPublishingPlatformLabel} needs valid media`
+                  : selectedConnectedAccount
                   ? isPublishingToLinkedIn
                     ? "Publishing..."
-                    : "Publish now"
-                  : isConnectingLinkedIn
+                    : `Publish to ${selectedPublishingPlatformLabel}`
+                  : isConnectingSelectedPlatform
                     ? "Redirecting..."
-                    : "Connect LinkedIn"
+                    : `Connect ${selectedPublishingPlatformLabel}`
               }}
             </button>
           </div>
@@ -2830,6 +3090,10 @@ onBeforeUnmount(() => {
               <span v-if="selectedLocalTimeLabel"> · Your time: {{ selectedLocalTimeLabel }}</span>
             </p>
 
+            <p v-if="selectedPublishingGuardrail" class="result-feedback subtle">
+              {{ selectedPublishingGuardrail }}
+            </p>
+
             <p v-if="isLoadingRecommendedSlots" class="result-feedback subtle">
               Loading best posting windows...
             </p>
@@ -2885,7 +3149,7 @@ onBeforeUnmount(() => {
                 <label class="media-upload-button">
                   <input
                     type="file"
-                    accept="image/png,image/jpeg,image/gif"
+                    accept="image/png,image/jpeg,image/gif,video/mp4"
                     multiple
                     :disabled="isUploadingPostAssets"
                     @change="void handleMediaSelection($event)"
@@ -2991,8 +3255,17 @@ onBeforeUnmount(() => {
 
             <div v-if="postAssets.length > 0" class="media-grid">
               <article v-for="asset in postAssets" :key="asset.id" class="media-card">
+                <video
+                  v-if="asset.previewUrl && asset.mimeType.startsWith('video/')"
+                  :src="asset.previewUrl"
+                  class="media-preview"
+                  controls
+                  muted
+                  playsinline
+                  preload="metadata"
+                />
                 <img
-                  v-if="asset.previewUrl"
+                  v-else-if="asset.previewUrl"
                   :src="asset.previewUrl"
                   :alt="`Attached media ${asset.orderIndex + 1}`"
                   class="media-preview"
@@ -3013,18 +3286,28 @@ onBeforeUnmount(() => {
             </div>
 
             <p v-else class="result-feedback subtle">
-              No media attached yet. This post will publish as text until you add images.
+              No media attached yet. This post will publish as text until you add supported media.
             </p>
           </section>
 
           <WorkspaceAssetPickerModal
             :open="isWorkspaceAssetPickerOpen"
             :business-id="activeBusinessId"
-            asset-type="image"
+            asset-type="all"
             multiple
             title="Attach existing workspace media"
             @close="isWorkspaceAssetPickerOpen = false"
             @select="void attachWorkspaceAssets($event)"
+          />
+
+          <MetaPageSelectionModal
+            :open="isMetaSelectionModalOpen"
+            :business-id="activeBusinessId"
+            :session="pendingMetaSession"
+            :platform="selectedPublishingPlatform === 'instagram' ? 'instagram' : 'facebook'"
+            @close="closeMetaSelectionModal"
+            @connected="void handleMetaConnected()"
+            @error="handleMetaSelectionError"
           />
 
           <section class="ai-command-panel">
@@ -3254,14 +3537,14 @@ onBeforeUnmount(() => {
               <p class="panel-meta">Delivery</p>
               <p class="shortcut-note">
                 Scheduling hands this draft to the worker loop. Publish now skips the queue and
-                goes directly to LinkedIn.
+                goes directly to {{ selectedPublishingPlatformLabel }}.
               </p>
             </div>
 
             <p class="panel-meta secondary-panel-meta">Use this draft elsewhere</p>
             <div class="side-action-stack">
               <button type="button" class="secondary-action side-action-button" @click="void copyPost()">
-                Copy for LinkedIn
+                Copy for {{ selectedPublishingPlatformLabel }}
               </button>
               <button type="button" class="secondary-action side-action-button" @click="goToOutreach">
                 Send via Outreach
@@ -3579,6 +3862,41 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 20px;
+}
+
+.channel-selector-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.channel-selector-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.channel-selector-button {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--fc-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.channel-selector-button[data-active="true"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 22%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 42%, white 58%);
+  transform: translateY(-1px);
 }
 
 .execution-status-card {

@@ -1,4 +1,4 @@
-export type WorkspaceAssetType = "image" | "logo" | "document" | "screenshot";
+export type WorkspaceAssetType = "image" | "video" | "logo" | "document" | "screenshot";
 export type WorkspaceAssetSourceType = "upload" | "post_asset" | "brand_kit" | "generated";
 export type WorkspaceAssetUsageSurface = "post" | "email" | "brand_kit" | "visual_generation" | "asset_hub";
 
@@ -54,6 +54,24 @@ export interface WorkspaceAssetsQuery {
 export interface WorkspaceAssetsResponse {
   assets: WorkspaceAsset[];
   brandKit?: WorkspaceBrandKitSummary;
+}
+
+export interface GetWorkspaceAssetQuery {
+  businessId: string;
+}
+
+export interface GetWorkspaceAssetResponse {
+  asset: WorkspaceAsset;
+}
+
+export interface DownloadWorkspaceAssetQuery {
+  businessId: string;
+}
+
+export interface DownloadWorkspaceAssetResponse {
+  asset: WorkspaceAsset;
+  downloadUrl: string;
+  fileName: string;
 }
 
 export interface CreateWorkspaceAssetUploadUrlRequest {

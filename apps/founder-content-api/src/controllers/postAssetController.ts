@@ -5,6 +5,10 @@ import type {
   CreatePostAssetRequest,
   CreatePostAssetResponse,
   DeletePostAssetResponse,
+  DownloadPostAssetQuery,
+  DownloadPostAssetResponse,
+  GetPostAssetQuery,
+  GetPostAssetResponse,
   ListPostAssetsQuery,
   ListPostAssetsResponse,
 } from "../../../../packages/shared-types/index.ts";
@@ -13,6 +17,8 @@ import {
   createMediaUploadUrl,
   createPostAsset,
   deletePostAsset,
+  getPostAsset,
+  getPostAssetDownload,
   listPostAssets,
 } from "../services/postAssetService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
@@ -41,6 +47,7 @@ export async function getMediaUploadUrl(
         businessId,
         postId,
         fileType,
+        assetType: request.body?.assetType,
         fileName: request.body?.fileName?.trim(),
         sizeBytes:
           typeof request.body?.sizeBytes === "number" ? request.body.sizeBytes : undefined,
@@ -97,6 +104,7 @@ export async function createPostAssetController(
         sizeBytes: request.body.sizeBytes,
         type: request.body?.type,
         source: request.body?.source,
+        metadata: request.body?.metadata,
         orderIndex:
           typeof request.body?.orderIndex === "number" ? request.body.orderIndex : undefined,
       }),
@@ -136,6 +144,64 @@ export async function getPostAssets(
       code: "post_assets_lookup_failed",
       message: "Unable to load post media.",
       logMessage: "Failed to load post media.",
+    });
+  }
+}
+
+export async function getPostAssetController(
+  request: Request<{ assetId: string }, GetPostAssetResponse | ApiError, unknown, Partial<GetPostAssetQuery>>,
+  response: Response<GetPostAssetResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+  const assetId = request.params.assetId?.trim();
+
+  if (!businessId || !assetId) {
+    sendApiError(response, 400, "bad_request", "businessId and assetId are required.");
+    return;
+  }
+
+  try {
+    response.json(await getPostAsset(request.auth, businessId, assetId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "post_asset_lookup_failed",
+      message: "Unable to load post media.",
+      logMessage: "Failed to load post media by id.",
+    });
+  }
+}
+
+export async function getPostAssetDownloadController(
+  request: Request<{ assetId: string }, DownloadPostAssetResponse | ApiError, unknown, Partial<DownloadPostAssetQuery>>,
+  response: Response<DownloadPostAssetResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+  const assetId = request.params.assetId?.trim();
+
+  if (!businessId || !assetId) {
+    sendApiError(response, 400, "bad_request", "businessId and assetId are required.");
+    return;
+  }
+
+  try {
+    response.json(await getPostAssetDownload(request.auth, businessId, assetId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "post_asset_download_failed",
+      message: "Unable to prepare post media download.",
+      logMessage: "Failed to prepare post media download.",
     });
   }
 }

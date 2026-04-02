@@ -37,16 +37,32 @@ export async function schedulePost(
     return;
   }
 
-  if (request.body?.platform !== "linkedin") {
-    sendApiError(response, 400, "bad_request", "Only LinkedIn scheduling is supported.");
+  if (
+    request.body?.platform !== "linkedin"
+    && request.body?.platform !== "instagram"
+    && request.body?.platform !== "facebook"
+  ) {
+    sendApiError(
+      response,
+      400,
+      "bad_request",
+      "Only LinkedIn, Facebook, and Instagram scheduling are supported.",
+    );
     return;
   }
+
+  const platform: "linkedin" | "instagram" | "facebook" =
+    request.body.platform === "instagram"
+      ? "instagram"
+      : request.body.platform === "facebook"
+        ? "facebook"
+        : "linkedin";
 
   try {
     response.status(201).json(
       await createScheduledPost(request.auth, {
         businessId,
-        platform: "linkedin",
+        platform,
         contentText: request.body?.contentText?.trim() ?? "",
         assetGroupId: request.body?.assetGroupId?.trim(),
         slides: request.body?.slides ?? [],
@@ -59,8 +75,8 @@ export async function schedulePost(
     handleApiError(response, error, {
       statusCode: 500,
       code: "schedule_post_failed",
-      message: "Unable to schedule LinkedIn post.",
-      logMessage: "Failed to schedule LinkedIn post.",
+      message: `Unable to schedule ${platform === "instagram" ? "Instagram" : platform === "facebook" ? "Facebook" : "LinkedIn"} post.`,
+      logMessage: `Failed to schedule ${platform === "instagram" ? "Instagram" : platform === "facebook" ? "Facebook" : "LinkedIn"} post.`,
     });
   }
 }
@@ -114,18 +130,35 @@ export async function publishPost(
     return;
   }
 
-  if (request.body?.platform !== "linkedin") {
-    sendApiError(response, 400, "bad_request", "Only LinkedIn publishing is supported.");
+  if (
+    request.body?.platform !== "linkedin"
+    && request.body?.platform !== "instagram"
+    && request.body?.platform !== "facebook"
+  ) {
+    sendApiError(
+      response,
+      400,
+      "bad_request",
+      "Only LinkedIn, Facebook, and Instagram publishing are supported.",
+    );
     return;
   }
+
+  const platform: "linkedin" | "instagram" | "facebook" =
+    request.body.platform === "instagram"
+      ? "instagram"
+      : request.body.platform === "facebook"
+        ? "facebook"
+        : "linkedin";
 
   try {
     response.status(201).json(
       await publishPostNow(request.auth, {
         businessId,
-        platform: "linkedin",
+        platform,
         contentText: request.body?.contentText?.trim() ?? "",
         assetId: request.body?.assetId?.trim(),
+        slides: request.body?.slides ?? [],
         title: request.body?.title?.trim(),
       }),
     );
@@ -133,8 +166,8 @@ export async function publishPost(
     handleApiError(response, error, {
       statusCode: 500,
       code: "publish_post_failed",
-      message: "Unable to publish to LinkedIn.",
-      logMessage: "Failed to publish LinkedIn post.",
+      message: `Unable to publish to ${platform === "instagram" ? "Instagram" : platform === "facebook" ? "Facebook" : "LinkedIn"}.`,
+      logMessage: `Failed to publish ${platform === "instagram" ? "Instagram" : platform === "facebook" ? "Facebook" : "LinkedIn"} post.`,
     });
   }
 }

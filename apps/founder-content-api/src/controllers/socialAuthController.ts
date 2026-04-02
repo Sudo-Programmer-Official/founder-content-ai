@@ -2,6 +2,10 @@ import type {
   ApiError,
   DisconnectSocialAccountRequest,
   DisconnectSocialAccountResponse,
+  MetaAuthSessionQuery,
+  MetaAuthSessionResponse,
+  SelectMetaPageRequest,
+  SelectMetaPageResponse,
   SelectSocialAccountIdentityRequest,
   SelectSocialAccountIdentityResponse,
   SocialAccountsQuery,
@@ -11,10 +15,14 @@ import type {
 } from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
 import {
+  connectMetaSelectedPage,
+  createMetaAuthorizationUrl,
   createLinkedInAuthorizationUrl,
   disconnectSocialAccount,
+  handleMetaOAuthCallback,
   handleLinkedInOAuthCallback,
   listSocialAccounts,
+  resolveMetaAuthSession,
   selectSocialAccountIdentity,
 } from "../services/socialAuthService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
@@ -72,6 +80,130 @@ export async function linkedInOAuthCallback(
   });
 
   response.redirect(302, redirectUrl);
+}
+
+export async function startMetaSocialAuth(
+  request: Request<unknown, StartSocialAuthResponse | ApiError, Partial<StartSocialAuthRequest>>,
+  response: Response<StartSocialAuthResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  if (request.body?.platform !== "facebook" && request.body?.platform !== "instagram") {
+    sendApiError(response, 400, "bad_request", "Meta social auth must target facebook or instagram.");
+    return;
+  }
+
+  try {
+    response.json(
+      await createMetaAuthorizationUrl(request.auth, {
+        businessId,
+        platform: request.body.platform,
+        returnPath: request.body?.returnPath?.trim(),
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "meta_auth_start_failed",
+      message: "Unable to start Meta authentication.",
+      logMessage: "Failed to start Meta authentication.",
+    });
+  }
+}
+
+export async function metaOAuthCallback(
+  request: Request,
+  response: Response,
+): Promise<void> {
+  const redirectUrl = await handleMetaOAuthCallback({
+    code: typeof request.query.code === "string" ? request.query.code : undefined,
+    state: typeof request.query.state === "string" ? request.query.state : undefined,
+    error: typeof request.query.error === "string" ? request.query.error : undefined,
+    errorDescription:
+      typeof request.query.error_description === "string"
+        ? request.query.error_description
+        : undefined,
+  });
+
+  response.redirect(302, redirectUrl);
+}
+
+export async function getMetaAuthSessionController(
+  request: Request<
+    unknown,
+    MetaAuthSessionResponse | ApiError,
+    unknown,
+    Partial<MetaAuthSessionQuery>
+  >,
+  response: Response<MetaAuthSessionResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+  const session = request.query.session?.trim();
+
+  if (!businessId || !session) {
+    sendApiError(response, 400, "bad_request", "businessId and session are required.");
+    return;
+  }
+
+  try {
+    response.json(await resolveMetaAuthSession(request.auth, { businessId, session }));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "meta_auth_session_failed",
+      message: "Unable to load Meta page selection options.",
+      logMessage: "Failed to load Meta auth session.",
+    });
+  }
+}
+
+export async function selectMetaPageController(
+  request: Request<
+    unknown,
+    SelectMetaPageResponse | ApiError,
+    Partial<SelectMetaPageRequest>
+  >,
+  response: Response<SelectMetaPageResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const session = request.body?.session?.trim();
+  const pageId = request.body?.pageId?.trim();
+
+  if (!businessId || !session || !pageId) {
+    sendApiError(response, 400, "bad_request", "businessId, session, and pageId are required.");
+    return;
+  }
+
+  try {
+    response.json(await connectMetaSelectedPage(request.auth, { businessId, session, pageId }));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "meta_page_select_failed",
+      message: "Unable to connect the selected Facebook page.",
+      logMessage: "Failed to connect selected Meta page.",
+    });
+  }
 }
 
 export async function getSocialAccounts(

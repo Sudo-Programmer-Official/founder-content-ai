@@ -20,6 +20,7 @@
     "dev": "tsx watch server.ts",
     "start": "tsx server.ts",
     "typecheck": "tsc --noEmit",
+    "smoke:scheduler": "tsx scripts/schedulerSmoke.ts",
     "worker": "tsx src/workers/appWorker.ts",
     "worker:scheduled-posts": "tsx src/workers/scheduledPostWorker.ts",
     "worker:email-campaigns": "tsx src/workers/emailCampaignWorker.ts",

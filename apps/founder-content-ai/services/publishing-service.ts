@@ -3,6 +3,7 @@ import type {
   DisconnectSocialAccountResponse,
   GenerateHashtagsRequest,
   GenerateHashtagsResponse,
+  MetaAuthSessionResponse,
   PublishPostRequest,
   PublishPostResponse,
   RecommendPostTimeContentType,
@@ -14,6 +15,8 @@ import type {
   UpdateScheduledPostPerformanceResponse,
   UpdateScheduledPostResponse,
   ScheduledPostsResponse,
+  SelectMetaPageRequest,
+  SelectMetaPageResponse,
   SelectSocialAccountIdentityRequest,
   SelectSocialAccountIdentityResponse,
   SocialAccountsResponse,
@@ -42,6 +45,40 @@ export async function requestLinkedInSocialAuthStart(input: {
     platform: "linkedin",
     returnPath: input.returnPath,
   });
+}
+
+export async function requestMetaSocialAuthStart(input: {
+  businessId: string;
+  platform?: "facebook" | "instagram";
+  returnPath?: string;
+}): Promise<StartSocialAuthResponse> {
+  return apiPost<
+    {
+      businessId: string;
+      platform: "facebook" | "instagram";
+      returnPath?: string;
+    },
+    StartSocialAuthResponse
+  >("/social-auth/meta/start", {
+    businessId: input.businessId,
+    platform: input.platform ?? "instagram",
+    returnPath: input.returnPath,
+  });
+}
+
+export async function requestMetaAuthSession(input: {
+  businessId: string;
+  session: string;
+}): Promise<MetaAuthSessionResponse> {
+  return apiGet<MetaAuthSessionResponse>(
+    `/social-auth/meta/session?businessId=${encodeURIComponent(input.businessId)}&session=${encodeURIComponent(input.session)}`,
+  );
+}
+
+export async function requestSelectMetaPage(
+  input: SelectMetaPageRequest,
+): Promise<SelectMetaPageResponse> {
+  return apiPost<SelectMetaPageRequest, SelectMetaPageResponse>("/social-auth/meta/select-page", input);
 }
 
 export async function requestDisconnectSocialAccount(input: {

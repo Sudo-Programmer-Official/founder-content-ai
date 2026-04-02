@@ -138,8 +138,16 @@ watch(search, () => {
             :class="{ selected: selectedIds.includes(asset.id) }"
             @click="toggleAsset(asset.id)"
           >
+            <video
+              v-if="asset.previewUrl && asset.mimeType.startsWith('video/')"
+              :src="asset.previewUrl"
+              class="picker-asset-preview"
+              muted
+              playsinline
+              preload="metadata"
+            />
             <img
-              v-if="asset.previewUrl && asset.mimeType.startsWith('image/')"
+              v-else-if="asset.previewUrl && asset.mimeType.startsWith('image/')"
               :src="asset.previewUrl"
               :alt="asset.title || asset.assetType"
               class="picker-asset-preview"

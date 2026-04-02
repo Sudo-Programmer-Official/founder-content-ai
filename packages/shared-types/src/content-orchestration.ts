@@ -2,6 +2,7 @@ export type ContentChannel = "linkedin" | "instagram" | "facebook" | "email";
 export type ContentExecutionLane = "social" | "email";
 export type ContentBatchStatus = "draft" | "confirmed" | "scheduled" | "archived";
 export type ContentBatchSpacing = "daily" | "weekdays";
+export type ContentVariantTextProfile = "full" | "medium" | "short";
 export type ContentVariantStatus =
   | "draft"
   | "ready"
@@ -16,6 +17,15 @@ export type ScheduleItemStatus =
   | "draft"
   | "scheduled"
   | "processing"
+  | "published"
+  | "failed"
+  | "paused"
+  | "canceled";
+export type ContentDistributionGroupStatus =
+  | "draft"
+  | "scheduled"
+  | "processing"
+  | "partial"
   | "published"
   | "failed"
   | "paused"
@@ -55,6 +65,23 @@ export interface ContentVariantMedia {
   videos: string[];
 }
 
+export interface ContentVariantAssetTransform {
+  aspectRatio?: "1:1" | "9:16";
+  maxImages?: number;
+}
+
+export interface ContentVariantAdaptationPlan {
+  sourceChannel: ContentChannel;
+  textProfile: ContentVariantTextProfile;
+  assetTransform?: ContentVariantAssetTransform;
+}
+
+export interface ContentVariantMetadata {
+  dayIndex?: number;
+  angle?: string;
+  adaptation?: ContentVariantAdaptationPlan;
+}
+
 export interface ContentVariant {
   id: string;
   contentItemId: string;
@@ -68,6 +95,21 @@ export interface ContentVariant {
   status: ContentVariantStatus;
   source: ContentVariantSource;
   isCustomized: boolean;
+  metadata?: ContentVariantMetadata;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContentDistributionGroup {
+  id: string;
+  businessId: string;
+  contentItemId: string;
+  primaryVariantId?: string;
+  lane: ContentExecutionLane;
+  title?: string;
+  status: ContentDistributionGroupStatus;
+  editableUntil?: string;
+  publishedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -77,6 +119,7 @@ export interface ScheduleItem {
   businessId: string;
   contentItemId: string;
   variantId: string;
+  distributionGroupId?: string;
   channel: ContentChannel;
   lane: ContentExecutionLane;
   scheduledDate: string;
@@ -119,6 +162,7 @@ export interface GetContentBatchResponse {
   batch: ContentBatch;
   items: ContentItem[];
   variants: ContentVariant[];
+  distributionGroups: ContentDistributionGroup[];
   scheduleItems: ScheduleItem[];
 }
 
@@ -133,6 +177,7 @@ export interface ConfirmContentBatchRequest {
 
 export interface ConfirmContentBatchResponse {
   batch: ContentBatch;
+  distributionGroups: ContentDistributionGroup[];
   scheduleItems: ScheduleItem[];
 }
 

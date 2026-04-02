@@ -5,6 +5,10 @@ import type {
   CreateWorkspaceAssetUploadUrlRequest,
   CreateWorkspaceAssetUploadUrlResponse,
   DeleteWorkspaceAssetResponse,
+  DownloadWorkspaceAssetQuery,
+  DownloadWorkspaceAssetResponse,
+  GetWorkspaceAssetQuery,
+  GetWorkspaceAssetResponse,
   RecordWorkspaceAssetUsageRequest,
   RecordWorkspaceAssetUsageResponse,
   WorkspaceAssetsQuery,
@@ -15,6 +19,8 @@ import {
   createWorkspaceAsset,
   createWorkspaceAssetUploadUrl,
   deleteWorkspaceAsset,
+  getWorkspaceAsset,
+  getWorkspaceAssetDownload,
   listWorkspaceAssets,
   recordWorkspaceAssetUsage,
 } from "../services/workspaceAssetService.ts";
@@ -175,6 +181,64 @@ export async function deleteWorkspaceAssetController(
       code: "workspace_asset_delete_failed",
       message: "Unable to remove workspace asset.",
       logMessage: "Failed to remove workspace asset.",
+    });
+  }
+}
+
+export async function getWorkspaceAssetController(
+  request: Request<{ assetId: string }, GetWorkspaceAssetResponse | ApiError, unknown, Partial<GetWorkspaceAssetQuery>>,
+  response: Response<GetWorkspaceAssetResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+  const assetId = request.params.assetId?.trim();
+
+  if (!businessId || !assetId) {
+    sendApiError(response, 400, "bad_request", "businessId and assetId are required.");
+    return;
+  }
+
+  try {
+    response.json(await getWorkspaceAsset(request.auth, businessId, assetId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "workspace_asset_lookup_failed",
+      message: "Unable to load workspace asset.",
+      logMessage: "Failed to load workspace asset by id.",
+    });
+  }
+}
+
+export async function getWorkspaceAssetDownloadController(
+  request: Request<{ assetId: string }, DownloadWorkspaceAssetResponse | ApiError, unknown, Partial<DownloadWorkspaceAssetQuery>>,
+  response: Response<DownloadWorkspaceAssetResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+  const assetId = request.params.assetId?.trim();
+
+  if (!businessId || !assetId) {
+    sendApiError(response, 400, "bad_request", "businessId and assetId are required.");
+    return;
+  }
+
+  try {
+    response.json(await getWorkspaceAssetDownload(request.auth, businessId, assetId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "workspace_asset_download_failed",
+      message: "Unable to prepare workspace asset download.",
+      logMessage: "Failed to prepare workspace asset download.",
     });
   }
 }

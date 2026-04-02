@@ -2,6 +2,9 @@ import { createHmac } from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
 import type {
   DisconnectSocialAccountResponse,
+  MetaAuthSessionResponse,
+  MetaPageConnectionCandidate,
+  SelectMetaPageResponse,
   SelectSocialAccountIdentityResponse,
   SocialAccount,
   SocialAccountIdentity,
@@ -26,8 +29,10 @@ const LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo";
 const LINKEDIN_ORGANIZATION_AUTHORIZATIONS_URL =
   "https://api.linkedin.com/rest/organizationAuthorizations";
 const LINKEDIN_ORGANIZATIONS_URL = "https://api.linkedin.com/rest/organizations";
+const META_GRAPH_BASE_URL = "https://graph.facebook.com";
 const SOCIAL_ACCOUNT_ENCRYPTION_SECRET_NAME = "SOCIAL_ACCOUNT_ENCRYPTION_SECRET";
 const SOCIAL_AUTH_STATE_SECRET_NAME = "SOCIAL_AUTH_STATE_SECRET";
+const META_AUTH_SESSION_SECRET_NAME = "META_AUTH_SESSION_SECRET";
 
 interface SocialAccountRow extends QueryResultRow {
   id: string;
@@ -143,11 +148,78 @@ interface LinkedInIdentityCandidate {
   metadata: Record<string, unknown>;
 }
 
+interface MetaOAuthTokenResponse {
+  access_token?: string;
+  token_type?: string;
+  expires_in?: number;
+  error?: {
+    message?: string;
+  };
+}
+
+interface MetaPagePictureData {
+  data?: {
+    url?: string;
+  };
+}
+
+interface MetaInstagramBusinessAccount {
+  id?: string;
+  username?: string;
+  name?: string;
+  profile_picture_url?: string;
+}
+
+interface MetaPageRecord {
+  id?: string;
+  name?: string;
+  access_token?: string;
+  tasks?: string[];
+  picture?: MetaPagePictureData;
+  instagram_business_account?: MetaInstagramBusinessAccount | null;
+}
+
+interface MetaAccountsResponse {
+  data?: MetaPageRecord[];
+}
+
+interface MetaUserProfileResponse {
+  id?: string;
+  name?: string;
+  email?: string;
+}
+
+interface MetaPendingPageSelection {
+  pageId: string;
+  pageName: string;
+  pageAccessToken: string;
+  pictureUrl?: string;
+  tasks: string[];
+  instagramBusinessAccountId?: string;
+  instagramUsername?: string;
+  instagramDisplayName?: string;
+  instagramProfilePictureUrl?: string;
+}
+
+interface MetaAuthSessionPayload {
+  businessId: string;
+  userId: string;
+  issuedAt: number;
+  returnPath?: string;
+  pages: MetaPendingPageSelection[];
+  userAccessToken: string;
+  userTokenExpiresAt?: string;
+  metaUserId?: string;
+  metaUserName?: string;
+  metaUserEmail?: string;
+}
+
 interface SocialAuthStatePayload {
   businessId: string;
   userId: string;
   issuedAt: number;
   returnPath?: string;
+  platform?: "facebook" | "instagram";
 }
 
 export interface LinkedInPublishingCredentials {
@@ -160,6 +232,24 @@ export interface LinkedInPublishingCredentials {
   selectedIdentityUrn: string;
   selectedIdentityType: SocialAccountIdentity["type"];
   selectedIdentityName: string;
+}
+
+export interface MetaPublishingCredentials {
+  accountId: string;
+  businessId: string;
+  userId: string;
+  pageId: string;
+  pageName?: string;
+  accessToken: string;
+  pageAccessToken: string;
+  userAccessToken?: string;
+  pageIdentityId?: string;
+  pageIdentityUrn?: string;
+  pageIdentityName?: string;
+  instagramUserId?: string;
+  instagramBusinessAccountId?: string;
+  instagramIdentityId?: string;
+  instagramUsername?: string;
 }
 
 function toIsoString(value: Date | string | null | undefined): string | undefined {
@@ -223,6 +313,50 @@ function resolveLinkedInScopes(): string[] {
     .filter(Boolean);
 }
 
+function resolveMetaAppId(): string {
+  const appId = process.env.META_APP_ID?.trim();
+
+  if (!appId) {
+    throw new HttpError(500, "meta_not_configured", "META_APP_ID is not configured.");
+  }
+
+  return appId;
+}
+
+function resolveMetaAppSecret(): string {
+  const appSecret = process.env.META_APP_SECRET?.trim();
+
+  if (!appSecret) {
+    throw new HttpError(500, "meta_not_configured", "META_APP_SECRET is not configured.");
+  }
+
+  return appSecret;
+}
+
+function resolveMetaRedirectUri(): string {
+  const redirectUri = process.env.META_REDIRECT_URI?.trim();
+
+  if (!redirectUri) {
+    throw new HttpError(500, "meta_not_configured", "META_REDIRECT_URI is not configured.");
+  }
+
+  return redirectUri;
+}
+
+function resolveMetaGraphVersion(): string {
+  return process.env.META_GRAPH_VERSION?.trim() || "v21.0";
+}
+
+function resolveMetaScopes(): string[] {
+  return (
+    process.env.META_SCOPE ??
+    "pages_show_list pages_read_engagement pages_manage_posts instagram_basic instagram_content_publish"
+  )
+    .split(/\s+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+}
+
 function resolveFrontendAppUrl(): string {
   const firstConfiguredOrigin = (process.env.FRONTEND_ORIGIN ?? "")
     .split(",")
@@ -280,6 +414,37 @@ function buildRedirectUrl(
   return url.toString();
 }
 
+function buildMetaRedirectUrl(
+  returnPath: string,
+  status: "connected" | "select_page" | "error",
+  options?: {
+    message?: string;
+    session?: string;
+    platform?: "facebook" | "instagram";
+  },
+): string {
+  const url = new URL(resolveFrontendAppUrl());
+  const location = resolveReturnLocation(returnPath);
+  url.pathname = location.pathname;
+  url.search = location.search;
+  url.hash = location.hash;
+  url.searchParams.set("meta", status);
+
+  if (options?.message) {
+    url.searchParams.set("message", options.message);
+  }
+
+  if (options?.session) {
+    url.searchParams.set("session", options.session);
+  }
+
+  if (options?.platform) {
+    url.searchParams.set("platform", options.platform);
+  }
+
+  return url.toString();
+}
+
 function mapSocialAccountIdentity(row: SocialAccountIdentityRow): SocialAccountIdentity {
   return {
     id: row.id,
@@ -328,6 +493,19 @@ function mapWorkspaceSocialAccount(
   };
 }
 
+function mapMetaPageCandidate(page: MetaPendingPageSelection): MetaPageConnectionCandidate {
+  return {
+    pageId: page.pageId,
+    pageName: page.pageName,
+    pictureUrl: page.pictureUrl,
+    tasks: page.tasks,
+    instagramBusinessAccountId: page.instagramBusinessAccountId,
+    instagramUsername: page.instagramUsername,
+    instagramDisplayName: page.instagramDisplayName,
+    instagramProfilePictureUrl: page.instagramProfilePictureUrl,
+  };
+}
+
 function resolveLinkedInAccountLabel(account: SocialAccount): string | undefined {
   if (account.selectedIdentity?.displayName) {
     return account.selectedIdentity.displayName;
@@ -368,6 +546,38 @@ function signState(payload: string): string {
   }
 
   return createHmac("sha256", secret).update(payload).digest("base64url");
+}
+
+function encodeMetaAuthSession(payload: MetaAuthSessionPayload): string {
+  return encryptSecret(JSON.stringify(payload), META_AUTH_SESSION_SECRET_NAME);
+}
+
+function decodeMetaAuthSession(session: string): MetaAuthSessionPayload {
+  let payload: MetaAuthSessionPayload;
+
+  try {
+    payload = JSON.parse(
+      decryptSecret(session, META_AUTH_SESSION_SECRET_NAME),
+    ) as MetaAuthSessionPayload;
+  } catch {
+    throw new HttpError(400, "invalid_meta_session", "Meta page selection session is invalid.");
+  }
+
+  if (
+    !payload.businessId
+    || !payload.userId
+    || !payload.issuedAt
+    || !payload.userAccessToken
+    || !Array.isArray(payload.pages)
+  ) {
+    throw new HttpError(400, "invalid_meta_session", "Meta page selection session is incomplete.");
+  }
+
+  if (Date.now() - payload.issuedAt > 15 * 60 * 1000) {
+    throw new HttpError(400, "expired_meta_session", "Meta page selection session has expired.");
+  }
+
+  return payload;
 }
 
 function encodeState(payload: SocialAuthStatePayload): string {
@@ -433,6 +643,38 @@ function buildLinkedInRestHeaders(
     "X-Restli-Protocol-Version": "2.0.0",
     ...(hasJsonBody ? { "Content-Type": "application/json" } : {}),
   };
+}
+
+function buildMetaGraphUrl(path: string, params: Record<string, string | undefined>): string {
+  const url = new URL(`${META_GRAPH_BASE_URL}/${resolveMetaGraphVersion()}/${path.replace(/^\/+/, "")}`);
+
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string" && value.trim() !== "") {
+      url.searchParams.set(key, value);
+    }
+  }
+
+  return url.toString();
+}
+
+async function fetchMetaGraphJson<TPayload>(
+  path: string,
+  params: Record<string, string | undefined>,
+): Promise<TPayload> {
+  const response = await fetch(buildMetaGraphUrl(path, params));
+  const payload = (await response.json().catch(() => ({}))) as {
+    error?: { message?: string };
+  } & TPayload;
+
+  if (!response.ok || payload.error?.message) {
+    throw new HttpError(
+      502,
+      "meta_graph_request_failed",
+      payload.error?.message ?? "Meta Graph request failed.",
+    );
+  }
+
+  return payload;
 }
 
 function hasOrganizationPublishingScope(scopes: string[]): boolean {
@@ -728,11 +970,67 @@ async function fetchLinkedInOrganizationIdentities(
   });
 }
 
+async function exchangeMetaAuthorizationCode(code: string): Promise<MetaOAuthTokenResponse> {
+  return fetchMetaGraphJson<MetaOAuthTokenResponse>("oauth/access_token", {
+    client_id: resolveMetaAppId(),
+    client_secret: resolveMetaAppSecret(),
+    redirect_uri: resolveMetaRedirectUri(),
+    code,
+  });
+}
+
+async function exchangeMetaForLongLivedUserToken(
+  accessToken: string,
+): Promise<MetaOAuthTokenResponse> {
+  return fetchMetaGraphJson<MetaOAuthTokenResponse>("oauth/access_token", {
+    grant_type: "fb_exchange_token",
+    client_id: resolveMetaAppId(),
+    client_secret: resolveMetaAppSecret(),
+    fb_exchange_token: accessToken,
+  });
+}
+
+async function fetchMetaUserProfile(accessToken: string): Promise<MetaUserProfileResponse> {
+  return fetchMetaGraphJson<MetaUserProfileResponse>("me", {
+    access_token: accessToken,
+    fields: "id,name,email",
+  });
+}
+
+async function fetchMetaPageSelections(accessToken: string): Promise<MetaPendingPageSelection[]> {
+  const payload = await fetchMetaGraphJson<MetaAccountsResponse>("me/accounts", {
+    access_token: accessToken,
+    fields:
+      "id,name,access_token,tasks,picture{url},instagram_business_account{id,username,name,profile_picture_url}",
+  });
+
+  return (payload.data ?? []).flatMap((page) => {
+    if (!page.id || !page.name || !page.access_token) {
+      return [];
+    }
+
+    return [
+      {
+        pageId: page.id,
+        pageName: page.name,
+        pageAccessToken: page.access_token,
+        pictureUrl: page.picture?.data?.url,
+        tasks: Array.isArray(page.tasks) ? page.tasks.filter((task): task is string => typeof task === "string") : [],
+        instagramBusinessAccountId: page.instagram_business_account?.id,
+        instagramUsername: page.instagram_business_account?.username,
+        instagramDisplayName: page.instagram_business_account?.name,
+        instagramProfilePictureUrl: page.instagram_business_account?.profile_picture_url,
+      },
+    ];
+  });
+}
+
 async function upsertSocialAccount(
   client: PoolClient,
   options: {
     businessId: string;
     userId: string;
+    platform: SocialPlatform;
     platformUserId: string;
     platformUserUrn: string;
     accountEmail?: string;
@@ -763,7 +1061,6 @@ async function upsertSocialAccount(
       ) values (
         $1,
         $2,
-        'linkedin',
         $3,
         $4,
         $5,
@@ -772,8 +1069,9 @@ async function upsertSocialAccount(
         $8,
         $9,
         $10,
+        $11,
         'connected',
-        $11::jsonb
+        $12::jsonb
       )
       on conflict (platform, platform_user_id)
       do update set
@@ -810,6 +1108,7 @@ async function upsertSocialAccount(
     [
       options.businessId,
       options.userId,
+      options.platform,
       options.platformUserId,
       options.platformUserUrn,
       options.accountEmail ?? null,
@@ -901,6 +1200,7 @@ async function upsertBusinessSocialChannel(
   client: PoolClient,
   options: {
     businessId: string;
+    platform: SocialPlatform;
     socialAccountId: string;
     selectedIdentityId: string;
     status: SocialAccount["status"];
@@ -918,11 +1218,11 @@ async function upsertBusinessSocialChannel(
         metadata_json
       ) values (
         $1,
-        'linkedin',
         $2,
         $3,
         $4,
-        $5::jsonb
+        $5,
+        $6::jsonb
       )
       on conflict (business_id, platform)
       do update set
@@ -949,6 +1249,7 @@ async function upsertBusinessSocialChannel(
     `,
     [
       options.businessId,
+      options.platform,
       options.socialAccountId,
       options.selectedIdentityId,
       options.status,
@@ -1131,6 +1432,23 @@ function pickDefaultIdentity(identities: SocialAccountIdentityRow[]): SocialAcco
   );
 }
 
+function pickInstagramIdentity(
+  identities: SocialAccountIdentityRow[],
+  preferredIdentityId?: string | null,
+): SocialAccountIdentityRow | null {
+  if (preferredIdentityId) {
+    const preferredIdentity = identities.find(
+      (identity) => identity.id === preferredIdentityId && identity.platform === "instagram",
+    );
+
+    if (preferredIdentity) {
+      return preferredIdentity;
+    }
+  }
+
+  return identities.find((identity) => identity.platform === "instagram") ?? null;
+}
+
 export async function createLinkedInAuthorizationUrl(
   principal: AuthenticatedPrincipal,
   input: {
@@ -1161,6 +1479,44 @@ export async function createLinkedInAuthorizationUrl(
   url.searchParams.set("redirect_uri", resolveLinkedInRedirectUri());
   url.searchParams.set("state", state);
   url.searchParams.set("scope", resolveLinkedInScopes().join(" "));
+
+  return {
+    authorizationUrl: url.toString(),
+  };
+}
+
+export async function createMetaAuthorizationUrl(
+  principal: AuthenticatedPrincipal,
+  input: {
+    businessId: string;
+    platform: "facebook" | "instagram";
+    returnPath?: string;
+  },
+): Promise<StartSocialAuthResponse> {
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId: input.businessId,
+    featureKey: "scheduler",
+  });
+  await requireBusinessMembership(principal, input.businessId);
+
+  if (!principal.userId) {
+    throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
+  }
+
+  const state = encodeState({
+    businessId: input.businessId,
+    userId: principal.userId,
+    issuedAt: Date.now(),
+    returnPath: sanitizeReturnPath(input.returnPath),
+    platform: input.platform,
+  });
+  const url = new URL(`https://www.facebook.com/${resolveMetaGraphVersion()}/dialog/oauth`);
+  url.searchParams.set("client_id", resolveMetaAppId());
+  url.searchParams.set("redirect_uri", resolveMetaRedirectUri());
+  url.searchParams.set("state", state);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", resolveMetaScopes().join(","));
 
   return {
     authorizationUrl: url.toString(),
@@ -1240,6 +1596,7 @@ export async function handleLinkedInOAuthCallback(input: {
       const socialAccount = await upsertSocialAccount(client, {
         businessId: callbackState.businessId,
         userId: callbackState.userId,
+        platform: "linkedin",
         platformUserId,
         platformUserUrn: `urn:li:person:${platformUserId}`,
         accountEmail:
@@ -1293,6 +1650,7 @@ export async function handleLinkedInOAuthCallback(input: {
 
       await upsertBusinessSocialChannel(client, {
         businessId: callbackState.businessId,
+        platform: "linkedin",
         socialAccountId: socialAccount.id,
         selectedIdentityId: memberIdentity.id,
         status: "connected",
@@ -1320,6 +1678,98 @@ export async function handleLinkedInOAuthCallback(input: {
   }
 }
 
+export async function handleMetaOAuthCallback(input: {
+  code?: string;
+  state?: string;
+  error?: string;
+  errorDescription?: string;
+}): Promise<string> {
+  let state: SocialAuthStatePayload | undefined;
+
+  if (input.state) {
+    try {
+      state = decodeState(input.state);
+    } catch {
+      state = undefined;
+    }
+  }
+
+  const fallbackRedirectUrl = buildMetaRedirectUrl(
+    state?.returnPath ?? "/app/create",
+    "error",
+    {
+      message: "connect_failed",
+      platform: state?.platform,
+    },
+  );
+
+  if (input.error) {
+    return buildMetaRedirectUrl(state?.returnPath ?? "/app/create", "error", {
+      message: input.errorDescription ?? input.error,
+      platform: state?.platform,
+    });
+  }
+
+  if (!input.code || !input.state) {
+    return fallbackRedirectUrl;
+  }
+
+  try {
+    const callbackState = state ?? decodeState(input.state);
+    state = callbackState;
+    const tokenPayload = await exchangeMetaAuthorizationCode(input.code);
+    const shortLivedAccessToken = tokenPayload.access_token;
+
+    if (!shortLivedAccessToken) {
+      throw new HttpError(
+        502,
+        "meta_token_exchange_failed",
+        "Meta did not return a usable access token.",
+      );
+    }
+
+    const longLivedTokenPayload = await exchangeMetaForLongLivedUserToken(shortLivedAccessToken)
+      .catch(() => tokenPayload);
+    const accessToken = longLivedTokenPayload.access_token ?? shortLivedAccessToken;
+    const userProfile = await fetchMetaUserProfile(accessToken).catch(
+      () => ({}) as MetaUserProfileResponse,
+    );
+    const pages = await fetchMetaPageSelections(accessToken);
+
+    if (pages.length === 0) {
+      return buildMetaRedirectUrl(callbackState.returnPath ?? "/app/create", "error", {
+        message: "no_pages_found",
+        platform: callbackState.platform,
+      });
+    }
+
+    const session = encodeMetaAuthSession({
+      businessId: callbackState.businessId,
+      userId: callbackState.userId,
+      issuedAt: Date.now(),
+      returnPath: callbackState.returnPath,
+      pages,
+      userAccessToken: accessToken,
+      userTokenExpiresAt: longLivedTokenPayload.expires_in
+        ? new Date(Date.now() + longLivedTokenPayload.expires_in * 1000).toISOString()
+        : undefined,
+      metaUserId: userProfile.id,
+      metaUserName: userProfile.name,
+      metaUserEmail: userProfile.email,
+    });
+
+    return buildMetaRedirectUrl(callbackState.returnPath ?? "/app/create", "select_page", {
+      session,
+      platform: callbackState.platform,
+    });
+  } catch (error) {
+    logWarn("Meta OAuth callback failed.", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return fallbackRedirectUrl;
+  }
+}
+
 export async function listSocialAccounts(
   principal: AuthenticatedPrincipal,
   businessId: string,
@@ -1334,6 +1784,191 @@ export async function listSocialAccounts(
   return {
     accounts: channels.map((channel) =>
       mapWorkspaceSocialAccount(channel, identitiesByAccountId.get(channel.id) ?? []),
+    ),
+  };
+}
+
+export async function resolveMetaAuthSession(
+  principal: AuthenticatedPrincipal,
+  input: {
+    businessId: string;
+    session: string;
+  },
+): Promise<MetaAuthSessionResponse> {
+  await enforceWorkspaceReadAccess(principal, input.businessId, "scheduler");
+  await requireBusinessMembership(principal, input.businessId);
+
+  const sessionPayload = decodeMetaAuthSession(input.session);
+
+  if (sessionPayload.businessId !== input.businessId || sessionPayload.userId !== principal.userId) {
+    throw new HttpError(403, "invalid_meta_session", "Meta page selection session does not match this workspace.");
+  }
+
+  return {
+    session: input.session,
+    pages: sessionPayload.pages.map(mapMetaPageCandidate),
+  };
+}
+
+export async function connectMetaSelectedPage(
+  principal: AuthenticatedPrincipal,
+  input: {
+    businessId: string;
+    session: string;
+    pageId: string;
+  },
+): Promise<SelectMetaPageResponse> {
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId: input.businessId,
+    featureKey: "scheduler",
+  });
+  await requireBusinessMembership(principal, input.businessId);
+
+  if (!principal.userId) {
+    throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
+  }
+  const principalUserId = principal.userId;
+
+  const sessionPayload = decodeMetaAuthSession(input.session);
+
+  if (sessionPayload.businessId !== input.businessId || sessionPayload.userId !== principal.userId) {
+    throw new HttpError(403, "invalid_meta_session", "Meta page selection session does not match this workspace.");
+  }
+
+  const selectedPage = sessionPayload.pages.find((page) => page.pageId === input.pageId);
+
+  if (!selectedPage) {
+    throw new HttpError(404, "meta_page_not_found", "Selected Facebook page was not found in this session.");
+  }
+
+  await withDbTransaction(async (client) => {
+    const existingChannelResult = await client.query<{ social_account_id: string }>(
+      `
+        select social_account_id
+        from business_social_channels
+        where business_id = $1::uuid
+          and platform = 'facebook'
+        limit 1
+      `,
+      [input.businessId],
+    );
+    const previousSocialAccountId = existingChannelResult.rows[0]?.social_account_id ?? null;
+
+    const socialAccount = await upsertSocialAccount(client, {
+      businessId: input.businessId,
+      userId: principalUserId,
+      platform: "facebook",
+      platformUserId: selectedPage.pageId,
+      platformUserUrn: `urn:facebook:page:${selectedPage.pageId}`,
+      accountEmail: sessionPayload.metaUserEmail,
+      accessToken: selectedPage.pageAccessToken,
+      refreshToken: sessionPayload.userAccessToken,
+      tokenExpiresAt: sessionPayload.userTokenExpiresAt
+        ? new Date(sessionPayload.userTokenExpiresAt)
+        : undefined,
+      refreshTokenExpiresAt: sessionPayload.userTokenExpiresAt
+        ? new Date(sessionPayload.userTokenExpiresAt)
+        : undefined,
+      scopes: resolveMetaScopes(),
+      metadata: {
+        connectedVia: "meta_page_selection",
+        pageId: selectedPage.pageId,
+        pageName: selectedPage.pageName,
+        pagePictureUrl: selectedPage.pictureUrl ?? null,
+        pageTasks: selectedPage.tasks,
+        metaUserId: sessionPayload.metaUserId ?? null,
+        metaUserName: sessionPayload.metaUserName ?? null,
+        metaUserEmail: sessionPayload.metaUserEmail ?? null,
+        instagramBusinessAccountId: selectedPage.instagramBusinessAccountId ?? null,
+        instagramUsername: selectedPage.instagramUsername ?? null,
+        instagramDisplayName: selectedPage.instagramDisplayName ?? null,
+        instagramProfilePictureUrl: selectedPage.instagramProfilePictureUrl ?? null,
+      },
+    });
+
+    const pageIdentity = await upsertSocialAccountIdentity(client, {
+      socialAccountId: socialAccount.id,
+      platform: "facebook",
+      identityType: "page",
+      platformIdentityId: selectedPage.pageId,
+      platformIdentityUrn: `urn:facebook:page:${selectedPage.pageId}`,
+      displayName: selectedPage.pageName,
+      avatarUrl: selectedPage.pictureUrl,
+      metadata: {
+        tasks: selectedPage.tasks,
+      },
+    });
+
+    if (selectedPage.instagramBusinessAccountId) {
+      await upsertSocialAccountIdentity(client, {
+        socialAccountId: socialAccount.id,
+        platform: "instagram",
+        identityType: "organization",
+        platformIdentityId: selectedPage.instagramBusinessAccountId,
+        platformIdentityUrn: `urn:instagram:business:${selectedPage.instagramBusinessAccountId}`,
+        displayName:
+          selectedPage.instagramDisplayName
+          || selectedPage.instagramUsername
+          || `Instagram ${selectedPage.instagramBusinessAccountId}`,
+        avatarUrl: selectedPage.instagramProfilePictureUrl,
+        metadata: {
+          username: selectedPage.instagramUsername ?? null,
+          pageId: selectedPage.pageId,
+        },
+      });
+    }
+
+    await upsertBusinessSocialChannel(client, {
+      businessId: input.businessId,
+      platform: "facebook",
+      socialAccountId: socialAccount.id,
+      selectedIdentityId: pageIdentity.id,
+      status: "connected",
+      metadata: {
+        connectedAt: new Date().toISOString(),
+        connectedAccountLabel: selectedPage.pageName,
+        instagramBusinessAccountId: selectedPage.instagramBusinessAccountId ?? null,
+        instagramUsername: selectedPage.instagramUsername ?? null,
+      },
+    });
+
+    if (previousSocialAccountId && previousSocialAccountId !== socialAccount.id) {
+      await client.query(
+        `
+          delete from social_accounts sa
+          where sa.id = $1::uuid
+            and not exists (
+              select 1
+              from business_social_channels bsc
+              where bsc.social_account_id = sa.id
+            )
+        `,
+        [previousSocialAccountId],
+      );
+    }
+  });
+
+  const channels = await loadWorkspaceSocialAccountChannels(input.businessId, "facebook");
+  const updatedChannel = channels[0];
+
+  if (!updatedChannel) {
+    throw new HttpError(404, "social_account_not_found", "Meta social account was not found.");
+  }
+
+  const identitiesByAccountId = await loadSocialAccountIdentitiesByAccountIds([updatedChannel.id]);
+
+  logInfo("Connected Meta social account.", {
+    businessId: input.businessId,
+    userId: principal.userId,
+    pageId: selectedPage.pageId,
+    instagramBusinessAccountId: selectedPage.instagramBusinessAccountId ?? null,
+  });
+
+  return {
+    account: mapWorkspaceSocialAccount(
+      updatedChannel,
+      identitiesByAccountId.get(updatedChannel.id) ?? [],
     ),
   };
 }
@@ -1585,5 +2220,184 @@ export async function getLinkedInPublishingCredentialsForBusiness(input: {
     selectedIdentityUrn: resolvedIdentity.platform_identity_urn,
     selectedIdentityType: resolvedIdentity.identity_type,
     selectedIdentityName: resolvedIdentity.display_name,
+  };
+}
+
+export async function getMetaPublishingCredentialsForBusiness(input: {
+  businessId: string;
+  channel: "facebook" | "instagram";
+  socialAccountId?: string | null;
+  socialAccountIdentityId?: string | null;
+}): Promise<MetaPublishingCredentials> {
+  let account = input.socialAccountId ? await loadSocialAccountById(input.socialAccountId) : null;
+  let selectedIdentity = input.socialAccountIdentityId
+    ? await loadSocialAccountIdentityById(input.socialAccountIdentityId)
+    : null;
+
+  if (!account && selectedIdentity) {
+    account = await loadSocialAccountById(selectedIdentity.social_account_id);
+  }
+
+  if (
+    account?.platform !== "facebook"
+    || account.business_id !== input.businessId
+    || account.status !== "connected"
+  ) {
+    account = null;
+  }
+
+  if (account) {
+    const channel = await loadWorkspaceSocialChannelByAccountId(input.businessId, account.id);
+
+    if (!channel || channel.platform !== "facebook" || channel.status !== "connected") {
+      account = null;
+    }
+  }
+
+  if (!account || !selectedIdentity || selectedIdentity.social_account_id !== account.id) {
+    const channels = (await loadWorkspaceSocialAccountChannels(input.businessId, "facebook")).filter(
+      (channel) => channel.channel_status === "connected" && channel.account_status === "connected",
+    );
+    const channel = channels[0];
+
+    if (!channel) {
+      throw new HttpError(
+        409,
+        input.channel === "facebook" ? "facebook_not_connected" : "instagram_not_connected",
+        input.channel === "facebook"
+          ? "Connect a Facebook Page before publishing."
+          : "Connect a Facebook Page with a linked Instagram business account before publishing.",
+      );
+    }
+
+    account = account ?? {
+      id: channel.id,
+      business_id: channel.business_id,
+      user_id: channel.user_id,
+      platform: channel.platform,
+      platform_user_id: channel.platform_user_id,
+      platform_user_urn: channel.platform_user_urn,
+      account_email: channel.account_email,
+      access_token: channel.access_token,
+      refresh_token: channel.refresh_token,
+      token_expires_at: channel.token_expires_at,
+      refresh_token_expires_at: channel.refresh_token_expires_at,
+      scope: channel.scope,
+      status: channel.account_status,
+      metadata_json: channel.account_metadata_json,
+      created_at: channel.account_created_at,
+      updated_at: channel.account_updated_at,
+    };
+
+    const identitiesByAccountId = await loadSocialAccountIdentitiesByAccountIds([account.id]);
+    const availableIdentities = identitiesByAccountId.get(account.id) ?? [];
+    selectedIdentity =
+      input.channel === "facebook"
+        ? availableIdentities.find((identity) =>
+          identity.platform === "facebook" && identity.id === (input.socialAccountIdentityId ?? channel.selected_identity_id),
+        ) ?? availableIdentities.find((identity) => identity.platform === "facebook") ?? null
+        : pickInstagramIdentity(
+          availableIdentities,
+          input.socialAccountIdentityId ?? channel.selected_identity_id,
+        );
+  }
+
+  if (!account) {
+    throw new HttpError(
+      409,
+      input.channel === "facebook" ? "facebook_not_connected" : "instagram_not_connected",
+      input.channel === "facebook"
+        ? "Connect a Facebook Page before publishing."
+        : "Connect a Facebook Page with a linked Instagram business account before publishing.",
+    );
+  }
+
+  const metadata = toJsonRecord(account.metadata_json);
+  const encryptedPageAccessToken = account.access_token?.trim();
+  const encryptedUserAccessToken = account.refresh_token?.trim();
+
+  if (!encryptedPageAccessToken && !encryptedUserAccessToken) {
+    throw new HttpError(
+      409,
+      input.channel === "facebook" ? "facebook_not_connected" : "instagram_not_connected",
+      "The connected Facebook Page is missing a usable Meta access token.",
+    );
+  }
+
+  const pageAccessToken = encryptedPageAccessToken
+    ? decryptSecret(encryptedPageAccessToken, SOCIAL_ACCOUNT_ENCRYPTION_SECRET_NAME)
+    : undefined;
+  const userAccessToken = encryptedUserAccessToken
+    ? decryptSecret(encryptedUserAccessToken, SOCIAL_ACCOUNT_ENCRYPTION_SECRET_NAME)
+    : undefined;
+  const accessToken = pageAccessToken ?? userAccessToken;
+
+  if (!accessToken) {
+    throw new HttpError(
+      409,
+      input.channel === "facebook" ? "facebook_not_connected" : "instagram_not_connected",
+      "The connected Facebook Page is missing a usable Meta access token.",
+    );
+  }
+
+  const pageIdentity =
+    selectedIdentity?.platform === "facebook"
+      ? selectedIdentity
+      : null;
+  const pageId =
+    pageIdentity?.platform_identity_id ||
+    (typeof metadata.pageId === "string" && metadata.pageId.trim() !== ""
+      ? metadata.pageId.trim()
+      : account.platform_user_id);
+  const pageName =
+    pageIdentity?.display_name ||
+    (typeof metadata.pageName === "string" && metadata.pageName.trim() !== ""
+      ? metadata.pageName.trim()
+      : undefined);
+  const instagramBusinessAccountId =
+    selectedIdentity?.platform === "instagram"
+      ? selectedIdentity.platform_identity_id
+      : typeof metadata.instagramBusinessAccountId === "string"
+        ? metadata.instagramBusinessAccountId.trim()
+        : "";
+  const instagramUsername =
+    selectedIdentity?.platform === "instagram" && typeof selectedIdentity.metadata_json?.username === "string"
+      ? selectedIdentity.metadata_json.username
+      : typeof metadata.instagramUsername === "string" && metadata.instagramUsername.trim() !== ""
+        ? metadata.instagramUsername.trim()
+        : undefined;
+
+  if (input.channel === "facebook" && !pageId) {
+    throw new HttpError(
+      409,
+      "facebook_not_connected",
+      "The connected Meta account is missing a usable Facebook Page identity.",
+    );
+  }
+
+  if (input.channel === "instagram" && !instagramBusinessAccountId) {
+    throw new HttpError(
+      409,
+      "instagram_not_connected",
+      "The connected Facebook Page does not have a linked Instagram business account.",
+    );
+  }
+
+  return {
+    accountId: account.id,
+    businessId: input.businessId,
+    userId: account.user_id,
+    pageId,
+    pageName,
+    accessToken,
+    pageAccessToken: pageAccessToken ?? accessToken,
+    userAccessToken,
+    pageIdentityId: pageIdentity?.id,
+    pageIdentityUrn: pageIdentity?.platform_identity_urn,
+    pageIdentityName: pageIdentity?.display_name,
+    instagramUserId: instagramBusinessAccountId || undefined,
+    instagramBusinessAccountId: instagramBusinessAccountId || undefined,
+    instagramIdentityId: selectedIdentity?.platform === "instagram" ? selectedIdentity.id : undefined,
+    instagramUsername,
   };
 }

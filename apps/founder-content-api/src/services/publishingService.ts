@@ -1,11 +1,16 @@
 import { Buffer } from "node:buffer";
+import { isIP } from "node:net";
 import type { PostAsset, ScheduledPostSlide } from "../../../../packages/shared-types/index.ts";
 import { HttpError } from "../utils/http.ts";
-import { downloadPostAssetBytes } from "./postAssetService.ts";
-import { getLinkedInPublishingCredentialsForBusiness } from "./socialAuthService.ts";
+import { createPostAssetDownloadUrl, downloadPostAssetBytes } from "./postAssetService.ts";
+import {
+  getLinkedInPublishingCredentialsForBusiness,
+  getMetaPublishingCredentialsForBusiness,
+} from "./socialAuthService.ts";
 
 const LINKEDIN_IMAGES_API_URL = "https://api.linkedin.com/rest/images";
 const LINKEDIN_POSTS_API_URL = "https://api.linkedin.com/rest/posts";
+const META_GRAPH_BASE_URL = "https://graph.facebook.com";
 
 interface LinkedInImageInitializationResponse {
   value?: {
@@ -22,11 +27,200 @@ interface LinkedInErrorPayload {
 
 interface LinkedInPostCreationResult {
   externalPostId: string;
+  externalPostUrl?: string;
   response: Record<string, unknown>;
+}
+
+interface MetaGraphErrorPayload {
+  error?: {
+    message?: string;
+    error_user_msg?: string;
+  };
+  message?: string;
+}
+
+interface MetaInstagramContainerStatusPayload {
+  status_code?: string;
+  status?: string;
+}
+
+interface MetaInstagramMediaPayload {
+  id?: string;
+  permalink?: string;
+}
+
+interface MetaFacebookPhotoPayload {
+  id?: string;
+  post_id?: string;
+}
+
+interface MetaFacebookVideoPayload {
+  id?: string;
+  post_id?: string;
+  success?: boolean;
+}
+
+interface MetaFacebookPostPayload {
+  id?: string;
+  permalink_url?: string;
+}
+
+export type PublishingChannel = "linkedin" | "instagram" | "facebook" | "x";
+
+export interface PublishPlatformPostInput {
+  channel: PublishingChannel;
+  businessId: string;
+  contentText: string;
+  assets?: PostAsset[];
+  slides?: ScheduledPostSlide[];
+  socialAccountId?: string | null;
+  socialAccountIdentityId?: string | null;
+}
+
+export interface PublishMediaValidationSummary {
+  totalCount: number;
+  imageCount: number;
+  videoCount: number;
+  slideCount: number;
+}
+
+function countPostAssetsByType(assets: PostAsset[]): { imageCount: number; videoCount: number } {
+  let imageCount = 0;
+  let videoCount = 0;
+
+  for (const asset of assets) {
+    if (asset.type === "image") {
+      imageCount += 1;
+      continue;
+    }
+
+    if (asset.type === "video") {
+      videoCount += 1;
+    }
+  }
+
+  return { imageCount, videoCount };
+}
+
+function resolvePublishingChannelLabel(channel: "linkedin" | "facebook" | "instagram"): string {
+  switch (channel) {
+    case "linkedin":
+      return "LinkedIn";
+    case "facebook":
+      return "Facebook";
+    case "instagram":
+      return "Instagram";
+  }
+}
+
+export function validatePublishMediaForChannel(input: {
+  channel: "linkedin" | "facebook" | "instagram";
+  assets?: PostAsset[];
+  slides?: ScheduledPostSlide[];
+}): PublishMediaValidationSummary {
+  const assets = input.assets ?? [];
+  const slides = input.slides ?? [];
+  const { imageCount, videoCount } = countPostAssetsByType(assets);
+  const slideCount = slides.length;
+  const totalCount = imageCount + videoCount + slideCount;
+  const channelLabel = resolvePublishingChannelLabel(input.channel);
+
+  if (imageCount > 0 && videoCount > 0) {
+    throw new HttpError(
+      400,
+      "mixed_assets_not_supported",
+      "Mixed image and video drafts are not publishable yet. Use only one media type per post.",
+    );
+  }
+
+  if (assets.length > 0 && slideCount > 0) {
+    throw new HttpError(
+      400,
+      "mixed_asset_sources_not_supported",
+      "Publishing does not support mixing attached assets and slide payloads in one request.",
+    );
+  }
+
+  if (videoCount > 0) {
+    if (input.channel === "linkedin") {
+      throw new HttpError(
+        400,
+        "unsupported_asset_type",
+        "Video is publishable on Instagram and Facebook. LinkedIn video support is coming soon.",
+      );
+    }
+
+    if (slideCount > 0) {
+      throw new HttpError(
+        400,
+        "mixed_asset_sources_not_supported",
+        "Publishing does not support mixing attached assets and slide payloads in one request.",
+      );
+    }
+
+    if (videoCount !== 1) {
+      throw new HttpError(
+        400,
+        input.channel === "instagram" ? "instagram_invalid_video_count" : "facebook_invalid_video_count",
+        `${channelLabel} video publishing currently supports exactly one ready video asset per post.`,
+      );
+    }
+  }
+
+  if (input.channel === "instagram") {
+    if (slideCount > 0) {
+      throw new HttpError(
+        400,
+        "instagram_asset_conversion_required",
+        "Instagram publishing currently requires attached image assets instead of slide payloads.",
+      );
+    }
+
+    if (videoCount === 0 && (imageCount < 1 || imageCount > 10)) {
+      throw new HttpError(
+        400,
+        "instagram_invalid_image_count",
+        "Instagram publishing requires between 1 and 10 ready image assets.",
+      );
+    }
+  }
+
+  if (input.channel === "facebook" && videoCount === 0 && totalCount > 10) {
+    throw new HttpError(
+      400,
+      "facebook_invalid_image_count",
+      "Facebook publishing supports up to 10 images per post.",
+    );
+  }
+
+  if (input.channel === "linkedin" && totalCount > 20) {
+    throw new HttpError(
+      400,
+      "invalid_image_count",
+      "LinkedIn image posts support at most 20 images.",
+    );
+  }
+
+  return {
+    totalCount,
+    imageCount,
+    videoCount,
+    slideCount,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function resolveLinkedInApiVersion(): string {
   return process.env.LINKEDIN_API_VERSION?.trim() || "202602";
+}
+
+function resolveMetaGraphVersion(): string {
+  return process.env.META_GRAPH_VERSION?.trim() || "v21.0";
 }
 
 function buildLinkedInHeaders(
@@ -41,6 +235,202 @@ function buildLinkedInHeaders(
   };
 }
 
+function buildMetaGraphUrl(path: string): string {
+  return `${META_GRAPH_BASE_URL}/${resolveMetaGraphVersion()}/${path.replace(/^\/+/, "")}`;
+}
+
+function isPrivateIpAddress(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+
+  if (normalized === "::1") {
+    return true;
+  }
+
+  if (normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:")) {
+    return true;
+  }
+
+  const version = isIP(normalized);
+
+  if (version !== 4) {
+    return false;
+  }
+
+  const octets = normalized.split(".").map((segment) => Number(segment));
+  const [first, second] = octets;
+
+  return (
+    first === 0
+    || first === 10
+    || first === 127
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168)
+    || (first === 198 && (second === 18 || second === 19))
+  );
+}
+
+function assertPublicHttpsUrl(value: string, message: string, errorCode = "instagram_image_url_not_public"): void {
+  let parsed: URL;
+
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new HttpError(400, errorCode, message);
+  }
+
+  const hostname = parsed.hostname.trim().toLowerCase();
+
+  if (
+    parsed.protocol !== "https:"
+    || !hostname
+    || hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname.endsWith(".local")
+    || hostname.endsWith(".internal")
+    || hostname.endsWith(".test")
+    || hostname.endsWith(".example")
+    || hostname.endsWith(".invalid")
+    || isPrivateIpAddress(hostname)
+    || (isIP(hostname) === 0 && !hostname.includes("."))
+  ) {
+    throw new HttpError(400, errorCode, message);
+  }
+}
+
+function buildLinkedInExternalPostUrl(externalPostId: string): string {
+  return `https://www.linkedin.com/feed/update/${encodeURIComponent(externalPostId)}`;
+}
+
+function buildFacebookExternalPostUrl(externalPostId: string): string {
+  return `https://www.facebook.com/${encodeURIComponent(externalPostId)}`;
+}
+
+function extractMetaGraphErrorMessage(payload: MetaGraphErrorPayload, fallbackMessage: string): string {
+  return (
+    payload.error?.error_user_msg?.trim()
+    || payload.error?.message?.trim()
+    || payload.message?.trim()
+    || fallbackMessage
+  );
+}
+
+async function postMetaGraphForm<TPayload extends MetaGraphErrorPayload>(
+  path: string,
+  accessToken: string,
+  params: Record<string, string | undefined>,
+  options?: {
+    errorCode?: string;
+    fallbackMessage?: string;
+  },
+): Promise<TPayload> {
+  const body = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string" && value.trim() !== "") {
+      body.set(key, value);
+    }
+  }
+
+  body.set("access_token", accessToken);
+
+  const response = await fetch(buildMetaGraphUrl(path), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body,
+  });
+  const payload = (await response.json().catch(() => ({}))) as TPayload;
+
+  if (!response.ok || payload.error?.message) {
+    throw new HttpError(
+      502,
+      options?.errorCode ?? "instagram_post_failed",
+      extractMetaGraphErrorMessage(payload, options?.fallbackMessage ?? "Meta Graph request failed."),
+    );
+  }
+
+  return payload;
+}
+
+async function getMetaGraphJson<TPayload extends MetaGraphErrorPayload>(
+  path: string,
+  accessToken: string,
+  params: Record<string, string | undefined>,
+  options?: {
+    errorCode?: string;
+    fallbackMessage?: string;
+  },
+): Promise<TPayload> {
+  const url = new URL(buildMetaGraphUrl(path));
+
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string" && value.trim() !== "") {
+      url.searchParams.set(key, value);
+    }
+  }
+
+  url.searchParams.set("access_token", accessToken);
+
+  const response = await fetch(url.toString());
+  const payload = (await response.json().catch(() => ({}))) as TPayload;
+
+  if (!response.ok || payload.error?.message) {
+    throw new HttpError(
+      502,
+      options?.errorCode ?? "instagram_post_failed",
+      extractMetaGraphErrorMessage(payload, options?.fallbackMessage ?? "Meta Graph request failed."),
+    );
+  }
+
+  return payload;
+}
+
+async function postMetaGraphMultipart<TPayload extends MetaGraphErrorPayload>(
+  path: string,
+  accessToken: string,
+  params: Record<string, string | undefined>,
+  file: {
+    fieldName: string;
+    bytes: Buffer;
+    mimeType: string;
+    fileName: string;
+  },
+  options?: {
+    errorCode?: string;
+    fallbackMessage?: string;
+  },
+): Promise<TPayload> {
+  const body = new FormData();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === "string" && value.trim() !== "") {
+      body.set(key, value);
+    }
+  }
+
+  body.set("access_token", accessToken);
+  body.set(file.fieldName, new Blob([file.bytes], { type: file.mimeType }), file.fileName);
+
+  const response = await fetch(buildMetaGraphUrl(path), {
+    method: "POST",
+    body,
+  });
+  const payload = (await response.json().catch(() => ({}))) as TPayload;
+
+  if (!response.ok || payload.error?.message) {
+    throw new HttpError(
+      502,
+      options?.errorCode ?? "facebook_post_failed",
+      extractMetaGraphErrorMessage(payload, options?.fallbackMessage ?? "Meta Graph request failed."),
+    );
+  }
+
+  return payload;
+}
+
 function parseDataUrl(dataUrl: string): { mimeType: string; bytes: Buffer } {
   const match = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl.trim());
 
@@ -52,6 +442,19 @@ function parseDataUrl(dataUrl: string): { mimeType: string; bytes: Buffer } {
     mimeType: match[1].toLowerCase(),
     bytes: Buffer.from(match[2], "base64"),
   };
+}
+
+function resolveImageFileName(mimeType: string): string {
+  switch (mimeType) {
+    case "image/jpeg":
+      return "upload.jpg";
+    case "image/png":
+      return "upload.png";
+    case "image/gif":
+      return "upload.gif";
+    default:
+      return "upload.bin";
+  }
 }
 
 function buildBaseLinkedInPostPayload(authorUrn: string, commentary: string): Record<string, unknown> {
@@ -135,8 +538,10 @@ async function createLinkedInPost(
 
   return {
     externalPostId,
+    externalPostUrl: buildLinkedInExternalPostUrl(externalPostId),
     response: {
       externalPostId,
+      externalPostUrl: buildLinkedInExternalPostUrl(externalPostId),
     },
   };
 }
@@ -146,7 +551,7 @@ function ensureSupportedLinkedInImageType(mimeType: string): void {
     throw new HttpError(
       400,
       "unsupported_slide_format",
-      "LinkedIn multi-image posts support PNG, JPG, and GIF uploads only.",
+      "Image uploads support PNG, JPG, and GIF formats only.",
     );
   }
 }
@@ -380,4 +785,573 @@ export async function publishLinkedInTextPost(input: {
     credentials.accessToken,
     buildBaseLinkedInPostPayload(credentials.selectedIdentityUrn, contentText),
   );
+}
+
+async function publishLinkedInPost(input: PublishPlatformPostInput): Promise<LinkedInPostCreationResult> {
+  const assets = input.assets ?? [];
+  const slides = input.slides ?? [];
+
+  if (assets.length > 0) {
+    return publishLinkedInImagePost({
+      businessId: input.businessId,
+      contentText: input.contentText,
+      assets,
+      socialAccountId: input.socialAccountId,
+      socialAccountIdentityId: input.socialAccountIdentityId,
+    });
+  }
+
+  if (slides.length > 0) {
+    return publishLinkedInMultiImagePost({
+      businessId: input.businessId,
+      contentText: input.contentText,
+      slides,
+      socialAccountId: input.socialAccountId,
+      socialAccountIdentityId: input.socialAccountIdentityId,
+    });
+  }
+
+  return publishLinkedInTextPost({
+    businessId: input.businessId,
+    contentText: input.contentText,
+    socialAccountId: input.socialAccountId,
+    socialAccountIdentityId: input.socialAccountIdentityId,
+  });
+}
+
+async function waitForInstagramContainerReady(
+  creationId: string,
+  accessToken: string,
+): Promise<void> {
+  const maxPolls = 6;
+
+  for (let pollIndex = 0; pollIndex < maxPolls; pollIndex += 1) {
+    if (pollIndex > 0) {
+      await sleep(3000);
+    }
+
+    const statusPayload = await getMetaGraphJson<MetaInstagramContainerStatusPayload & MetaGraphErrorPayload>(
+      creationId,
+      accessToken,
+      { fields: "status_code,status" },
+      {
+        errorCode: "instagram_post_failed",
+        fallbackMessage: "Unable to inspect Instagram media processing status.",
+      },
+    );
+    const normalizedStatus =
+      statusPayload.status_code?.trim().toUpperCase()
+      || statusPayload.status?.trim().toUpperCase()
+      || "";
+
+    if (!normalizedStatus || normalizedStatus === "FINISHED") {
+      return;
+    }
+
+    if (normalizedStatus === "ERROR" || normalizedStatus === "EXPIRED") {
+      throw new HttpError(
+        502,
+        "instagram_post_failed",
+        "Instagram media processing failed before publish.",
+      );
+    }
+  }
+
+  throw new HttpError(
+    502,
+    "instagram_post_failed",
+    "Instagram media processing did not finish before publish.",
+  );
+}
+
+async function fetchInstagramMediaPermalink(
+  mediaId: string,
+  accessToken: string,
+): Promise<string> {
+  const payload = await getMetaGraphJson<MetaInstagramMediaPayload & MetaGraphErrorPayload>(
+    mediaId,
+    accessToken,
+    { fields: "id,permalink" },
+    {
+      errorCode: "instagram_post_failed",
+      fallbackMessage: "Unable to resolve the Instagram post permalink.",
+    },
+  );
+  const permalink = payload.permalink?.trim();
+
+  if (!permalink) {
+    throw new HttpError(
+      502,
+      "instagram_post_failed",
+      "Instagram publish succeeded without returning a permalink.",
+    );
+  }
+
+  return permalink;
+}
+
+function resolvePublicAssetUrl(
+  asset: Pick<PostAsset, "storageKey">,
+  message: string,
+  errorCode: string,
+): string {
+  const imageUrl = createPostAssetDownloadUrl(asset, 3600);
+  assertPublicHttpsUrl(imageUrl, message, errorCode);
+
+  return imageUrl;
+}
+
+async function createInstagramImageContainer(input: {
+  instagramUserId: string;
+  accessToken: string;
+  asset: PostAsset;
+  caption?: string;
+  isCarouselItem?: boolean;
+}): Promise<string> {
+  const imageUrl = resolvePublicAssetUrl(
+    input.asset,
+    "Instagram publishing requires a public HTTPS image URL.",
+    "instagram_image_url_not_public",
+  );
+  const creation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+    `${input.instagramUserId}/media`,
+    input.accessToken,
+    {
+      image_url: imageUrl,
+      caption: input.caption?.trim() || undefined,
+      is_carousel_item: input.isCarouselItem ? "true" : undefined,
+    },
+    {
+      errorCode: "instagram_post_failed",
+      fallbackMessage: "Instagram media container creation failed.",
+    },
+  );
+  const creationId = creation.id?.trim();
+
+  if (!creationId) {
+    throw new HttpError(
+      502,
+      "instagram_post_failed",
+      "Instagram media container creation did not return an id.",
+    );
+  }
+
+  await waitForInstagramContainerReady(creationId, input.accessToken);
+  return creationId;
+}
+
+async function createInstagramVideoContainer(input: {
+  instagramUserId: string;
+  accessToken: string;
+  asset: PostAsset;
+  caption?: string;
+}): Promise<string> {
+  const videoUrl = resolvePublicAssetUrl(
+    input.asset,
+    "Instagram publishing requires a public HTTPS video URL.",
+    "instagram_video_url_not_public",
+  );
+  const creation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+    `${input.instagramUserId}/media`,
+    input.accessToken,
+    {
+      video_url: videoUrl,
+      caption: input.caption?.trim() || undefined,
+    },
+    {
+      errorCode: "instagram_post_failed",
+      fallbackMessage: "Instagram video container creation failed.",
+    },
+  );
+  const creationId = creation.id?.trim();
+
+  if (!creationId) {
+    throw new HttpError(
+      502,
+      "instagram_post_failed",
+      "Instagram video container creation did not return an id.",
+    );
+  }
+
+  await waitForInstagramContainerReady(creationId, input.accessToken);
+  return creationId;
+}
+
+async function fetchFacebookPostPermalink(
+  postId: string,
+  accessToken: string,
+): Promise<string> {
+  const payload = await getMetaGraphJson<MetaFacebookPostPayload & MetaGraphErrorPayload>(
+    postId,
+    accessToken,
+    { fields: "id,permalink_url" },
+    {
+      errorCode: "facebook_post_failed",
+      fallbackMessage: "Unable to resolve the Facebook post permalink.",
+    },
+  );
+
+  return payload.permalink_url?.trim() || buildFacebookExternalPostUrl(postId);
+}
+
+async function uploadFacebookPhotoFromAsset(input: {
+  pageId: string;
+  accessToken: string;
+  asset: PostAsset;
+}): Promise<string> {
+  const imageUrl = resolvePublicAssetUrl(
+    input.asset,
+    "Facebook publishing requires a public HTTPS image URL.",
+    "facebook_image_url_not_public",
+  );
+  const payload = await postMetaGraphForm<MetaFacebookPhotoPayload & MetaGraphErrorPayload>(
+    `${input.pageId}/photos`,
+    input.accessToken,
+    {
+      url: imageUrl,
+      published: "false",
+    },
+    {
+      errorCode: "facebook_post_failed",
+      fallbackMessage: "Facebook photo upload failed.",
+    },
+  );
+  const photoId = payload.id?.trim();
+
+  if (!photoId) {
+    throw new HttpError(502, "facebook_post_failed", "Facebook photo upload did not return a media id.");
+  }
+
+  return photoId;
+}
+
+async function uploadFacebookPhotoFromSlide(input: {
+  pageId: string;
+  accessToken: string;
+  slide: ScheduledPostSlide;
+}): Promise<string> {
+  const parsed = parseDataUrl(input.slide.imageDataUrl);
+  ensureSupportedLinkedInImageType(parsed.mimeType);
+  const mimeType = input.slide.mimeType?.trim() || parsed.mimeType;
+  const payload = await postMetaGraphMultipart<MetaFacebookPhotoPayload & MetaGraphErrorPayload>(
+    `${input.pageId}/photos`,
+    input.accessToken,
+    {
+      published: "false",
+    },
+    {
+      fieldName: "source",
+      bytes: parsed.bytes,
+      mimeType,
+      fileName: resolveImageFileName(mimeType),
+    },
+    {
+      errorCode: "facebook_post_failed",
+      fallbackMessage: "Facebook photo upload failed.",
+    },
+  );
+  const photoId = payload.id?.trim();
+
+  if (!photoId) {
+    throw new HttpError(502, "facebook_post_failed", "Facebook photo upload did not return a media id.");
+  }
+
+  return photoId;
+}
+
+async function uploadFacebookVideoFromAsset(input: {
+  pageId: string;
+  accessToken: string;
+  asset: PostAsset;
+  description?: string;
+}): Promise<MetaFacebookVideoPayload> {
+  const videoUrl = resolvePublicAssetUrl(
+    input.asset,
+    "Facebook publishing requires a public HTTPS video URL.",
+    "facebook_video_url_not_public",
+  );
+  const payload = await postMetaGraphForm<MetaFacebookVideoPayload & MetaGraphErrorPayload>(
+    `${input.pageId}/videos`,
+    input.accessToken,
+    {
+      file_url: videoUrl,
+      description: input.description?.trim() || undefined,
+    },
+    {
+      errorCode: "facebook_post_failed",
+      fallbackMessage: "Facebook video upload failed.",
+    },
+  );
+
+  if (!payload.id?.trim() && !payload.post_id?.trim()) {
+    throw new HttpError(502, "facebook_post_failed", "Facebook video upload did not return an id.");
+  }
+
+  return payload;
+}
+
+async function publishInstagram(
+  input: PublishPlatformPostInput,
+): Promise<LinkedInPostCreationResult> {
+  const assets = input.assets ?? [];
+
+  const credentials = await getMetaPublishingCredentialsForBusiness({
+    businessId: input.businessId,
+    channel: "instagram",
+    socialAccountId: input.socialAccountId,
+    socialAccountIdentityId: input.socialAccountIdentityId,
+  });
+  const caption = input.contentText.trim();
+  const accessToken = credentials.accessToken;
+  const instagramUserId = credentials.instagramUserId;
+
+  if (!instagramUserId) {
+    throw new HttpError(
+      409,
+      "instagram_not_connected",
+      "The connected Facebook Page does not have a linked Instagram business account.",
+    );
+  }
+
+  const creationId =
+    assets.length === 1
+      ? await (assets[0].type === "video"
+        ? createInstagramVideoContainer({
+          instagramUserId,
+          accessToken,
+          asset: assets[0],
+          caption,
+        })
+        : createInstagramImageContainer({
+          instagramUserId,
+          accessToken,
+          asset: assets[0],
+          caption,
+        }))
+      : await (async () => {
+        const childCreationIds = [];
+
+        for (const asset of assets) {
+          childCreationIds.push(
+            await createInstagramImageContainer({
+              instagramUserId,
+              accessToken,
+              asset,
+              isCarouselItem: true,
+            }),
+          );
+        }
+
+        const parentCreation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+          `${instagramUserId}/media`,
+          accessToken,
+          {
+            media_type: "CAROUSEL",
+            children: childCreationIds.join(","),
+            caption: caption || undefined,
+          },
+          {
+            errorCode: "instagram_post_failed",
+            fallbackMessage: "Instagram carousel container creation failed.",
+          },
+        );
+        const parentCreationId = parentCreation.id?.trim();
+
+        if (!parentCreationId) {
+          throw new HttpError(
+            502,
+            "instagram_post_failed",
+            "Instagram carousel container creation did not return an id.",
+          );
+        }
+
+        await waitForInstagramContainerReady(parentCreationId, accessToken);
+        return parentCreationId;
+      })();
+
+  const publishPayload = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+    `${instagramUserId}/media_publish`,
+    accessToken,
+    {
+      creation_id: creationId,
+    },
+    {
+      errorCode: "instagram_post_failed",
+      fallbackMessage: "Instagram publish failed.",
+    },
+  );
+  const externalPostId = publishPayload.id?.trim();
+
+  if (!externalPostId) {
+    throw new HttpError(
+      502,
+      "instagram_post_failed",
+      "Instagram publish completed without returning a media id.",
+    );
+  }
+
+  const externalPostUrl = await fetchInstagramMediaPermalink(externalPostId, accessToken);
+
+  return {
+    externalPostId,
+    externalPostUrl,
+    response: {
+      externalPostId,
+      externalPostUrl,
+      creationId,
+      uploadedImageCount: assets.filter((asset) => asset.type === "image").length,
+      uploadedVideoCount: assets.filter((asset) => asset.type === "video").length,
+      instagramUserId,
+      instagramBusinessAccountId: credentials.instagramBusinessAccountId,
+    },
+  };
+}
+
+async function publishFacebook(
+  input: PublishPlatformPostInput,
+): Promise<LinkedInPostCreationResult> {
+  const assets = input.assets ?? [];
+  const slides = input.slides ?? [];
+  const imageCount = assets.length + slides.length;
+  const { videoCount } = countPostAssetsByType(assets);
+
+  const credentials = await getMetaPublishingCredentialsForBusiness({
+    businessId: input.businessId,
+    channel: "facebook",
+    socialAccountId: input.socialAccountId,
+    socialAccountIdentityId: input.socialAccountIdentityId,
+  });
+  const pageId = credentials.pageId;
+  const accessToken = credentials.pageAccessToken;
+  const contentText = input.contentText.trim();
+
+  if (videoCount === 1) {
+    const videoPayload = await uploadFacebookVideoFromAsset({
+      pageId,
+      accessToken,
+      asset: assets[0],
+      description: contentText,
+    });
+    const externalPostId = videoPayload.post_id?.trim() || videoPayload.id?.trim();
+
+    if (!externalPostId) {
+      throw new HttpError(502, "facebook_post_failed", "Facebook video publish did not return an id.");
+    }
+
+    const externalPostUrl = await fetchFacebookPostPermalink(externalPostId, accessToken);
+
+    return {
+      externalPostId,
+      externalPostUrl,
+      response: {
+        externalPostId,
+        externalPostUrl,
+        uploadedImageCount: 0,
+        uploadedVideoCount: 1,
+        videoId: videoPayload.id?.trim() || undefined,
+      },
+    };
+  }
+
+  if (imageCount === 0) {
+    const payload = await postMetaGraphForm<MetaFacebookPostPayload & MetaGraphErrorPayload>(
+      `${pageId}/feed`,
+      accessToken,
+      {
+        message: contentText,
+      },
+      {
+        errorCode: "facebook_post_failed",
+        fallbackMessage: "Facebook post creation failed.",
+      },
+    );
+    const externalPostId = payload.id?.trim();
+
+    if (!externalPostId) {
+      throw new HttpError(502, "facebook_post_failed", "Facebook post creation did not return an id.");
+    }
+
+    return {
+      externalPostId,
+      externalPostUrl: await fetchFacebookPostPermalink(externalPostId, accessToken),
+      response: {
+        externalPostId,
+        externalPostUrl: await fetchFacebookPostPermalink(externalPostId, accessToken),
+        uploadedImageCount: 0,
+      },
+    };
+  }
+
+  const mediaIds = [];
+
+  for (const asset of assets) {
+    mediaIds.push(await uploadFacebookPhotoFromAsset({ pageId, accessToken, asset }));
+  }
+
+  for (const slide of slides) {
+    mediaIds.push(await uploadFacebookPhotoFromSlide({ pageId, accessToken, slide }));
+  }
+
+  const feedPayload = await postMetaGraphForm<MetaFacebookPostPayload & MetaGraphErrorPayload>(
+    `${pageId}/feed`,
+    accessToken,
+    Object.fromEntries([
+      ["message", contentText || undefined],
+      ...mediaIds.map((mediaId, index) => [
+        `attached_media[${index}]`,
+        JSON.stringify({ media_fbid: mediaId }),
+      ]),
+    ]),
+    {
+      errorCode: "facebook_post_failed",
+      fallbackMessage: "Facebook post creation failed.",
+    },
+  );
+  const externalPostId = feedPayload.id?.trim();
+
+  if (!externalPostId) {
+    throw new HttpError(502, "facebook_post_failed", "Facebook post creation did not return an id.");
+  }
+
+  const externalPostUrl = await fetchFacebookPostPermalink(externalPostId, accessToken);
+
+  return {
+    externalPostId,
+    externalPostUrl,
+    response: {
+      externalPostId,
+      externalPostUrl,
+      uploadedImageCount: mediaIds.length,
+      uploadedVideoCount: 0,
+    },
+  };
+}
+
+export async function publishPlatformPost(
+  input: PublishPlatformPostInput,
+): Promise<{ externalPostId: string; externalPostUrl?: string; response: Record<string, unknown> }> {
+  if (input.channel === "linkedin" || input.channel === "instagram" || input.channel === "facebook") {
+    validatePublishMediaForChannel({
+      channel: input.channel,
+      assets: input.assets,
+      slides: input.slides,
+    });
+  }
+
+  switch (input.channel) {
+    case "linkedin":
+      return publishLinkedInPost(input);
+    case "instagram":
+      return publishInstagram(input);
+    case "facebook":
+      return publishFacebook(input);
+    case "x":
+      throw new HttpError(
+        501,
+        "publishing_channel_not_supported",
+        `Publishing to ${input.channel} is not supported yet.`,
+      );
+    default:
+      throw new HttpError(400, "bad_request", "Unsupported publishing channel.");
+  }
 }

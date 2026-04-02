@@ -12,6 +12,7 @@ interface PublishedPostNotificationRow extends QueryResultRow {
   owner_full_name: string;
   notify_post_published: boolean;
   scheduled_post_id: string;
+  platform: string;
   content_text: string;
   published_at: Date | string | null;
   external_post_url: string | null;
@@ -70,6 +71,7 @@ function formatDateTime(value: Date | string, timeZone: string): string {
 
 function buildHtmlBody(input: {
   ownerFirstName: string;
+  platformLabel: string;
   publishedTitle: string;
   publishedAtLabel: string;
   externalPostUrl?: string | null;
@@ -78,7 +80,7 @@ function buildHtmlBody(input: {
   plannerUrl?: string | null;
 }): string {
   const viewPostMarkup = input.externalPostUrl
-    ? `<p><a href="${escapeHtml(input.externalPostUrl)}">View post on LinkedIn</a></p>`
+    ? `<p><a href="${escapeHtml(input.externalPostUrl)}">View post on ${escapeHtml(input.platformLabel)}</a></p>`
     : "";
   const nextScheduledMarkup =
     input.nextScheduledAtLabel && input.nextScheduledPreview
@@ -100,7 +102,7 @@ function buildHtmlBody(input: {
   return `
     <div style="font-family:Inter,Arial,sans-serif;color:#241d19;line-height:1.6;">
       <p>Hey ${escapeHtml(input.ownerFirstName)},</p>
-      <p>Your LinkedIn post is now live.</p>
+      <p>Your ${escapeHtml(input.platformLabel)} post is now live.</p>
       <p><strong>Post</strong><br />${escapeHtml(input.publishedTitle)}</p>
       <p><strong>Published at</strong><br />${escapeHtml(input.publishedAtLabel)}</p>
       ${viewPostMarkup}
@@ -114,6 +116,7 @@ function buildHtmlBody(input: {
 
 function buildTextBody(input: {
   ownerFirstName: string;
+  platformLabel: string;
   publishedTitle: string;
   publishedAtLabel: string;
   externalPostUrl?: string | null;
@@ -124,7 +127,7 @@ function buildTextBody(input: {
   const lines = [
     `Hey ${input.ownerFirstName},`,
     "",
-    "Your LinkedIn post is now live.",
+    `Your ${input.platformLabel} post is now live.`,
     "",
     `Post: ${input.publishedTitle}`,
     `Published at: ${input.publishedAtLabel}`,
@@ -158,6 +161,7 @@ export async function sendScheduledPostPublishedNotification(
       select
         sp.id as scheduled_post_id,
         sp.business_id,
+        sp.platform,
         sp.content_text,
         sp.published_at,
         sp.external_post_url,
@@ -229,6 +233,12 @@ export async function sendScheduledPostPublishedNotification(
   const ownerFirstName =
     publishedPost.owner_full_name.trim().split(/\s+/).find((segment) => segment !== "") ?? "there";
   const publishedTitle = excerptContent(publishedPost.content_text);
+  const platformLabel =
+    publishedPost.platform === "instagram"
+      ? "Instagram"
+      : publishedPost.platform === "facebook"
+        ? "Facebook"
+        : "LinkedIn";
   const publishedAtLabel = formatDateTime(
     publishedPost.published_at ?? new Date().toISOString(),
     displayTimeZone,
@@ -242,9 +252,10 @@ export async function sendScheduledPostPublishedNotification(
     fromEmail: process.env.SYSTEM_FROM_EMAIL?.trim() || "notifications@foundercontent.ai",
     fromName: "FounderContent",
     toEmail: publishedPost.owner_email,
-    subject: "Your LinkedIn post is live",
+    subject: `Your ${platformLabel} post is live`,
     htmlBody: buildHtmlBody({
       ownerFirstName,
+      platformLabel,
       publishedTitle,
       publishedAtLabel,
       externalPostUrl: publishedPost.external_post_url,
@@ -254,6 +265,7 @@ export async function sendScheduledPostPublishedNotification(
     }),
     textBody: buildTextBody({
       ownerFirstName,
+      platformLabel,
       publishedTitle,
       publishedAtLabel,
       externalPostUrl: publishedPost.external_post_url,

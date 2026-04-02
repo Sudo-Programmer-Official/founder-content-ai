@@ -3,6 +3,8 @@ import type {
   ConfirmContentBatchRequest,
   ConfirmContentBatchResponse,
   ContentBatch,
+  ContentChannel,
+  ContentDistributionGroup,
   ContentBatchSpacing,
   ContentItem,
   ContentVariant,
@@ -16,9 +18,10 @@ import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { generatePostsWithAI } from "./aiService.ts";
 import { createContentAssetRecord, safeLogContentGeneration, safeLogEvent } from "./analytics/eventLoggingService.ts";
 import { resolveContentGenerationTone } from "./contentGenerationToneService.ts";
+import { safeRecordContentGenerationSuggestionScheduled } from "./contentGenerationFeedbackService.ts";
 import { queryDb, withDbTransaction } from "./db/client.ts";
 import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "./governanceService.ts";
-import { createScheduledPost } from "./scheduledPostService.ts";
+import { createScheduledPostInTransaction } from "./scheduledPostService.ts";
 import { HttpError } from "../utils/http.ts";
 
 interface ContentBatchRow extends QueryResultRow {
@@ -64,6 +67,7 @@ interface ContentVariantRow extends QueryResultRow {
   source: "generated" | "manual" | "remix";
   status: ContentVariant["status"];
   is_customized: boolean;
+  metadata_json: unknown;
   created_at: Date | string;
   updated_at: Date | string;
 }
@@ -73,6 +77,7 @@ interface ScheduleItemRow extends QueryResultRow {
   business_id: string;
   content_item_id: string;
   variant_id: string;
+  distribution_group_id: string | null;
   channel: "linkedin" | "instagram" | "facebook" | "email";
   lane: "social" | "email";
   scheduled_date: Date | string;
@@ -85,6 +90,20 @@ interface ScheduleItemRow extends QueryResultRow {
   created_at: Date | string;
   updated_at: Date | string;
   published_at: Date | string | null;
+}
+
+interface ContentDistributionGroupRow extends QueryResultRow {
+  id: string;
+  business_id: string;
+  content_item_id: string;
+  primary_variant_id: string | null;
+  lane: "social" | "email";
+  title: string | null;
+  status: ContentDistributionGroup["status"];
+  editable_until: Date | string | null;
+  published_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
 function toIsoString(value: Date | string | null | undefined): string | undefined {
@@ -144,6 +163,69 @@ function parseMedia(value: unknown): { images: string[]; videos: string[] } {
   return { images, videos };
 }
 
+function toJsonRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function parseOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function parseOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function parseVariantMetadata(value: unknown): ContentVariant["metadata"] | undefined {
+  const record = toJsonRecord(value);
+  const adaptationRecord = toJsonRecord(record.adaptation);
+  const aspectRatio = adaptationRecord.aspectRatio === "1:1" || adaptationRecord.aspectRatio === "9:16"
+    ? adaptationRecord.aspectRatio
+    : undefined;
+  const maxImages = parseOptionalNumber(adaptationRecord.maxImages);
+  const sourceChannel =
+    adaptationRecord.sourceChannel === "linkedin"
+      || adaptationRecord.sourceChannel === "instagram"
+      || adaptationRecord.sourceChannel === "facebook"
+      || adaptationRecord.sourceChannel === "email"
+      ? adaptationRecord.sourceChannel
+      : undefined;
+  const textProfile =
+    adaptationRecord.textProfile === "full"
+      || adaptationRecord.textProfile === "medium"
+      || adaptationRecord.textProfile === "short"
+      ? adaptationRecord.textProfile
+      : undefined;
+  const dayIndex = parseOptionalNumber(record.dayIndex);
+  const angle = parseOptionalString(record.angle);
+
+  const adaptation: NonNullable<ContentVariant["metadata"]>["adaptation"] =
+    sourceChannel && textProfile
+      ? {
+        sourceChannel,
+        textProfile,
+        assetTransform:
+          aspectRatio || typeof maxImages === "number"
+            ? {
+              aspectRatio,
+              ...(typeof maxImages === "number" ? { maxImages } : {}),
+            }
+            : undefined,
+      }
+      : undefined;
+
+  if (!adaptation && typeof dayIndex !== "number" && !angle) {
+    return undefined;
+  }
+
+  return {
+    ...(typeof dayIndex === "number" ? { dayIndex } : {}),
+    ...(angle ? { angle } : {}),
+    ...(adaptation ? { adaptation } : {}),
+  };
+}
+
 function mapContentVariant(row: ContentVariantRow): ContentVariant {
   return {
     id: row.id,
@@ -158,6 +240,7 @@ function mapContentVariant(row: ContentVariantRow): ContentVariant {
     status: row.status,
     source: row.source,
     isCustomized: row.is_customized,
+    metadata: parseVariantMetadata(row.metadata_json),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
@@ -177,6 +260,7 @@ function mapScheduleItem(row: ScheduleItemRow): ScheduleItem {
     businessId: row.business_id,
     contentItemId: row.content_item_id,
     variantId: row.variant_id,
+    distributionGroupId: row.distribution_group_id ?? undefined,
     channel: row.channel,
     lane: row.lane,
     scheduledDate: normalizeDateString(row.scheduled_date),
@@ -189,6 +273,22 @@ function mapScheduleItem(row: ScheduleItemRow): ScheduleItem {
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
     publishedAt: toIsoString(row.published_at),
+  };
+}
+
+function mapContentDistributionGroup(row: ContentDistributionGroupRow): ContentDistributionGroup {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    contentItemId: row.content_item_id,
+    primaryVariantId: row.primary_variant_id ?? undefined,
+    lane: row.lane,
+    title: row.title ?? undefined,
+    status: row.status,
+    editableUntil: toIsoString(row.editable_until),
+    publishedAt: toIsoString(row.published_at),
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
   };
 }
 
@@ -278,6 +378,120 @@ function buildDailyPrompt(input: {
 
 Create a distinct LinkedIn post for day ${input.dayIndex} of ${input.totalDays}.
 Keep the batch cohesive, but make this entry feel materially different from the others.${priorContext}`;
+}
+
+function normalizeVariantBody(value: string): string {
+  return value
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0)
+    .join("\n\n");
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const slice = value.slice(0, Math.max(0, maxLength - 1));
+  const breakIndex = Math.max(slice.lastIndexOf("\n"), slice.lastIndexOf(" "));
+  const truncated = (breakIndex >= Math.floor(maxLength * 0.6) ? slice.slice(0, breakIndex) : slice).trimEnd();
+  return `${truncated}…`;
+}
+
+function adaptInstagramText(baseText: string): string {
+  const normalized = normalizeVariantBody(baseText);
+  const paragraphs = normalized
+    .split("\n\n")
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
+  const body = truncateText(paragraphs.slice(0, 2).join("\n\n") || normalized, 420);
+  return body;
+}
+
+function adaptFacebookText(baseText: string): string {
+  const normalized = normalizeVariantBody(baseText);
+  const paragraphs = normalized
+    .split("\n\n")
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph.length > 0);
+  return truncateText(paragraphs.slice(0, 3).join("\n\n") || normalized, 700);
+}
+
+function buildVariantMetadata(input: {
+  dayIndex: number;
+  angle?: string;
+  sourceChannel: ContentChannel;
+  textProfile: "full" | "medium" | "short";
+  assetTransform?: {
+    aspectRatio?: "1:1" | "9:16";
+    maxImages?: number;
+  };
+}): Record<string, unknown> {
+  return {
+    dayIndex: input.dayIndex,
+    angle: input.angle ?? null,
+    adaptation: {
+      sourceChannel: input.sourceChannel,
+      textProfile: input.textProfile,
+      ...(input.assetTransform ? { assetTransform: input.assetTransform } : {}),
+    },
+  };
+}
+
+function buildGeneratedPlatformVariants(input: {
+  baseText: string;
+  title: string;
+  dayIndex: number;
+  sourceChannel: ContentChannel;
+  angle?: string;
+}): Array<{
+  channel: Extract<ContentChannel, "linkedin" | "instagram" | "facebook">;
+  title: string;
+  text: string;
+  metadata: Record<string, unknown>;
+}> {
+  const linkedInText = normalizeVariantBody(input.baseText);
+  const instagramText = adaptInstagramText(input.baseText);
+  const facebookText = adaptFacebookText(input.baseText);
+
+  return [
+    {
+      channel: "linkedin",
+      title: input.title,
+      text: linkedInText,
+      metadata: buildVariantMetadata({
+        dayIndex: input.dayIndex,
+        angle: input.angle,
+        sourceChannel: input.sourceChannel,
+        textProfile: "full",
+      }),
+    },
+    {
+      channel: "instagram",
+      title: buildTitle(instagramText, input.title),
+      text: instagramText,
+      metadata: buildVariantMetadata({
+        dayIndex: input.dayIndex,
+        angle: input.angle,
+        sourceChannel: input.sourceChannel,
+        textProfile: "short",
+        assetTransform: { aspectRatio: "1:1" },
+      }),
+    },
+    {
+      channel: "facebook",
+      title: buildTitle(facebookText, input.title),
+      text: facebookText,
+      metadata: buildVariantMetadata({
+        dayIndex: input.dayIndex,
+        angle: input.angle,
+        sourceChannel: input.sourceChannel,
+        textProfile: "medium",
+        assetTransform: { maxImages: 3 },
+      }),
+    },
+  ];
 }
 
 async function resolveBusinessTimezone(businessId: string): Promise<string> {
@@ -383,6 +597,10 @@ function formatTimeInTimezone(value: string, timeZone: string): string {
   }).format(new Date(value));
 }
 
+function buildEditableUntil(value: string, minutesBefore = 5): string {
+  return new Date(new Date(value).getTime() - minutesBefore * 60_000).toISOString();
+}
+
 async function loadBatchRow(businessId: string, batchId: string): Promise<ContentBatchRow> {
   const result = await queryDb<ContentBatchRow>(
     `
@@ -458,6 +676,7 @@ async function loadVariantsForBatch(batchId: string): Promise<ContentVariantRow[
         cv.source,
         cv.status,
         cv.is_customized,
+        cv.metadata_json,
         cv.created_at,
         cv.updated_at
       from content_variants cv
@@ -479,6 +698,7 @@ async function loadScheduleItemsForBatch(batchId: string): Promise<ScheduleItemR
         si.business_id,
         si.content_item_id,
         si.variant_id,
+        si.distribution_group_id,
         si.channel,
         si.lane,
         si.scheduled_date,
@@ -502,11 +722,38 @@ async function loadScheduleItemsForBatch(batchId: string): Promise<ScheduleItemR
   return result.rows;
 }
 
+async function loadDistributionGroupsForBatch(batchId: string): Promise<ContentDistributionGroupRow[]> {
+  const result = await queryDb<ContentDistributionGroupRow>(
+    `
+      select
+        cdg.id,
+        cdg.business_id,
+        cdg.content_item_id,
+        cdg.primary_variant_id,
+        cdg.lane,
+        cdg.title,
+        cdg.status,
+        cdg.editable_until,
+        cdg.published_at,
+        cdg.created_at,
+        cdg.updated_at
+      from content_distribution_groups cdg
+      join content_items ci on ci.id = cdg.content_item_id
+      where ci.batch_id = $1
+      order by cdg.created_at asc
+    `,
+    [batchId],
+  );
+
+  return result.rows;
+}
+
 async function loadBatchDetail(businessId: string, batchId: string): Promise<GetContentBatchResponse> {
-  const [batchRow, itemRows, variantRows, scheduleRows] = await Promise.all([
+  const [batchRow, itemRows, variantRows, distributionGroupRows, scheduleRows] = await Promise.all([
     loadBatchRow(businessId, batchId),
     loadContentItemsForBatch(batchId),
     loadVariantsForBatch(batchId),
+    loadDistributionGroupsForBatch(batchId),
     loadScheduleItemsForBatch(batchId),
   ]);
 
@@ -514,6 +761,7 @@ async function loadBatchDetail(businessId: string, batchId: string): Promise<Get
     batch: mapContentBatch(batchRow),
     items: itemRows.map(mapContentItem),
     variants: variantRows.map(mapContentVariant),
+    distributionGroups: distributionGroupRows.map(mapContentDistributionGroup),
     scheduleItems: scheduleRows.map(mapScheduleItem),
   };
 }
@@ -686,66 +934,77 @@ export async function generateContentBatch(
       const itemRow = itemResult.rows[0];
       itemRows.push(itemRow);
 
-      const variantResult = await client.query<ContentVariantRow>(
-        `
-          insert into content_variants (
-            business_id,
-            user_id,
-            content_item_id,
-            channel,
-            lane,
-            title,
-            text_content,
-            media_json,
-            source,
-            status,
-            is_customized,
-            metadata_json
-          ) values (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            $6,
-            $7,
-            '{"images":[],"videos":[]}'::jsonb,
-            'generated',
-            'draft',
-            false,
-            $8::jsonb
-          )
-          returning
-            id,
-            business_id,
-            user_id,
-            content_item_id,
-            source_asset_id,
-            channel,
-            lane,
-            title,
-            text_content,
-            html_content,
-            media_json,
-            source,
-            status,
-            is_customized,
-            created_at,
-            updated_at
-        `,
-        [
-          businessId,
-          principal.userId ?? null,
-          itemRow.id,
-          primaryChannel,
-          lane,
-          generated.variantTitle,
-          generated.variantText,
-          JSON.stringify({ dayIndex: index + 1, angle: generated.angle ?? null }),
-        ],
-      );
+      const platformVariants = buildGeneratedPlatformVariants({
+        baseText: generated.variantText,
+        title: generated.variantTitle,
+        dayIndex: index + 1,
+        sourceChannel: primaryChannel,
+        angle: generated.angle,
+      });
 
-      variantRows.push(variantResult.rows[0]);
+      for (const variantDraft of platformVariants) {
+        const variantResult = await client.query<ContentVariantRow>(
+          `
+            insert into content_variants (
+              business_id,
+              user_id,
+              content_item_id,
+              channel,
+              lane,
+              title,
+              text_content,
+              media_json,
+              source,
+              status,
+              is_customized,
+              metadata_json
+            ) values (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              $6,
+              $7,
+              '{"images":[],"videos":[]}'::jsonb,
+              'generated',
+              'draft',
+              false,
+              $8::jsonb
+            )
+            returning
+              id,
+              business_id,
+              user_id,
+              content_item_id,
+              source_asset_id,
+              channel,
+              lane,
+              title,
+              text_content,
+              html_content,
+              media_json,
+              source,
+              status,
+              is_customized,
+              metadata_json,
+              created_at,
+              updated_at
+          `,
+          [
+            businessId,
+            principal.userId ?? null,
+            itemRow.id,
+            variantDraft.channel,
+            lane,
+            variantDraft.title,
+            variantDraft.text,
+            JSON.stringify(variantDraft.metadata),
+          ],
+        );
+
+        variantRows.push(variantResult.rows[0]);
+      }
     }
 
     return {
@@ -800,6 +1059,11 @@ export async function confirmContentBatch(
     usageMetric: "posts",
   });
 
+  if (!principal.userId) {
+    throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
+  }
+  const actorUserId = principal.userId;
+
   const detail = await loadBatchDetail(businessId, batchId);
 
   if (detail.batch.lane !== "social" || detail.batch.primaryChannel !== "linkedin") {
@@ -835,183 +1099,293 @@ export async function confirmContentBatch(
     detail.batch.defaultScheduledTime ?? "09:00",
   );
   const scheduleDateKeys = buildScheduleDateKeys(startDate, detail.items.length, spacing);
-  const variantsByItemId = new Map(detail.variants.map((variant) => [variant.contentItemId, variant]));
-  const createdScheduleItems: ScheduleItem[] = [];
+  const variantsByItemId = new Map(
+    detail.variants
+      .filter((variant) => variant.channel === detail.batch.primaryChannel)
+      .map((variant) => [variant.contentItemId, variant]),
+  );
+  const persisted = await withDbTransaction(async (client) => {
+    const createdDistributionGroups: ContentDistributionGroup[] = [];
+    const createdScheduleItems: ScheduleItem[] = [];
+    const scheduledFeedbacks: Array<{
+      assetId: string;
+      scheduledPostId: string;
+      scheduledAt: string;
+    }> = [];
 
-  for (const [index, item] of detail.items.entries()) {
-    const variant = variantsByItemId.get(item.id);
+    for (const [index, item] of detail.items.entries()) {
+      const variant = variantsByItemId.get(item.id);
 
-    if (!variant) {
-      throw new HttpError(
-        409,
-        "content_variant_missing",
-        "One or more batch items are missing their channel variant.",
+      if (!variant) {
+        throw new HttpError(
+          409,
+          "content_variant_missing",
+          "One or more batch items are missing their channel variant.",
+        );
+      }
+
+      const contentAsset = await createContentAssetRecord(
+        {
+          businessId,
+          userId: actorUserId,
+          contentType: variant.channel === "email" ? "email" : "post",
+          title: variant.title ?? buildTitle(variant.text, `Day ${index + 1}`),
+          contentBody: {
+            content: variant.text,
+            batchId,
+            contentItemId: item.id,
+            variantId: variant.id,
+            channel: variant.channel,
+            lane: variant.lane,
+          },
+          sourceKind: "generated",
+          pipelineStage: "review",
+        },
+        client,
       );
+
+      await Promise.all([
+        client.query(
+          `
+            update content_items
+            set source_asset_id = $2, updated_at = now()
+            where id = $1
+          `,
+          [item.id, contentAsset.id],
+        ),
+        client.query(
+          `
+            update content_variants
+            set source_asset_id = $2, status = 'scheduled', updated_at = now()
+            where id = $1
+          `,
+          [variant.id, contentAsset.id],
+        ),
+      ]);
+
+      const requestedScheduledAt = zonedDateTimeToUtc(
+        scheduleDateKeys[index],
+        defaultScheduledTime,
+        audienceTimezone,
+      );
+
+      const scheduled = await createScheduledPostInTransaction({
+        businessId,
+        userId: actorUserId,
+        platform: "linkedin",
+        contentText: variant.text,
+        assetGroupId: contentAsset.id,
+        slides: [],
+        scheduledAt: requestedScheduledAt,
+        audienceTimezone,
+        client,
+      });
+
+      const distributionGroupResult = await client.query<ContentDistributionGroupRow>(
+        `
+          insert into content_distribution_groups (
+            business_id,
+            user_id,
+            content_item_id,
+            primary_variant_id,
+            lane,
+            title,
+            status,
+            editable_until,
+            published_at,
+            metadata_json
+          ) values (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9,
+            $10::jsonb
+          )
+          on conflict (content_item_id, lane)
+          do update set
+            primary_variant_id = excluded.primary_variant_id,
+            title = excluded.title,
+            status = excluded.status,
+            editable_until = excluded.editable_until,
+            published_at = excluded.published_at,
+            updated_at = now()
+          returning
+            id,
+            business_id,
+            content_item_id,
+            primary_variant_id,
+            lane,
+            title,
+            status,
+            editable_until,
+            published_at,
+            created_at,
+            updated_at
+        `,
+        [
+          businessId,
+          actorUserId,
+          item.id,
+          variant.id,
+          variant.lane,
+          variant.title ?? buildTitle(variant.text, `Day ${index + 1}`),
+          "scheduled",
+          buildEditableUntil(scheduled.scheduledAt),
+          null,
+          JSON.stringify({
+            batchId,
+            channel: variant.channel,
+            legacyScheduledPostId: scheduled.scheduledPostId,
+          }),
+        ],
+      );
+
+      const scheduleResult = await client.query<ScheduleItemRow>(
+        `
+          insert into schedule_items (
+            business_id,
+            user_id,
+            content_item_id,
+            variant_id,
+            distribution_group_id,
+            legacy_scheduled_post_id,
+            channel,
+            lane,
+            scheduled_date,
+            scheduled_time,
+            audience_timezone,
+            scheduled_at,
+            status,
+            external_reference_id,
+            external_reference_url,
+            published_at
+          ) values (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9,
+            $10,
+            $11,
+            $12,
+            $13,
+            $14,
+            $15,
+            $16
+          )
+          returning
+            id,
+            business_id,
+            content_item_id,
+            variant_id,
+            distribution_group_id,
+            channel,
+            lane,
+            scheduled_date,
+            scheduled_time,
+            audience_timezone,
+            scheduled_at,
+            status,
+            external_reference_id,
+            external_reference_url,
+            created_at,
+            updated_at,
+            published_at
+        `,
+        [
+          businessId,
+          actorUserId,
+          item.id,
+          variant.id,
+          distributionGroupResult.rows[0].id,
+          scheduled.scheduledPostId,
+          variant.channel,
+          variant.lane,
+          formatDateKeyInTimezone(scheduled.scheduledAt, audienceTimezone),
+          formatTimeInTimezone(scheduled.scheduledAt, audienceTimezone),
+          audienceTimezone,
+          scheduled.scheduledAt,
+          "scheduled",
+          null,
+          null,
+          null,
+        ],
+      );
+
+      createdDistributionGroups.push(mapContentDistributionGroup(distributionGroupResult.rows[0]));
+      createdScheduleItems.push(mapScheduleItem(scheduleResult.rows[0]));
+      scheduledFeedbacks.push({
+        assetId: contentAsset.id,
+        scheduledPostId: scheduled.scheduledPostId,
+        scheduledAt: scheduled.scheduledAt,
+      });
     }
 
-    const contentAsset = await createContentAssetRecord({
-      businessId,
-      userId: principal.userId,
-      contentType: variant.channel === "email" ? "email" : "post",
-      title: variant.title ?? buildTitle(variant.text, `Day ${index + 1}`),
-      contentBody: {
-        content: variant.text,
-        batchId,
-        contentItemId: item.id,
-        variantId: variant.id,
-        channel: variant.channel,
-        lane: variant.lane,
-      },
-      sourceKind: "generated",
-      pipelineStage: "review",
-    });
-
-    await Promise.all([
-      queryDb(
-        `
-          update content_items
-          set source_asset_id = $2, updated_at = now()
-          where id = $1
-        `,
-        [item.id, contentAsset.id],
-      ),
-      queryDb(
-        `
-          update content_variants
-          set source_asset_id = $2, status = 'scheduled', updated_at = now()
-          where id = $1
-        `,
-        [variant.id, contentAsset.id],
-      ),
-    ]);
-
-    const requestedScheduledAt = zonedDateTimeToUtc(
-      scheduleDateKeys[index],
-      defaultScheduledTime,
-      audienceTimezone,
-    ).toISOString();
-
-    const scheduled = await createScheduledPost(principal, {
-      businessId,
-      platform: "linkedin",
-      contentText: variant.text,
-      assetGroupId: contentAsset.id,
-      slides: [],
-      scheduledAt: requestedScheduledAt,
-      audienceTimezone,
-    });
-
-    const scheduleResult = await queryDb<ScheduleItemRow>(
+    const updatedBatchResult = await client.query<ContentBatchRow>(
       `
-        insert into schedule_items (
-          business_id,
-          user_id,
-          content_item_id,
-          variant_id,
-          legacy_scheduled_post_id,
-          channel,
-          lane,
-          scheduled_date,
-          scheduled_time,
-          audience_timezone,
-          scheduled_at,
-          status,
-          external_reference_id,
-          external_reference_url,
-          published_at
-        ) values (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9,
-          $10,
-          $11,
-          $12,
-          $13,
-          $14,
-          $15
-        )
+        update content_batches
+        set
+          status = 'scheduled',
+          confirmed_at = coalesce(confirmed_at, now()),
+          default_audience_timezone = $2,
+          default_scheduled_time = $3,
+          updated_at = now()
+        where id = $1
         returning
           id,
           business_id,
-          content_item_id,
-          variant_id,
-          channel,
+          user_id,
           lane,
-          scheduled_date,
-          scheduled_time,
-          audience_timezone,
-          scheduled_at,
+          primary_channel,
+          days,
+          title,
           status,
-          external_reference_id,
-          external_reference_url,
+          default_audience_timezone,
+          default_scheduled_time,
+          confirmed_at,
           created_at,
-          updated_at,
-          published_at
+          updated_at
       `,
-      [
-        businessId,
-        principal.userId ?? null,
-        item.id,
-        variant.id,
-        scheduled.scheduledPost.id,
-        variant.channel,
-        variant.lane,
-        formatDateKeyInTimezone(scheduled.scheduledPost.scheduledAt, audienceTimezone),
-        formatTimeInTimezone(scheduled.scheduledPost.scheduledAt, audienceTimezone),
-        audienceTimezone,
-        scheduled.scheduledPost.scheduledAt,
-        scheduled.scheduledPost.status,
-        scheduled.scheduledPost.externalPostId ?? null,
-        scheduled.scheduledPost.externalPostUrl ?? null,
-        scheduled.scheduledPost.publishedAt ?? null,
-      ],
+      [batchId, audienceTimezone, defaultScheduledTime],
     );
 
-    createdScheduleItems.push(mapScheduleItem(scheduleResult.rows[0]));
-  }
+    return {
+      batch: mapContentBatch(updatedBatchResult.rows[0]),
+      distributionGroups: createdDistributionGroups,
+      scheduleItems: createdScheduleItems,
+      scheduledFeedbacks,
+    };
+  });
 
-  const updatedBatchResult = await queryDb<ContentBatchRow>(
-    `
-      update content_batches
-      set
-        status = 'scheduled',
-        confirmed_at = coalesce(confirmed_at, now()),
-        default_audience_timezone = $2,
-        default_scheduled_time = $3,
-        updated_at = now()
-      where id = $1
-      returning
-        id,
-        business_id,
-        user_id,
-        lane,
-        primary_channel,
-        days,
-        title,
-        status,
-        default_audience_timezone,
-        default_scheduled_time,
-        confirmed_at,
-        created_at,
-        updated_at
-    `,
-    [batchId, audienceTimezone, defaultScheduledTime],
+  await Promise.all(
+    persisted.scheduledFeedbacks.map((entry) =>
+      safeRecordContentGenerationSuggestionScheduled({
+        businessId,
+        assetId: entry.assetId,
+        scheduledPostId: entry.scheduledPostId,
+        scheduledAt: entry.scheduledAt,
+      }),
+    ),
   );
 
   await safeLogEvent("first_content_scheduled", principal.userId, businessId, {
     route: "/api/content/batches/:batchId/confirm",
     batchId,
-    scheduledCount: createdScheduleItems.length,
+    scheduledCount: persisted.scheduleItems.length,
   });
 
   return {
-    batch: mapContentBatch(updatedBatchResult.rows[0]),
-    scheduleItems: createdScheduleItems,
+    batch: persisted.batch,
+    distributionGroups: persisted.distributionGroups,
+    scheduleItems: persisted.scheduleItems,
   };
 }

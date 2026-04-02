@@ -1,8 +1,10 @@
-export type SocialPlatform = "linkedin";
+export type SocialPlatform = "linkedin" | "facebook" | "instagram";
 export type SocialAccountStatus = "connected" | "expired" | "revoked" | "error";
-export type PostAssetType = "image";
+export type PostAssetType = "image" | "video";
 export type PostAssetSource = "upload" | "generated";
 export type PostAssetStatus = "uploaded" | "processing" | "ready" | "failed";
+export type PostAssetAspectRatio = "1:1" | "9:16";
+export type PostAssetMetadataSource = "upload" | "motion_template";
 export type PostPerformanceLabel = "low" | "medium" | "high";
 export type SchedulingSafetyWarningCode = "daily_limit" | "minimum_gap";
 export type ScheduledPostStatus =
@@ -12,7 +14,7 @@ export type ScheduledPostStatus =
   | "failed"
   | "paused"
   | "canceled";
-export type SocialAccountIdentityType = "person" | "organization";
+export type SocialAccountIdentityType = "person" | "organization" | "page";
 export type ScheduledPostMutationAction =
   | "pause"
   | "resume"
@@ -62,11 +64,41 @@ export interface PublicationEvent {
   createdAt: string;
 }
 
-export interface PostAsset {
+export type MotionTemplateId = "subtle_zoom" | "caption_pulse" | "story_pan";
+export type MotionTemplateAspectRatio = "square" | "portrait";
+
+export interface MotionTemplateMetadata {
+  id: MotionTemplateId;
+  aspectRatio?: MotionTemplateAspectRatio;
+  durationMs?: number;
+  loop?: boolean;
+  sourceAssetIds?: string[];
+  sourceSlideCount?: number;
+}
+
+export interface BasePostAssetMetadata {
+  aspectRatio?: PostAssetAspectRatio;
+}
+
+export interface ImagePostAssetMetadata extends BasePostAssetMetadata {
+  source?: "upload";
+}
+
+export interface VideoPostAssetMetadata extends BasePostAssetMetadata {
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  source?: PostAssetMetadataSource;
+  motionTemplate?: MotionTemplateMetadata;
+  posterAssetId?: string;
+}
+
+export type PostAssetMetadata = ImagePostAssetMetadata | VideoPostAssetMetadata;
+
+export interface BasePostAsset {
   id: string;
   businessId: string;
   postId: string;
-  type: PostAssetType;
   source: PostAssetSource;
   storageKey: string;
   storageUrl: string;
@@ -78,6 +110,18 @@ export interface PostAsset {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface ImagePostAsset extends BasePostAsset {
+  type: "image";
+  metadata: ImagePostAssetMetadata;
+}
+
+export interface VideoPostAsset extends BasePostAsset {
+  type: "video";
+  metadata: VideoPostAssetMetadata;
+}
+
+export type PostAsset = ImagePostAsset | VideoPostAsset;
 
 export interface ScheduledPostSlide {
   imageDataUrl: string;
@@ -166,6 +210,37 @@ export interface StartSocialAuthResponse {
   authorizationUrl: string;
 }
 
+export interface MetaPageConnectionCandidate {
+  pageId: string;
+  pageName: string;
+  pictureUrl?: string;
+  tasks: string[];
+  instagramBusinessAccountId?: string;
+  instagramUsername?: string;
+  instagramDisplayName?: string;
+  instagramProfilePictureUrl?: string;
+}
+
+export interface MetaAuthSessionQuery {
+  businessId: string;
+  session: string;
+}
+
+export interface MetaAuthSessionResponse {
+  session: string;
+  pages: MetaPageConnectionCandidate[];
+}
+
+export interface SelectMetaPageRequest {
+  businessId: string;
+  session: string;
+  pageId: string;
+}
+
+export interface SelectMetaPageResponse {
+  account: SocialAccount;
+}
+
 export interface DisconnectSocialAccountRequest {
   businessId: string;
 }
@@ -212,6 +287,7 @@ export interface PublishPostRequest {
   platform: SocialPlatform;
   contentText: string;
   assetId?: string;
+  slides?: ScheduledPostSlide[];
   title?: string;
 }
 
@@ -258,6 +334,7 @@ export interface CreateMediaUploadUrlRequest {
   businessId: string;
   postId: string;
   fileType: string;
+  assetType?: PostAssetType;
   fileName?: string;
   sizeBytes?: number;
 }
@@ -278,6 +355,7 @@ export interface CreatePostAssetRequest {
   sizeBytes: number;
   type?: PostAssetType;
   source?: PostAssetSource;
+  metadata?: PostAssetMetadata;
   orderIndex?: number;
 }
 
@@ -292,6 +370,24 @@ export interface ListPostAssetsQuery {
 
 export interface ListPostAssetsResponse {
   assets: PostAsset[];
+}
+
+export interface GetPostAssetQuery {
+  businessId: string;
+}
+
+export interface GetPostAssetResponse {
+  asset: PostAsset;
+}
+
+export interface DownloadPostAssetQuery {
+  businessId: string;
+}
+
+export interface DownloadPostAssetResponse {
+  asset: PostAsset;
+  downloadUrl: string;
+  fileName: string;
 }
 
 export interface DeletePostAssetRequest {

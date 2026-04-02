@@ -10,11 +10,13 @@ import type {
   ScheduledPostStatus,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
+import MetaPageSelectionModal from "../components/MetaPageSelectionModal.vue";
 import HistorySkeleton from "../components/skeletons/HistorySkeleton.vue";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
 import { ApiRequestError } from "../services/api-client";
 import {
   requestLinkedInSocialAuthStart,
+  requestMetaSocialAuthStart,
   requestScheduledPosts,
   requestUpdateScheduledPost,
   requestUpdateScheduledPostPerformance,
@@ -38,6 +40,13 @@ import {
   toDateKeyInTimezone,
   toTimeValueInTimezone,
 } from "../utils/timezone";
+import {
+  looksLikeSocialReconnectIssue,
+  resolveExternalPostLabel,
+  resolveScheduledIdentityLabel,
+  resolveSocialPlatformLabel,
+  resolveSocialPlatformShortLabel,
+} from "../utils/social-platforms";
 
 type HistoryTab = "published" | "scheduled" | "failed" | "all";
 
@@ -98,8 +107,18 @@ const currentPage = ref(1);
 const isLoading = ref(true);
 const isUpdating = ref(false);
 const isConnectingLinkedIn = ref(false);
+const isConnectingMeta = ref(false);
+const isMetaSelectionModalOpen = ref(false);
+const pendingMetaSession = ref("");
 const errorMessage = ref("");
 const feedbackMessage = ref("");
+const pendingMetaPlatform = computed<"facebook" | "instagram">(() =>
+  route.query.platform === "instagram"
+    ? "instagram"
+    : selectedScheduledPost.value?.platform === "instagram"
+      ? "instagram"
+      : "facebook",
+);
 
 const resolvedBusinessId = computed(
   () => productAccess.value?.activeBusinessId || activeBusinessId.value || businesses.value[0]?.businessId || "",
@@ -198,18 +217,6 @@ function matchesTab(post: ScheduledPost, tab: HistoryTab): boolean {
     default:
       return true;
   }
-}
-
-function looksLikeReconnectIssue(post: ScheduledPost): boolean {
-  const message = post.errorMessage?.toLowerCase() || "";
-  return (
-    message.includes("linkedin") ||
-    message.includes("token") ||
-    message.includes("expired") ||
-    message.includes("connect") ||
-    message.includes("permission") ||
-    message.includes("authorize")
-  );
 }
 
 const sortedPosts = computed(() =>
@@ -336,30 +343,9 @@ const selectedLocalTimeLabel = computed(() => {
   return formatTimeWithZone(scheduledAt, userTimezone);
 });
 
-const selectedScheduledPostNeedsReconnect = computed(() => {
-  const message = selectedScheduledPost.value?.errorMessage?.toLowerCase() || "";
-  return message.includes("reconnect linkedin") || message.includes("connection expired");
-});
-
-function resolveIdentityTypeLabel(post: ScheduledPost): string {
-  if (post.selectedIdentityType === "organization") {
-    return "Page";
-  }
-
-  if (post.selectedIdentityType === "person") {
-    return "Personal";
-  }
-
-  return "LinkedIn";
-}
-
-function resolveSelectedIdentityLabel(post: ScheduledPost): string {
-  if (!post.selectedIdentityDisplayName) {
-    return "Workspace LinkedIn identity";
-  }
-
-  return `${post.selectedIdentityDisplayName} · ${resolveIdentityTypeLabel(post)}`;
-}
+const selectedScheduledPostNeedsReconnect = computed(() =>
+  selectedScheduledPost.value ? looksLikeSocialReconnectIssue(selectedScheduledPost.value) : false,
+);
 
 function extractSchedulingWarnings(error: unknown): SchedulingSafetyWarning[] {
   if (!(error instanceof ApiRequestError) || error.code !== "scheduling_safety_warning") {
@@ -411,6 +397,31 @@ function confirmSchedulingWarnings(warnings: SchedulingSafetyWarning[]): boolean
   );
 }
 
+async function connectInstagram(): Promise<void> {
+  if (!resolvedBusinessId.value) {
+    errorMessage.value = "Pick a workspace before reconnecting Instagram.";
+    return;
+  }
+
+  isConnectingMeta.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestMetaSocialAuthStart({
+      businessId: resolvedBusinessId.value,
+      platform: "instagram",
+      returnPath: route.fullPath,
+    });
+
+    window.location.assign(response.authorizationUrl);
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to start Meta reconnection.";
+  } finally {
+    isConnectingMeta.value = false;
+  }
+}
+
 async function reconnectLinkedIn(): Promise<void> {
   if (!resolvedBusinessId.value) {
     errorMessage.value = "Pick a workspace before reconnecting LinkedIn.";
@@ -433,6 +444,64 @@ async function reconnectLinkedIn(): Promise<void> {
   } finally {
     isConnectingLinkedIn.value = false;
   }
+}
+
+async function connectFacebook(): Promise<void> {
+  if (!resolvedBusinessId.value) {
+    errorMessage.value = "Pick a workspace before reconnecting Facebook.";
+    return;
+  }
+
+  isConnectingMeta.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestMetaSocialAuthStart({
+      businessId: resolvedBusinessId.value,
+      platform: "facebook",
+      returnPath: route.fullPath,
+    });
+
+    window.location.assign(response.authorizationUrl);
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to start Meta reconnection.";
+  } finally {
+    isConnectingMeta.value = false;
+  }
+}
+
+async function reconnectSelectedPlatform(): Promise<void> {
+  if (selectedScheduledPost.value?.platform === "instagram") {
+    await connectInstagram();
+    return;
+  }
+
+  if (selectedScheduledPost.value?.platform === "facebook") {
+    await connectFacebook();
+    return;
+  }
+
+  await reconnectLinkedIn();
+}
+
+function closeMetaSelectionModal(): void {
+  isMetaSelectionModalOpen.value = false;
+  pendingMetaSession.value = "";
+  isConnectingMeta.value = false;
+}
+
+function handleMetaSelectionError(message: string): void {
+  errorMessage.value = message;
+  isConnectingMeta.value = false;
+}
+
+function handleMetaConnected(): void {
+  closeMetaSelectionModal();
+  feedbackMessage.value =
+    pendingMetaPlatform.value === "facebook"
+      ? "Facebook connected. History is ready to recover failed posts."
+      : "Instagram connected. History is ready to recover failed posts.";
 }
 
 function syncSelectedScheduleForm(post: ScheduledPost | null): void {
@@ -565,6 +634,7 @@ async function mutateSelectedPost(
         path: appRoutes.appPlanner,
         query: {
           draftId: selectedAssetGroupId,
+          platform: selectedScheduledPost.value.platform,
         },
       });
     }
@@ -756,6 +826,53 @@ watch(
   },
 );
 
+watch(
+  () => [route.query.linkedin, route.query.meta, route.query.message, route.query.session],
+  async ([linkedInStatus, metaStatus, message, session]) => {
+    if (
+      typeof linkedInStatus !== "string"
+      && typeof metaStatus !== "string"
+      && typeof message !== "string"
+      && typeof session !== "string"
+    ) {
+      return;
+    }
+
+    if (linkedInStatus === "connected") {
+      feedbackMessage.value = "LinkedIn connected. History is ready.";
+    } else if (linkedInStatus === "error") {
+      errorMessage.value =
+        typeof message === "string" && message.trim() !== ""
+          ? message
+          : "LinkedIn connection failed.";
+    }
+
+    if (metaStatus === "connected") {
+      feedbackMessage.value = "Instagram connected. History is ready.";
+      isConnectingMeta.value = false;
+    } else if (metaStatus === "error") {
+      errorMessage.value =
+        typeof message === "string" && message.trim() !== ""
+          ? message
+          : "Meta connection failed.";
+      isConnectingMeta.value = false;
+    } else if (metaStatus === "select_page" && typeof session === "string" && session.trim() !== "") {
+      pendingMetaSession.value = session.trim();
+      isMetaSelectionModalOpen.value = true;
+      isConnectingMeta.value = false;
+    }
+
+    const nextQuery = { ...route.query };
+    delete nextQuery.linkedin;
+    delete nextQuery.meta;
+    delete nextQuery.message;
+    delete nextQuery.session;
+    void router.replace({ query: nextQuery });
+    isConnectingLinkedIn.value = false;
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   if (isProductAccessReady.value) {
     void initializePage();
@@ -896,10 +1013,12 @@ onMounted(() => {
           >
             <div class="history-row-topline">
               <div class="history-chip-row">
-                <span class="workspace-chip">LI</span>
+                <span class="workspace-chip">
+                  {{ resolveSocialPlatformShortLabel(post.platform) }}
+                </span>
                 <span class="workspace-chip">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
                 <span v-if="post.selectedIdentityDisplayName" class="workspace-chip">
-                  {{ resolveSelectedIdentityLabel(post) }}
+                  {{ resolveScheduledIdentityLabel(post) }}
                 </span>
                 <span v-if="post.performanceLabel" class="workspace-chip">
                   {{ resolvePerformanceLabel(post.performanceLabel) }}
@@ -963,7 +1082,7 @@ onMounted(() => {
             }}
           </p>
           <p class="workspace-description compact">
-            Publishing as {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
+            Publishing as {{ resolveScheduledIdentityLabel(selectedScheduledPost) }}
           </p>
           <p class="workspace-description compact">
             {{ resolveScheduledPostStatusSummary(selectedScheduledPost) }}
@@ -971,9 +1090,12 @@ onMounted(() => {
 
           <article class="history-preview-card">
             <div class="history-preview-chip-row">
+              <p class="workspace-chip">
+                {{ resolveSocialPlatformLabel(selectedScheduledPost.platform) }}
+              </p>
               <p class="workspace-chip">{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</p>
               <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
-                {{ resolveSelectedIdentityLabel(selectedScheduledPost) }}
+                {{ resolveScheduledIdentityLabel(selectedScheduledPost) }}
               </p>
               <p v-if="selectedScheduledPost.performanceLabel" class="workspace-chip">
                 {{ resolvePerformanceLabel(selectedScheduledPost.performanceLabel) }}
@@ -1060,7 +1182,7 @@ onMounted(() => {
               target="_blank"
               rel="noreferrer"
             >
-              View on LinkedIn
+              {{ resolveExternalPostLabel(selectedScheduledPost.platform) }}
             </a>
             <button
               type="button"
@@ -1123,10 +1245,14 @@ onMounted(() => {
               v-if="selectedScheduledPostNeedsReconnect"
               type="button"
               class="workspace-secondary-button"
-              :disabled="isConnectingLinkedIn"
-              @click="reconnectLinkedIn"
+              :disabled="isConnectingLinkedIn || isConnectingMeta"
+              @click="reconnectSelectedPlatform"
             >
-              {{ isConnectingLinkedIn ? "Redirecting..." : "Reconnect LinkedIn" }}
+              {{
+                isConnectingLinkedIn || isConnectingMeta
+                  ? "Redirecting..."
+                  : `Reconnect ${resolveSocialPlatformLabel(selectedScheduledPost.platform)}`
+              }}
             </button>
             <button
               v-if="selectedScheduledPostCanReschedule"
@@ -1156,12 +1282,12 @@ onMounted(() => {
               {{ isUpdating ? "Updating..." : "Cancel" }}
             </button>
             <button
-              v-if="selectedScheduledPost.status === 'failed' && looksLikeReconnectIssue(selectedScheduledPost)"
+              v-if="selectedScheduledPost.status === 'failed' && looksLikeSocialReconnectIssue(selectedScheduledPost)"
               type="button"
               class="workspace-secondary-button"
               @click="openSettings"
             >
-              Check LinkedIn connection
+              Check {{ resolveSocialPlatformLabel(selectedScheduledPost.platform) }} connection
             </button>
           </div>
         </template>
@@ -1170,13 +1296,23 @@ onMounted(() => {
           <p class="workspace-eyebrow">No post selected</p>
           <h2>Choose a history item</h2>
           <p class="workspace-description compact">
-            Select a row to inspect the post, open the live LinkedIn link, or recover a failed publish.
+            Select a row to inspect the post, open the live destination link, or recover a failed publish.
           </p>
         </template>
 
         <p v-if="feedbackMessage" class="history-feedback success">{{ feedbackMessage }}</p>
       </aside>
       </section>
+
+      <MetaPageSelectionModal
+        :open="isMetaSelectionModalOpen"
+        :business-id="resolvedBusinessId"
+        :session="pendingMetaSession"
+        :platform="pendingMetaPlatform"
+        @close="closeMetaSelectionModal"
+        @connected="handleMetaConnected"
+        @error="handleMetaSelectionError"
+      />
     </template>
   </main>
 </template>

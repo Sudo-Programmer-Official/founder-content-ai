@@ -6,6 +6,8 @@ import type {
   CreateWorkspaceAssetUploadUrlRequest,
   CreateWorkspaceAssetUploadUrlResponse,
   DeleteWorkspaceAssetResponse,
+  DownloadWorkspaceAssetResponse,
+  GetWorkspaceAssetResponse,
   RecordWorkspaceAssetUsageRequest,
   RecordWorkspaceAssetUsageResponse,
   WorkspaceAsset,
@@ -90,6 +92,7 @@ const ALLOWED_WORKSPACE_UPLOAD_TYPES = new Set([
   "image/gif",
   "image/webp",
   "image/svg+xml",
+  "video/mp4",
   "application/pdf",
 ]);
 const IMAGE_MIME_TYPES = new Set([
@@ -99,6 +102,7 @@ const IMAGE_MIME_TYPES = new Set([
   "image/webp",
   "image/svg+xml",
 ]);
+const VIDEO_MIME_TYPES = new Set(["video/mp4"]);
 
 function toIsoString(value: Date | string): string {
   return new Date(value).toISOString();
@@ -342,6 +346,8 @@ function resolveFileExtension(mimeType: string, fileName?: string): string {
       return "webp";
     case "image/svg+xml":
       return "svg";
+    case "video/mp4":
+      return "mp4";
     case "application/pdf":
       return "pdf";
     default:
@@ -362,12 +368,24 @@ function inferWorkspaceAssetType(mimeType: string, requestedType?: WorkspaceAsse
     throw new HttpError(
       400,
       "unsupported_media_type",
-      "Only JPG, PNG, GIF, WEBP, SVG, and PDF files are supported right now.",
+      "Only JPG, PNG, GIF, WEBP, SVG, MP4, and PDF files are supported right now.",
     );
   }
 
   if (mimeType === "application/pdf") {
     return "document";
+  }
+
+  if (VIDEO_MIME_TYPES.has(mimeType)) {
+    if (requestedType && requestedType !== "video") {
+      throw new HttpError(400, "unsupported_media_type", "Video uploads must use the video asset type.");
+    }
+
+    return "video";
+  }
+
+  if (requestedType === "video") {
+    throw new HttpError(400, "unsupported_media_type", "Video assets must be uploaded as MP4 files.");
   }
 
   return requestedType ?? "image";
@@ -426,6 +444,26 @@ function buildWorkspaceAssetPreviewUrl(storageKey: string | null, storageUrl: st
   }
 }
 
+function buildWorkspaceAssetDownloadUrl(storageKey: string | null, storageUrl: string): string {
+  if (!storageKey) {
+    return storageUrl;
+  }
+
+  try {
+    return createS3PresignedUrl({
+      method: "GET",
+      key: storageKey,
+      expiresInSeconds: resolvePreviewTtlSeconds(),
+    });
+  } catch (error) {
+    logWarn("Unable to build workspace asset download URL.", {
+      storageKey,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return storageUrl;
+  }
+}
+
 function inferMimeTypeFromUrl(url: string): string {
   const normalized = url.toLowerCase();
 
@@ -451,6 +489,10 @@ function inferMimeTypeFromUrl(url: string): string {
 
   if (normalized.endsWith(".pdf")) {
     return "application/pdf";
+  }
+
+  if (normalized.endsWith(".mp4")) {
+    return "video/mp4";
   }
 
   return "image/png";
@@ -480,6 +522,28 @@ function extractStorageKey(storageUrl: string): string | null {
   }
 
   return null;
+}
+
+function resolveWorkspaceAssetFileName(asset: Pick<WorkspaceAsset, "id" | "assetType" | "mimeType" | "title">): string {
+  const extension = inferMimeTypeFromUrl(`file.${asset.mimeType.split("/").pop() ?? "bin"}`) === asset.mimeType
+    ? asset.mimeType.split("/").pop() ?? "bin"
+    : asset.mimeType === "image/jpeg"
+      ? "jpg"
+      : asset.mimeType === "image/png"
+        ? "png"
+        : asset.mimeType === "image/gif"
+          ? "gif"
+          : asset.mimeType === "image/webp"
+            ? "webp"
+            : asset.mimeType === "image/svg+xml"
+              ? "svg"
+              : asset.mimeType === "application/pdf"
+                ? "pdf"
+                : asset.mimeType === "video/mp4"
+                  ? "mp4"
+                  : "bin";
+  const safeTitle = asset.title?.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return `${safeTitle || `${asset.assetType}-${asset.id}`}.${extension}`;
 }
 
 async function loadWorkspaceAssetRowById(assetId: string, businessId: string): Promise<WorkspaceAssetRow | null> {
@@ -1190,6 +1254,48 @@ export async function listWorkspaceAssets(
   };
 }
 
+export async function getWorkspaceAsset(
+  principal: AuthenticatedPrincipal,
+  businessId: string,
+  assetId: string,
+): Promise<GetWorkspaceAssetResponse> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  await requireBusinessMembership(principal, businessId);
+
+  const asset = await loadWorkspaceAssetRowById(assetId, businessId);
+
+  if (!asset) {
+    throw new HttpError(404, "workspace_asset_not_found", "Workspace asset not found.");
+  }
+
+  return {
+    asset: mapWorkspaceAsset(asset),
+  };
+}
+
+export async function getWorkspaceAssetDownload(
+  principal: AuthenticatedPrincipal,
+  businessId: string,
+  assetId: string,
+): Promise<DownloadWorkspaceAssetResponse> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  await requireBusinessMembership(principal, businessId);
+
+  const asset = await loadWorkspaceAssetRowById(assetId, businessId);
+
+  if (!asset) {
+    throw new HttpError(404, "workspace_asset_not_found", "Workspace asset not found.");
+  }
+
+  const mappedAsset = mapWorkspaceAsset(asset);
+
+  return {
+    asset: mappedAsset,
+    downloadUrl: buildWorkspaceAssetDownloadUrl(asset.storage_key, asset.storage_url),
+    fileName: resolveWorkspaceAssetFileName(mappedAsset),
+  };
+}
+
 export async function deleteWorkspaceAsset(
   principal: AuthenticatedPrincipal,
   businessId: string,
@@ -1280,7 +1386,7 @@ export async function syncWorkspaceAssetFromPostAsset(input: {
   sourceType?: WorkspaceAssetSourceType;
 }): Promise<void> {
   try {
-    const assetType = inferWorkspaceAssetType(normalizeMimeType(input.mimeType), "image");
+    const assetType = inferWorkspaceAssetType(normalizeMimeType(input.mimeType));
     const asset = await upsertWorkspaceAssetByStorage({
       businessId: input.businessId,
       assetType,

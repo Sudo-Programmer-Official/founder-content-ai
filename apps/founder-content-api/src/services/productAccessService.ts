@@ -55,7 +55,7 @@ async function loadScheduledQueueUsage(businessId: string): Promise<number> {
       select count(*)::int as total
       from scheduled_posts
       where business_id = $1
-        and platform = 'linkedin'
+        and platform in ('linkedin', 'instagram')
         and status in ('scheduled', 'processing', 'paused', 'failed')
     `,
     [businessId],

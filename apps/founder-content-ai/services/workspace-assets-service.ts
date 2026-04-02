@@ -4,6 +4,8 @@ import type {
   CreateWorkspaceAssetUploadUrlRequest,
   CreateWorkspaceAssetUploadUrlResponse,
   DeleteWorkspaceAssetResponse,
+  DownloadWorkspaceAssetResponse,
+  GetWorkspaceAssetResponse,
   RecordWorkspaceAssetUsageRequest,
   RecordWorkspaceAssetUsageResponse,
   WorkspaceAssetsQuery,
@@ -41,6 +43,24 @@ export async function requestWorkspaceAssets(
   }
 
   return apiGet<WorkspaceAssetsResponse>(`${API_ENDPOINTS.workspaceAssets}?${params.toString()}`);
+}
+
+export async function requestWorkspaceAsset(
+  businessId: string,
+  assetId: string,
+): Promise<GetWorkspaceAssetResponse> {
+  return apiGet<GetWorkspaceAssetResponse>(
+    `${API_ENDPOINTS.workspaceAssets}/${encodeURIComponent(assetId)}?businessId=${encodeURIComponent(businessId)}`,
+  );
+}
+
+export async function requestWorkspaceAssetDownload(
+  businessId: string,
+  assetId: string,
+): Promise<DownloadWorkspaceAssetResponse> {
+  return apiGet<DownloadWorkspaceAssetResponse>(
+    `${API_ENDPOINTS.workspaceAssets}/${encodeURIComponent(assetId)}/download?businessId=${encodeURIComponent(businessId)}`,
+  );
 }
 
 export async function requestWorkspaceAssetUploadUrl(
