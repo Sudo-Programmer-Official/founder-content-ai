@@ -1,569 +1,158 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type {
-  BusinessMembership,
-  PostPerformanceLabel,
-  RepurposeStrategy,
-  ScheduledPost,
-  SchedulingSafetyWarning,
-  ScheduledPostStatus,
-} from "../../../packages/shared-types";
+import type { PublishAttempt, PublishAttemptPlatform, PublishAttemptStatus } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
-import MetaPageSelectionModal from "../components/MetaPageSelectionModal.vue";
 import HistorySkeleton from "../components/skeletons/HistorySkeleton.vue";
-import { requestMyBusinesses } from "../services/admin-analytics-service";
 import { ApiRequestError } from "../services/api-client";
 import {
-  requestLinkedInSocialAuthStart,
-  requestMetaSocialAuthStart,
-  requestScheduledPosts,
-  requestUpdateScheduledPost,
-  requestUpdateScheduledPostPerformance,
+  requestPublishAttemptDetail,
+  requestPublishAttempts,
+  requestRetryFailedPublishAttempt,
 } from "../services/publishing-service";
-import { saveRepurposeSeed } from "../utils/repurpose-loop";
-import {
-  DEFAULT_REPURPOSE_STRATEGY,
-  REPURPOSE_STRATEGY_OPTIONS,
-} from "../utils/repurpose-strategies";
-import { appRoutes } from "../utils/routes";
-import {
-  formatScheduledPostDispatchWindow,
-  resolveScheduledPostStatusLabel,
-  resolveScheduledPostStatusSummary,
-} from "../utils/scheduled-post-status";
-import {
-  convertZonedDateTimeToUtcIso,
-  detectUserTimezone,
-  formatDateInTimezone,
-  formatTimeWithZone,
-  toDateKeyInTimezone,
-  toTimeValueInTimezone,
-} from "../utils/timezone";
-import {
-  looksLikeSocialReconnectIssue,
-  resolveExternalPostLabel,
-  resolveScheduledIdentityLabel,
-  resolveSocialPlatformLabel,
-  resolveSocialPlatformShortLabel,
-} from "../utils/social-platforms";
-import { toFriendlySocialAuthMessage } from "../utils/social-auth-errors";
-
-type HistoryTab = "published" | "scheduled" | "failed" | "all";
-
-const HISTORY_TABS: { id: HistoryTab; label: string }[] = [
-  { id: "published", label: "Posted" },
-  { id: "scheduled", label: "Queued" },
-  { id: "failed", label: "Failed" },
-  { id: "all", label: "All" },
-];
-const HISTORY_PAGE_SIZE = 20;
-const PERFORMANCE_OPTIONS: { value: PostPerformanceLabel; label: string }[] = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-];
-const FOLLOW_UP_STRATEGY_OPTIONS = REPURPOSE_STRATEGY_OPTIONS.filter(
-  (option) => option.value !== DEFAULT_REPURPOSE_STRATEGY,
-);
+import { resolveExternalPostLabel, resolveSocialPlatformLabel } from "../utils/social-platforms";
 
 const route = useRoute();
 const router = useRouter();
 const {
-  bootstrap: productAccess,
   activeBusinessId,
   refreshProductAccess,
-  setActiveBusinessId,
-  isReady: isProductAccessReady,
-  isFeatureEnabled,
 } = useProductAccessContext();
 
-const userTimezone = detectUserTimezone();
-const COMMON_AUDIENCE_TIMEZONES = [
-  "UTC",
-  "America/Chicago",
-  "America/New_York",
-  "America/Los_Angeles",
-  "Europe/London",
-  "Europe/Berlin",
-  "Asia/Kolkata",
-  "Asia/Dubai",
-  "Asia/Singapore",
-  "Australia/Sydney",
-] as const;
-
-const businesses = ref<BusinessMembership[]>([]);
-const scheduledPosts = ref<ScheduledPost[]>([]);
-const selectedTab = ref<HistoryTab>(
-  HISTORY_TABS.some((tab) => tab.id === route.query.tab)
-    ? (route.query.tab as HistoryTab)
-    : "published",
-);
-const selectedScheduledPostId = ref("");
-const audienceTimezone = ref("");
-const selectedAudienceDateKey = ref("");
-const scheduleTime = ref("09:00");
-const searchQuery = ref("");
-const currentPage = ref(1);
+const publishAttempts = ref<PublishAttempt[]>([]);
+const selectedAttemptId = ref("");
+const selectedAttemptDetail = ref<PublishAttempt | null>(null);
 const isLoading = ref(true);
-const isUpdating = ref(false);
-const isConnectingLinkedIn = ref(false);
-const isConnectingMeta = ref(false);
-const isMetaSelectionModalOpen = ref(false);
-const pendingMetaSession = ref("");
+const isLoadingDetail = ref(false);
+const isRetrying = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
-const pendingMetaPlatform = computed<"facebook" | "instagram">(() =>
-  route.query.platform === "instagram"
-    ? "instagram"
-    : selectedScheduledPost.value?.platform === "instagram"
-      ? "instagram"
-      : "facebook",
-);
 
-const resolvedBusinessId = computed(
-  () => productAccess.value?.activeBusinessId || activeBusinessId.value || businesses.value[0]?.businessId || "",
-);
+const resolvedBusinessId = computed(() => activeBusinessId.value || "");
+const selectedAttempt = computed<PublishAttempt | null>(() => {
+  if (selectedAttemptDetail.value && selectedAttemptDetail.value.id === selectedAttemptId.value) {
+    return selectedAttemptDetail.value;
+  }
 
-const currentBusiness = computed(
-  () => businesses.value.find((membership) => membership.businessId === resolvedBusinessId.value) ?? null,
-);
-
-const workspaceDefaultAudienceTimezone = computed(
-  () => currentBusiness.value?.business.timezone || "UTC",
-);
-
-const schedulerEnabled = computed(
-  () =>
-    !resolvedBusinessId.value ||
-    !productAccess.value?.activeBusinessId ||
-    isFeatureEnabled("scheduler"),
-);
-
-const audienceTimezoneOptions = computed(() => {
-  const unique = new Set<string>([
-    workspaceDefaultAudienceTimezone.value,
-    userTimezone,
-    ...COMMON_AUDIENCE_TIMEZONES,
-  ]);
-
-  return [...unique].map((value) => ({
-    value,
-    label: value === workspaceDefaultAudienceTimezone.value ? `${value} · workspace default` : value,
-  }));
+  return publishAttempts.value.find((attempt) => attempt.id === selectedAttemptId.value) ?? null;
 });
+const selectedFailedPlatforms = computed(() =>
+  (selectedAttempt.value?.platforms ?? []).filter((platform) => platform.status === "failed"),
+);
+const canRetryFailedPlatforms = computed(() =>
+  Boolean(resolvedBusinessId.value)
+  && Boolean(selectedAttempt.value)
+  && selectedFailedPlatforms.value.length > 0
+  && !isRetrying.value,
+);
 
-function getHistoryAnchor(post: ScheduledPost): string {
-  return post.publishedAt || post.scheduledAt;
+function formatTimestamp(value: string | undefined): string {
+  if (!value) {
+    return "Unknown";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
-function getDisplayTitle(post: ScheduledPost): string {
-  const firstLine = post.contentText
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.length > 0);
+function formatExcerpt(value: string | undefined): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
 
-  return firstLine || "Untitled post";
-}
+  if (!normalized) {
+    return "No publish copy stored for this attempt.";
+  }
 
-function buildExcerpt(value: string, maxLength = 180): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-
-  if (normalized.length <= maxLength) {
+  if (normalized.length <= 220) {
     return normalized;
   }
 
-  return `${normalized.slice(0, maxLength).trimEnd()}...`;
+  return `${normalized.slice(0, 220).trimEnd()}...`;
 }
 
-function getMediaCount(post: ScheduledPost): number {
-  return post.assets.length > 0 ? post.assets.length : post.slides.length;
-}
-
-function resolveStatusTone(status: ScheduledPostStatus): "default" | "success" | "warning" | "danger" {
+function resolveAttemptStatusTone(status: PublishAttemptStatus): "success" | "warning" | "danger" | "default" {
   switch (status) {
-    case "published":
+    case "success":
       return "success";
-    case "failed":
-      return "danger";
-    case "paused":
+    case "partial":
     case "processing":
       return "warning";
+    case "failed":
+      return "danger";
     default:
       return "default";
   }
 }
 
-function resolvePerformanceLabel(label: PostPerformanceLabel | undefined): string {
-  switch (label) {
-    case "high":
-      return "High signal";
-    case "medium":
-      return "Medium signal";
-    case "low":
-      return "Low signal";
-    default:
-      return "Not rated";
-  }
-}
-
-function matchesTab(post: ScheduledPost, tab: HistoryTab): boolean {
-  switch (tab) {
-    case "published":
-      return post.status === "published";
-    case "scheduled":
-      return post.status === "scheduled" || post.status === "paused" || post.status === "processing";
+function resolveAttemptStatusLabel(status: PublishAttemptStatus): string {
+  switch (status) {
+    case "success":
+      return "Successful";
+    case "partial":
+      return "Partial";
     case "failed":
-      return post.status === "failed";
+      return "Failed";
     default:
-      return true;
+      return "Processing";
   }
 }
 
-const sortedPosts = computed(() =>
-  [...scheduledPosts.value].sort(
-    (left, right) => new Date(getHistoryAnchor(right)).getTime() - new Date(getHistoryAnchor(left)).getTime(),
-  ),
-);
+function resolveAttemptSourceLabel(sourceKind: PublishAttempt["sourceKind"]): string {
+  switch (sourceKind) {
+    case "retry":
+      return "Retry";
+    case "scheduled":
+      return "Scheduled";
+    default:
+      return "Manual";
+  }
+}
 
-const filteredPosts = computed(() =>
-  sortedPosts.value.filter((post) => {
-    if (!matchesTab(post, selectedTab.value)) {
-      return false;
-    }
-
-    const query = searchQuery.value.trim().toLowerCase();
-
-    if (!query) {
-      return true;
-    }
-
-    return (
-      getDisplayTitle(post).toLowerCase().includes(query) ||
-      post.contentText.toLowerCase().includes(query) ||
-      resolveScheduledPostStatusLabel(post.status).toLowerCase().includes(query)
-    );
-  }),
-);
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredPosts.value.length / HISTORY_PAGE_SIZE)));
-const paginatedPosts = computed(() => {
-  const startIndex = (currentPage.value - 1) * HISTORY_PAGE_SIZE;
-  return filteredPosts.value.slice(startIndex, startIndex + HISTORY_PAGE_SIZE);
-});
-
-const selectedScheduledPost = computed(
-  () =>
-    paginatedPosts.value.find((post) => post.id === selectedScheduledPostId.value) ??
-    paginatedPosts.value[0] ??
-    null,
-);
-
-const selectedScheduledPostCanPause = computed(
-  () => selectedScheduledPost.value?.status === "scheduled",
-);
-
-const selectedScheduledPostCanResume = computed(
-  () => selectedScheduledPost.value?.status === "paused",
-);
-
-const selectedScheduledPostCanRetry = computed(
-  () => selectedScheduledPost.value?.status === "failed",
-);
-
-const selectedScheduledPostCanPublishNow = computed(() => {
-  const status = selectedScheduledPost.value?.status;
-  return status === "scheduled" || status === "paused" || status === "failed";
-});
-
-const selectedScheduledPostCanCancel = computed(() => {
-  const status = selectedScheduledPost.value?.status;
-  return status === "scheduled" || status === "paused" || status === "failed";
-});
-
-const selectedScheduledPostCanReschedule = computed(() => {
-  const status = selectedScheduledPost.value?.status;
-  return status === "scheduled" || status === "paused" || status === "failed";
-});
-
-const selectedScheduledPostCanMoveToDraft = computed(() => {
-  const post = selectedScheduledPost.value;
-
-  if (!post?.assetGroupId) {
-    return false;
+function resolvePlatformStatusLabel(platform: PublishAttemptPlatform): string {
+  if (platform.status === "success") {
+    return "Posted";
   }
 
-  return (
-    post.status === "scheduled"
-    || post.status === "paused"
-    || post.status === "failed"
-    || post.status === "canceled"
-  );
-});
-
-const overviewCards = computed(() => {
-  const published = scheduledPosts.value.filter((post) => post.status === "published").length;
-  const scheduled = scheduledPosts.value.filter(
-    (post) => post.status === "scheduled" || post.status === "paused" || post.status === "processing",
-  ).length;
-  const failed = scheduledPosts.value.filter((post) => post.status === "failed").length;
-  const withMedia = scheduledPosts.value.filter((post) => getMediaCount(post) > 0).length;
-
-  return [
-    { label: "Posted", value: String(published), tone: published > 0 ? "success" : "default" },
-    { label: "Queued", value: String(scheduled), tone: "default" },
-    { label: "Failed", value: String(failed), tone: failed > 0 ? "danger" : "default" },
-    { label: "With media", value: String(withMedia), tone: withMedia > 0 ? "warning" : "default" },
-  ] as const;
-});
-
-const selectedAudienceTimeLabel = computed(() => {
-  if (!selectedAudienceDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
-    return "";
+  if (platform.status === "failed") {
+    return "Failed";
   }
 
-  const scheduledAt = convertZonedDateTimeToUtcIso(
-    selectedAudienceDateKey.value,
-    scheduleTime.value,
-    audienceTimezone.value,
-  );
+  return "Processing";
+}
 
-  return formatTimeWithZone(scheduledAt, audienceTimezone.value);
-});
+function selectAttempt(attemptId: string): void {
+  selectedAttemptId.value = attemptId;
+  selectedAttemptDetail.value = null;
 
-const selectedLocalTimeLabel = computed(() => {
-  if (!selectedAudienceDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
-    return "";
-  }
-
-  const scheduledAt = convertZonedDateTimeToUtcIso(
-    selectedAudienceDateKey.value,
-    scheduleTime.value,
-    audienceTimezone.value,
-  );
-
-  return formatTimeWithZone(scheduledAt, userTimezone);
-});
-
-const selectedScheduledPostNeedsReconnect = computed(() =>
-  selectedScheduledPost.value ? looksLikeSocialReconnectIssue(selectedScheduledPost.value) : false,
-);
-
-function extractSchedulingWarnings(error: unknown): SchedulingSafetyWarning[] {
-  if (!(error instanceof ApiRequestError) || error.code !== "scheduling_safety_warning") {
-    return [];
-  }
-
-  const warnings = error.details?.warnings;
-
-  if (!Array.isArray(warnings)) {
-    return [];
-  }
-
-  return warnings.flatMap((warning) => {
-    if (!warning || typeof warning !== "object") {
-      return [];
-    }
-
-    const candidate = warning as Record<string, unknown>;
-
-    if (
-      typeof candidate.code !== "string" ||
-      typeof candidate.title !== "string" ||
-      typeof candidate.message !== "string"
-    ) {
-      return [];
-    }
-
-    return [
-      {
-        code: candidate.code as SchedulingSafetyWarning["code"],
-        title: candidate.title,
-        message: candidate.message,
-      },
-    ];
+  void router.replace({
+    query: {
+      ...route.query,
+      attempt: attemptId,
+    },
   });
 }
 
-function buildSchedulingWarningMessage(warnings: SchedulingSafetyWarning[]): string {
-  return warnings.map((warning) => `${warning.title}\n${warning.message}`).join("\n\n");
-}
-
-function confirmSchedulingWarnings(warnings: SchedulingSafetyWarning[]): boolean {
-  if (typeof window === "undefined") {
-    return false;
+function toFriendlyErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof ApiRequestError && error.message.trim()) {
+    return error.message.trim();
   }
 
-  return window.confirm(
-    `${buildSchedulingWarningMessage(warnings)}\n\nChoose OK to schedule anyway, or Cancel to keep the safer spacing.`,
-  );
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+
+  return fallback;
 }
 
-async function connectInstagram(): Promise<void> {
+async function loadPublishHistory(): Promise<void> {
   if (!resolvedBusinessId.value) {
-    errorMessage.value = "Pick a workspace before reconnecting Instagram.";
-    return;
-  }
-
-  isConnectingMeta.value = true;
-  errorMessage.value = "";
-
-  try {
-    const response = await requestMetaSocialAuthStart({
-      businessId: resolvedBusinessId.value,
-      platform: "instagram",
-      returnPath: route.fullPath,
-    });
-
-    window.location.assign(response.authorizationUrl);
-  } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to start Meta reconnection.";
-  } finally {
-    isConnectingMeta.value = false;
-  }
-}
-
-async function reconnectLinkedIn(): Promise<void> {
-  if (!resolvedBusinessId.value) {
-    errorMessage.value = "Pick a workspace before reconnecting LinkedIn.";
-    return;
-  }
-
-  isConnectingLinkedIn.value = true;
-  errorMessage.value = "";
-
-  try {
-    const response = await requestLinkedInSocialAuthStart({
-      businessId: resolvedBusinessId.value,
-      returnPath: route.fullPath,
-    });
-
-    window.location.assign(response.authorizationUrl);
-  } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to start LinkedIn reconnection.";
-  } finally {
-    isConnectingLinkedIn.value = false;
-  }
-}
-
-async function connectFacebook(): Promise<void> {
-  if (!resolvedBusinessId.value) {
-    errorMessage.value = "Pick a workspace before reconnecting Facebook.";
-    return;
-  }
-
-  isConnectingMeta.value = true;
-  errorMessage.value = "";
-
-  try {
-    const response = await requestMetaSocialAuthStart({
-      businessId: resolvedBusinessId.value,
-      platform: "facebook",
-      returnPath: route.fullPath,
-    });
-
-    window.location.assign(response.authorizationUrl);
-  } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to start Meta reconnection.";
-  } finally {
-    isConnectingMeta.value = false;
-  }
-}
-
-async function reconnectSelectedPlatform(): Promise<void> {
-  if (selectedScheduledPost.value?.platform === "instagram") {
-    await connectInstagram();
-    return;
-  }
-
-  if (selectedScheduledPost.value?.platform === "facebook") {
-    await connectFacebook();
-    return;
-  }
-
-  await reconnectLinkedIn();
-}
-
-function closeMetaSelectionModal(): void {
-  isMetaSelectionModalOpen.value = false;
-  pendingMetaSession.value = "";
-  isConnectingMeta.value = false;
-}
-
-function handleMetaSelectionError(message: string): void {
-  errorMessage.value = message;
-  isConnectingMeta.value = false;
-}
-
-function handleMetaConnected(): void {
-  closeMetaSelectionModal();
-  feedbackMessage.value =
-    pendingMetaPlatform.value === "facebook"
-      ? "Facebook connected. History is ready to recover failed posts."
-      : "Instagram connected. History is ready to recover failed posts.";
-}
-
-function syncSelectedScheduleForm(post: ScheduledPost | null): void {
-  if (!post) {
-    return;
-  }
-
-  audienceTimezone.value = post.audienceTimezone || workspaceDefaultAudienceTimezone.value;
-  selectedAudienceDateKey.value = toDateKeyInTimezone(post.scheduledAt, audienceTimezone.value);
-  scheduleTime.value = toTimeValueInTimezone(post.scheduledAt, audienceTimezone.value);
-}
-
-function syncSelection(): void {
-  if (filteredPosts.value.length === 0) {
-    const fallbackTab = HISTORY_TABS.find((tab) =>
-      sortedPosts.value.some((post) => matchesTab(post, tab.id)),
-    );
-
-    if (fallbackTab && fallbackTab.id !== selectedTab.value) {
-      selectedTab.value = fallbackTab.id;
-      return;
-    }
-
-    selectedScheduledPostId.value = "";
-    return;
-  }
-
-  currentPage.value = Math.min(currentPage.value, totalPages.value);
-
-  if (!paginatedPosts.value.some((post) => post.id === selectedScheduledPostId.value)) {
-    selectedScheduledPostId.value = paginatedPosts.value[0]?.id ?? "";
-  }
-
-  syncSelectedScheduleForm(selectedScheduledPost.value);
-}
-
-async function loadBusinesses(): Promise<void> {
-  const response = await requestMyBusinesses();
-  businesses.value = response.businesses;
-
-  const preferredBusinessId =
-    productAccess.value?.activeBusinessId || activeBusinessId.value || response.businesses[0]?.businessId || "";
-
-  if (preferredBusinessId && preferredBusinessId !== productAccess.value?.activeBusinessId) {
-    await setActiveBusinessId(preferredBusinessId);
-  }
-}
-
-async function loadHistoryData(): Promise<void> {
-  if (!resolvedBusinessId.value || !schedulerEnabled.value) {
-    scheduledPosts.value = [];
-    return;
-  }
-
-  const response = await requestScheduledPosts(resolvedBusinessId.value);
-  scheduledPosts.value = response.scheduledPosts;
-}
-
-async function initializePage(): Promise<void> {
-  if (!isProductAccessReady.value) {
-    isLoading.value = true;
+    publishAttempts.value = [];
+    selectedAttemptId.value = "";
+    selectedAttemptDetail.value = null;
+    isLoading.value = false;
     return;
   }
 
@@ -571,1046 +160,511 @@ async function initializePage(): Promise<void> {
   errorMessage.value = "";
 
   try {
-    await loadBusinesses();
-    if (!audienceTimezone.value) {
-      audienceTimezone.value = workspaceDefaultAudienceTimezone.value;
-    }
-    await loadHistoryData();
-    syncSelection();
+    const response = await requestPublishAttempts(resolvedBusinessId.value);
+    publishAttempts.value = response.publishAttempts;
+
+    const requestedAttemptId =
+      typeof route.query.attempt === "string"
+        ? route.query.attempt.trim()
+        : "";
+    const nextAttemptId =
+      (requestedAttemptId && response.publishAttempts.some((attempt) => attempt.id === requestedAttemptId)
+        ? requestedAttemptId
+        : response.publishAttempts[0]?.id) ?? "";
+
+    selectedAttemptId.value = nextAttemptId;
   } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to load post history right now.";
+    publishAttempts.value = [];
+    selectedAttemptId.value = "";
+    selectedAttemptDetail.value = null;
+    errorMessage.value = toFriendlyErrorMessage(error, "Unable to load publish history right now.");
   } finally {
     isLoading.value = false;
   }
 }
 
-function selectPost(postId: string): void {
-  selectedScheduledPostId.value = postId;
-  syncSelectedScheduleForm(
-    paginatedPosts.value.find((post) => post.id === postId) ?? null,
-  );
-  feedbackMessage.value = "";
-  errorMessage.value = "";
-}
-
-async function mutateSelectedPost(
-  action: "pause" | "resume" | "cancel" | "retry" | "publish_now" | "move_to_draft",
-): Promise<void> {
-  if (!resolvedBusinessId.value || !selectedScheduledPost.value) {
-    errorMessage.value = "Pick a post first.";
+async function loadSelectedAttemptDetail(): Promise<void> {
+  if (!resolvedBusinessId.value || !selectedAttemptId.value) {
+    selectedAttemptDetail.value = null;
     return;
   }
 
-  const selectedAssetGroupId = selectedScheduledPost.value.assetGroupId;
-  isUpdating.value = true;
+  isLoadingDetail.value = true;
+
+  try {
+    const response = await requestPublishAttemptDetail(selectedAttemptId.value, resolvedBusinessId.value);
+    selectedAttemptDetail.value = response.publishAttempt;
+  } catch (error) {
+    selectedAttemptDetail.value = null;
+    errorMessage.value = toFriendlyErrorMessage(error, "Unable to load publish attempt detail.");
+  } finally {
+    isLoadingDetail.value = false;
+  }
+}
+
+async function retryFailedPlatforms(): Promise<void> {
+  if (!resolvedBusinessId.value || !selectedAttempt.value) {
+    return;
+  }
+
+  isRetrying.value = true;
   errorMessage.value = "";
   feedbackMessage.value = "";
 
   try {
-    const response = await requestUpdateScheduledPost(selectedScheduledPost.value.id, {
+    const response = await requestRetryFailedPublishAttempt(selectedAttempt.value.id, {
       businessId: resolvedBusinessId.value,
-      action,
     });
 
-    feedbackMessage.value =
-      action === "pause"
-        ? "Scheduled post paused."
-        : action === "resume"
-          ? "Scheduled post resumed."
-          : action === "cancel"
-            ? "Scheduled post canceled."
-            : action === "retry"
-              ? "Failed post re-queued for publishing."
-              : action === "publish_now"
-                ? "Post pushed to publish now."
-                : "Slot removed. The draft is back in the planner backlog.";
-    selectedScheduledPostId.value = response.scheduledPost.id;
-    await loadHistoryData();
-    await refreshProductAccess(resolvedBusinessId.value);
-    syncSelection();
-
-    if (action === "move_to_draft" && selectedAssetGroupId) {
-      await router.push({
-        path: appRoutes.appPlanner,
-        query: {
-          draftId: selectedAssetGroupId,
-          platform: selectedScheduledPost.value.platform,
-        },
-      });
-    }
+    feedbackMessage.value = "Retried the failed platforms. Successful channels were left untouched.";
+    selectedAttemptDetail.value = response.publishAttempt;
+    selectedAttemptId.value = response.publishAttempt.id;
+    await loadPublishHistory();
+    selectAttempt(response.publishAttempt.id);
   } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to update that post right now.";
+    errorMessage.value = toFriendlyErrorMessage(error, "Unable to retry the failed platforms.");
   } finally {
-    isUpdating.value = false;
+    isRetrying.value = false;
   }
-}
-
-async function rescheduleSelectedPost(): Promise<void> {
-  if (!resolvedBusinessId.value || !selectedScheduledPost.value) {
-    errorMessage.value = "Pick a post first.";
-    return;
-  }
-
-  isUpdating.value = true;
-  errorMessage.value = "";
-
-  const rescheduleRequest = {
-    businessId: resolvedBusinessId.value,
-    action: "reschedule" as const,
-    scheduledAt: convertZonedDateTimeToUtcIso(
-      selectedAudienceDateKey.value,
-      scheduleTime.value,
-      audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
-    ),
-    audienceTimezone: audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
-  };
-
-  try {
-    let response;
-
-    try {
-      response = await requestUpdateScheduledPost(selectedScheduledPost.value.id, rescheduleRequest);
-    } catch (error) {
-      const warnings = extractSchedulingWarnings(error);
-
-      if (warnings.length === 0 || !confirmSchedulingWarnings(warnings)) {
-        throw error;
-      }
-
-      response = await requestUpdateScheduledPost(selectedScheduledPost.value.id, {
-        ...rescheduleRequest,
-        ignoreSafetyWarnings: true,
-      });
-      feedbackMessage.value = "Publishing slot updated with a manual safety override.";
-    }
-
-    if (!feedbackMessage.value) {
-      feedbackMessage.value =
-        response.scheduledPost.status === "paused"
-          ? "Paused post rescheduled without resuming it."
-          : "Publishing slot updated.";
-    }
-    selectedScheduledPostId.value = response.scheduledPost.id;
-    await loadHistoryData();
-    await refreshProductAccess(resolvedBusinessId.value);
-    syncSelection();
-  } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to reschedule that post right now.";
-  } finally {
-    isUpdating.value = false;
-  }
-}
-
-async function saveSelectedPostPerformance(performanceLabel: PostPerformanceLabel): Promise<void> {
-  if (!resolvedBusinessId.value || !selectedScheduledPost.value) {
-    errorMessage.value = "Pick a published post before saving performance.";
-    return;
-  }
-
-  isUpdating.value = true;
-  errorMessage.value = "";
-  feedbackMessage.value = "";
-
-  try {
-    const response = await requestUpdateScheduledPostPerformance(selectedScheduledPost.value.id, {
-      businessId: resolvedBusinessId.value,
-      performanceLabel,
-    });
-
-    selectedScheduledPostId.value = response.scheduledPost.id;
-    scheduledPosts.value = scheduledPosts.value.map((post) =>
-      post.id === response.scheduledPost.id ? response.scheduledPost : post,
-    );
-    feedbackMessage.value = `Saved ${resolvePerformanceLabel(performanceLabel).toLowerCase()} for this post.`;
-    syncSelection();
-  } catch (error) {
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to save post performance right now.";
-  } finally {
-    isUpdating.value = false;
-  }
-}
-
-function continueWritingFromHistory(
-  post: ScheduledPost,
-  strategy: RepurposeStrategy = DEFAULT_REPURPOSE_STRATEGY,
-): void {
-  saveRepurposeSeed({
-    text: post.contentText,
-    title: getDisplayTitle(post),
-    strategy,
-    autoGenerate: true,
-    source: "history",
-  });
-
-  void router.push(appRoutes.appCreate);
-}
-
-function openDraftEditor(assetId?: string): void {
-  if (!assetId) {
-    return;
-  }
-
-  void router.push({
-    path: appRoutes.appCreate,
-    query: {
-      postId: assetId,
-    },
-  });
-}
-
-function openPlanner(): void {
-  void router.push(appRoutes.appPlanner);
-}
-
-function openSettings(): void {
-  void router.push(appRoutes.settingsPreferences);
 }
 
 watch(
-  () => workspaceDefaultAudienceTimezone.value,
-  (timezone) => {
-    if (!audienceTimezone.value) {
-      audienceTimezone.value = timezone;
-    }
+  () => resolvedBusinessId.value,
+  async () => {
+    await refreshProductAccess(resolvedBusinessId.value || null);
+    await loadPublishHistory();
   },
   { immediate: true },
 );
 
 watch(
-  () => [isProductAccessReady.value, resolvedBusinessId.value, schedulerEnabled.value] as const,
-  ([accessReady]) => {
-    if (!accessReady) {
+  () => route.query.attempt,
+  (value) => {
+    if (typeof value !== "string") {
       return;
     }
 
-    void initializePage();
-  },
-);
-
-watch(
-  () => selectedTab.value,
-  () => {
-    currentPage.value = 1;
-    void router.replace({
-      query: {
-        ...route.query,
-        tab: selectedTab.value,
-      },
-    });
-    syncSelection();
-  },
-);
-
-watch(
-  () => searchQuery.value,
-  () => {
-    currentPage.value = 1;
-    syncSelection();
-  },
-);
-
-watch(
-  () => currentPage.value,
-  () => {
-    syncSelection();
-  },
-);
-
-watch(
-  () => scheduledPosts.value,
-  () => {
-    syncSelection();
-  },
-);
-
-watch(
-  () => [route.query.linkedin, route.query.meta, route.query.message, route.query.session],
-  async ([linkedInStatus, metaStatus, message, session]) => {
-    if (
-      typeof linkedInStatus !== "string"
-      && typeof metaStatus !== "string"
-      && typeof message !== "string"
-      && typeof session !== "string"
-    ) {
-      return;
+    if (value !== selectedAttemptId.value) {
+      selectedAttemptId.value = value;
     }
+  },
+);
 
-    if (linkedInStatus === "connected") {
-      feedbackMessage.value = "LinkedIn connected. History is ready.";
-    } else if (linkedInStatus === "error") {
-      errorMessage.value =
-        typeof message === "string" && message.trim() !== ""
-          ? toFriendlySocialAuthMessage(message, "linkedin")
-          : toFriendlySocialAuthMessage(undefined, "linkedin");
-    }
-
-    if (metaStatus === "connected") {
-      feedbackMessage.value = "Instagram connected. History is ready.";
-      isConnectingMeta.value = false;
-    } else if (metaStatus === "error") {
-      errorMessage.value =
-        typeof message === "string" && message.trim() !== ""
-          ? toFriendlySocialAuthMessage(message, pendingMetaPlatform.value)
-          : toFriendlySocialAuthMessage(undefined, pendingMetaPlatform.value);
-      isConnectingMeta.value = false;
-    } else if (metaStatus === "select_page" && typeof session === "string" && session.trim() !== "") {
-      pendingMetaSession.value = session.trim();
-      isMetaSelectionModalOpen.value = true;
-      isConnectingMeta.value = false;
-    }
-
-    const nextQuery = { ...route.query };
-    delete nextQuery.linkedin;
-    delete nextQuery.meta;
-    delete nextQuery.message;
-    delete nextQuery.session;
-    void router.replace({ query: nextQuery });
-    isConnectingLinkedIn.value = false;
+watch(
+  () => [resolvedBusinessId.value, selectedAttemptId.value],
+  () => {
+    void loadSelectedAttemptDetail();
   },
   { immediate: true },
 );
-
-onMounted(() => {
-  if (isProductAccessReady.value) {
-    void initializePage();
-  }
-});
 </script>
 
 <template>
-  <main class="history-shell">
-    <section class="workspace-hero">
+  <section class="history-page">
+    <header class="history-header">
       <div>
-        <p class="workspace-eyebrow">/app/history</p>
-        <h1>Post history</h1>
-        <p class="workspace-description">
-          Verify what shipped, see what failed, and recover execution issues without hunting through the planner.
+        <p class="history-eyebrow">Publish History</p>
+        <h1>Track every publish action across platforms.</h1>
+        <p class="history-copy">
+          Manual posts, scheduled dispatches, failures, and retries now live in one ledger.
         </p>
       </div>
 
-      <div class="history-top-actions">
-        <button type="button" class="workspace-secondary-button" @click="openPlanner">
-          Open planner
-        </button>
-        <router-link class="workspace-primary-button link-button" :to="appRoutes.appCreate">
-          Create post
-        </router-link>
-      </div>
-    </section>
+      <button
+        v-if="canRetryFailedPlatforms"
+        type="button"
+        class="history-retry-button"
+        :disabled="isRetrying"
+        @click="void retryFailedPlatforms()"
+      >
+        {{ isRetrying ? "Retrying failed..." : "Retry failed only" }}
+      </button>
+    </header>
+
+    <p v-if="feedbackMessage" class="history-feedback history-feedback-success">{{ feedbackMessage }}</p>
+    <p v-if="errorMessage" class="history-feedback history-feedback-error">{{ errorMessage }}</p>
 
     <HistorySkeleton v-if="isLoading" />
 
-    <template v-else>
-      <section class="history-overview-grid">
-        <article
-          v-for="card in overviewCards"
-          :key="card.label"
-          class="workspace-card history-overview-card"
-          :data-tone="card.tone"
-        >
-          <span>{{ card.label }}</span>
-          <strong>{{ card.value }}</strong>
-        </article>
-      </section>
-
-      <section v-if="errorMessage" class="workspace-card empty-state">
-        <h2>History unavailable</h2>
-        <p>{{ errorMessage }}</p>
-      </section>
-
-      <section v-else-if="!resolvedBusinessId" class="workspace-card empty-state">
-        <h2>No workspace selected</h2>
-        <p>Switch into a workspace first, then use history to verify what shipped and recover failures.</p>
-      </section>
-
-      <section v-else-if="!schedulerEnabled" class="workspace-card empty-state">
-        <h2>History is not enabled here</h2>
-        <p>Turn on the scheduler feature for this workspace to unlock execution history.</p>
-      </section>
-
-      <section v-else class="history-main-grid">
-      <article class="workspace-card history-list-panel">
-        <div class="history-toolbar">
+    <div v-else class="history-layout">
+      <aside class="history-list-card">
+        <div class="history-list-header">
           <div>
-            <p class="workspace-chip">Execution stream · {{ userTimezone }}</p>
-            <p class="workspace-description compact">
-              Posted items confirm output. Failed items are the recovery queue. Queued items show what is waiting for dispatch.
-            </p>
-          </div>
-
-          <div class="history-toolbar-actions">
-            <div class="history-tab-row" role="tablist" aria-label="History filters">
-              <button
-                v-for="tab in HISTORY_TABS"
-                :key="tab.id"
-                type="button"
-                class="history-tab"
-                :class="{ active: tab.id === selectedTab }"
-                @click="selectedTab = tab.id"
-              >
-                {{ tab.label }}
-              </button>
-            </div>
-
-            <label class="history-search">
-              <span>Search posts</span>
-              <input
-                v-model="searchQuery"
-                type="search"
-                placeholder="Search title, content, or status"
-              />
-            </label>
+            <p class="history-eyebrow">Attempts</p>
+            <strong>{{ publishAttempts.length }} total</strong>
           </div>
         </div>
 
-        <div v-if="filteredPosts.length === 0" class="history-empty-state">
-          <strong>No {{ HISTORY_TABS.find((tab) => tab.id === selectedTab)?.label.toLowerCase() }} posts yet.</strong>
-          <span>
-            {{
-              selectedTab === "failed"
-                ? "Failures will show up here with recovery actions."
-                : selectedTab === "published"
-                  ? "Published items land here after direct or scheduled posting."
-                  : "The execution stream for this filter is still empty."
-            }}
-          </span>
+        <div v-if="publishAttempts.length === 0" class="history-empty-state">
+          <strong>No publish attempts yet.</strong>
+          <p>Once you publish or schedule content, the ledger will show each action and platform result here.</p>
         </div>
 
-        <div v-else class="history-list">
-          <div class="history-list-meta">
-            <span>{{ filteredPosts.length }} matching post{{ filteredPosts.length === 1 ? "" : "s" }}</span>
-            <div class="history-page-controls">
-              <button
-                type="button"
-                class="workspace-secondary-button compact"
-                :disabled="currentPage <= 1"
-                @click="currentPage -= 1"
-              >
-                Previous
-              </button>
-              <span>Page {{ currentPage }} / {{ totalPages }}</span>
-              <button
-                type="button"
-                class="workspace-secondary-button compact"
-                :disabled="currentPage >= totalPages"
-                @click="currentPage += 1"
-              >
-                Next
-              </button>
-            </div>
-          </div>
-          <button
-            v-for="post in paginatedPosts"
-            :key="post.id"
-            type="button"
-            class="history-row"
-            :class="{ active: post.id === selectedScheduledPost?.id }"
-            :data-tone="resolveStatusTone(post.status)"
-            @click="selectPost(post.id)"
-          >
-            <div class="history-row-topline">
-              <div class="history-chip-row">
-                <span class="workspace-chip">
-                  {{ resolveSocialPlatformShortLabel(post.platform) }}
-                </span>
-                <span class="workspace-chip">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
-                <span v-if="post.selectedIdentityDisplayName" class="workspace-chip">
-                  {{ resolveScheduledIdentityLabel(post) }}
-                </span>
-                <span v-if="post.performanceLabel" class="workspace-chip">
-                  {{ resolvePerformanceLabel(post.performanceLabel) }}
-                </span>
-                <span v-if="getMediaCount(post) > 0" class="workspace-chip">
-                  📎 {{ getMediaCount(post) }}
-                </span>
-              </div>
-              <span class="history-row-time">
-                {{
-                  formatDateInTimezone(getHistoryAnchor(post), userTimezone, {
-                    month: "short",
-                    day: "numeric",
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })
-                }}
-              </span>
-            </div>
-
-            <strong>{{ getDisplayTitle(post) }}</strong>
-            <p>{{ buildExcerpt(post.contentText, 140) }}</p>
-            <span v-if="post.status === 'failed' && post.errorMessage" class="history-row-error">
-              {{ buildExcerpt(post.errorMessage, 120) }}
+        <button
+          v-for="attempt in publishAttempts"
+          :key="attempt.id"
+          type="button"
+          class="history-list-row"
+          :data-active="attempt.id === selectedAttemptId"
+          @click="selectAttempt(attempt.id)"
+        >
+          <div class="history-list-row-top">
+            <span class="history-source-chip">{{ resolveAttemptSourceLabel(attempt.sourceKind) }}</span>
+            <span class="history-status-chip" :data-tone="resolveAttemptStatusTone(attempt.status)">
+              {{ resolveAttemptStatusLabel(attempt.status) }}
             </span>
-          </button>
+          </div>
+
+          <strong>{{ attempt.title || "Publish attempt" }}</strong>
+          <p>{{ formatExcerpt(attempt.contentText) }}</p>
+
+          <div class="history-platform-chip-row">
+            <span
+              v-for="platform in attempt.platforms"
+              :key="`${attempt.id}-${platform.platform}`"
+              class="history-platform-chip"
+              :data-status="platform.status"
+            >
+              {{ resolveSocialPlatformLabel(platform.platform) }} · {{ resolvePlatformStatusLabel(platform) }}
+            </span>
+          </div>
+
+          <span class="history-timestamp">{{ formatTimestamp(attempt.createdAt) }}</span>
+        </button>
+      </aside>
+
+      <section class="history-detail-card">
+        <div v-if="!selectedAttempt" class="history-empty-state history-detail-empty">
+          <strong>Select a publish attempt.</strong>
+          <p>Choose an attempt from the ledger to inspect platform results and retry failures.</p>
         </div>
-      </article>
-
-      <aside class="workspace-card history-sidebar">
-        <template v-if="selectedScheduledPost">
-          <p class="workspace-eyebrow">Selected slot</p>
-          <h2>{{ getDisplayTitle(selectedScheduledPost) }}</h2>
-          <p class="workspace-description compact">
-            {{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }} ·
-            {{
-              formatDateInTimezone(
-                selectedScheduledPost.status === "published"
-                  ? selectedScheduledPost.publishedAt || selectedScheduledPost.scheduledAt
-                  : selectedScheduledPost.scheduledAt,
-                selectedScheduledPost.audienceTimezone,
-                {
-                  weekday: "long",
-                  month: "short",
-                  day: "numeric",
-                  hour: "numeric",
-                  minute: "2-digit",
-                },
-              )
-            }}
-            in {{ selectedScheduledPost.audienceTimezone }}
-          </p>
-          <p v-if="selectedScheduledPost.audienceTimezone !== userTimezone" class="workspace-description compact">
-            Your time: {{
-              formatTimeWithZone(
-                selectedScheduledPost.status === "published"
-                  ? selectedScheduledPost.publishedAt || selectedScheduledPost.scheduledAt
-                  : selectedScheduledPost.scheduledAt,
-                userTimezone,
-              )
-            }}
-          </p>
-          <p class="workspace-description compact">
-            Publishing as {{ resolveScheduledIdentityLabel(selectedScheduledPost) }}
-          </p>
-          <p class="workspace-description compact">
-            {{ resolveScheduledPostStatusSummary(selectedScheduledPost) }}
-          </p>
-
-          <article class="history-preview-card">
-            <div class="history-preview-chip-row">
-              <p class="workspace-chip">
-                {{ resolveSocialPlatformLabel(selectedScheduledPost.platform) }}
-              </p>
-              <p class="workspace-chip">{{ resolveScheduledPostStatusLabel(selectedScheduledPost.status) }}</p>
-              <p v-if="selectedScheduledPost.selectedIdentityDisplayName" class="workspace-chip">
-                {{ resolveScheduledIdentityLabel(selectedScheduledPost) }}
-              </p>
-              <p v-if="selectedScheduledPost.performanceLabel" class="workspace-chip">
-                {{ resolvePerformanceLabel(selectedScheduledPost.performanceLabel) }}
-              </p>
-              <p v-if="getMediaCount(selectedScheduledPost) > 0" class="workspace-chip">
-                📎 {{ getMediaCount(selectedScheduledPost) }} image{{ getMediaCount(selectedScheduledPost) === 1 ? "" : "s" }}
-              </p>
-            </div>
-            <p>{{ selectedScheduledPost.contentText }}</p>
-          </article>
-
-          <div v-if="selectedScheduledPost.status === 'published'" class="history-inline-section">
-            <label class="history-inline-label">How did this perform?</label>
-            <div class="history-chip-row">
-              <button
-                v-for="option in PERFORMANCE_OPTIONS"
-                :key="option.value"
-                type="button"
-                class="workspace-secondary-button"
-                :disabled="isUpdating"
-                :data-active="selectedScheduledPost.performanceLabel === option.value"
-                @click="saveSelectedPostPerformance(option.value)"
-              >
-                {{ option.label }}
-              </button>
-            </div>
-            <p class="workspace-description compact">
-              Save a simple signal now. This becomes the first step toward performance-informed generation.
-            </p>
-          </div>
-
-          <div v-if="selectedScheduledPost.errorMessage" class="history-feedback danger">
-            {{ selectedScheduledPost.errorMessage }}
-          </div>
-
-          <p class="workspace-description compact">
-            Dispatch window: {{ formatScheduledPostDispatchWindow(selectedScheduledPost) }}
-          </p>
-
-          <div v-if="selectedScheduledPostCanReschedule" class="history-inline-section">
-            <label class="history-inline-label">Reschedule slot</label>
-            <div class="history-schedule-grid">
-              <label>
-                <span>Audience timezone</span>
-                <select v-model="audienceTimezone">
-                  <option
-                    v-for="option in audienceTimezoneOptions"
-                    :key="option.value"
-                    :value="option.value"
-                  >
-                    {{ option.label }}
-                  </option>
-                </select>
-              </label>
-              <label>
-                <span>Audience date</span>
-                <input v-model="selectedAudienceDateKey" type="date" />
-              </label>
-              <label>
-                <span>Time</span>
-                <input v-model="scheduleTime" type="time" />
-              </label>
-            </div>
-
-            <p class="workspace-description compact">
-              Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
-            </p>
-          </div>
-
-          <div class="history-sidebar-actions">
-            <button
-              v-if="selectedScheduledPost.assetGroupId"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdating"
-              @click="openDraftEditor(selectedScheduledPost.assetGroupId)"
-            >
-              Edit draft
-            </button>
-            <a
-              v-if="selectedScheduledPost.externalPostUrl"
-              class="workspace-primary-button link-button"
-              :href="selectedScheduledPost.externalPostUrl"
-              target="_blank"
-              rel="noreferrer"
-            >
-              {{ resolveExternalPostLabel(selectedScheduledPost.platform) }}
-            </a>
-            <button
-              type="button"
-              class="workspace-secondary-button"
-              @click="continueWritingFromHistory(selectedScheduledPost)"
-            >
-              Continue writing
-            </button>
-            <div class="history-strategy-actions">
-              <p class="panel-meta">One-click angles</p>
-              <div class="history-strategy-row">
-                <button
-                  v-for="option in FOLLOW_UP_STRATEGY_OPTIONS"
-                  :key="option.value"
-                  type="button"
-                  class="workspace-secondary-button compact"
-                  @click="continueWritingFromHistory(selectedScheduledPost, option.value)"
-                >
-                  {{ option.shortLabel }}
-                </button>
-              </div>
-            </div>
-            <button
-              v-if="selectedScheduledPostCanPublishNow"
-              type="button"
-              class="workspace-primary-button"
-              :disabled="isUpdating"
-              @click="mutateSelectedPost('publish_now')"
-            >
-              {{ isUpdating ? "Updating..." : "Publish now" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanRetry"
-              type="button"
-              class="workspace-primary-button"
-              :disabled="isUpdating"
-              @click="mutateSelectedPost('retry')"
-            >
-              {{ isUpdating ? "Updating..." : "Retry now" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanPause"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdating"
-              @click="mutateSelectedPost('pause')"
-            >
-              {{ isUpdating ? "Updating..." : "Pause" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanResume"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdating"
-              @click="mutateSelectedPost('resume')"
-            >
-              {{ isUpdating ? "Updating..." : "Resume" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostNeedsReconnect"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isConnectingLinkedIn || isConnectingMeta"
-              @click="reconnectSelectedPlatform"
-            >
-              {{
-                isConnectingLinkedIn || isConnectingMeta
-                  ? "Redirecting..."
-                  : `Reconnect ${resolveSocialPlatformLabel(selectedScheduledPost.platform)}`
-              }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanReschedule"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdating"
-              @click="rescheduleSelectedPost"
-            >
-              {{ isUpdating ? "Updating..." : "Reschedule" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanMoveToDraft"
-              type="button"
-              class="workspace-secondary-button"
-              :disabled="isUpdating"
-              @click="mutateSelectedPost('move_to_draft')"
-            >
-              {{ isUpdating ? "Updating..." : "Move to draft" }}
-            </button>
-            <button
-              v-if="selectedScheduledPostCanCancel"
-              type="button"
-              class="workspace-secondary-button history-danger-button"
-              :disabled="isUpdating"
-              @click="mutateSelectedPost('cancel')"
-            >
-              {{ isUpdating ? "Updating..." : "Cancel" }}
-            </button>
-            <button
-              v-if="selectedScheduledPost.status === 'failed' && looksLikeSocialReconnectIssue(selectedScheduledPost)"
-              type="button"
-              class="workspace-secondary-button"
-              @click="openSettings"
-            >
-              Check {{ resolveSocialPlatformLabel(selectedScheduledPost.platform) }} connection
-            </button>
-          </div>
-        </template>
 
         <template v-else>
-          <p class="workspace-eyebrow">No post selected</p>
-          <h2>Choose a history item</h2>
-          <p class="workspace-description compact">
-            Select a row to inspect the post, open the live destination link, or recover a failed publish.
-          </p>
+          <div class="history-detail-header">
+            <div>
+              <p class="history-eyebrow">{{ resolveAttemptSourceLabel(selectedAttempt.sourceKind) }} publish</p>
+              <h2>{{ selectedAttempt.title || "Publish attempt" }}</h2>
+              <p class="history-copy">{{ formatExcerpt(selectedAttempt.contentText) }}</p>
+            </div>
+
+            <div class="history-detail-meta">
+              <span class="history-status-chip" :data-tone="resolveAttemptStatusTone(selectedAttempt.status)">
+                {{ resolveAttemptStatusLabel(selectedAttempt.status) }}
+              </span>
+              <span>{{ formatTimestamp(selectedAttempt.createdAt) }}</span>
+            </div>
+          </div>
+
+          <div v-if="isLoadingDetail" class="history-detail-loading">Loading attempt detail...</div>
+
+          <div v-else class="history-detail-grid">
+            <article
+              v-for="platform in selectedAttempt.platforms"
+              :key="platform.id"
+              class="history-platform-detail"
+              :data-status="platform.status"
+            >
+              <div class="history-platform-detail-top">
+                <div>
+                  <p class="history-eyebrow">{{ resolveSocialPlatformLabel(platform.platform) }}</p>
+                  <strong>{{ resolvePlatformStatusLabel(platform) }}</strong>
+                </div>
+                <span class="history-platform-badge" :data-status="platform.status">
+                  {{ platform.status }}
+                </span>
+              </div>
+
+              <p v-if="platform.status === 'success'" class="history-platform-message">
+                Posted successfully{{ platform.externalPostId ? ` · ${platform.externalPostId}` : "" }}.
+              </p>
+              <p v-else-if="platform.errorMessage" class="history-platform-message">
+                {{ platform.errorMessage }}
+              </p>
+              <p v-else class="history-platform-message">
+                This platform is still processing.
+              </p>
+
+              <div class="history-platform-stats">
+                <span>{{ platform.mediaSummary.imageCount }} images</span>
+                <span>{{ platform.mediaSummary.videoCount }} videos</span>
+                <span>{{ platform.mediaSummary.slideCount }} slides</span>
+              </div>
+
+              <a
+                v-if="platform.externalPostUrl"
+                :href="platform.externalPostUrl"
+                target="_blank"
+                rel="noreferrer"
+                class="history-link"
+              >
+                {{ resolveExternalPostLabel(platform.platform) }}
+              </a>
+            </article>
+          </div>
         </template>
-
-        <p v-if="feedbackMessage" class="history-feedback success">{{ feedbackMessage }}</p>
-      </aside>
       </section>
-
-      <MetaPageSelectionModal
-        :open="isMetaSelectionModalOpen"
-        :business-id="resolvedBusinessId"
-        :session="pendingMetaSession"
-        :platform="pendingMetaPlatform"
-        @close="closeMetaSelectionModal"
-        @connected="handleMetaConnected"
-        @error="handleMetaSelectionError"
-      />
-    </template>
-  </main>
+    </div>
+  </section>
 </template>
 
 <style scoped>
-.history-shell,
-.history-overview-grid,
-.history-main-grid,
-.history-toolbar,
-.history-tab-row,
-.history-row-topline,
-.history-chip-row,
-.history-sidebar-actions,
-.history-schedule-grid,
-.history-preview-chip-row {
+.history-page {
   display: grid;
-  gap: 1rem;
-}
-
-.history-shell {
   gap: 1.5rem;
 }
 
-.history-top-actions,
-.history-sidebar-actions,
-.history-page-controls {
+.history-header {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  justify-content: flex-end;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
-.history-toolbar-actions,
-.history-list-meta,
-.history-strategy-actions {
+.history-eyebrow {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(78, 45, 20, 0.68);
+}
+
+.history-header h1,
+.history-detail-header h2 {
+  margin: 0;
+  font-size: clamp(1.8rem, 2vw, 2.4rem);
+  line-height: 1.05;
+  color: #2a211b;
+}
+
+.history-copy {
+  margin: 0.45rem 0 0;
+  max-width: 60ch;
+  color: rgba(78, 45, 20, 0.72);
+}
+
+.history-retry-button {
+  border: none;
+  border-radius: 999px;
+  padding: 0.95rem 1.25rem;
+  background: linear-gradient(135deg, #ff6a3d, #ff8a5c);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.history-retry-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.history-feedback {
+  margin: 0;
+  border-radius: 1rem;
+  padding: 0.9rem 1rem;
+  font-weight: 600;
+}
+
+.history-feedback-success {
+  background: rgba(33, 146, 76, 0.1);
+  color: #1c7a43;
+}
+
+.history-feedback-error {
+  background: rgba(181, 58, 58, 0.1);
+  color: #8f2f2f;
+}
+
+.history-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  gap: 1.25rem;
+}
+
+.history-list-card,
+.history-detail-card {
+  border: 1px solid rgba(184, 151, 122, 0.26);
+  border-radius: 1.6rem;
+  background: rgba(255, 250, 245, 0.92);
+  box-shadow: 0 20px 44px rgba(122, 82, 47, 0.08);
+}
+
+.history-list-card {
+  display: grid;
+  gap: 0.85rem;
+  padding: 1rem;
+  align-content: start;
+}
+
+.history-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.history-list-row {
+  display: grid;
+  gap: 0.7rem;
+  width: 100%;
+  border: 1px solid rgba(184, 151, 122, 0.22);
+  border-radius: 1.2rem;
+  padding: 1rem;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.history-list-row:hover,
+.history-list-row[data-active="true"] {
+  transform: translateY(-1px);
+  border-color: rgba(255, 106, 61, 0.35);
+  box-shadow: 0 16px 30px rgba(122, 82, 47, 0.08);
+}
+
+.history-list-row strong {
+  color: #2a211b;
+}
+
+.history-list-row p {
+  margin: 0;
+  color: rgba(78, 45, 20, 0.68);
+}
+
+.history-list-row-top,
+.history-detail-meta,
+.history-platform-detail-top,
+.history-platform-stats,
+.history-platform-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.history-source-chip,
+.history-status-chip,
+.history-platform-chip,
+.history-platform-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0.32rem 0.68rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.history-source-chip,
+.history-platform-chip {
+  background: rgba(123, 79, 36, 0.08);
+  color: rgba(78, 45, 20, 0.72);
+}
+
+.history-status-chip[data-tone="success"],
+.history-platform-badge[data-status="success"],
+.history-platform-chip[data-status="success"] {
+  background: rgba(33, 146, 76, 0.12);
+  color: #1c7a43;
+}
+
+.history-status-chip[data-tone="warning"],
+.history-platform-badge[data-status="processing"] {
+  background: rgba(206, 140, 31, 0.14);
+  color: #8d5d08;
+}
+
+.history-status-chip[data-tone="danger"],
+.history-platform-badge[data-status="failed"],
+.history-platform-chip[data-status="failed"] {
+  background: rgba(181, 58, 58, 0.12);
+  color: #8f2f2f;
+}
+
+.history-status-chip[data-tone="default"] {
+  background: rgba(123, 79, 36, 0.08);
+  color: rgba(78, 45, 20, 0.72);
+}
+
+.history-timestamp {
+  color: rgba(78, 45, 20, 0.56);
+  font-size: 0.82rem;
+}
+
+.history-detail-card {
+  padding: 1.3rem;
   display: grid;
   gap: 1rem;
 }
 
-.history-strategy-row {
+.history-detail-header {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
-.history-overview-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.history-overview-card span,
-.history-row-time,
-.history-row p,
-.history-row-error,
-.history-empty-state span,
-.history-feedback,
-.history-inline-label,
-.history-schedule-grid span {
-  color: rgba(68, 51, 43, 0.72);
-  font-size: 0.92rem;
-}
-
-.history-overview-card strong {
-  font-size: 2rem;
-}
-
-.history-overview-card[data-tone="success"] {
-  background: rgba(226, 244, 232, 0.72);
-  border-color: rgba(105, 164, 122, 0.32);
-}
-
-.history-overview-card[data-tone="danger"] {
-  background: rgba(251, 233, 231, 0.82);
-  border-color: rgba(199, 92, 92, 0.32);
-}
-
-.history-overview-card[data-tone="warning"] {
-  background: rgba(255, 243, 224, 0.82);
-  border-color: rgba(216, 142, 51, 0.26);
-}
-
-.history-main-grid {
-  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
-  align-items: start;
-}
-
-.history-list-panel,
-.history-sidebar {
-  gap: 1.25rem;
-}
-
-.history-sidebar {
-  position: sticky;
-  top: 1.5rem;
-}
-
-.history-toolbar {
-  align-items: start;
-}
-
-.history-search {
-  display: grid;
-  gap: 0.4rem;
-}
-
-.history-search span {
-  color: rgba(68, 51, 43, 0.72);
-  font-size: 0.82rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.history-search input {
-  min-width: min(100%, 18rem);
-  border: 1px solid rgba(68, 51, 43, 0.14);
-  border-radius: 0.95rem;
-  padding: 0.85rem 0.95rem;
-  font: inherit;
-  color: inherit;
-  background: rgba(255, 255, 255, 0.88);
-}
-
-.history-tab-row {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.history-tab {
-  border: 1px solid rgba(128, 101, 77, 0.16);
-  background: rgba(255, 252, 248, 0.72);
-  color: inherit;
-  border-radius: 999px;
-  padding: 0.72rem 0.92rem;
-  font: inherit;
-  cursor: pointer;
-}
-
-.history-tab.active {
-  background: rgba(225, 104, 48, 0.12);
-  border-color: rgba(225, 104, 48, 0.38);
-  color: #b45321;
-}
-
+.history-detail-loading,
 .history-empty-state {
-  display: grid;
-  gap: 0.45rem;
-  padding: 1.25rem;
-  border-radius: 1.25rem;
-  background: rgba(255, 252, 248, 0.7);
-  border: 1px dashed rgba(128, 101, 77, 0.22);
-}
-
-.history-list {
-  display: grid;
-  gap: 0.9rem;
-}
-
-.history-list-meta {
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  color: rgba(68, 51, 43, 0.72);
-  font-size: 0.92rem;
-}
-
-.history-row {
-  text-align: left;
-  border: 1px solid rgba(128, 101, 77, 0.14);
-  background: rgba(255, 252, 248, 0.82);
+  border: 1px dashed rgba(184, 151, 122, 0.38);
   border-radius: 1.2rem;
-  padding: 1rem 1.05rem;
+  padding: 1.15rem;
+  background: rgba(255, 255, 255, 0.68);
+  color: rgba(78, 45, 20, 0.7);
+}
+
+.history-empty-state strong {
+  display: block;
+  color: #2a211b;
+}
+
+.history-empty-state p {
+  margin: 0.35rem 0 0;
+}
+
+.history-detail-grid {
   display: grid;
-  gap: 0.7rem;
-  cursor: pointer;
-  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
-.history-row:hover,
-.history-row.active {
-  border-color: rgba(225, 104, 48, 0.28);
-  transform: translateY(-1px);
-  box-shadow: 0 14px 32px rgba(128, 101, 77, 0.08);
+.history-platform-detail {
+  display: grid;
+  gap: 0.85rem;
+  border: 1px solid rgba(184, 151, 122, 0.2);
+  border-radius: 1.2rem;
+  padding: 1rem;
+  background: #fff;
 }
 
-.history-row[data-tone="success"] {
-  border-color: rgba(105, 164, 122, 0.22);
-}
-
-.history-row[data-tone="danger"] {
-  border-color: rgba(199, 92, 92, 0.28);
-}
-
-.history-row[data-tone="warning"] {
-  border-color: rgba(216, 142, 51, 0.24);
-}
-
-.history-row-topline {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-}
-
-.history-chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.history-row strong {
-  font-size: 1rem;
-}
-
-.history-row p {
+.history-platform-message {
   margin: 0;
+  color: rgba(78, 45, 20, 0.72);
 }
 
-.history-row-error {
-  color: #b84b3c;
+.history-platform-stats {
+  color: rgba(78, 45, 20, 0.58);
+  font-size: 0.84rem;
 }
 
-.history-preview-card {
-  display: grid;
-  gap: 0.9rem;
-  padding: 1rem 1.05rem;
-  border-radius: 1.2rem;
-  background: rgba(255, 252, 248, 0.82);
-  border: 1px solid rgba(128, 101, 77, 0.14);
+.history-link {
+  color: #cf5d28;
+  font-weight: 700;
+  text-decoration: none;
 }
 
-.history-inline-section {
-  display: grid;
-  gap: 0.8rem;
+.history-link:hover {
+  text-decoration: underline;
 }
 
-.history-inline-label,
-.history-schedule-grid span {
-  font-weight: 600;
-}
-
-.history-schedule-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.history-schedule-grid label {
-  display: grid;
-  gap: 0.45rem;
-}
-
-.history-schedule-grid input,
-.history-schedule-grid select {
-  border-radius: 1rem;
-  border: 1px solid rgba(128, 101, 77, 0.18);
-  background: rgba(255, 252, 248, 0.92);
-  padding: 0.85rem 0.95rem;
-  font: inherit;
-  color: inherit;
-}
-
-.history-feedback.success {
-  color: #25603d;
-}
-
-.history-feedback.danger {
-  color: #b84b3c;
-}
-
-.history-danger-button {
-  border-color: rgba(184, 75, 60, 0.22);
-  color: #9f3f32;
-}
-
-.workspace-secondary-button[data-active="true"] {
-  background: rgba(225, 104, 48, 0.12);
-  border-color: rgba(225, 104, 48, 0.38);
-  color: #b45321;
-}
-
-@media (max-width: 1100px) {
-  .history-main-grid,
-  .history-overview-grid {
+@media (max-width: 960px) {
+  .history-header,
+  .history-detail-header,
+  .history-layout {
     grid-template-columns: 1fr;
+    display: grid;
   }
 
-  .history-sidebar {
-    position: static;
-  }
-}
-
-@media (max-width: 760px) {
-  .history-tab-row,
-  .history-schedule-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .history-row-topline {
-    grid-template-columns: 1fr;
-  }
-
-  .history-top-actions,
-  .history-sidebar-actions {
-    justify-content: stretch;
+  .history-retry-button {
+    width: 100%;
   }
 }
 </style>

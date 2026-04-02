@@ -560,6 +560,32 @@ function buildStorageUrl(storageKey: string): string {
   return `s3://${resolveMediaBucket()}/${storageKey}`;
 }
 
+function resolveMediaPublicBaseUrl(): string | undefined {
+  const configuredBaseUrl = process.env.S3_MEDIA_PUBLIC_BASE_URL?.trim();
+
+  if (configuredBaseUrl) {
+    return configuredBaseUrl.replace(/\/+$/g, "");
+  }
+
+  const bucket = resolveMediaBucket();
+  const region = resolveAwsRegion();
+  return `https://${bucket}.s3.${region}.amazonaws.com`;
+}
+
+function buildPublicUrl(storageKey: string): string {
+  const publicBaseUrl = resolveMediaPublicBaseUrl();
+
+  if (!publicBaseUrl) {
+    throw new HttpError(
+      500,
+      "media_public_url_not_configured",
+      "S3_MEDIA_PUBLIC_BASE_URL is not configured.",
+    );
+  }
+
+  return `${publicBaseUrl}/${encodeS3Path(storageKey)}`;
+}
+
 function buildPreviewUrl(storageKey: string): string | undefined {
   try {
     return createS3PresignedUrl({
@@ -1095,4 +1121,8 @@ export function createPostAssetDownloadUrl(
     key: asset.storageKey,
     expiresInSeconds,
   });
+}
+
+export function createPostAssetPublicUrl(asset: Pick<PostAsset, "storageKey">): string {
+  return buildPublicUrl(asset.storageKey);
 }

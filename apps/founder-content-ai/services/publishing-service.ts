@@ -1,9 +1,13 @@
 import type {
+  CreatePublishAttemptRequest,
+  CreatePublishAttemptResponse,
   DisconnectSocialAccountRequest,
   DisconnectSocialAccountResponse,
   GenerateHashtagsRequest,
   GenerateHashtagsResponse,
   MetaAuthSessionResponse,
+  PublishAttemptDetailResponse,
+  PublishAttemptsResponse,
   PublishPostRequest,
   PublishPostResponse,
   RecommendPostTimeContentType,
@@ -21,6 +25,8 @@ import type {
   SelectSocialAccountIdentityResponse,
   SocialAccountsResponse,
   StartSocialAuthResponse,
+  RetryPublishAttemptRequest,
+  RetryPublishAttemptResponse,
 } from "../../../packages/shared-types";
 import { apiGet, apiPatch, apiPost } from "./api-client";
 
@@ -117,6 +123,38 @@ export async function requestPublishPost(
   input: PublishPostRequest,
 ): Promise<PublishPostResponse> {
   return apiPost<PublishPostRequest, PublishPostResponse>("/publish-post", input);
+}
+
+export async function requestCreatePublishAttempt(
+  input: CreatePublishAttemptRequest,
+): Promise<CreatePublishAttemptResponse> {
+  return apiPost<CreatePublishAttemptRequest, CreatePublishAttemptResponse>("/publish-attempts", input);
+}
+
+export async function requestPublishAttempts(
+  businessId: string,
+): Promise<PublishAttemptsResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiGet<PublishAttemptsResponse>(`/publish-attempts?businessId=${encodedBusinessId}`);
+}
+
+export async function requestPublishAttemptDetail(
+  publishAttemptId: string,
+  businessId: string,
+): Promise<PublishAttemptDetailResponse> {
+  return apiGet<PublishAttemptDetailResponse>(
+    `/publish-attempts/${encodeURIComponent(publishAttemptId)}?businessId=${encodeURIComponent(businessId)}`,
+  );
+}
+
+export async function requestRetryFailedPublishAttempt(
+  publishAttemptId: string,
+  input: RetryPublishAttemptRequest,
+): Promise<RetryPublishAttemptResponse> {
+  return apiPost<RetryPublishAttemptRequest, RetryPublishAttemptResponse>(
+    `/publish-attempts/${encodeURIComponent(publishAttemptId)}/retry-failed`,
+    input,
+  );
 }
 
 export async function requestScheduledPosts(

@@ -11,6 +11,8 @@ import type {
   GenerateVisualResponse,
   MediaRecommendationSuggestion,
   PostAsset,
+  PublishAttempt,
+  PublishAttemptPlatform,
   RecommendedPostTimeSlot,
   RepurposeContentResponse,
   RepurposeStrategy,
@@ -39,10 +41,12 @@ import { requestVisualGeneration } from "../services/generation-service";
 import { requestMediaRecommendations } from "../services/media-intelligence-service";
 import {
   requestGeneratedHashtags,
+  requestCreatePublishAttempt,
   requestLinkedInSocialAuthStart,
   requestMetaSocialAuthStart,
-  requestPublishPost,
+  requestPublishAttempts,
   requestRecommendedPostTimes,
+  requestRetryFailedPublishAttempt,
   requestSchedulePost,
   requestSocialAccounts,
 } from "../services/publishing-service";
@@ -90,8 +94,20 @@ const FOLLOW_UP_STRATEGY_OPTIONS = REPURPOSE_STRATEGY_OPTIONS.filter(
   (option) => option.value !== DEFAULT_REPURPOSE_STRATEGY,
 );
 
+interface PlatformPublishAttemptResult {
+  attemptId: string;
+  platformAttemptId: string;
+  platform: PublishableSocialPlatform;
+  status: "success" | "failed";
+  message: string;
+  errorCode?: string;
+  externalPostUrl?: string;
+}
+
 const draft = ref<ActivationDraftRecord | null>(null);
 const feedbackMessage = ref("");
+const publishAttemptResults = ref<PlatformPublishAttemptResult[]>([]);
+const currentPublishAttemptId = ref("");
 const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingChannels = ref(false);
 const isConnectingLinkedIn = ref(false);
@@ -781,6 +797,38 @@ const selectedPublishingStatus = computed(() => {
       ? "Connect a Facebook Page to publish directly."
       : "Connect LinkedIn to publish directly.";
 });
+const selectedPublishAttemptResults = computed(() =>
+  publishAttemptResults.value.filter((result) => selectedPublishingPlatforms.value.includes(result.platform)),
+);
+const selectedPublishSuccessResults = computed(() =>
+  selectedPublishAttemptResults.value.filter((result) => result.status === "success"),
+);
+const selectedPublishFailureResults = computed(() =>
+  selectedPublishAttemptResults.value.filter((result) => result.status === "failed"),
+);
+const hasCompleteSelectedPublishAttempt = computed(() =>
+  selectedPublishingPlatforms.value.length > 0
+  && selectedPublishAttemptResults.value.length === selectedPublishingPlatforms.value.length,
+);
+const hasPartialSelectedPublishFailure = computed(() =>
+  hasCompleteSelectedPublishAttempt.value
+  && selectedPublishSuccessResults.value.length > 0
+  && selectedPublishFailureResults.value.length > 0,
+);
+const retryFailedPlatformsLabel = computed(() =>
+  formatSelectedPlatformsLabel(selectedPublishFailureResults.value.map((result) => result.platform)),
+);
+const canRetryFailedPlatforms = computed(() =>
+  selectedPublishFailureResults.value.length > 0
+  && !isPublishingToLinkedIn.value
+  && !isConnectingLinkedIn.value
+  && !isConnectingMeta.value
+  && !isUploadingPostAssets.value
+  && Boolean(activeBusinessId.value),
+);
+const shouldUseRetryFailedAsPrimaryAction = computed(() =>
+  canRetryFailedPlatforms.value && hasCompleteSelectedPublishAttempt.value,
+);
 const isConnectingSelectedPlatform = computed(() =>
   selectedPublishingPlatform.value === "linkedin" ? isConnectingLinkedIn.value : isConnectingMeta.value,
 );
@@ -793,6 +841,12 @@ const canRunPublishingAction = computed(() =>
   canPublishSelectedPlatforms.value || shouldConnectFocusedPublishingPlatform.value,
 );
 const primaryPublishActionLabel = computed(() => {
+  if (shouldUseRetryFailedAsPrimaryAction.value) {
+    return isPublishingToLinkedIn.value
+      ? "Retrying failed..."
+      : `Retry failed only${selectedPublishFailureResults.value.length > 1 ? ` · ${retryFailedPlatformsLabel.value}` : ""}`;
+  }
+
   if (canPublishSelectedPlatforms.value) {
     return isPublishingToLinkedIn.value
       ? "Publishing..."
@@ -881,6 +935,81 @@ function getPublishFailureMessage(error: unknown, platform: PublishableSocialPla
   return rawMessage;
 }
 
+function mapPublishAttemptResult(platform: PublishAttemptPlatform, attemptId: string): PlatformPublishAttemptResult {
+  return {
+    attemptId,
+    platformAttemptId: platform.id,
+    platform: platform.platform as PublishableSocialPlatform,
+    status: platform.status === "success" ? "success" : "failed",
+    message:
+      platform.status === "success"
+        ? "Posted successfully."
+        : platform.errorMessage?.trim() || "Publishing failed. Fix the issue and retry.",
+    errorCode: platform.errorCode,
+    externalPostUrl: platform.externalPostUrl,
+  };
+}
+
+function applyPublishAttempt(attempt: PublishAttempt, options: { merge?: boolean } = {}): void {
+  currentPublishAttemptId.value = attempt.id;
+  const merged = options.merge
+    ? new Map(publishAttemptResults.value.map((result) => [result.platform, result] as const))
+    : new Map<PublishableSocialPlatform, PlatformPublishAttemptResult>();
+
+  for (const platform of attempt.platforms) {
+    merged.set(platform.platform as PublishableSocialPlatform, mapPublishAttemptResult(platform, attempt.id));
+  }
+
+  publishAttemptResults.value = PUBLISHABLE_SOCIAL_PLATFORMS
+    .map((platform) => merged.get(platform))
+    .filter((result): result is PlatformPublishAttemptResult => Boolean(result));
+}
+
+async function loadPersistedPublishAttemptResults(): Promise<void> {
+  if (!activeBusinessId.value || !persistedPostId.value) {
+    currentPublishAttemptId.value = "";
+    publishAttemptResults.value = [];
+    return;
+  }
+
+  try {
+    const response = await requestPublishAttempts(activeBusinessId.value);
+    const matchingAttempts = response.publishAttempts.filter(
+      (attempt) =>
+        attempt.assetGroupId === persistedPostId.value
+        && attempt.sourceKind !== "scheduled",
+    );
+
+    if (matchingAttempts.length === 0) {
+      currentPublishAttemptId.value = "";
+      publishAttemptResults.value = [];
+      return;
+    }
+
+    currentPublishAttemptId.value = matchingAttempts[0]?.id ?? "";
+
+    const latestByPlatform = new Map<PublishableSocialPlatform, PlatformPublishAttemptResult>();
+
+    for (const attempt of matchingAttempts) {
+      for (const platform of attempt.platforms) {
+        if (!latestByPlatform.has(platform.platform as PublishableSocialPlatform)) {
+          latestByPlatform.set(
+            platform.platform as PublishableSocialPlatform,
+            mapPublishAttemptResult(platform, attempt.id),
+          );
+        }
+      }
+    }
+
+    publishAttemptResults.value = PUBLISHABLE_SOCIAL_PLATFORMS
+      .map((platform) => latestByPlatform.get(platform))
+      .filter((result): result is PlatformPublishAttemptResult => Boolean(result));
+  } catch {
+    currentPublishAttemptId.value = "";
+    publishAttemptResults.value = [];
+  }
+}
+
 const attentionSignal = computed(() => {
   if (postScore.value >= 84) {
     return {
@@ -918,6 +1047,10 @@ const structureSignal = computed(() => {
 });
 
 const actionPriorityLabel = computed(() => {
+  if (shouldUseRetryFailedAsPrimaryAction.value) {
+    return "Retry failed only";
+  }
+
   if (selectedPublishingGuardrail.value) {
     return selectedPublishingPlatform.value === "instagram" ? "Fix Instagram setup" : "Fix channel setup";
   }
@@ -1155,12 +1288,38 @@ const executionStatus = computed(() => {
     } as const;
   }
 
-  if (feedbackMessage.value.startsWith("Posted to ")) {
+  if (hasPartialSelectedPublishFailure.value) {
+    return {
+      tone: "warning",
+      label: "Partial publish",
+      title: "Some platforms posted, some still need a retry",
+      description: `${formatSelectedPlatformsLabel(selectedPublishSuccessResults.value.map((result) => result.platform))} posted successfully. ${retryFailedPlatformsLabel.value} still failed.`,
+      detail: "Retry failed only uses the current draft and media, and it skips platforms that already posted successfully.",
+    } as const;
+  }
+
+  if (
+    hasCompleteSelectedPublishAttempt.value
+    && selectedPublishFailureResults.value.length === selectedPublishingPlatforms.value.length
+  ) {
+    return {
+      tone: "warning",
+      label: "Publish failed",
+      title: "No selected platforms published",
+      description: "Fix the blocking issue, then retry only the failed platforms.",
+      detail: "Successful platforms are preserved when they exist. Failed platforms are safe to retry with the latest media and copy.",
+    } as const;
+  }
+
+  if (
+    hasCompleteSelectedPublishAttempt.value
+    && selectedPublishSuccessResults.value.length === selectedPublishingPlatforms.value.length
+  ) {
     return {
       tone: "live",
       label: "Published",
       title: "This post is already live",
-      description: `The draft has cleared direct publishing and ${selectedPublishingPlatformLabel.value} returned a live post URL.`,
+      description: `The draft has cleared direct publishing on ${selectedPublishingPlatformsLabel.value}.`,
       detail: "Use planner for the next slot, or repurpose this post into email and outreach.",
     } as const;
   }
@@ -1242,9 +1401,31 @@ const executionPanelFacts = computed(() => [
 ]);
 
 const executionTimeline = computed(() => {
-  if (feedbackMessage.value.startsWith("Posted to ")) {
+  if (hasPartialSelectedPublishFailure.value) {
     return [
-      `The post is already live on ${selectedPublishingPlatformLabel.value}.`,
+      `${formatSelectedPlatformsLabel(selectedPublishSuccessResults.value.map((result) => result.platform))} already posted successfully.`,
+      `${retryFailedPlatformsLabel.value} failed and can be retried without reposting the successful platforms.`,
+      "Fix the blocking issue, then use Retry failed only to send just the failed channels again.",
+    ];
+  }
+
+  if (
+    hasCompleteSelectedPublishAttempt.value
+    && selectedPublishFailureResults.value.length === selectedPublishingPlatforms.value.length
+  ) {
+    return [
+      "No selected platforms published yet.",
+      "The current draft and media are still intact in the workspace.",
+      "Fix the failure reason, then retry only the failed platforms.",
+    ];
+  }
+
+  if (
+    hasCompleteSelectedPublishAttempt.value
+    && selectedPublishSuccessResults.value.length === selectedPublishingPlatforms.value.length
+  ) {
+    return [
+      `The post is already live on ${selectedPublishingPlatformsLabel.value}.`,
       "History will track the publish result and let you repurpose it later.",
       "Use planner to lock the next execution slot while momentum is fresh.",
     ];
@@ -2666,6 +2847,37 @@ function handleMetaSelectionError(message: string): void {
 }
 
 async function publishToSelectedPlatforms(): Promise<void> {
+  await publishToPlatforms(selectedPublishingPlatforms.value, { mode: "all" });
+}
+
+async function triggerPrimaryPublishAction(): Promise<void> {
+  if (!canPublishSelectedPlatforms.value) {
+    await connectSelectedPlatform();
+    return;
+  }
+
+  if (shouldUseRetryFailedAsPrimaryAction.value) {
+    await retryFailedPlatforms();
+    return;
+  }
+
+  await publishToSelectedPlatforms();
+}
+
+async function retryFailedPlatforms(): Promise<void> {
+  const failedPlatforms = selectedPublishFailureResults.value.map((result) => result.platform);
+
+  if (failedPlatforms.length === 0) {
+    return;
+  }
+
+  await publishToPlatforms(failedPlatforms, { mode: "retry_failed" });
+}
+
+async function publishToPlatforms(
+  platforms: PublishableSocialPlatform[],
+  options: { mode: "all" | "retry_failed" },
+): Promise<void> {
   if (!draft.value) {
     return;
   }
@@ -2675,7 +2887,7 @@ async function publishToSelectedPlatforms(): Promise<void> {
     return;
   }
 
-  if (!canPublishSelectedPlatforms.value) {
+  if (platforms.length === 0) {
     feedbackMessage.value = "Select at least one publishable platform before posting.";
     return;
   }
@@ -2691,41 +2903,62 @@ async function publishToSelectedPlatforms(): Promise<void> {
       return;
     }
 
-    const successes: Array<{ platform: PublishableSocialPlatform; url: string }> = [];
-    const failures: string[] = [];
+    const attempt =
+      options.mode === "retry_failed" && currentPublishAttemptId.value
+        ? (
+          await requestRetryFailedPublishAttempt(currentPublishAttemptId.value, {
+            businessId: activeBusinessId.value,
+            contentText: postContent.value,
+            assetId: ensuredPostId,
+            title: draft.value.result.idea.title,
+          })
+        ).publishAttempt
+        : (
+          await requestCreatePublishAttempt({
+            businessId: activeBusinessId.value,
+            platforms,
+            contentText: postContent.value,
+            assetId: ensuredPostId,
+            title: draft.value.result.idea.title,
+          })
+        ).publishAttempt;
 
-    for (const platform of selectedPublishingPlatforms.value) {
-      try {
-        const response = await requestPublishPost({
-          businessId: activeBusinessId.value,
-          platform,
-          contentText: postContent.value,
-          assetId: ensuredPostId,
-          title: draft.value.result.idea.title,
-        });
+    applyPublishAttempt(attempt, { merge: options.mode === "retry_failed" });
 
-        successes.push({ platform, url: response.externalPostUrl });
-      } catch (error) {
-        failures.push(
-          `${resolveSocialPlatformLabel(platform)}: ${getPublishFailureMessage(error, platform)}`,
-        );
-      }
-    }
+    const relevantResults = attempt.platforms
+      .filter((result) => platforms.includes(result.platform as PublishableSocialPlatform))
+      .map((result) => mapPublishAttemptResult(result, attempt.id));
+    const successes = relevantResults
+      .filter((result) => result.status === "success")
+      .map((result) => ({
+        platform: result.platform,
+        url: result.externalPostUrl ?? "",
+      }));
+    const failures = relevantResults
+      .filter((result) => result.status === "failed")
+      .map((result) => `${resolveSocialPlatformLabel(result.platform)}: ${result.message}`);
 
     if (successes.length === 0) {
-      const copied = await copyPost({ silent: true });
       const baseMessage = failures[0] ?? "Unable to publish right now.";
 
-      feedbackMessage.value = copied
-        ? `${baseMessage} Optimized caption copied instead.`
-        : baseMessage;
+      if (options.mode === "retry_failed") {
+        feedbackMessage.value = baseMessage;
+        return;
+      }
+
+      const copied = await copyPost({ silent: true });
+      feedbackMessage.value = copied ? `${baseMessage} Optimized caption copied instead.` : baseMessage;
       return;
     }
 
     const publishedPlatforms = formatSelectedPlatformsLabel(successes.map((success) => success.platform));
-    feedbackMessage.value = successes.length === 1
-      ? `Posted to ${publishedPlatforms}. ${successes[0].url}`
-      : `Posted to ${publishedPlatforms}.`;
+    feedbackMessage.value = options.mode === "retry_failed"
+      ? failures.length === 0
+        ? `Retried successfully on ${publishedPlatforms}.`
+        : `Recovered ${publishedPlatforms}.`
+      : successes.length === 1
+        ? `Posted to ${publishedPlatforms}. ${successes[0].url}`
+        : `Posted to ${publishedPlatforms}.`;
 
     if (failures.length > 0) {
       feedbackMessage.value = `${feedbackMessage.value} Failed: ${failures.join(" · ")}`;
@@ -2781,6 +3014,14 @@ watch(
   () => [activeBusinessId.value, persistedPostId.value],
   () => {
     void loadPostAssets();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [activeBusinessId.value, persistedPostId.value],
+  () => {
+    void loadPersistedPublishAttemptResults();
   },
   { immediate: true },
 );
@@ -3141,6 +3382,51 @@ onBeforeUnmount(() => {
             >
               {{ feedbackMessage }}
             </p>
+
+            <div v-if="selectedPublishAttemptResults.length > 0" class="publish-attempt-panel">
+              <div class="publish-attempt-header">
+                <div>
+                  <p class="panel-meta">Per-platform status</p>
+                  <strong>Successful platforms stay posted. Failed platforms can be retried safely.</strong>
+                </div>
+                <button
+                  v-if="canRetryFailedPlatforms"
+                  type="button"
+                  class="secondary-action execution-status-button"
+                  :disabled="isPublishingToLinkedIn"
+                  @click="void retryFailedPlatforms()"
+                >
+                  {{ isPublishingToLinkedIn ? "Retrying..." : "Retry failed only" }}
+                </button>
+              </div>
+
+              <article
+                v-for="result in selectedPublishAttemptResults"
+                :key="`publish-attempt-${result.platform}`"
+                class="publish-attempt-row"
+                :data-status="result.status"
+              >
+                <div class="publish-attempt-copy">
+                  <strong>{{ resolveSocialPlatformLabel(result.platform) }}</strong>
+                  <p>{{ result.message }}</p>
+                </div>
+
+                <div class="publish-attempt-actions">
+                  <span class="publish-attempt-badge" :data-status="result.status">
+                    {{ result.status === "success" ? "Posted" : "Failed" }}
+                  </span>
+                  <a
+                    v-if="result.status === 'success' && result.externalPostUrl"
+                    :href="result.externalPostUrl"
+                    class="publish-attempt-link"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {{ resolveExternalPostLabel(result.platform) }}
+                  </a>
+                </div>
+              </article>
+            </div>
           </section>
 
           <div class="result-primary-actions">
@@ -3155,7 +3441,7 @@ onBeforeUnmount(() => {
                 !activeBusinessId ||
                 !canRunPublishingAction
               "
-              @click="canPublishSelectedPlatforms ? publishToSelectedPlatforms() : connectSelectedPlatform()"
+              @click="void triggerPrimaryPublishAction()"
             >
               {{ primaryPublishActionLabel }}
             </button>
@@ -3218,7 +3504,7 @@ onBeforeUnmount(() => {
                 !activeBusinessId ||
                 !canRunPublishingAction
               "
-              @click="canPublishSelectedPlatforms ? publishToSelectedPlatforms() : connectSelectedPlatform()"
+              @click="void triggerPrimaryPublishAction()"
             >
               {{ primaryPublishActionLabel }}
             </button>
@@ -4281,6 +4567,106 @@ onBeforeUnmount(() => {
 
 .execution-feedback {
   margin-top: 0;
+}
+
+.publish-attempt-panel {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.publish-attempt-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.publish-attempt-header strong {
+  display: block;
+  line-height: 1.3;
+}
+
+.publish-attempt-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-top: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+}
+
+.publish-attempt-row:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.publish-attempt-row:last-of-type {
+  padding-bottom: 0;
+}
+
+.publish-attempt-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.publish-attempt-copy strong {
+  line-height: 1.25;
+}
+
+.publish-attempt-copy p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
+}
+
+.publish-attempt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.publish-attempt-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.publish-attempt-badge[data-status="success"] {
+  border-color: color-mix(in srgb, var(--fc-success-text, #2c6b35) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg, rgba(56, 142, 60, 0.12)) 82%, white 18%);
+  color: var(--fc-success-text, #2c6b35);
+}
+
+.publish-attempt-badge[data-status="failed"] {
+  border-color: color-mix(in srgb, #b14d18 24%, var(--fc-border));
+  background: color-mix(in srgb, #ff8a5c 12%, white 88%);
+  color: #9a4215;
+}
+
+.publish-attempt-link {
+  color: var(--fc-accent-dark);
+  font-size: 0.92rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.publish-attempt-link:hover,
+.publish-attempt-link:focus-visible {
+  text-decoration: underline;
 }
 
 .schedule-panel {

@@ -2,10 +2,22 @@ import { createHash } from "node:crypto";
 import type { PoolClient, QueryResult, QueryResultRow } from "pg";
 import type {
   ContentDistributionGroup,
+  CreatePublishAttemptRequest,
+  CreatePublishAttemptResponse,
   PostAsset,
   PostPerformanceLabel,
+  PublishAttempt,
+  PublishAttemptDetailResponse,
+  PublishAttemptMediaSummary,
+  PublishAttemptPlatform,
+  PublishAttemptPlatformStatus,
+  PublishAttemptSourceKind,
+  PublishAttemptsResponse,
+  PublishAttemptStatus,
   PublishPostRequest,
   PublishPostResponse,
+  RetryPublishAttemptRequest,
+  RetryPublishAttemptResponse,
   SchedulePostRequest,
   SchedulePostResponse,
   ScheduleItem,
@@ -121,6 +133,12 @@ interface LinkedScheduleExecutionContextRow extends QueryResultRow {
   channel: string;
 }
 
+interface ScheduledPostAttemptSeedRow extends ScheduledPostRow {
+  schedule_item_id: string | null;
+  distribution_group_id: string | null;
+  group_title: string | null;
+}
+
 interface ScheduledPostPublishJobPayload {
   scheduledPostId: string;
 }
@@ -131,6 +149,58 @@ interface SchedulingConflictCheckResult extends QueryResultRow {
 
 interface ScheduledQueueUsageRow extends QueryResultRow {
   total: string | number;
+}
+
+interface DirectPublishReuseRow extends QueryResultRow {
+  id: string;
+  status: ScheduledPostStatus;
+  external_post_id: string | null;
+  external_post_url: string | null;
+  published_at: Date | string | null;
+  created_at: Date | string;
+}
+
+interface PublishAttemptRow extends QueryResultRow {
+  id: string;
+  business_id: string;
+  user_id: string | null;
+  source_kind: PublishAttemptSourceKind;
+  status: PublishAttemptStatus;
+  title: string | null;
+  content_text: string | null;
+  asset_group_id: string | null;
+  asset_payload: unknown;
+  distribution_group_id: string | null;
+  retry_of_attempt_id: string | null;
+  completed_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+interface PublishAttemptPlatformRow extends QueryResultRow {
+  id: string;
+  publish_attempt_id: string;
+  business_id: string;
+  platform: SocialPlatform;
+  status: PublishAttemptPlatformStatus;
+  content_text: string;
+  asset_group_id: string | null;
+  asset_payload: unknown;
+  media_summary: unknown;
+  scheduled_post_id: string | null;
+  schedule_item_id: string | null;
+  distribution_group_id: string | null;
+  social_account_id: string | null;
+  social_account_identity_id: string | null;
+  external_post_id: string | null;
+  external_post_url: string | null;
+  error_code: string | null;
+  error_message: string | null;
+  response_json: unknown;
+  retry_of_publish_attempt_platform_id: string | null;
+  completed_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
 async function executeQuery<TRow extends QueryResultRow>(
@@ -198,8 +268,28 @@ function buildEditableUntil(value: string, minutesBefore = 5): string {
   return new Date(new Date(value).getTime() - minutesBefore * 60_000).toISOString();
 }
 
+function extractPublishAttemptTitle(contentText: string): string {
+  const firstLine = contentText
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+
+  return (firstLine || "Publishing attempt").slice(0, 160);
+}
+
 function buildLinkedInExternalPostUrl(externalPostId: string): string {
   return `https://www.linkedin.com/feed/update/${encodeURIComponent(externalPostId)}`;
+}
+
+function resolveSocialPlatformLabel(platform: "linkedin" | "facebook" | "instagram"): string {
+  switch (platform) {
+    case "facebook":
+      return "Facebook";
+    case "instagram":
+      return "Instagram";
+    default:
+      return "LinkedIn";
+  }
 }
 
 async function loadScheduledQueueUsage(
@@ -398,6 +488,65 @@ async function loadScheduleExecutionContext(
     distributionGroupId: row?.distribution_group_id ?? undefined,
     channel: row?.channel ?? undefined,
   };
+}
+
+async function loadScheduledAttemptSeedRows(
+  businessId: string,
+  distributionGroupId: string,
+  client?: PoolClient,
+): Promise<ScheduledPostAttemptSeedRow[]> {
+  const result = await executeQuery<ScheduledPostAttemptSeedRow>(
+    `
+      select
+        sp.id,
+        sp.business_id,
+        sp.user_id,
+        sp.social_account_id,
+        sp.social_account_identity_id,
+        sai.display_name as social_account_identity_display_name,
+        sai.identity_type as social_account_identity_type,
+        sp.platform,
+        sp.content_text,
+        sp.asset_group_id,
+        sp.asset_payload,
+        sp.scheduled_at,
+        sp.earliest_dispatch_at,
+        sp.latest_dispatch_at,
+        sp.dispatch_job_id,
+        sp.dispatch_priority,
+        sp.hook_hash,
+        sp.body_hash,
+        sp.content_fingerprint,
+        sp.audience_timezone,
+        sp.status,
+        sp.external_post_id,
+        sp.external_post_url,
+        sp.error_message,
+        sp.retry_count,
+        sp.last_attempt_at,
+        sp.published_at,
+        sp.created_at,
+        sp.updated_at,
+        si.id as schedule_item_id,
+        si.distribution_group_id,
+        cdg.title as group_title
+      from schedule_items si
+      join scheduled_posts sp
+        on sp.id = si.legacy_scheduled_post_id
+      left join social_account_identities sai
+        on sai.id = sp.social_account_identity_id
+      left join content_distribution_groups cdg
+        on cdg.id = si.distribution_group_id
+      where sp.business_id = $1::uuid
+        and si.distribution_group_id = $2::uuid
+        and sp.status in ('scheduled', 'processing')
+      order by sp.created_at asc
+    `,
+    [businessId, distributionGroupId],
+    client,
+  );
+
+  return result.rows;
 }
 
 async function reconcileDistributionGroupState(distributionGroupId: string): Promise<void> {
@@ -672,6 +821,100 @@ function mapScheduledPostWithAssets(
   };
 }
 
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return {};
+}
+
+function parsePublishAttemptMediaSummary(value: unknown): PublishAttemptMediaSummary {
+  const parsed = parseJsonRecord(value);
+  const imageCount = typeof parsed.imageCount === "number" || typeof parsed.imageCount === "string"
+    ? parsed.imageCount
+    : null;
+  const videoCount = typeof parsed.videoCount === "number" || typeof parsed.videoCount === "string"
+    ? parsed.videoCount
+    : null;
+  const slideCount = typeof parsed.slideCount === "number" || typeof parsed.slideCount === "string"
+    ? parsed.slideCount
+    : null;
+
+  return {
+    imageCount: toNumber(imageCount),
+    videoCount: toNumber(videoCount),
+    slideCount: toNumber(slideCount),
+  };
+}
+
+function mapPublishAttemptPlatform(row: PublishAttemptPlatformRow): PublishAttemptPlatform {
+  return {
+    id: row.id,
+    publishAttemptId: row.publish_attempt_id,
+    platform: row.platform,
+    status: row.status,
+    contentText: row.content_text,
+    assetGroupId: row.asset_group_id ?? undefined,
+    slides: parseSlides(row.asset_payload),
+    mediaSummary: parsePublishAttemptMediaSummary(row.media_summary),
+    scheduledPostId: row.scheduled_post_id ?? undefined,
+    scheduleItemId: row.schedule_item_id ?? undefined,
+    distributionGroupId: row.distribution_group_id ?? undefined,
+    externalPostId: row.external_post_id ?? undefined,
+    externalPostUrl: row.external_post_url ?? undefined,
+    errorCode: row.error_code ?? undefined,
+    errorMessage: row.error_message ?? undefined,
+    retryOfPublishAttemptPlatformId: row.retry_of_publish_attempt_platform_id ?? undefined,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+    completedAt: toIsoString(row.completed_at),
+  };
+}
+
+function mapPublishAttempt(
+  row: PublishAttemptRow,
+  platformRows: PublishAttemptPlatformRow[],
+): PublishAttempt {
+  return {
+    id: row.id,
+    businessId: row.business_id,
+    userId: row.user_id ?? undefined,
+    sourceKind: row.source_kind,
+    status: row.status,
+    title: row.title ?? undefined,
+    contentText: row.content_text ?? undefined,
+    assetGroupId: row.asset_group_id ?? undefined,
+    slides: parseSlides(row.asset_payload),
+    distributionGroupId: row.distribution_group_id ?? undefined,
+    retryOfAttemptId: row.retry_of_attempt_id ?? undefined,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+    completedAt: toIsoString(row.completed_at),
+    platforms: platformRows.map(mapPublishAttemptPlatform),
+  };
+}
+
+function derivePublishAttemptStatus(statuses: PublishAttemptPlatformStatus[]): PublishAttemptStatus {
+  if (statuses.length === 0) {
+    return "failed";
+  }
+
+  if (statuses.some((status) => status === "processing")) {
+    return "processing";
+  }
+
+  if (statuses.every((status) => status === "success")) {
+    return "success";
+  }
+
+  if (statuses.every((status) => status === "failed")) {
+    return "failed";
+  }
+
+  return "partial";
+}
+
 function normalizeTimezone(value: string | undefined | null): string | null {
   const normalized = value?.trim();
 
@@ -810,6 +1053,44 @@ function buildContentFingerprint(contentText: string): {
     hookHash: hashText(normalizedHook),
     bodyHash: hashText(normalizedBody),
     contentFingerprint: hashText(`${normalizedHook}::${normalizedBody}`),
+  };
+}
+
+function buildDirectPublishFingerprint(input: {
+  platform: SocialPlatform;
+  contentText: string;
+  assets: PostAsset[];
+  slides: ScheduledPostSlide[];
+}): {
+  hookHash: string;
+  bodyHash: string;
+  contentFingerprint: string;
+} {
+  const textFingerprint = buildContentFingerprint(input.contentText);
+  const assetSignature = input.assets.map((asset) => ({
+    id: asset.id,
+    type: asset.type,
+    storageKey: asset.storageKey,
+    mimeType: asset.mimeType,
+    orderIndex: asset.orderIndex,
+    updatedAt: asset.updatedAt,
+  }));
+  const slideSignature = input.slides.map((slide) => ({
+    imageDataUrl: slide.imageDataUrl,
+    mimeType: slide.mimeType ?? null,
+    altText: slide.altText ?? null,
+  }));
+  const payloadSignature = JSON.stringify({
+    platform: input.platform,
+    normalizedBody: normalizeContentForHash(input.contentText),
+    assets: assetSignature,
+    slides: slideSignature,
+  });
+
+  return {
+    hookHash: textFingerprint.hookHash,
+    bodyHash: textFingerprint.bodyHash,
+    contentFingerprint: hashText(`${textFingerprint.contentFingerprint}::${payloadSignature}`),
   };
 }
 
@@ -1419,6 +1700,490 @@ async function recordPublicationEvent(
   );
 }
 
+function summarizePublishErrorCode(error: unknown): string {
+  if (error instanceof HttpError) {
+    return error.code;
+  }
+
+  return "publish_attempt_failed";
+}
+
+async function reconcilePublishAttemptStatus(
+  publishAttemptId: string,
+  client?: PoolClient,
+): Promise<void> {
+  const result = await executeQuery<{ status: PublishAttemptPlatformStatus }>(
+    `
+      select status
+      from publish_attempt_platforms
+      where publish_attempt_id = $1::uuid
+    `,
+    [publishAttemptId],
+    client,
+  );
+
+  const statuses = result.rows.map((row) => row.status);
+  const nextStatus = derivePublishAttemptStatus(statuses);
+  const completedAt = nextStatus === "processing" ? null : new Date().toISOString();
+
+  await executeQuery(
+    `
+      update publish_attempts
+      set
+        status = $2,
+        completed_at = $3::timestamptz,
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [publishAttemptId, nextStatus, completedAt],
+    client,
+  );
+}
+
+async function createPublishAttemptLedger(input: {
+  businessId: string;
+  userId?: string | null;
+  sourceKind: PublishAttemptSourceKind;
+  title?: string | null;
+  contentText?: string | null;
+  assetGroupId?: string | null;
+  slides?: ScheduledPostSlide[];
+  distributionGroupId?: string | null;
+  retryOfAttemptId?: string | null;
+  metadata?: Record<string, unknown>;
+  platforms: Array<{
+    platform: SocialPlatform;
+    contentText: string;
+    assetGroupId?: string | null;
+    slides?: ScheduledPostSlide[];
+    mediaSummary: PublishAttemptMediaSummary;
+    scheduledPostId?: string | null;
+    scheduleItemId?: string | null;
+    distributionGroupId?: string | null;
+    socialAccountId?: string | null;
+    socialAccountIdentityId?: string | null;
+    retryOfPublishAttemptPlatformId?: string | null;
+    status?: PublishAttemptPlatformStatus;
+    externalPostId?: string | null;
+    externalPostUrl?: string | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    response?: Record<string, unknown>;
+  }>;
+  client?: PoolClient;
+}): Promise<{ publishAttemptId: string; platformAttemptIds: Map<SocialPlatform, string> }> {
+  const parentResult = await executeQuery<{ id: string }>(
+    `
+      insert into publish_attempts (
+        business_id,
+        user_id,
+        source_kind,
+        status,
+        title,
+        content_text,
+        asset_group_id,
+        asset_payload,
+        distribution_group_id,
+        retry_of_attempt_id,
+        metadata_json
+      ) values (
+        $1::uuid,
+        $2::uuid,
+        $3,
+        'processing',
+        $4,
+        $5,
+        $6::uuid,
+        $7::jsonb,
+        $8::uuid,
+        $9::uuid,
+        $10::jsonb
+      )
+      returning id
+    `,
+    [
+      input.businessId,
+      input.userId ?? null,
+      input.sourceKind,
+      input.title?.trim() || null,
+      input.contentText?.trim() || null,
+      input.assetGroupId?.trim() || null,
+      JSON.stringify({ slides: input.slides ?? [] }),
+      input.distributionGroupId?.trim() || null,
+      input.retryOfAttemptId?.trim() || null,
+      JSON.stringify(input.metadata ?? {}),
+    ],
+    input.client,
+  );
+
+  const publishAttemptId = parentResult.rows[0]?.id;
+
+  if (!publishAttemptId) {
+    throw new HttpError(500, "publish_attempt_create_failed", "Unable to create publish attempt.");
+  }
+
+  const platformAttemptIds = new Map<SocialPlatform, string>();
+
+  for (const platformInput of input.platforms) {
+    const platformResult = await executeQuery<{ id: string }>(
+      `
+        insert into publish_attempt_platforms (
+          publish_attempt_id,
+          business_id,
+          platform,
+          status,
+          content_text,
+          asset_group_id,
+          asset_payload,
+          media_summary,
+          scheduled_post_id,
+          schedule_item_id,
+          distribution_group_id,
+          social_account_id,
+          social_account_identity_id,
+          external_post_id,
+          external_post_url,
+          error_code,
+          error_message,
+          response_json,
+          retry_of_publish_attempt_platform_id,
+          completed_at
+        ) values (
+          $1::uuid,
+          $2::uuid,
+          $3,
+          $4,
+          $5,
+          $6::uuid,
+          $7::jsonb,
+          $8::jsonb,
+          $9::uuid,
+          $10::uuid,
+          $11::uuid,
+          $12::uuid,
+          $13::uuid,
+          $14,
+          $15,
+          $16,
+          $17,
+          $18::jsonb,
+          $19::uuid,
+          case when $4 = 'processing' then null else now() end
+        )
+        returning id
+      `,
+      [
+        publishAttemptId,
+        input.businessId,
+        platformInput.platform,
+        platformInput.status ?? "processing",
+        platformInput.contentText,
+        platformInput.assetGroupId?.trim() || null,
+        JSON.stringify({ slides: platformInput.slides ?? [] }),
+        JSON.stringify(platformInput.mediaSummary),
+        platformInput.scheduledPostId?.trim() || null,
+        platformInput.scheduleItemId?.trim() || null,
+        platformInput.distributionGroupId?.trim() || null,
+        platformInput.socialAccountId?.trim() || null,
+        platformInput.socialAccountIdentityId?.trim() || null,
+        platformInput.externalPostId?.trim() || null,
+        platformInput.externalPostUrl?.trim() || null,
+        platformInput.errorCode?.trim() || null,
+        platformInput.errorMessage?.trim() || null,
+        JSON.stringify(platformInput.response ?? {}),
+        platformInput.retryOfPublishAttemptPlatformId?.trim() || null,
+      ],
+      input.client,
+    );
+
+    const platformAttemptId = platformResult.rows[0]?.id;
+
+    if (!platformAttemptId) {
+      throw new HttpError(500, "publish_attempt_create_failed", "Unable to create publish attempt platform.");
+    }
+
+    platformAttemptIds.set(platformInput.platform, platformAttemptId);
+  }
+
+  await reconcilePublishAttemptStatus(publishAttemptId, input.client);
+
+  return { publishAttemptId, platformAttemptIds };
+}
+
+async function updatePublishAttemptPlatformState(input: {
+  platformAttemptId: string;
+  status: PublishAttemptPlatformStatus;
+  scheduledPostId?: string | null;
+  externalPostId?: string | null;
+  externalPostUrl?: string | null;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  response?: Record<string, unknown>;
+  client?: PoolClient;
+}): Promise<void> {
+  const result = await executeQuery<{ publish_attempt_id: string }>(
+    `
+      update publish_attempt_platforms
+      set
+        status = $2,
+        scheduled_post_id = coalesce($3::uuid, scheduled_post_id),
+        external_post_id = $4,
+        external_post_url = $5,
+        error_code = $6,
+        error_message = $7,
+        response_json = coalesce($8::jsonb, response_json),
+        completed_at = case when $2 = 'processing' then null else now() end,
+        updated_at = now()
+      where id = $1::uuid
+      returning publish_attempt_id
+    `,
+    [
+      input.platformAttemptId,
+      input.status,
+      input.scheduledPostId?.trim() || null,
+      input.externalPostId?.trim() || null,
+      input.externalPostUrl?.trim() || null,
+      input.errorCode?.trim() || null,
+      input.errorMessage?.trim() || null,
+      input.response ? JSON.stringify(input.response) : null,
+    ],
+    input.client,
+  );
+
+  const publishAttemptId = result.rows[0]?.publish_attempt_id;
+
+  if (!publishAttemptId) {
+    throw new HttpError(404, "publish_attempt_platform_not_found", "Publish attempt platform not found.");
+  }
+
+  await reconcilePublishAttemptStatus(publishAttemptId, input.client);
+}
+
+async function loadPublishAttemptRows(
+  businessId: string,
+  attemptIds?: string[],
+): Promise<{
+  attempts: PublishAttemptRow[];
+  platforms: PublishAttemptPlatformRow[];
+}> {
+  const attemptsResult = attemptIds && attemptIds.length > 0
+    ? await queryDb<PublishAttemptRow>(
+      `
+        select
+          id,
+          business_id,
+          user_id,
+          source_kind,
+          status,
+          title,
+          content_text,
+          asset_group_id,
+          asset_payload,
+          distribution_group_id,
+          retry_of_attempt_id,
+          completed_at,
+          created_at,
+          updated_at
+        from publish_attempts
+        where business_id = $1::uuid
+          and id = any($2::uuid[])
+        order by created_at desc
+      `,
+      [businessId, attemptIds],
+    )
+    : await queryDb<PublishAttemptRow>(
+      `
+        select
+          id,
+          business_id,
+          user_id,
+          source_kind,
+          status,
+          title,
+          content_text,
+          asset_group_id,
+          asset_payload,
+          distribution_group_id,
+          retry_of_attempt_id,
+          completed_at,
+          created_at,
+          updated_at
+        from publish_attempts
+        where business_id = $1::uuid
+        order by created_at desc
+        limit 100
+      `,
+      [businessId],
+    );
+
+  const foundAttemptIds = attemptsResult.rows.map((row) => row.id);
+
+  if (foundAttemptIds.length === 0) {
+    return {
+      attempts: [],
+      platforms: [],
+    };
+  }
+
+  const platformResult = await queryDb<PublishAttemptPlatformRow>(
+    `
+      select
+        id,
+        publish_attempt_id,
+        business_id,
+        platform,
+        status,
+        content_text,
+        asset_group_id,
+        asset_payload,
+        media_summary,
+        scheduled_post_id,
+        schedule_item_id,
+        distribution_group_id,
+        social_account_id,
+        social_account_identity_id,
+        external_post_id,
+        external_post_url,
+        error_code,
+        error_message,
+        response_json,
+        retry_of_publish_attempt_platform_id,
+        completed_at,
+        created_at,
+        updated_at
+      from publish_attempt_platforms
+      where publish_attempt_id = any($1::uuid[])
+      order by created_at asc
+    `,
+    [foundAttemptIds],
+  );
+
+  return {
+    attempts: attemptsResult.rows,
+    platforms: platformResult.rows,
+  };
+}
+
+async function loadPublishAttemptOrThrow(
+  businessId: string,
+  publishAttemptId: string,
+): Promise<PublishAttempt> {
+  const rows = await loadPublishAttemptRows(businessId, [publishAttemptId]);
+  const attemptRow = rows.attempts[0];
+
+  if (!attemptRow) {
+    throw new HttpError(404, "publish_attempt_not_found", "Publish attempt not found.");
+  }
+
+  return mapPublishAttempt(
+    attemptRow,
+    rows.platforms.filter((row) => row.publish_attempt_id === attemptRow.id),
+  );
+}
+
+async function ensureScheduledPublishAttemptForPlatform(input: {
+  duePost: ScheduledPostRow;
+  scheduleItemId?: string;
+  distributionGroupId?: string;
+  mediaSummary: PublishAttemptMediaSummary;
+}): Promise<{ publishAttemptId: string; platformAttemptId: string }> {
+  return withDbTransaction(async (client) => {
+    const existing = await executeQuery<{ publish_attempt_id: string; platform_attempt_id: string }>(
+      `
+        select
+          pa.id as publish_attempt_id,
+          pap.id as platform_attempt_id
+        from publish_attempts pa
+        join publish_attempt_platforms pap
+          on pap.publish_attempt_id = pa.id
+        where pa.business_id = $1::uuid
+          and pa.source_kind = 'scheduled'
+          and pa.status = 'processing'
+          and pap.scheduled_post_id = $2::uuid
+        order by pa.created_at desc
+        limit 1
+      `,
+      [input.duePost.business_id, input.duePost.id],
+      client,
+    );
+
+    if (existing.rows[0]?.publish_attempt_id && existing.rows[0]?.platform_attempt_id) {
+      return {
+        publishAttemptId: existing.rows[0].publish_attempt_id,
+        platformAttemptId: existing.rows[0].platform_attempt_id,
+      };
+    }
+
+    const seedRows =
+      input.distributionGroupId
+        ? await loadScheduledAttemptSeedRows(input.duePost.business_id, input.distributionGroupId, client)
+        : [
+          {
+            ...input.duePost,
+            schedule_item_id: input.scheduleItemId ?? null,
+            distribution_group_id: input.distributionGroupId ?? null,
+            group_title: null,
+          } satisfies ScheduledPostAttemptSeedRow,
+        ];
+
+    const platformInputs = [];
+
+    for (const seedRow of seedRows) {
+      const isCurrentRow = seedRow.id === input.duePost.id;
+      const slides = parseSlides(seedRow.asset_payload);
+      const mediaSummary = isCurrentRow
+        ? input.mediaSummary
+        : summarizePublishMedia(
+          seedRow.asset_group_id && isUuidLike(seedRow.asset_group_id)
+            ? await loadReadyPostAssets(seedRow.business_id, seedRow.asset_group_id)
+            : [],
+          slides,
+        );
+
+      platformInputs.push({
+        platform: seedRow.platform,
+        contentText: seedRow.content_text,
+        assetGroupId: seedRow.asset_group_id,
+        slides,
+        mediaSummary,
+        scheduledPostId: seedRow.id,
+        scheduleItemId: seedRow.schedule_item_id,
+        distributionGroupId: seedRow.distribution_group_id,
+        socialAccountId: seedRow.social_account_id,
+        socialAccountIdentityId: seedRow.social_account_identity_id,
+      });
+    }
+
+    const title =
+      seedRows[0]?.group_title?.trim()
+      || extractPublishAttemptTitle(input.duePost.content_text);
+
+    const { publishAttemptId, platformAttemptIds } = await createPublishAttemptLedger({
+      businessId: input.duePost.business_id,
+      userId: input.duePost.user_id,
+      sourceKind: "scheduled",
+      title,
+      contentText: input.duePost.content_text,
+      assetGroupId: input.duePost.asset_group_id,
+      slides: parseSlides(input.duePost.asset_payload),
+      distributionGroupId: input.distributionGroupId ?? null,
+      platforms: platformInputs,
+      client,
+    });
+
+    const platformAttemptId = platformAttemptIds.get(input.duePost.platform);
+
+    if (!platformAttemptId) {
+      throw new HttpError(500, "publish_attempt_create_failed", "Unable to seed scheduled publish attempt.");
+    }
+
+    return {
+      publishAttemptId,
+      platformAttemptId,
+    };
+  });
+}
+
 async function syncLinkedContentAssetStage(input: {
   businessId: string;
   linkedAssetId?: string | null;
@@ -1645,6 +2410,182 @@ async function markScheduledPostFailed(scheduledPostId: string, error: unknown):
   await syncScheduleItemStateForScheduledPost({
     scheduledPostId,
     status: "failed",
+  });
+}
+
+async function prepareDirectPublishExecution(input: {
+  businessId: string;
+  userId: string;
+  platform: SocialPlatform;
+  contentText: string;
+  assetGroupId?: string | null;
+  slides: ScheduledPostSlide[];
+  assets: PostAsset[];
+  socialAccountId?: string | null;
+  socialAccountIdentityId?: string | null;
+  audienceTimezone: string;
+}): Promise<{
+  existingPublished?: PublishPostResponse;
+  scheduledPostId?: string;
+}> {
+  const fingerprint = buildDirectPublishFingerprint({
+    platform: input.platform,
+    contentText: input.contentText,
+    assets: input.assets,
+    slides: input.slides,
+  });
+
+  return withDbTransaction(async (client) => {
+    const assetGroupId = input.assetGroupId?.trim() || null;
+
+    if (assetGroupId && isUuidLike(assetGroupId)) {
+      const assetLock = await executeQuery<{ id: string }>(
+        `
+          select id
+          from content_assets
+          where id = $1::uuid
+            and business_id = $2::uuid
+          limit 1
+          for update
+        `,
+        [assetGroupId, input.businessId],
+        client,
+      );
+
+      if (!assetLock.rows[0]) {
+        throw new HttpError(404, "content_asset_not_found", "Draft not found.");
+      }
+    }
+
+    const recentResult = await executeQuery<DirectPublishReuseRow>(
+      `
+        select
+          id,
+          status,
+          external_post_id,
+          external_post_url,
+          published_at,
+          created_at
+        from scheduled_posts
+        where business_id = $1::uuid
+          and platform = $2
+          and dispatch_job_id is null
+          and content_fingerprint = $3
+          and created_at >= now() - interval '10 minutes'
+          and status in ('processing', 'published')
+        order by created_at desc
+        limit 1
+      `,
+      [
+        input.businessId,
+        input.platform,
+        fingerprint.contentFingerprint,
+      ],
+      client,
+    );
+
+    const recent = recentResult.rows[0];
+
+    if (recent?.status === "processing") {
+      throw new HttpError(
+        409,
+        "publish_post_in_progress",
+        `A ${resolveSocialPlatformLabel(input.platform)} publish for this draft is already in progress. Wait a moment and refresh.`,
+      );
+    }
+
+    if (recent?.status === "published" && recent.external_post_id) {
+      return {
+        existingPublished: {
+          platform: input.platform,
+          externalPostId: recent.external_post_id,
+          externalPostUrl:
+            recent.external_post_url
+            ?? resolvePublishedExternalPostUrl(input.platform, {
+              externalPostId: recent.external_post_id,
+            }),
+          publishedAt: toIsoString(recent.published_at) ?? new Date(recent.created_at).toISOString(),
+        },
+      };
+    }
+
+    const inserted = await executeQuery<{ id: string }>(
+      `
+        insert into scheduled_posts (
+          business_id,
+          user_id,
+          social_account_id,
+          social_account_identity_id,
+          platform,
+          content_text,
+          asset_group_id,
+          asset_payload,
+          scheduled_at,
+          earliest_dispatch_at,
+          latest_dispatch_at,
+          audience_timezone,
+          status,
+          retry_count,
+          last_attempt_at,
+          hook_hash,
+          body_hash,
+          content_fingerprint
+        ) values (
+          $1::uuid,
+          $2::uuid,
+          $3::uuid,
+          $4::uuid,
+          $5,
+          $6,
+          $7,
+          $8::jsonb,
+          now(),
+          now(),
+          now(),
+          $9,
+          'processing',
+          0,
+          now(),
+          $10,
+          $11,
+          $12
+        )
+        returning id
+      `,
+      [
+        input.businessId,
+        input.userId,
+        input.socialAccountId ?? null,
+        input.socialAccountIdentityId ?? null,
+        input.platform,
+        input.contentText,
+        assetGroupId,
+        JSON.stringify({ slides: input.slides, directPublish: true }),
+        input.audienceTimezone,
+        fingerprint.hookHash,
+        fingerprint.bodyHash,
+        fingerprint.contentFingerprint,
+      ],
+      client,
+    );
+
+    const scheduledPostId = inserted.rows[0]?.id;
+
+    if (!scheduledPostId) {
+      throw new HttpError(500, "publish_history_create_failed", "Unable to prepare publish history.");
+    }
+
+    await recordPublicationEvent(
+      scheduledPostId,
+      "processing",
+      {
+        directPublish: true,
+        requestedAt: new Date().toISOString(),
+      },
+      client,
+    );
+
+    return { scheduledPostId };
   });
 }
 
@@ -2419,10 +3360,287 @@ export async function createScheduledPost(
   };
 }
 
-export async function publishPostNow(
+export async function createPublishAttempt(
+  principal: AuthenticatedPrincipal,
+  input: CreatePublishAttemptRequest,
+): Promise<CreatePublishAttemptResponse> {
+  const businessId = input.businessId.trim();
+  const platforms = Array.from(
+    new Set(
+      (input.platforms ?? []).filter(
+        (platform): platform is SocialPlatform =>
+          platform === "linkedin" || platform === "facebook" || platform === "instagram",
+      ),
+    ),
+  );
+  const contentText = input.contentText.trim();
+  const assetGroupId = input.assetId?.trim() || null;
+  const slides = input.slides ?? [];
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "control_dashboard",
+  });
+  await requireBusinessMembership(principal, businessId);
+
+  if (!principal.userId) {
+    throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
+  }
+
+  if (!contentText) {
+    throw new HttpError(400, "bad_request", "contentText is required.");
+  }
+
+  if (platforms.length === 0) {
+    throw new HttpError(400, "bad_request", "Select at least one platform to publish.");
+  }
+
+  const requestedAssets = await loadReadyAssetsForPostGroup(businessId, assetGroupId);
+  const mediaSummary = summarizePublishMedia(requestedAssets, slides);
+  const title = input.title?.trim() || extractPublishAttemptTitle(contentText);
+  const ledger = await createPublishAttemptLedger({
+    businessId,
+    userId: principal.userId,
+    sourceKind: "manual",
+    title,
+    contentText,
+    assetGroupId,
+    slides,
+    platforms: platforms.map((platform) => ({
+      platform,
+      contentText,
+      assetGroupId,
+      slides,
+      mediaSummary,
+    })),
+  });
+
+  for (const platform of platforms) {
+    const platformAttemptId = ledger.platformAttemptIds.get(platform);
+
+    if (!platformAttemptId) {
+      continue;
+    }
+
+    try {
+      const result = await runDirectPlatformPublishInternal(principal, {
+        businessId,
+        platform,
+        contentText,
+        assetId: assetGroupId ?? undefined,
+        slides,
+        title: input.title?.trim(),
+      });
+
+      await updatePublishAttemptPlatformState({
+        platformAttemptId,
+        status: "success",
+        scheduledPostId: result.scheduledPostId,
+        externalPostId: result.publishResponse.externalPostId,
+        externalPostUrl: result.publishResponse.externalPostUrl,
+        response: {
+          publishedAt: result.publishResponse.publishedAt,
+          reusedExisting: result.reusedExisting,
+        },
+      });
+    } catch (error) {
+      await updatePublishAttemptPlatformState({
+        platformAttemptId,
+        status: "failed",
+        errorCode: summarizePublishErrorCode(error),
+        errorMessage: summarizePublishFailure(error),
+        response: {
+          message: error instanceof Error ? error.message : "Unknown publishing error.",
+        },
+      });
+    }
+  }
+
+  return {
+    publishAttempt: await loadPublishAttemptOrThrow(businessId, ledger.publishAttemptId),
+  };
+}
+
+export async function listPublishAttempts(
+  principal: AuthenticatedPrincipal,
+  businessId: string,
+): Promise<PublishAttemptsResponse> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  await requireBusinessMembership(principal, businessId);
+
+  const rows = await loadPublishAttemptRows(businessId);
+  const platformRowsByAttempt = new Map<string, PublishAttemptPlatformRow[]>();
+
+  for (const row of rows.platforms) {
+    const current = platformRowsByAttempt.get(row.publish_attempt_id) ?? [];
+    current.push(row);
+    platformRowsByAttempt.set(row.publish_attempt_id, current);
+  }
+
+  return {
+    publishAttempts: rows.attempts.map((row) =>
+      mapPublishAttempt(row, platformRowsByAttempt.get(row.id) ?? [])),
+  };
+}
+
+export async function getPublishAttemptDetail(
+  principal: AuthenticatedPrincipal,
+  businessId: string,
+  publishAttemptId: string,
+): Promise<PublishAttemptDetailResponse> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  await requireBusinessMembership(principal, businessId);
+
+  return {
+    publishAttempt: await loadPublishAttemptOrThrow(businessId, publishAttemptId),
+  };
+}
+
+export async function retryPublishAttempt(
+  principal: AuthenticatedPrincipal,
+  publishAttemptId: string,
+  input: RetryPublishAttemptRequest,
+): Promise<RetryPublishAttemptResponse> {
+  const businessId = input.businessId.trim();
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "control_dashboard",
+  });
+  await requireBusinessMembership(principal, businessId);
+
+  if (!principal.userId) {
+    throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
+  }
+
+  const priorAttempt = await loadPublishAttemptOrThrow(businessId, publishAttemptId);
+  const failedPlatforms = priorAttempt.platforms.filter((platform) => platform.status === "failed");
+
+  if (failedPlatforms.length === 0) {
+    throw new HttpError(409, "publish_attempt_retry_not_needed", "This publish attempt has no failed platforms to retry.");
+  }
+
+  const recoveredResult = await queryDb<{ retry_of_publish_attempt_platform_id: string }>(
+    `
+      select retry_of_publish_attempt_platform_id
+      from publish_attempt_platforms
+      where retry_of_publish_attempt_platform_id = any($1::uuid[])
+        and status = 'success'
+    `,
+    [failedPlatforms.map((platform) => platform.id)],
+  );
+  const recoveredPlatformIds = new Set(
+    recoveredResult.rows
+      .map((row) => row.retry_of_publish_attempt_platform_id)
+      .filter((value): value is string => typeof value === "string" && value.length > 0),
+  );
+  const retryablePlatforms = failedPlatforms.filter((platform) => !recoveredPlatformIds.has(platform.id));
+
+  if (retryablePlatforms.length === 0) {
+    throw new HttpError(
+      409,
+      "publish_attempt_retry_not_needed",
+      "All failed platforms from this attempt have already been recovered.",
+    );
+  }
+
+  const overrideContentText = input.contentText?.trim();
+  const overrideAssetGroupId = input.assetId?.trim() || null;
+  const overrideSlides = input.slides;
+  const requestedAssets = overrideAssetGroupId
+    ? await loadReadyAssetsForPostGroup(businessId, overrideAssetGroupId)
+    : [];
+
+  const retryLedger = await createPublishAttemptLedger({
+    businessId,
+    userId: principal.userId,
+    sourceKind: "retry",
+    title: input.title?.trim() || priorAttempt.title || extractPublishAttemptTitle(priorAttempt.contentText || ""),
+    contentText: overrideContentText || priorAttempt.contentText || retryablePlatforms[0]?.contentText || "",
+    assetGroupId: overrideAssetGroupId || priorAttempt.assetGroupId || null,
+    slides: overrideSlides ?? priorAttempt.slides,
+    distributionGroupId: priorAttempt.distributionGroupId,
+    retryOfAttemptId: priorAttempt.id,
+    platforms: retryablePlatforms.map((platform) => {
+      const contentText = overrideContentText || platform.contentText;
+      const slides = overrideSlides ?? platform.slides;
+      const mediaSummary =
+        overrideSlides || overrideAssetGroupId
+          ? summarizePublishMedia(requestedAssets, slides)
+          : platform.mediaSummary;
+
+      return {
+        platform: platform.platform,
+        contentText,
+        assetGroupId: overrideAssetGroupId || platform.assetGroupId || null,
+        slides,
+        mediaSummary,
+        retryOfPublishAttemptPlatformId: platform.id,
+      };
+    }),
+  });
+
+  for (const platform of retryablePlatforms) {
+    const platformAttemptId = retryLedger.platformAttemptIds.get(platform.platform);
+
+    if (!platformAttemptId) {
+      continue;
+    }
+
+    const contentText = overrideContentText || platform.contentText;
+    const slides = overrideSlides ?? platform.slides;
+    const assetId = overrideAssetGroupId || platform.assetGroupId;
+
+    try {
+      const result = await runDirectPlatformPublishInternal(principal, {
+        businessId,
+        platform: platform.platform,
+        contentText,
+        assetId: assetId ?? undefined,
+        slides,
+        title: input.title?.trim() || priorAttempt.title,
+      });
+
+      await updatePublishAttemptPlatformState({
+        platformAttemptId,
+        status: "success",
+        scheduledPostId: result.scheduledPostId,
+        externalPostId: result.publishResponse.externalPostId,
+        externalPostUrl: result.publishResponse.externalPostUrl,
+        response: {
+          publishedAt: result.publishResponse.publishedAt,
+          reusedExisting: result.reusedExisting,
+        },
+      });
+    } catch (error) {
+      await updatePublishAttemptPlatformState({
+        platformAttemptId,
+        status: "failed",
+        errorCode: summarizePublishErrorCode(error),
+        errorMessage: summarizePublishFailure(error),
+        response: {
+          message: error instanceof Error ? error.message : "Unknown publishing error.",
+        },
+      });
+    }
+  }
+
+  return {
+    publishAttempt: await loadPublishAttemptOrThrow(businessId, retryLedger.publishAttemptId),
+  };
+}
+
+async function runDirectPlatformPublishInternal(
   principal: AuthenticatedPrincipal,
   input: PublishPostRequest,
-): Promise<PublishPostResponse> {
+): Promise<{
+  publishResponse: PublishPostResponse;
+  scheduledPostId?: string;
+  mediaSummary: PublishAttemptMediaSummary;
+  reusedExisting: boolean;
+}> {
   const businessId = input.businessId.trim();
   const platform = input.platform;
   const contentText = input.contentText.trim();
@@ -2459,6 +3677,18 @@ export async function publishPostNow(
 
   const publishingTarget = await resolvePublishingTarget(businessId, platform);
   const audienceTimezone = await resolveBusinessTimezone(businessId);
+  const directPublishPreparation = await prepareDirectPublishExecution({
+    businessId,
+    userId: principal.userId,
+    platform,
+    contentText,
+    assetGroupId: input.assetId?.trim() || null,
+    slides,
+    assets: readyAssets,
+    socialAccountId: publishingTarget.socialAccountId,
+    socialAccountIdentityId: publishingTarget.socialAccountIdentityId,
+    audienceTimezone,
+  });
   logInfo("Starting direct platform publish.", {
     businessId,
     platform,
@@ -2467,6 +3697,22 @@ export async function publishPostNow(
     videoCount: mediaSummary.videoCount,
     slideCount: mediaSummary.slideCount,
   });
+
+  if (directPublishPreparation.existingPublished) {
+    logInfo("Skipped duplicate direct platform publish and reused existing result.", {
+      businessId,
+      platform,
+      assetId: input.assetId?.trim() || null,
+      externalPostId: directPublishPreparation.existingPublished.externalPostId,
+      externalPostUrl: directPublishPreparation.existingPublished.externalPostUrl,
+    });
+
+    return {
+      publishResponse: directPublishPreparation.existingPublished,
+      mediaSummary,
+      reusedExisting: true,
+    };
+  }
 
   try {
     const publishResult = await publishPlatformPost({
@@ -2496,81 +3742,14 @@ export async function publishPostNow(
 
       asset = pipelineUpdate.asset;
     }
-
-    try {
-      const historyResult = await queryDb<ScheduledPostRow>(
-        `
-        insert into scheduled_posts (
-          business_id,
-          user_id,
-          social_account_id,
-          social_account_identity_id,
-          platform,
-          content_text,
-          asset_group_id,
-          asset_payload,
-          scheduled_at,
-          earliest_dispatch_at,
-          latest_dispatch_at,
-          audience_timezone,
-          status,
-          external_post_id,
-          external_post_url,
-          retry_count,
-          last_attempt_at,
-          published_at
-        ) values (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8::jsonb,
-          now(),
-          now(),
-          now(),
-          $9,
-          'published',
-          $10,
-          $11,
-          0,
-          now(),
-          now()
-        )
-        returning id
-      `,
-      [
-        businessId,
-        principal.userId,
-        publishingTarget.socialAccountId,
-        publishingTarget.socialAccountIdentityId,
+    if (directPublishPreparation.scheduledPostId) {
+      await markScheduledPostPublished(
+        directPublishPreparation.scheduledPostId,
         platform,
-        contentText,
+        publishResult,
         input.assetId?.trim() || null,
-        JSON.stringify({ slides }),
-        audienceTimezone,
-        publishResult.externalPostId,
-        externalPostUrl,
-        ],
-      );
-
-      await recordPublicationEvent(historyResult.rows[0].id, "published", publishResult.response);
-      if (input.assetId?.trim()) {
-        await safeRecordContentGenerationSuggestionPublished({
-          businessId,
-          assetId: input.assetId.trim(),
-          scheduledPostId: historyResult.rows[0].id,
-        });
-      }
-    } catch (error) {
-      logWarn("Platform post published but the local history row was not recorded.", {
         businessId,
-        platform,
-        message: error instanceof Error ? error.message : "Unknown error",
-        externalPostId: publishResult.externalPostId,
-      });
+      );
     }
 
     logInfo("Published direct platform post.", {
@@ -2585,11 +3764,16 @@ export async function publishPostNow(
     });
 
     return {
-      platform,
-      externalPostId: publishResult.externalPostId,
-      externalPostUrl,
-      publishedAt: new Date().toISOString(),
-      asset,
+      publishResponse: {
+        platform,
+        externalPostId: publishResult.externalPostId,
+        externalPostUrl,
+        publishedAt: new Date().toISOString(),
+        asset,
+      },
+      scheduledPostId: directPublishPreparation.scheduledPostId,
+      mediaSummary,
+      reusedExisting: false,
     };
   } catch (error) {
     logWarn("Failed direct platform publish.", {
@@ -2601,8 +3785,30 @@ export async function publishPostNow(
       slideCount: mediaSummary.slideCount,
       message: error instanceof Error ? error.message : "Unknown error",
     });
+
+    if (directPublishPreparation.scheduledPostId) {
+      try {
+        await markScheduledPostFailed(directPublishPreparation.scheduledPostId, error);
+      } catch (markFailedError) {
+        logWarn("Direct publish failed and the local history row could not be updated.", {
+          businessId,
+          platform,
+          scheduledPostId: directPublishPreparation.scheduledPostId,
+          message: markFailedError instanceof Error ? markFailedError.message : "Unknown error",
+        });
+      }
+    }
+
     throw error;
   }
+}
+
+export async function publishPostNow(
+  principal: AuthenticatedPrincipal,
+  input: PublishPostRequest,
+): Promise<PublishPostResponse> {
+  const result = await runDirectPlatformPublishInternal(principal, input);
+  return result.publishResponse;
 }
 
 export async function listScheduledPosts(
@@ -2840,6 +4046,13 @@ export async function processDueScheduledPosts(limit: number): Promise<{
         continue;
       }
 
+      const publishAttempt = await ensureScheduledPublishAttemptForPlatform({
+        duePost,
+        scheduleItemId: executionContext.scheduleItemId,
+        distributionGroupId: executionContext.distributionGroupId,
+        mediaSummary,
+      });
+
       const publishResult = await publishPlatformPost({
         channel: duePost.platform,
         businessId: duePost.business_id,
@@ -2857,6 +4070,23 @@ export async function processDueScheduledPosts(limit: number): Promise<{
         duePost.asset_group_id,
         duePost.business_id,
       );
+      try {
+        await updatePublishAttemptPlatformState({
+          platformAttemptId: publishAttempt.platformAttemptId,
+          status: "success",
+          scheduledPostId: duePost.id,
+          externalPostId: publishResult.externalPostId,
+          externalPostUrl:
+            resolvePublishedExternalPostUrl(duePost.platform, publishResult),
+          response: publishResult.response,
+        });
+      } catch (attemptError) {
+        logWarn("Scheduled publish succeeded but publish ledger update failed.", {
+          scheduledPostId: duePost.id,
+          publishAttemptId: publishAttempt.publishAttemptId,
+          message: attemptError instanceof Error ? attemptError.message : "Unknown error",
+        });
+      }
       await markJobCompleted(job.id);
       try {
         await sendScheduledPostPublishedNotification(duePost.id);
@@ -2889,13 +4119,54 @@ export async function processDueScheduledPosts(limit: number): Promise<{
       const mediaSummary = summarizePublishMedia(readyAssets, slides);
       const failureMessage = summarizePublishFailure(error);
       const shouldRetry = isRetryablePublishError(error) && job.attempts < job.maxAttempts;
+      let publishAttempt: { publishAttemptId: string; platformAttemptId: string } | null = null;
+
+      try {
+        publishAttempt = await ensureScheduledPublishAttemptForPlatform({
+          duePost,
+          scheduleItemId: executionContext.scheduleItemId,
+          distributionGroupId: executionContext.distributionGroupId,
+          mediaSummary,
+        });
+      } catch (attemptError) {
+        logWarn("Unable to attach scheduled publish failure to the publish ledger.", {
+          scheduledPostId: duePost.id,
+          message: attemptError instanceof Error ? attemptError.message : "Unknown error",
+        });
+      }
 
       if (shouldRetry) {
         await markScheduledPostQueuedForRetry(duePost.id, failureMessage, job.attempts);
         await markJobFailed(job.id, failureMessage);
+        if (publishAttempt) {
+          await updatePublishAttemptPlatformState({
+            platformAttemptId: publishAttempt.platformAttemptId,
+            status: "processing",
+            scheduledPostId: duePost.id,
+            errorCode: summarizePublishErrorCode(error),
+            errorMessage: failureMessage,
+            response: {
+              retryQueued: true,
+              attemptCount: job.attempts,
+            },
+          });
+        }
       } else {
         await markScheduledPostFailed(duePost.id, new Error(failureMessage));
         await markJobTerminalFailed(job.id, failureMessage);
+        if (publishAttempt) {
+          await updatePublishAttemptPlatformState({
+            platformAttemptId: publishAttempt.platformAttemptId,
+            status: "failed",
+            scheduledPostId: duePost.id,
+            errorCode: summarizePublishErrorCode(error),
+            errorMessage: failureMessage,
+            response: {
+              retryQueued: false,
+              attemptCount: job.attempts,
+            },
+          });
+        }
         failed += 1;
       }
 

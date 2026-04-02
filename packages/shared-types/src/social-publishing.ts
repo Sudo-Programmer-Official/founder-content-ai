@@ -14,6 +14,9 @@ export type ScheduledPostStatus =
   | "failed"
   | "paused"
   | "canceled";
+export type PublishAttemptStatus = "processing" | "success" | "partial" | "failed";
+export type PublishAttemptPlatformStatus = "processing" | "success" | "failed";
+export type PublishAttemptSourceKind = "manual" | "scheduled" | "retry";
 export type SocialAccountIdentityType = "person" | "organization" | "page";
 export type ScheduledPostMutationAction =
   | "pause"
@@ -161,6 +164,52 @@ export interface ScheduledPost {
   publishedAt?: string;
 }
 
+export interface PublishAttemptMediaSummary {
+  imageCount: number;
+  videoCount: number;
+  slideCount: number;
+}
+
+export interface PublishAttemptPlatform {
+  id: string;
+  publishAttemptId: string;
+  platform: SocialPlatform;
+  status: PublishAttemptPlatformStatus;
+  contentText: string;
+  assetGroupId?: string;
+  slides: ScheduledPostSlide[];
+  mediaSummary: PublishAttemptMediaSummary;
+  scheduledPostId?: string;
+  scheduleItemId?: string;
+  distributionGroupId?: string;
+  externalPostId?: string;
+  externalPostUrl?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  retryOfPublishAttemptPlatformId?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface PublishAttempt {
+  id: string;
+  businessId: string;
+  userId?: string;
+  sourceKind: PublishAttemptSourceKind;
+  status: PublishAttemptStatus;
+  title?: string;
+  contentText?: string;
+  assetGroupId?: string;
+  slides: ScheduledPostSlide[];
+  distributionGroupId?: string;
+  retryOfAttemptId?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  platforms: PublishAttemptPlatform[];
+}
+
 export interface SchedulingSafetyWarning {
   code: SchedulingSafetyWarningCode;
   title: string;
@@ -297,6 +346,47 @@ export interface PublishPostResponse {
   externalPostUrl: string;
   publishedAt: string;
   asset?: import("./analytics.ts").ContentAsset;
+}
+
+export interface CreatePublishAttemptRequest {
+  businessId: string;
+  platforms: SocialPlatform[];
+  contentText: string;
+  assetId?: string;
+  slides?: ScheduledPostSlide[];
+  title?: string;
+}
+
+export interface CreatePublishAttemptResponse {
+  publishAttempt: PublishAttempt;
+}
+
+export interface RetryPublishAttemptRequest {
+  businessId: string;
+  contentText?: string;
+  assetId?: string;
+  slides?: ScheduledPostSlide[];
+  title?: string;
+}
+
+export interface RetryPublishAttemptResponse {
+  publishAttempt: PublishAttempt;
+}
+
+export interface PublishAttemptsQuery {
+  businessId: string;
+}
+
+export interface PublishAttemptsResponse {
+  publishAttempts: PublishAttempt[];
+}
+
+export interface PublishAttemptDetailQuery {
+  businessId: string;
+}
+
+export interface PublishAttemptDetailResponse {
+  publishAttempt: PublishAttempt;
 }
 
 export interface ScheduledPostsQuery {

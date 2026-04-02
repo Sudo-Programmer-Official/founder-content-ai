@@ -1,7 +1,14 @@
 import type {
   ApiError,
+  CreatePublishAttemptRequest,
+  CreatePublishAttemptResponse,
+  PublishAttemptDetailResponse,
   PublishPostRequest,
   PublishPostResponse,
+  PublishAttemptsQuery,
+  PublishAttemptsResponse,
+  RetryPublishAttemptRequest,
+  RetryPublishAttemptResponse,
   SchedulePostRequest,
   SchedulePostResponse,
   UpdateScheduledPostPerformanceRequest,
@@ -13,9 +20,13 @@ import type {
 } from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
 import {
+  createPublishAttempt,
+  getPublishAttemptDetail,
   createScheduledPost,
+  listPublishAttempts,
   listScheduledPosts,
   publishPostNow,
+  retryPublishAttempt,
   updateScheduledPost,
   updateScheduledPostPerformance,
 } from "../services/scheduledPostService.ts";
@@ -168,6 +179,147 @@ export async function publishPost(
       code: "publish_post_failed",
       message: `Unable to publish to ${platform === "instagram" ? "Instagram" : platform === "facebook" ? "Facebook" : "LinkedIn"}.`,
       logMessage: `Failed to publish ${platform === "instagram" ? "Instagram" : platform === "facebook" ? "Facebook" : "LinkedIn"} post.`,
+    });
+  }
+}
+
+export async function createPublishAttemptController(
+  request: Request<unknown, CreatePublishAttemptResponse | ApiError, Partial<CreatePublishAttemptRequest>>,
+  response: Response<CreatePublishAttemptResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  try {
+    response.status(201).json(
+      await createPublishAttempt(request.auth, {
+        businessId,
+        platforms: request.body?.platforms ?? [],
+        contentText: request.body?.contentText?.trim() ?? "",
+        assetId: request.body?.assetId?.trim(),
+        slides: request.body?.slides ?? [],
+        title: request.body?.title?.trim(),
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "publish_attempt_failed",
+      message: "Unable to publish to the selected platforms.",
+      logMessage: "Failed to create publish attempt.",
+    });
+  }
+}
+
+export async function getPublishAttemptsController(
+  request: Request<unknown, PublishAttemptsResponse | ApiError, unknown, Partial<PublishAttemptsQuery>>,
+  response: Response<PublishAttemptsResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  try {
+    response.json(await listPublishAttempts(request.auth, businessId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "publish_attempts_lookup_failed",
+      message: "Unable to load publish history.",
+      logMessage: "Failed to load publish history.",
+    });
+  }
+}
+
+export async function getPublishAttemptDetailController(
+  request: Request<{ publishAttemptId: string }, PublishAttemptDetailResponse | ApiError, unknown, Partial<PublishAttemptsQuery>>,
+  response: Response<PublishAttemptDetailResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.query.businessId?.trim();
+  const publishAttemptId = request.params.publishAttemptId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  if (!publishAttemptId) {
+    sendApiError(response, 400, "bad_request", "publishAttemptId is required.");
+    return;
+  }
+
+  try {
+    response.json(await getPublishAttemptDetail(request.auth, businessId, publishAttemptId));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "publish_attempt_lookup_failed",
+      message: "Unable to load publish attempt detail.",
+      logMessage: "Failed to load publish attempt detail.",
+    });
+  }
+}
+
+export async function retryPublishAttemptController(
+  request: Request<{ publishAttemptId: string }, RetryPublishAttemptResponse | ApiError, Partial<RetryPublishAttemptRequest>>,
+  response: Response<RetryPublishAttemptResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const publishAttemptId = request.params.publishAttemptId?.trim();
+
+  if (!businessId) {
+    sendApiError(response, 400, "bad_request", "businessId is required.");
+    return;
+  }
+
+  if (!publishAttemptId) {
+    sendApiError(response, 400, "bad_request", "publishAttemptId is required.");
+    return;
+  }
+
+  try {
+    response.status(201).json(
+      await retryPublishAttempt(request.auth, publishAttemptId, {
+        businessId,
+        contentText: request.body?.contentText?.trim(),
+        assetId: request.body?.assetId?.trim(),
+        slides: request.body?.slides,
+        title: request.body?.title?.trim(),
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "publish_attempt_retry_failed",
+      message: "Unable to retry the failed platforms.",
+      logMessage: "Failed to retry publish attempt.",
     });
   }
 }

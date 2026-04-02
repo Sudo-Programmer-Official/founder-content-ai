@@ -2,7 +2,12 @@ import { Buffer } from "node:buffer";
 import { isIP } from "node:net";
 import type { PostAsset, ScheduledPostSlide } from "../../../../packages/shared-types/index.ts";
 import { HttpError } from "../utils/http.ts";
-import { createPostAssetDownloadUrl, downloadPostAssetBytes } from "./postAssetService.ts";
+import { logInfo, logWarn } from "../utils/logger.ts";
+import {
+  createPostAssetDownloadUrl,
+  createPostAssetPublicUrl,
+  downloadPostAssetBytes,
+} from "./postAssetService.ts";
 import {
   getLinkedInPublishingCredentialsForBusiness,
   getMetaPublishingCredentialsForBusiness,
@@ -901,6 +906,232 @@ function resolvePublicAssetUrl(
   return imageUrl;
 }
 
+function resolveInstagramAssetUrl(
+  asset: Pick<PostAsset, "storageKey">,
+  message: string,
+  errorCode: string,
+): string {
+  const assetUrl = createPostAssetPublicUrl(asset);
+  assertPublicHttpsUrl(assetUrl, message, errorCode);
+
+  return assetUrl;
+}
+
+function normalizeAssetUrlForLogs(assetUrl: string): string {
+  try {
+    const parsed = new URL(assetUrl);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return assetUrl;
+  }
+}
+
+function hasSignedMediaUrlSignature(assetUrl: string): boolean {
+  try {
+    const parsed = new URL(assetUrl);
+    const queryKeys = Array.from(parsed.searchParams.keys()).map((key) => key.trim().toLowerCase());
+
+    return queryKeys.some((key) => (
+      key.startsWith("x-amz-")
+      || key.startsWith("x-goog-")
+      || key === "awsaccesskeyid"
+      || key === "googleaccessid"
+      || key === "signature"
+      || key === "key-pair-id"
+    ));
+  } catch {
+    return /(x-amz-|x-goog-|awsaccesskeyid=|googleaccessid=|signature=|key-pair-id=)/i.test(assetUrl);
+  }
+}
+
+function isSuccessfulMediaPreflightStatus(statusCode: number): boolean {
+  return statusCode >= 200 && statusCode < 300;
+}
+
+function resolveMediaContentType(response: Response): string {
+  return response.headers.get("content-type")?.trim().toLowerCase().split(";")[0] || "";
+}
+
+function resolveMediaContentLength(response: Response): number | null {
+  const contentLengthHeader = response.headers.get("content-length")?.trim() || "";
+  const contentLength = Number.parseInt(contentLengthHeader, 10);
+
+  if (Number.isFinite(contentLength) && contentLength > 0) {
+    return contentLength;
+  }
+
+  const contentRange = response.headers.get("content-range")?.trim() || "";
+  const totalBytesMatch = contentRange.match(/\/(\d+)\s*$/);
+
+  if (!totalBytesMatch) {
+    return null;
+  }
+
+  const totalBytes = Number.parseInt(totalBytesMatch[1], 10);
+  return Number.isFinite(totalBytes) && totalBytes > 0 ? totalBytes : null;
+}
+
+function isAcceptedInstagramMediaContentType(
+  contentType: string,
+  expectedKind: "image" | "video",
+): boolean {
+  if (expectedKind === "image") {
+    return (
+      contentType === "image/jpeg"
+      || contentType === "image/png"
+      || contentType === "image/webp"
+    );
+  }
+
+  return contentType.startsWith("video/");
+}
+
+async function assertMetaCanFetchAssetUrl(
+  assetUrl: string,
+  expectedKind: "image" | "video",
+  errorCode: string,
+): Promise<void> {
+  const safeUrl = normalizeAssetUrlForLogs(assetUrl);
+
+  if (hasSignedMediaUrlSignature(assetUrl)) {
+    throw new HttpError(
+      422,
+      "presigned_url_not_allowed_for_instagram",
+      "Instagram requires a stable public media URL. Expiring signed URLs are not allowed.",
+      { mediaUrl: safeUrl },
+    );
+  }
+
+  logInfo("Preflighting Instagram media URL.", {
+    mediaUrl: safeUrl,
+    expectedKind,
+  });
+
+  const headResponse = await fetch(assetUrl, {
+    method: "HEAD",
+    redirect: "manual",
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => null);
+
+  if (!headResponse) {
+    throw new HttpError(
+      422,
+      errorCode,
+      "The selected media URL is not publicly reachable from outside the app.",
+      { mediaUrl: safeUrl },
+    );
+  }
+
+  if (headResponse.status >= 300 && headResponse.status < 400) {
+    throw new HttpError(
+      422,
+      errorCode,
+      "Instagram publishing requires a direct public media URL with no redirects.",
+      { mediaUrl: safeUrl },
+    );
+  }
+
+  const headContentType = resolveMediaContentType(headResponse);
+  const headContentLength = resolveMediaContentLength(headResponse);
+  const shouldRetryWithRangeGet = (
+    !isSuccessfulMediaPreflightStatus(headResponse.status)
+    || !headContentLength
+    || !isAcceptedInstagramMediaContentType(headContentType, expectedKind)
+  );
+
+  const response = shouldRetryWithRangeGet
+    ? await fetch(assetUrl, {
+      method: "GET",
+      headers: { Range: "bytes=0-0" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(5000),
+    }).catch(() => null)
+    : headResponse;
+
+  if (!response) {
+    throw new HttpError(
+      422,
+      errorCode,
+      "The selected media URL is not publicly reachable from outside the app.",
+      { mediaUrl: safeUrl },
+    );
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    throw new HttpError(
+      422,
+      errorCode,
+      "Instagram publishing requires a direct public media URL with no redirects.",
+      { mediaUrl: safeUrl },
+    );
+  }
+
+  if (!isSuccessfulMediaPreflightStatus(response.status)) {
+    throw new HttpError(
+      422,
+      errorCode,
+      "The selected media URL is not publicly accessible. Configure a stable public media URL instead of an expiring signed URL.",
+      { mediaUrl: safeUrl, statusCode: response.status },
+    );
+  }
+
+  const contentType = resolveMediaContentType(response);
+  const contentLength = resolveMediaContentLength(response);
+
+  if (!isAcceptedInstagramMediaContentType(contentType, expectedKind)) {
+    throw new HttpError(
+      422,
+      errorCode,
+      `The selected media URL did not return a valid ${expectedKind} content type.`,
+      { mediaUrl: safeUrl, contentType },
+    );
+  }
+
+  if (!contentLength) {
+    throw new HttpError(
+      422,
+      errorCode,
+      "Instagram publishing requires a direct media URL that returns a valid Content-Length header.",
+      { mediaUrl: safeUrl, contentLength: null },
+    );
+  }
+
+  logInfo("Instagram media URL passed preflight.", {
+    mediaUrl: safeUrl,
+    expectedKind,
+    preflightMethod: shouldRetryWithRangeGet ? "GET" : "HEAD",
+    statusCode: response.status,
+    contentType,
+    contentLength,
+  });
+}
+
+function normalizeInstagramMediaFetchError(
+  error: unknown,
+  assetUrl: string,
+): never {
+  if (
+    error instanceof HttpError
+    && error.code === "instagram_post_failed"
+    && /could not be fetched from this uri/i.test(error.message)
+  ) {
+    const safeUrl = normalizeAssetUrlForLogs(assetUrl);
+
+    logWarn("Instagram could not fetch the supplied media URL.", {
+      mediaUrl: safeUrl,
+    });
+
+    throw new HttpError(
+      422,
+      "instagram_media_invalid",
+      "Instagram could not download this media. Use a stable public HTTPS asset URL with no redirects or expiring signature.",
+      { mediaUrl: safeUrl },
+    );
+  }
+
+  throw error;
+}
+
 async function createInstagramImageContainer(input: {
   instagramUserId: string;
   accessToken: string;
@@ -908,11 +1139,12 @@ async function createInstagramImageContainer(input: {
   caption?: string;
   isCarouselItem?: boolean;
 }): Promise<string> {
-  const imageUrl = resolvePublicAssetUrl(
+  const imageUrl = resolveInstagramAssetUrl(
     input.asset,
-    "Instagram publishing requires a public HTTPS image URL.",
+    "Instagram publishing requires a stable public HTTPS image URL.",
     "instagram_image_url_not_public",
   );
+  await assertMetaCanFetchAssetUrl(imageUrl, "image", "instagram_media_invalid");
   const creation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
     `${input.instagramUserId}/media`,
     input.accessToken,
@@ -925,7 +1157,7 @@ async function createInstagramImageContainer(input: {
       errorCode: "instagram_post_failed",
       fallbackMessage: "Instagram media container creation failed.",
     },
-  );
+  ).catch((error) => normalizeInstagramMediaFetchError(error, imageUrl));
   const creationId = creation.id?.trim();
 
   if (!creationId) {
@@ -946,11 +1178,12 @@ async function createInstagramVideoContainer(input: {
   asset: PostAsset;
   caption?: string;
 }): Promise<string> {
-  const videoUrl = resolvePublicAssetUrl(
+  const videoUrl = resolveInstagramAssetUrl(
     input.asset,
-    "Instagram publishing requires a public HTTPS video URL.",
+    "Instagram publishing requires a stable public HTTPS video URL.",
     "instagram_video_url_not_public",
   );
+  await assertMetaCanFetchAssetUrl(videoUrl, "video", "instagram_media_invalid");
   const creation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
     `${input.instagramUserId}/media`,
     input.accessToken,
@@ -962,7 +1195,7 @@ async function createInstagramVideoContainer(input: {
       errorCode: "instagram_post_failed",
       fallbackMessage: "Instagram video container creation failed.",
     },
-  );
+  ).catch((error) => normalizeInstagramMediaFetchError(error, videoUrl));
   const creationId = creation.id?.trim();
 
   if (!creationId) {
