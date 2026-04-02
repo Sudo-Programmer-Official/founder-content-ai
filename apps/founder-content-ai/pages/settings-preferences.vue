@@ -26,6 +26,7 @@ import type {
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import AiAssistPanel from "../components/AiAssistPanel.vue";
+import MetaPageSelectionModal from "../components/MetaPageSelectionModal.vue";
 import { useAiAssistSuggestions } from "../composables/use-ai-assist";
 import { usePreferenceContext } from "../preferences/preference-context";
 import {
@@ -47,12 +48,17 @@ import {
 import {
   requestDisconnectSocialAccount,
   requestLinkedInSocialAuthStart,
+  requestMetaSocialAuthStart,
   requestSelectSocialAccountIdentity,
   requestSocialAccounts,
 } from "../services/publishing-service";
 import { appRoutes } from "../utils/routes";
+import {
+  resolveInstagramIdentity,
+  resolvePublishingDescriptor,
+} from "../utils/social-platforms";
 
-type WorkspaceChannelKey = "linkedin" | "instagram" | "reddit";
+type WorkspaceChannelKey = "linkedin" | "facebook" | "instagram" | "reddit";
 
 interface WorkspaceChannelDefinition {
   key: WorkspaceChannelKey;
@@ -135,6 +141,9 @@ const isLoadingChannels = ref(false);
 const isStartingChannelConnect = ref<WorkspaceChannelKey | "">("");
 const disconnectingAccountId = ref("");
 const selectingIdentityAccountId = ref("");
+const isMetaSelectionModalOpen = ref(false);
+const pendingMetaSession = ref("");
+const pendingMetaPlatform = ref<"facebook" | "instagram">("facebook");
 const channelFeedback = ref("");
 const channelError = ref("");
 const brandProfile = ref<BrandProfile | null>(null);
@@ -197,10 +206,16 @@ const workspaceChannelDefinitions: WorkspaceChannelDefinition[] = [
     availability: "live",
   },
   {
+    key: "facebook",
+    label: "Facebook",
+    description: "Connect the workspace Facebook Page. This is the Meta source of truth for Facebook publishing and Instagram derivation.",
+    availability: "live",
+  },
+  {
     key: "instagram",
     label: "Instagram",
-    description: "Reserve a slot for the visual publishing workflow. This will land after LinkedIn stabilizes.",
-    availability: "coming_soon",
+    description: "Connect Instagram through the linked Facebook Page. Founder Content derives the Instagram business account from the Page you choose.",
+    availability: "live",
   },
   {
     key: "reddit",
@@ -381,32 +396,53 @@ const usageCards = computed(() => {
 const isReadOnly = computed(() => bootstrap.value?.access?.readOnly ?? false);
 const workspaceChannels = computed(() =>
   workspaceChannelDefinitions.map((definition) => {
-    const linkedInAccount =
+    const account =
       definition.key === "linkedin"
-        ? socialAccounts.value.find((account) => account.platform === "linkedin")
+        ? socialAccounts.value.find((candidate) => candidate.platform === "linkedin") ?? null
+        : definition.key === "facebook"
+          ? socialAccounts.value.find((candidate) => candidate.platform === "facebook") ?? null
+          : definition.key === "instagram"
+            ? socialAccounts.value.find((candidate) =>
+              candidate.platform === "facebook"
+              && candidate.availableIdentities.some((identity) => identity.platform === "instagram"),
+            ) ?? null
+            : null;
+    const selectedIdentity =
+      definition.key === "linkedin"
+        ? account?.selectedIdentity
+        : definition.key === "facebook"
+          ? (
+            account?.availableIdentities.find((identity) =>
+              identity.platform === "facebook" && identity.id === account.selectedIdentity?.id,
+            ) ?? account?.availableIdentities.find((identity) => identity.platform === "facebook")
+          )
+          : definition.key === "instagram"
+            ? resolveInstagramIdentity(account)
+            : undefined;
+    const identityOptions =
+      definition.key === "linkedin"
+        ? account?.availableIdentities ?? []
+        : definition.key === "facebook"
+          ? account?.availableIdentities.filter((identity) => identity.platform === "facebook") ?? []
+          : [];
+    const connectedLabel =
+      definition.key === "linkedin" || definition.key === "facebook" || definition.key === "instagram"
+        ? resolvePublishingDescriptor(definition.key, account)
         : undefined;
-    const selectedIdentity = linkedInAccount?.selectedIdentity;
-    const linkedInName =
-      linkedInAccount &&
-      typeof linkedInAccount.metadata?.linkedInName === "string" &&
-      linkedInAccount.metadata.linkedInName.trim() !== ""
-        ? linkedInAccount.metadata.linkedInName.trim()
-        : undefined;
+    const status =
+      definition.availability === "coming_soon"
+        ? "coming_soon"
+        : definition.key === "instagram"
+          ? (account && selectedIdentity ? account.status : "not_connected")
+          : account?.status ?? "not_connected";
 
     return {
       ...definition,
-      account: linkedInAccount,
+      account,
       selectedIdentity,
-      identityOptions: linkedInAccount?.availableIdentities ?? [],
-      connectedLabel:
-        selectedIdentity?.displayName ||
-        linkedInName ||
-        linkedInAccount?.accountEmail ||
-        linkedInAccount?.platformUserId,
-      status:
-        definition.availability === "coming_soon"
-          ? "coming_soon"
-          : linkedInAccount?.status ?? "not_connected",
+      identityOptions,
+      connectedLabel,
+      status,
     };
   }),
 );
@@ -1341,7 +1377,7 @@ async function loadWorkspaceChannels(): Promise<void> {
 async function handleChannelConnect(platform: WorkspaceChannelKey): Promise<void> {
   const businessId = activeBusinessId.value;
 
-  if (!businessId || platform !== "linkedin") {
+  if (!businessId || platform === "reddit") {
     return;
   }
 
@@ -1349,9 +1385,20 @@ async function handleChannelConnect(platform: WorkspaceChannelKey): Promise<void
   channelError.value = "";
 
   try {
-    const response = await requestLinkedInSocialAuthStart({
+    if (platform === "linkedin") {
+      const response = await requestLinkedInSocialAuthStart({
+        businessId,
+        returnPath: route.fullPath,
+      });
+      window.location.href = response.authorizationUrl;
+      return;
+    }
+
+    pendingMetaPlatform.value = platform === "instagram" ? "instagram" : "facebook";
+    const response = await requestMetaSocialAuthStart({
       businessId,
-      returnPath: appRoutes.settingsPreferences,
+      platform: pendingMetaPlatform.value,
+      returnPath: route.fullPath,
     });
     window.location.href = response.authorizationUrl;
   } catch (error) {
@@ -1387,6 +1434,7 @@ async function handleChannelDisconnect(accountId: string): Promise<void> {
 async function handleChannelIdentitySelect(
   accountId: string,
   identityId: string,
+  platform: Extract<WorkspaceChannelKey, "linkedin" | "facebook">,
 ): Promise<void> {
   const businessId = activeBusinessId.value;
 
@@ -1403,14 +1451,42 @@ async function handleChannelIdentitySelect(
       businessId,
       identityId,
     });
-    channelFeedback.value = "LinkedIn publishing target updated for this workspace.";
+    channelFeedback.value =
+      platform === "facebook"
+        ? "Facebook publishing target updated for this workspace."
+        : "LinkedIn publishing target updated for this workspace.";
     await loadWorkspaceChannels();
   } catch (error) {
     channelError.value =
-      error instanceof Error ? error.message : "Unable to update the LinkedIn publishing target.";
+      error instanceof Error
+        ? error.message
+        : platform === "facebook"
+          ? "Unable to update the Facebook publishing target."
+          : "Unable to update the LinkedIn publishing target.";
   } finally {
     selectingIdentityAccountId.value = "";
   }
+}
+
+function closeMetaSelectionModal(): void {
+  isMetaSelectionModalOpen.value = false;
+  pendingMetaSession.value = "";
+  isStartingChannelConnect.value = "";
+}
+
+async function handleMetaConnected(): Promise<void> {
+  closeMetaSelectionModal();
+  channelError.value = "";
+  channelFeedback.value =
+    pendingMetaPlatform.value === "facebook"
+      ? "Facebook connected for this workspace."
+      : "Instagram connected for this workspace.";
+  await loadWorkspaceChannels();
+}
+
+function handleMetaSelectionError(message: string): void {
+  channelError.value = message;
+  isStartingChannelConnect.value = "";
 }
 
 watch(
@@ -1431,25 +1507,55 @@ watch(
 );
 
 watch(
-  () => [route.query.linkedin, route.query.message],
-  async ([status, message]) => {
-    if (typeof status !== "string" && typeof message !== "string") {
+  () => [route.query.linkedin, route.query.meta, route.query.message, route.query.session, route.query.platform],
+  async ([linkedInStatus, metaStatus, message, session, platform]) => {
+    if (
+      typeof linkedInStatus !== "string"
+      && typeof metaStatus !== "string"
+      && typeof message !== "string"
+      && typeof session !== "string"
+      && typeof platform !== "string"
+    ) {
       return;
     }
 
-    if (status === "connected") {
+    if (platform === "facebook" || platform === "instagram") {
+      pendingMetaPlatform.value = platform;
+    }
+
+    if (linkedInStatus === "connected") {
       channelFeedback.value = "LinkedIn connected for this workspace.";
       channelError.value = "";
       await loadWorkspaceChannels();
-    } else if (status === "error") {
+    } else if (linkedInStatus === "error") {
       channelError.value = typeof message === "string" && message.trim() !== ""
         ? message
         : "LinkedIn connection failed.";
     }
 
+    if (metaStatus === "connected") {
+      channelFeedback.value =
+        pendingMetaPlatform.value === "facebook"
+          ? "Facebook connected for this workspace."
+          : "Instagram connected for this workspace.";
+      channelError.value = "";
+      await loadWorkspaceChannels();
+    } else if (metaStatus === "error") {
+      channelError.value =
+        typeof message === "string" && message.trim() !== ""
+          ? message
+          : "Meta connection failed.";
+    } else if (metaStatus === "select_page" && typeof session === "string" && session.trim() !== "") {
+      pendingMetaSession.value = session.trim();
+      isMetaSelectionModalOpen.value = true;
+    }
+
     const nextQuery = { ...route.query };
     delete nextQuery.linkedin;
+    delete nextQuery.meta;
     delete nextQuery.message;
+    delete nextQuery.session;
+    delete nextQuery.platform;
     void router.replace({ query: nextQuery });
     isStartingChannelConnect.value = "";
   },
@@ -1581,7 +1687,7 @@ watch(
       </div>
 
       <p class="dashboard-description">
-        Every workspace should keep its own publishing channels. Connect LinkedIn now, then layer Instagram and Reddit later without mixing brand accounts across products.
+        Every workspace should keep its own publishing channels. Connect LinkedIn and Meta per workspace so Facebook and Instagram stay tied to the right brand.
       </p>
 
       <p v-if="channelFeedback" class="dashboard-feedback">{{ channelFeedback }}</p>
@@ -1597,7 +1703,15 @@ watch(
           <div class="channel-card-header">
             <div>
               <p class="dashboard-card-label">{{ channel.label }}</p>
-              <strong>{{ channel.availability === "live" ? "Workspace connection" : "Coming soon" }}</strong>
+              <strong>
+                {{
+                  channel.availability !== "live"
+                    ? "Coming soon"
+                    : channel.key === "instagram"
+                      ? "Derived from Meta connection"
+                      : "Workspace connection"
+                }}
+              </strong>
             </div>
             <span
               class="channel-status-badge"
@@ -1626,7 +1740,9 @@ watch(
             <span>{{ channel.connectedLabel }}</span>
             <small>
               {{
-                channel.account.accountEmail
+                channel.key === "instagram"
+                  ? "Managed through the connected Facebook Page"
+                  : channel.account.accountEmail
                   ? channel.account.accountEmail
                   : `Connected ${new Date(channel.account.updatedAt).toLocaleDateString()}`
               }}
@@ -1634,7 +1750,7 @@ watch(
           </div>
 
           <label
-            v-if="channel.account && channel.identityOptions.length > 0"
+            v-if="channel.account && channel.identityOptions.length > 0 && channel.key !== 'instagram'"
             class="dashboard-field channel-identity-field"
           >
             <span>Publish this workspace as</span>
@@ -1645,6 +1761,7 @@ watch(
                 void handleChannelIdentitySelect(
                   channel.account.id,
                   ($event.target as HTMLSelectElement).value,
+                  channel.key as 'linkedin' | 'facebook',
                 )
               "
             >
@@ -1667,18 +1784,22 @@ watch(
               @click="void handleChannelConnect(channel.key)"
             >
               {{
-                channel.status === "connected"
-                  ? isStartingChannelConnect === channel.key
-                    ? "Refreshing..."
-                    : "Reconnect"
-                  : isStartingChannelConnect === channel.key
+                isStartingChannelConnect === channel.key
+                  ? channel.key === "linkedin"
                     ? "Connecting..."
-                    : "Connect"
+                    : "Opening Meta..."
+                  : channel.key === "instagram"
+                    ? channel.status === "connected"
+                      ? "Refresh Meta setup"
+                      : "Connect via Meta"
+                    : channel.status === "connected"
+                      ? "Reconnect"
+                      : "Connect"
               }}
             </button>
 
             <button
-              v-if="channel.account"
+              v-if="channel.account && channel.key !== 'instagram'"
               type="button"
               class="dashboard-button secondary"
               :disabled="
@@ -1701,6 +1822,16 @@ watch(
           </div>
         </article>
       </div>
+
+      <MetaPageSelectionModal
+        :open="isMetaSelectionModalOpen"
+        :business-id="activeBusinessId ?? undefined"
+        :session="pendingMetaSession"
+        :platform="pendingMetaPlatform"
+        @close="closeMetaSelectionModal"
+        @connected="void handleMetaConnected()"
+        @error="handleMetaSelectionError"
+      />
     </section>
 
     <section class="dashboard-panel brand-theme-panel">
