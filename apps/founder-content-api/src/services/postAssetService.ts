@@ -1173,3 +1173,8 @@ export function createPostAssetDirectS3Url(asset: Pick<PostAsset, "storageKey">)
   const region = resolveAwsRegion();
   return `https://${bucket}.s3.${region}.amazonaws.com/${encodeS3Path(asset.storageKey)}`;
 }
+
+export function createPostAssetGlobalS3Url(asset: Pick<PostAsset, "storageKey">): string {
+  const bucket = resolveMediaBucket();
+  return `https://s3.amazonaws.com/${bucket}/${encodeS3Path(asset.storageKey)}`;
+}

@@ -6,6 +6,7 @@ import { HttpError } from "../utils/http.ts";
 import { logInfo, logWarn } from "../utils/logger.ts";
 import {
   createPostAssetDirectS3Url,
+  createPostAssetGlobalS3Url,
   createPostAssetDownloadUrl,
   createPostAssetPublicUrl,
   createPostAssetPublicUrlForBase,
@@ -1066,7 +1067,7 @@ function createInstagramPublishUrl(storageKey: string): string {
     return createPostAssetPublicUrlForBase({ storageKey }, publishBaseUrl);
   }
 
-  return createPostAssetDirectS3Url({ storageKey });
+  return createPostAssetGlobalS3Url({ storageKey });
 }
 
 interface InstagramReadyImageTarget {
@@ -1079,8 +1080,12 @@ interface InstagramReadyImageTarget {
 }
 
 function resolveInstagramFallbackUrl(storageKey: string, currentUrl: string): string | undefined {
-  const directS3Url = createPostAssetDirectS3Url({ storageKey });
-  return directS3Url === currentUrl ? undefined : directS3Url;
+  if (!resolveInstagramPublishBaseUrl()) {
+    return undefined;
+  }
+
+  const globalS3Url = createPostAssetGlobalS3Url({ storageKey });
+  return globalS3Url === currentUrl ? undefined : globalS3Url;
 }
 
 async function createInstagramReadyImageUrl(asset: PostAsset): Promise<InstagramReadyImageTarget> {
@@ -1311,19 +1316,37 @@ async function createInstagramImageContainer(input: {
   isCarouselItem?: boolean;
 }): Promise<string> {
   const createContainer = async (imageUrl: string): Promise<{ id?: string } & MetaGraphErrorPayload> =>
-    postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
-      `${input.instagramUserId}/media`,
-      input.accessToken,
-      {
-        image_url: imageUrl,
-        caption: input.caption?.trim() || undefined,
-        is_carousel_item: input.isCarouselItem ? "true" : undefined,
-      },
-      {
-        errorCode: "instagram_post_failed",
-        fallbackMessage: "Instagram media container creation failed.",
-      },
-    );
+    {
+      const caption = input.caption?.trim() || undefined;
+
+      logInfo("Submitting Instagram media container request.", {
+        instagramUserId: input.instagramUserId,
+        imageUrl: normalizeAssetUrlForLogs(imageUrl),
+        hasCaption: Boolean(caption),
+        captionLength: caption?.length ?? 0,
+        isCarouselItem: Boolean(input.isCarouselItem),
+        paramKeys: [
+          "image_url",
+          ...(caption ? ["caption"] : []),
+          ...(input.isCarouselItem ? ["is_carousel_item"] : []),
+          "access_token",
+        ],
+      });
+
+      return postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+        `${input.instagramUserId}/media`,
+        input.accessToken,
+        {
+          image_url: imageUrl,
+          caption,
+          is_carousel_item: input.isCarouselItem ? "true" : undefined,
+        },
+        {
+          errorCode: "instagram_post_failed",
+          fallbackMessage: "Instagram media container creation failed.",
+        },
+      );
+    };
 
   const imageTarget = await createInstagramReadyImageUrl(input.asset);
 
