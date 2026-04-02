@@ -1014,15 +1014,17 @@ function isAcceptedInstagramMediaContentType(
   return contentType.startsWith("video/");
 }
 
-function buildInstagramNormalizedStorageKey(asset: Pick<PostAsset, "storageKey" | "id">): string {
-  const lastSlashIndex = asset.storageKey.lastIndexOf("/");
+function resolveInstagramPublicMediaPrefix(): string {
+  return process.env.S3_INSTAGRAM_PUBLIC_PREFIX?.trim().replace(/^\/+|\/+$/g, "") || "public-instagram";
+}
 
-  if (lastSlashIndex < 0) {
-    return `${asset.storageKey}.instagram.jpg`;
-  }
-
-  const directory = asset.storageKey.slice(0, lastSlashIndex);
-  return `${directory}/instagram-normalized/${asset.id}.jpg`;
+function buildInstagramPublicStorageKey(asset: Pick<PostAsset, "businessId" | "postId" | "id">): string {
+  return [
+    resolveInstagramPublicMediaPrefix(),
+    asset.businessId,
+    asset.postId,
+    `${asset.id}.jpg`,
+  ].join("/");
 }
 
 interface InstagramReadyImageTarget {
@@ -1054,22 +1056,6 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
     "instagram_image_url_not_public",
   );
 
-  if (isAcceptedInstagramImageMimeType(asset.mimeType)) {
-    return {
-      originalUrl,
-      finalUrl: originalUrl,
-      fallbackUrl: resolveInstagramFallbackUrl(asset.storageKey, originalUrl),
-      sourceMimeType: asset.mimeType,
-      publishMimeType: asset.mimeType,
-      normalized: false,
-    };
-  }
-
-  logInfo("Normalizing non-JPEG image for Instagram publishing.", {
-    assetId: asset.id,
-    sourceMimeType: asset.mimeType,
-  });
-
   const sourceBytes = await downloadPostAssetBytes(asset);
   const normalizedBytes = await sharp(sourceBytes)
     .flatten({ background: "#ffffff" })
@@ -1078,7 +1064,15 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
       mozjpeg: true,
     })
     .toBuffer();
-  const normalizedStorageKey = buildInstagramNormalizedStorageKey(asset);
+  const normalizedStorageKey = buildInstagramPublicStorageKey(asset);
+
+  logInfo("Preparing public Instagram-ready image asset.", {
+    assetId: asset.id,
+    sourceMimeType: asset.mimeType,
+    publishMimeType: "image/jpeg",
+    originalUrl: normalizeAssetUrlForLogs(originalUrl),
+    publicStorageKey: normalizedStorageKey,
+  });
 
   await uploadPostAssetBytesToStorage({
     storageKey: normalizedStorageKey,
@@ -1086,13 +1080,9 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
     mimeType: "image/jpeg",
   });
 
-  const finalUrl = resolveInstagramAssetUrl(
-    { storageKey: normalizedStorageKey },
-    "Instagram publishing requires a stable public HTTPS image URL.",
-    "instagram_image_url_not_public",
-  );
+  const finalUrl = createPostAssetDirectS3Url({ storageKey: normalizedStorageKey });
 
-  logInfo("Prepared normalized Instagram image asset.", {
+  logInfo("Prepared Instagram-ready public image asset.", {
     assetId: asset.id,
     sourceMimeType: asset.mimeType,
     publishMimeType: "image/jpeg",
@@ -1106,7 +1096,7 @@ async function createInstagramReadyImageUrl(asset: PostAsset): Promise<Instagram
     fallbackUrl: resolveInstagramFallbackUrl(normalizedStorageKey, finalUrl),
     sourceMimeType: asset.mimeType,
     publishMimeType: "image/jpeg",
-    normalized: true,
+    normalized: !isAcceptedInstagramImageMimeType(asset.mimeType),
   };
 }
 
