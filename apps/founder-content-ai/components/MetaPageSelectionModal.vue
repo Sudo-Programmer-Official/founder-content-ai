@@ -147,23 +147,18 @@ watch(
   <div v-if="open" class="meta-page-modal-overlay" @click.self="emit('close')">
     <article class="meta-page-modal">
       <div class="meta-page-modal-header">
-        <div class="meta-page-modal-header-copy">
+        <div>
           <p class="workspace-eyebrow">Meta setup</p>
-          <h3>Connect Facebook Page</h3>
-          <p class="workspace-description compact">
-            {{
-              requiresInstagram
-                ? "Choose the Page you want to publish through. If it has a linked Instagram business account, Instagram unlocks on the same connection."
-                : "Choose the Page you want to publish content to. Instagram will also unlock automatically when the Page has a linked business account."
-            }}
-          </p>
+          <h3>Choose Facebook Page</h3>
         </div>
-        <div class="meta-page-modal-header-actions">
-          <p class="meta-page-trust-note">You can change this anytime in Settings.</p>
-          <button type="button" class="workspace-secondary-button compact" @click="emit('close')">
-            Close
-          </button>
-        </div>
+        <button
+          type="button"
+          class="meta-page-close-button"
+          aria-label="Close page selection"
+          @click="emit('close')"
+        >
+          ×
+        </button>
       </div>
 
       <p v-if="isLoading" class="workspace-description compact">Loading available Pages...</p>
@@ -282,32 +277,38 @@ watch(
 
 .meta-page-modal-header {
   display: flex;
-  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-}
-
-.meta-page-modal-header-copy {
-  display: grid;
-  gap: 8px;
-  max-width: 560px;
+  gap: 12px;
+  align-items: center;
 }
 
 .meta-page-modal-header h3 {
   margin: 0;
 }
 
-.meta-page-modal-header-actions {
-  display: grid;
-  gap: 10px;
-  justify-items: end;
+.meta-page-close-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 82%, white 18%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-surface-subtle) 84%, white 16%);
+  color: color-mix(in srgb, var(--fc-text, #1f2937) 78%, white 22%);
+  font-size: 1.5rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease;
 }
 
-.meta-page-trust-note {
-  margin: 0;
-  font-size: 0.88rem;
-  color: color-mix(in srgb, var(--fc-text-muted, #6b7280) 90%, white 10%);
+.meta-page-close-button:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-surface-subtle) 72%, white 28%);
 }
 
 .meta-page-empty-state {
@@ -508,8 +509,8 @@ watch(
     border-radius: 24px;
   }
 
-  .meta-page-modal-header-actions {
-    justify-items: start;
+  .meta-page-modal-header {
+    align-items: flex-start;
   }
 
   .meta-page-card-header {
