@@ -183,6 +183,25 @@ interface MetaAccountsResponse {
   data?: MetaPageRecord[];
 }
 
+interface MetaDebugTokenGranularScope {
+  scope?: string;
+  target_ids?: string[];
+}
+
+interface MetaDebugTokenPayload {
+  data?: {
+    app_id?: string;
+    type?: string;
+    application?: string;
+    data_access_expires_at?: number;
+    expires_at?: number;
+    is_valid?: boolean;
+    scopes?: string[];
+    granular_scopes?: MetaDebugTokenGranularScope[];
+    user_id?: string;
+  };
+}
+
 interface MetaUserProfileResponse {
   id?: string;
   name?: string;
@@ -677,6 +696,15 @@ async function fetchMetaGraphJson<TPayload>(
   return payload;
 }
 
+async function debugMetaUserToken(accessToken: string): Promise<MetaDebugTokenPayload["data"] | null> {
+  const payload = await fetchMetaGraphJson<MetaDebugTokenPayload>("debug_token", {
+    input_token: accessToken,
+    access_token: `${resolveMetaAppId()}|${resolveMetaAppSecret()}`,
+  });
+
+  return payload.data ?? null;
+}
+
 function hasOrganizationPublishingScope(scopes: string[]): boolean {
   return scopes.includes("w_organization_social") || scopes.includes("rw_organization_admin");
 }
@@ -1002,6 +1030,17 @@ async function fetchMetaPageSelections(accessToken: string): Promise<MetaPending
     access_token: accessToken,
     fields:
       "id,name,access_token,tasks,picture{url},instagram_business_account{id,username,name,profile_picture_url}",
+  });
+
+  logInfo("Fetched raw Meta /me/accounts payload.", {
+    rawPageCount: payload.data?.length ?? 0,
+    pages: (payload.data ?? []).map((page) => ({
+      id: page.id ?? null,
+      name: page.name ?? null,
+      hasAccessToken: Boolean(page.access_token),
+      tasks: Array.isArray(page.tasks) ? page.tasks : [],
+      instagramBusinessAccountId: page.instagram_business_account?.id ?? null,
+    })),
   });
 
   return (payload.data ?? []).flatMap((page) => {
@@ -1517,6 +1556,7 @@ export async function createMetaAuthorizationUrl(
   url.searchParams.set("state", state);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", resolveMetaScopes().join(","));
+  url.searchParams.set("auth_type", "rerequest");
 
   return {
     authorizationUrl: url.toString(),
@@ -1734,6 +1774,7 @@ export async function handleMetaOAuthCallback(input: {
     const userProfile = await fetchMetaUserProfile(accessToken).catch(
       () => ({}) as MetaUserProfileResponse,
     );
+    const debugTokenData = await debugMetaUserToken(accessToken).catch(() => null);
     const pages = await fetchMetaPageSelections(accessToken);
 
     logInfo("Fetched Meta page selections after OAuth callback.", {
@@ -1742,6 +1783,13 @@ export async function handleMetaOAuthCallback(input: {
       userId: callbackState.userId,
       metaUserId: userProfile.id ?? null,
       requestedScopes: resolveMetaScopes(),
+      grantedScopes: debugTokenData?.scopes ?? [],
+      granularScopes: (debugTokenData?.granular_scopes ?? []).map((scope) => ({
+        scope: scope.scope ?? null,
+        targetIds: scope.target_ids ?? [],
+      })),
+      debugTokenUserId: debugTokenData?.user_id ?? null,
+      debugTokenIsValid: debugTokenData?.is_valid ?? null,
       pageCount: pages.length,
       pageIds: pages.map((page) => page.pageId),
       instagramLinkedCount: pages.filter((page) => page.instagramBusinessAccountId).length,
@@ -1754,6 +1802,13 @@ export async function handleMetaOAuthCallback(input: {
         userId: callbackState.userId,
         metaUserId: userProfile.id ?? null,
         requestedScopes: resolveMetaScopes(),
+        grantedScopes: debugTokenData?.scopes ?? [],
+        granularScopes: (debugTokenData?.granular_scopes ?? []).map((scope) => ({
+          scope: scope.scope ?? null,
+          targetIds: scope.target_ids ?? [],
+        })),
+        debugTokenUserId: debugTokenData?.user_id ?? null,
+        debugTokenIsValid: debugTokenData?.is_valid ?? null,
       });
       return buildMetaRedirectUrl(callbackState.returnPath ?? "/app/create", "error", {
         message: "no_pages_found",
