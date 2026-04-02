@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type {
+  BillingOverviewResponse,
   BusinessEmailSettings,
   BusinessMembership,
   EmailCampaign,
@@ -8,6 +9,7 @@ import type {
 } from "../../../packages/shared-types";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useProductAccessContext } from "../access/product-access-context";
+import { requestBillingOverview } from "../services/billing-service";
 import {
   requestEmailCampaignCreate,
   requestEmailCampaignSend,
@@ -19,6 +21,7 @@ import {
   requestEmailLists,
 } from "../services/email-service";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
+import { appRoutes } from "../utils/routes";
 
 const { bootstrap: productAccess, refreshProductAccess, setActiveBusinessId, isFeatureEnabled } =
   useProductAccessContext();
@@ -28,6 +31,7 @@ const selectedBusinessId = ref("");
 const emailLists = ref<EmailList[]>([]);
 const campaigns = ref<EmailCampaign[]>([]);
 const domainSettings = ref<BusinessEmailSettings | null>(null);
+const billingOverview = ref<BillingOverviewResponse | null>(null);
 const isLoading = ref(true);
 const isImporting = ref(false);
 const isCreatingCampaign = ref(false);
@@ -35,6 +39,7 @@ const isSending = ref(false);
 const isSavingDomain = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
+const campaignBillingWarnings = ref<string[]>([]);
 const lastDomainId = ref("");
 let domainVerificationPollHandle: number | null = null;
 let campaignProgressPollHandle: number | null = null;
@@ -65,9 +70,91 @@ const emailFeatureEnabled = computed(
     !productAccess.value?.activeBusinessId ||
     isFeatureEnabled("email_campaigns"),
 );
+const emailAddon = computed(() => billingOverview.value?.emailAddon ?? null);
 const emailLimitText = computed(() => {
   const limits = productAccess.value?.limits;
   return limits ? `Emails left today: ${limits.emailsRemaining}` : "";
+});
+const selectedAudienceList = computed(
+  () => emailLists.value.find((list) => list.id === campaignForm.value.listId) ?? null,
+);
+const selectedAudienceRecipientCount = computed(() => selectedAudienceList.value?.contactCount ?? 0);
+const emailUsageTone = computed(() => {
+  switch (emailAddon.value?.usageState) {
+    case "over_limit":
+      return "error";
+    case "warning":
+      return "warning";
+    default:
+      return "info";
+  }
+});
+const emailUsageSummary = computed(() => {
+  if (!emailAddon.value) {
+    return "";
+  }
+
+  const monthlyLimit =
+    emailAddon.value.monthlyEmailLimit && emailAddon.value.monthlyEmailLimit > 0
+      ? `${formatNumber(emailAddon.value.currentPeriodEmailUsage)} / ${formatNumber(emailAddon.value.monthlyEmailLimit)} emails used this period.`
+      : `${formatNumber(emailAddon.value.currentPeriodEmailUsage)} emails used this period.`;
+  const subscriberLimit =
+    emailAddon.value.subscriberLimit && emailAddon.value.subscriberLimit > 0
+      ? `${formatNumber(emailAddon.value.currentSubscriberCount)} / ${formatNumber(emailAddon.value.subscriberLimit)} active subscribers.`
+      : `${formatNumber(emailAddon.value.currentSubscriberCount)} active subscribers tracked.`;
+
+  return `${subscriberLimit} ${monthlyLimit}`;
+});
+const emailUsageNudge = computed(() => {
+  if (!emailAddon.value) {
+    return "";
+  }
+
+  if (emailAddon.value.usageState === "over_limit") {
+    return "You are already above the current monthly allowance. Upgrade now to keep sending without manual overrides.";
+  }
+
+  if (emailAddon.value.usageState === "warning") {
+    return "You are approaching the monthly email limit. Upgrade now to keep sending without interruption.";
+  }
+
+  if (
+    emailAddon.value.fullListCampaignCapacity !== null &&
+    emailAddon.value.fullListCampaignCapacity <= 2
+  ) {
+    return "Capacity is getting tight. Upgrade before the next campaign cycle if you plan to send frequently.";
+  }
+
+  return "";
+});
+const selectedAudienceImpact = computed(() => {
+  if (!emailAddon.value || selectedAudienceRecipientCount.value <= 0) {
+    return null;
+  }
+
+  const projectedUsage = emailAddon.value.currentPeriodEmailUsage + selectedAudienceRecipientCount.value;
+  const monthlyLimit = emailAddon.value.monthlyEmailLimit;
+  const percentOfLimit =
+    monthlyLimit && monthlyLimit > 0
+      ? Math.max(1, Math.round((selectedAudienceRecipientCount.value / monthlyLimit) * 100))
+      : null;
+  const projectedPercent =
+    monthlyLimit && monthlyLimit > 0
+      ? Math.min(999, Math.round((projectedUsage / monthlyLimit) * 100))
+      : null;
+  const remainingCampaigns =
+    emailAddon.value.monthlyEmailRemaining !== null && selectedAudienceRecipientCount.value > 0
+      ? Math.max(0, Math.floor(emailAddon.value.monthlyEmailRemaining / selectedAudienceRecipientCount.value))
+      : null;
+
+  return {
+    audienceName: selectedAudienceList.value?.name ?? "Selected audience",
+    recipientCount: selectedAudienceRecipientCount.value,
+    projectedUsage,
+    percentOfLimit,
+    projectedPercent,
+    remainingCampaigns,
+  };
 });
 const domainSetupAnalysis = computed(() => domainSettings.value?.domainSetupAnalysis);
 const domainConflictFlags = computed(() => domainSetupAnalysis.value?.conflictFlags ?? []);
@@ -263,6 +350,26 @@ function formatTimestamp(value?: string): string {
   return new Date(value).toLocaleString();
 }
 
+function formatNumber(value?: number | null): string {
+  return new Intl.NumberFormat("en-US").format(value ?? 0);
+}
+
+function formatCampaignUsageImpact(recipientCount: number): string {
+  const monthlyLimit = emailAddon.value?.monthlyEmailLimit;
+
+  if (!monthlyLimit || monthlyLimit <= 0 || recipientCount <= 0) {
+    return "Tracked";
+  }
+
+  const ratio = (recipientCount / monthlyLimit) * 100;
+
+  if (ratio < 1) {
+    return "<1%";
+  }
+
+  return `${Math.round(ratio)}%`;
+}
+
 function applyDomainSettings(
   settings: BusinessEmailSettings | null,
   options: { syncForm?: boolean } = {},
@@ -366,17 +473,20 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     stopCampaignProgressPolling();
     emailLists.value = [];
     campaigns.value = [];
+    billingOverview.value = null;
     applyDomainSettings(null, { syncForm: options.syncDomainForm });
     return;
   }
 
-  const [listsResponse, campaignsResponse, domainResponse] = await Promise.all([
+  const [listsResponse, campaignsResponse, domainResponse, billingResponse] = await Promise.all([
     requestEmailLists(selectedBusinessId.value),
     requestEmailCampaigns(selectedBusinessId.value),
     requestEmailDomainSettings(selectedBusinessId.value),
+    requestBillingOverview(selectedBusinessId.value),
   ]);
   emailLists.value = listsResponse.lists;
   campaigns.value = campaignsResponse.campaigns;
+  billingOverview.value = billingResponse;
   applyDomainSettings(domainResponse.settings, { syncForm: options.syncDomainForm });
   startCampaignProgressPolling();
 
@@ -453,10 +563,12 @@ async function sendCampaign(campaignId: string): Promise<void> {
 
   isSending.value = true;
   errorMessage.value = "";
+  campaignBillingWarnings.value = [];
 
   try {
     const response = await requestEmailCampaignSend(selectedBusinessId.value, campaignId);
     feedbackMessage.value = `Campaign queued. Processing ${response.stats.recipientCount} recipients in the background.`;
+    campaignBillingWarnings.value = response.billingWarnings ?? [];
     await Promise.all([loadEmailState(), refreshProductAccess(selectedBusinessId.value)]);
   } catch (error) {
     errorMessage.value =
@@ -529,8 +641,10 @@ function getCampaignActionLabel(campaign: EmailCampaign): string {
 watch(selectedBusinessId, (nextBusinessId) => {
   stopDomainVerificationPolling();
   feedbackMessage.value = "";
+  campaignBillingWarnings.value = [];
 
   if (!nextBusinessId) {
+    billingOverview.value = null;
     applyDomainSettings(null, { syncForm: true });
     return;
   }
@@ -598,6 +712,23 @@ onBeforeUnmount(() => {
         </select>
 
         <p v-if="feedbackMessage" class="dashboard-feedback">{{ feedbackMessage }}</p>
+        <article v-if="campaignBillingWarnings.length > 0" class="setup-banner warning">
+          <strong>Email billing warning:</strong>
+          <ul class="warning-list">
+            <li v-for="warning in campaignBillingWarnings" :key="warning">{{ warning }}</li>
+          </ul>
+          <a class="upgrade-link" :href="appRoutes.appBilling">Keep sending →</a>
+        </article>
+        <article v-if="emailAddon" class="setup-banner usage-banner" :class="emailUsageTone">
+          <div class="usage-banner-head">
+            <div>
+              <strong>{{ emailAddon.label }}</strong>
+              <p>{{ emailUsageSummary }}</p>
+            </div>
+            <a class="upgrade-link" :href="appRoutes.appBilling">Manage billing</a>
+          </div>
+          <p v-if="emailUsageNudge" class="usage-banner-copy">{{ emailUsageNudge }}</p>
+        </article>
       </section>
 
       <section v-if="!emailFeatureEnabled" class="dashboard-panel">
@@ -650,6 +781,37 @@ onBeforeUnmount(() => {
               </option>
             </select>
 
+            <article
+              v-if="selectedAudienceImpact"
+              class="setup-banner usage-banner compact"
+              :class="emailUsageTone"
+            >
+              <strong>Audience impact</strong>
+              <p>
+                Sending to {{ formatNumber(selectedAudienceImpact.recipientCount) }} contacts from
+                {{ selectedAudienceImpact.audienceName }} will use
+                {{
+                  selectedAudienceImpact.percentOfLimit === null
+                    ? "tracked monthly capacity"
+                    : `${selectedAudienceImpact.percentOfLimit}% of the monthly email limit`
+                }}.
+              </p>
+              <p v-if="selectedAudienceImpact.projectedPercent !== null" class="usage-banner-copy">
+                After one send, this workspace would be at {{ selectedAudienceImpact.projectedPercent }}% of its monthly allowance.
+                <template v-if="selectedAudienceImpact.remainingCampaigns !== null">
+                  About {{ selectedAudienceImpact.remainingCampaigns }} more campaign{{ selectedAudienceImpact.remainingCampaigns === 1 ? "" : "s" }}
+                  at this audience size fit this period.
+                </template>
+              </p>
+              <a
+                v-if="emailUsageTone !== 'info'"
+                class="upgrade-link"
+                :href="appRoutes.appBilling"
+              >
+                Upgrade to keep sending →
+              </a>
+            </article>
+
             <label class="field-label" for="campaign-name">Campaign name</label>
             <input id="campaign-name" v-model="campaignForm.name" class="dashboard-input" />
 
@@ -690,12 +852,33 @@ onBeforeUnmount(() => {
             {{ brandedSendWarning.message }}
           </article>
 
+          <article v-if="emailAddon" class="setup-banner usage-banner" :class="emailUsageTone">
+            <div class="usage-banner-head">
+              <div>
+                <strong>
+                  {{
+                    emailUsageTone === "error"
+                      ? "You are over the monthly email allowance."
+                      : emailUsageTone === "warning"
+                        ? "You are approaching the monthly email allowance."
+                        : "Email usage is healthy."
+                  }}
+                </strong>
+                <p>{{ emailUsageSummary }}</p>
+              </div>
+              <a class="upgrade-link" :href="appRoutes.appBilling">
+                {{ emailUsageTone === "info" ? "View email billing" : "Keep sending →" }}
+              </a>
+            </div>
+          </article>
+
           <table class="data-table compact">
             <thead>
               <tr>
                 <th>Name</th>
                 <th>Status</th>
                 <th>Recipients</th>
+                <th>Impact</th>
                 <th>Sent</th>
                 <th>Unsubscribed</th>
                 <th>Failed</th>
@@ -707,6 +890,7 @@ onBeforeUnmount(() => {
                 <td>{{ campaign.name }}</td>
                 <td>{{ campaign.status }}</td>
                 <td>{{ campaign.recipientCount }}</td>
+                <td>{{ formatCampaignUsageImpact(campaign.recipientCount) }}</td>
                 <td>{{ campaign.sentCount }}</td>
                 <td>{{ campaign.unsubscribedCount }}</td>
                 <td>{{ campaign.failedCount }}</td>
@@ -721,7 +905,7 @@ onBeforeUnmount(() => {
                 </td>
               </tr>
               <tr v-if="campaigns.length === 0">
-                <td colspan="7">No campaigns yet.</td>
+                <td colspan="8">No campaigns yet.</td>
               </tr>
             </tbody>
           </table>
@@ -1217,10 +1401,55 @@ onBeforeUnmount(() => {
   color: #7a4a07;
 }
 
+.setup-banner.info {
+  background: rgba(216, 94, 42, 0.06);
+  border-color: rgba(216, 94, 42, 0.16);
+  color: #8f401c;
+}
+
 .setup-banner.error {
   background: rgba(176, 55, 41, 0.08);
   border-color: rgba(176, 55, 41, 0.2);
   color: #8a2419;
+}
+
+.warning-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.usage-banner {
+  display: grid;
+  gap: 10px;
+}
+
+.usage-banner.compact {
+  margin-top: 14px;
+}
+
+.usage-banner-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.usage-banner-head p,
+.usage-banner-copy {
+  margin: 4px 0 0;
+}
+
+.upgrade-link {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 800;
+  color: inherit;
+  text-decoration: none;
+}
+
+.upgrade-link:hover {
+  text-decoration: underline;
 }
 
 .deliverability-card {

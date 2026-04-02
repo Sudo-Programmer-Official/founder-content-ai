@@ -70,6 +70,10 @@ import {
   findConnectedFacebookAccount,
   findConnectedInstagramAccount,
   findConnectedLinkedInAccount,
+  formatSelectedPlatformsLabel,
+  parsePublishableSocialPlatform,
+  parsePublishableSocialPlatforms,
+  PUBLISHABLE_SOCIAL_PLATFORMS,
   resolveExternalPostLabel,
   resolvePublishingAccountLabel,
   resolvePublishingDescriptor,
@@ -93,12 +97,14 @@ const isLoadingChannels = ref(false);
 const isConnectingLinkedIn = ref(false);
 const isConnectingMeta = ref(false);
 const isPublishingToLinkedIn = ref(false);
-const selectedPublishingPlatform = ref<PublishableSocialPlatform>(
-  route.query.platform === "instagram"
-    ? "instagram"
-    : route.query.platform === "facebook"
-      ? "facebook"
-      : "linkedin",
+const initialPublishingPlatforms = parsePublishableSocialPlatforms(route.query.platforms);
+const initialPublishingPlatform =
+  parsePublishableSocialPlatform(route.query.platform)
+  ?? initialPublishingPlatforms[0]
+  ?? "linkedin";
+const selectedPublishingPlatform = ref<PublishableSocialPlatform>(initialPublishingPlatform);
+const selectedPublishingPlatforms = ref<PublishableSocialPlatform[]>(
+  initialPublishingPlatforms.length > 0 ? initialPublishingPlatforms : [initialPublishingPlatform],
 );
 const isMetaSelectionModalOpen = ref(false);
 const pendingMetaSession = ref("");
@@ -687,16 +693,21 @@ const readyImageCount = computed(() =>
 const readyVideoCount = computed(() =>
   postAssets.value.filter((asset) => asset.type === "video" && asset.status === "ready").length,
 );
-const selectedPublishingGuardrail = computed(() => {
+
+function resolvePublishingGuardrail(platform: PublishableSocialPlatform): string {
   if (readyImageCount.value > 0 && readyVideoCount.value > 0) {
     return "Mixed image and video drafts are not publishable yet. Use only one media type per post.";
   }
 
-  if (selectedPublishingPlatform.value === "linkedin" && readyVideoCount.value > 0) {
+  if (platform === "linkedin" && !connectedLinkedInAccount.value) {
+    return "Connect LinkedIn before publishing.";
+  }
+
+  if (platform === "linkedin" && readyVideoCount.value > 0) {
     return "Video is publishable on Instagram and Facebook. LinkedIn video support is coming soon.";
   }
 
-  if (selectedPublishingPlatform.value === "instagram") {
+  if (platform === "instagram") {
     if (!connectedInstagramAccount.value) {
       return "Connect a Facebook Page with a linked Instagram business account before publishing.";
     }
@@ -710,11 +721,11 @@ const selectedPublishingGuardrail = computed(() => {
     }
   }
 
-  if (selectedPublishingPlatform.value === "facebook" && !connectedFacebookAccount.value) {
+  if (platform === "facebook" && !connectedFacebookAccount.value) {
     return "Connect a Facebook Page before publishing.";
   }
 
-  if (selectedPublishingPlatform.value === "facebook") {
+  if (platform === "facebook") {
     if (readyVideoCount.value > 1) {
       return "Facebook video publishing currently supports exactly 1 ready video.";
     }
@@ -722,6 +733,29 @@ const selectedPublishingGuardrail = computed(() => {
     if (readyVideoCount.value === 0 && readyImageCount.value > 10) {
       return "Facebook publishing supports up to 10 ready images.";
     }
+  }
+
+  return "";
+}
+
+const selectedPublishingGuardrail = computed(() => resolvePublishingGuardrail(selectedPublishingPlatform.value));
+const selectedPublishingPlatformsLabel = computed(() =>
+  formatSelectedPlatformsLabel(selectedPublishingPlatforms.value),
+);
+const selectedPublishingPlatformCount = computed(() => selectedPublishingPlatforms.value.length);
+const selectablePublishingPlatforms = computed(() =>
+  PUBLISHABLE_SOCIAL_PLATFORMS.filter((platform) => resolvePublishingGuardrail(platform) === ""),
+);
+const canPublishSelectedPlatforms = computed(() => selectedPublishingPlatforms.value.length > 0);
+const selectedSchedulingCapacityGuardrail = computed(() => {
+  if (scheduledQueueRemaining.value === null || selectedPublishingPlatforms.value.length === 0) {
+    return "";
+  }
+
+  if (selectedPublishingPlatforms.value.length > scheduledQueueRemaining.value) {
+    return scheduledQueueRemaining.value === 0
+      ? queueLimitPrompt.value
+      : `This workspace can queue ${scheduledQueueRemaining.value} more post${scheduledQueueRemaining.value === 1 ? "" : "s"} right now. Select fewer platforms or upgrade to queue all destinations.`;
   }
 
   return "";
@@ -750,6 +784,88 @@ const selectedPublishingStatus = computed(() => {
 const isConnectingSelectedPlatform = computed(() =>
   selectedPublishingPlatform.value === "linkedin" ? isConnectingLinkedIn.value : isConnectingMeta.value,
 );
+const shouldConnectFocusedPublishingPlatform = computed(() =>
+  !canPublishSelectedPlatforms.value
+  && !selectedConnectedAccount.value
+  && selectedPublishingGuardrail.value.toLowerCase().includes("connect"),
+);
+const canRunPublishingAction = computed(() =>
+  canPublishSelectedPlatforms.value || shouldConnectFocusedPublishingPlatform.value,
+);
+const primaryPublishActionLabel = computed(() => {
+  if (canPublishSelectedPlatforms.value) {
+    return isPublishingToLinkedIn.value
+      ? "Publishing..."
+      : `Publish to ${selectedPublishingPlatformsLabel.value}`;
+  }
+
+  if (shouldConnectFocusedPublishingPlatform.value) {
+    return isConnectingSelectedPlatform.value
+      ? "Redirecting..."
+      : `Connect ${selectedPublishingPlatformLabel.value}`;
+  }
+
+  return "Select at least one destination";
+});
+const primaryScheduleActionLabel = computed(() => {
+  if (selectedPublishingPlatformCount.value === 0) {
+    return "Select destinations";
+  }
+
+  return selectedPublishingPlatformCount.value === 1
+    ? `Choose time for ${selectedPublishingPlatformsLabel.value}`
+    : `Choose time for ${selectedPublishingPlatformsLabel.value}`;
+});
+
+function isPublishingPlatformSelected(platform: PublishableSocialPlatform): boolean {
+  return selectedPublishingPlatforms.value.includes(platform);
+}
+
+function resolvePublishingPlatformAccount(platform: PublishableSocialPlatform): SocialAccount | null {
+  if (platform === "instagram") {
+    return connectedInstagramAccount.value;
+  }
+
+  if (platform === "facebook") {
+    return connectedFacebookAccount.value;
+  }
+
+  return connectedLinkedInAccount.value;
+}
+
+function resolvePublishingPlatformHint(platform: PublishableSocialPlatform): string {
+  const guardrail = resolvePublishingGuardrail(platform);
+
+  if (guardrail) {
+    return guardrail;
+  }
+
+  const account = resolvePublishingPlatformAccount(platform);
+
+  return account
+    ? resolvePublishingDescriptor(platform, account)
+    : `Connect ${resolveSocialPlatformLabel(platform)} to enable publishing.`;
+}
+
+function togglePublishingPlatform(platform: PublishableSocialPlatform): void {
+  selectedPublishingPlatform.value = platform;
+
+  if (resolvePublishingGuardrail(platform) !== "") {
+    return;
+  }
+
+  if (isPublishingPlatformSelected(platform)) {
+    selectedPublishingPlatforms.value = selectedPublishingPlatforms.value.filter(
+      (candidate) => candidate !== platform,
+    );
+    return;
+  }
+
+  selectedPublishingPlatforms.value = [
+    ...selectedPublishingPlatforms.value,
+    platform,
+  ];
+}
 
 function getPublishFailureMessage(error: unknown, platform: PublishableSocialPlatform): string {
   const platformLabel = resolveSocialPlatformLabel(platform);
@@ -2090,8 +2206,13 @@ async function openSchedulePanel(): Promise<void> {
     return;
   }
 
-  if (selectedPublishingGuardrail.value) {
-    feedbackMessage.value = selectedPublishingGuardrail.value;
+  if (!canPublishSelectedPlatforms.value) {
+    feedbackMessage.value = "Select at least one publishable platform before scheduling.";
+    return;
+  }
+
+  if (selectedSchedulingCapacityGuardrail.value) {
+    feedbackMessage.value = selectedSchedulingCapacityGuardrail.value;
     return;
   }
 
@@ -2148,33 +2269,24 @@ async function scheduleDraft(): Promise<void> {
     return;
   }
 
+  if (!canPublishSelectedPlatforms.value) {
+    scheduleFeedback.value = "Select at least one publishable platform before scheduling.";
+    return;
+  }
+
   if (queueLimitReached.value) {
     scheduleFeedback.value = queueLimitPrompt.value;
     return;
   }
 
-  if (selectedPublishingGuardrail.value) {
-    scheduleFeedback.value = selectedPublishingGuardrail.value;
+  if (selectedSchedulingCapacityGuardrail.value) {
+    scheduleFeedback.value = selectedSchedulingCapacityGuardrail.value;
     return;
   }
 
   isSchedulingDraft.value = true;
   scheduleFeedback.value = "";
   feedbackMessage.value = "";
-
-  const scheduleRequest = {
-    businessId: activeBusinessId.value,
-    platform: selectedPublishingPlatform.value,
-    contentText: postContent.value,
-    assetGroupId: draft.value.id,
-    slides: [],
-    scheduledAt: convertZonedDateTimeToUtcIso(
-      scheduleDateKey.value,
-      scheduleTime.value,
-      audienceTimezone.value,
-    ),
-    audienceTimezone: audienceTimezone.value,
-  };
 
   try {
     const ensuredPostId = await ensurePersistedDraft();
@@ -2184,28 +2296,55 @@ async function scheduleDraft(): Promise<void> {
       return;
     }
 
-    let response;
+    const scheduledAt = convertZonedDateTimeToUtcIso(
+      scheduleDateKey.value,
+      scheduleTime.value,
+      audienceTimezone.value,
+    );
+    const successes: PublishableSocialPlatform[] = [];
+    const failures: string[] = [];
 
-    try {
-      response = await requestSchedulePost({
-        ...scheduleRequest,
+    for (const platform of selectedPublishingPlatforms.value) {
+      const scheduleRequest = {
+        businessId: activeBusinessId.value,
+        platform,
+        contentText: postContent.value,
         assetGroupId: ensuredPostId,
-      });
-    } catch (error) {
-      const warnings = extractSchedulingWarnings(error);
+        slides: [],
+        scheduledAt,
+        audienceTimezone: audienceTimezone.value,
+      };
 
-      if (warnings.length === 0 || !confirmSchedulingWarnings(warnings)) {
-        throw error;
+      try {
+        try {
+          await requestSchedulePost(scheduleRequest);
+        } catch (error) {
+          const warnings = extractSchedulingWarnings(error);
+
+          if (warnings.length === 0 || !confirmSchedulingWarnings(warnings)) {
+            throw error;
+          }
+
+          await requestSchedulePost({
+            ...scheduleRequest,
+            ignoreSafetyWarnings: true,
+          });
+          feedbackMessage.value = selectedDispatchWindowLabel.value
+            ? `Queued for dispatch with a manual safety override. Dispatch window: ${selectedDispatchWindowLabel.value}.`
+            : "Queued for dispatch with a manual safety override.";
+        }
+
+        successes.push(platform);
+      } catch (error) {
+        failures.push(
+          `${resolveSocialPlatformLabel(platform)}: ${error instanceof Error ? error.message : "Unable to schedule."}`,
+        );
       }
+    }
 
-      response = await requestSchedulePost({
-        ...scheduleRequest,
-        assetGroupId: ensuredPostId,
-        ignoreSafetyWarnings: true,
-      });
-      feedbackMessage.value = selectedDispatchWindowLabel.value
-        ? `Queued for dispatch with a manual safety override. Dispatch window: ${selectedDispatchWindowLabel.value}.`
-        : "Queued for dispatch with a manual safety override.";
+    if (successes.length === 0) {
+      scheduleFeedback.value = failures[0] ?? "Unable to schedule this draft right now.";
+      return;
     }
 
     const refreshedAccess = await refreshProductAccess(activeBusinessId.value);
@@ -2215,11 +2354,16 @@ async function scheduleDraft(): Promise<void> {
 
     isSchedulePanelOpen.value = false;
     if (!feedbackMessage.value) {
+      const scheduledPlatformLabel = formatSelectedPlatformsLabel(successes);
       feedbackMessage.value = queueFilledByThisSchedule
-        ? `Nice — your post is queued for peak engagement on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Upgrade to plan the rest of your week.`
+        ? `Nice — your post is queued for ${scheduledPlatformLabel} on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Upgrade to plan the rest of your week.`
         : selectedDispatchWindowLabel.value
-          ? `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Dispatch window: ${selectedDispatchWindowLabel.value}.`
-          : `Queued for dispatch on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
+          ? `Queued for ${scheduledPlatformLabel} on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Dispatch window: ${selectedDispatchWindowLabel.value}.`
+          : `Queued for ${scheduledPlatformLabel} on ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value}. Open planner to manage it.`;
+    }
+
+    if (failures.length > 0) {
+      feedbackMessage.value = `${feedbackMessage.value} Failed: ${failures.join(" · ")}`;
     }
   } catch (error) {
     scheduleFeedback.value =
@@ -2270,6 +2414,7 @@ async function goToPlanner(): Promise<void> {
       query: {
         draftId: ensuredPostId,
         platform: selectedPublishingPlatform.value,
+        platforms: selectedPublishingPlatforms.value.join(","),
       },
     });
   } catch (error) {
@@ -2520,7 +2665,7 @@ function handleMetaSelectionError(message: string): void {
   isConnectingMeta.value = false;
 }
 
-async function publishToLinkedIn(): Promise<void> {
+async function publishToSelectedPlatforms(): Promise<void> {
   if (!draft.value) {
     return;
   }
@@ -2530,13 +2675,8 @@ async function publishToLinkedIn(): Promise<void> {
     return;
   }
 
-  if (selectedPublishingGuardrail.value) {
-    feedbackMessage.value = selectedPublishingGuardrail.value;
-    return;
-  }
-
-  if (!selectedConnectedAccount.value) {
-    await connectSelectedPlatform();
+  if (!canPublishSelectedPlatforms.value) {
+    feedbackMessage.value = "Select at least one publishable platform before posting.";
     return;
   }
 
@@ -2551,15 +2691,45 @@ async function publishToLinkedIn(): Promise<void> {
       return;
     }
 
-    const response = await requestPublishPost({
-      businessId: activeBusinessId.value,
-      platform: selectedPublishingPlatform.value,
-      contentText: postContent.value,
-      assetId: ensuredPostId,
-      title: draft.value.result.idea.title,
-    });
+    const successes: Array<{ platform: PublishableSocialPlatform; url: string }> = [];
+    const failures: string[] = [];
 
-    feedbackMessage.value = `Posted to ${resolveSocialPlatformLabel(selectedPublishingPlatform.value)}. ${response.externalPostUrl}`;
+    for (const platform of selectedPublishingPlatforms.value) {
+      try {
+        const response = await requestPublishPost({
+          businessId: activeBusinessId.value,
+          platform,
+          contentText: postContent.value,
+          assetId: ensuredPostId,
+          title: draft.value.result.idea.title,
+        });
+
+        successes.push({ platform, url: response.externalPostUrl });
+      } catch (error) {
+        failures.push(
+          `${resolveSocialPlatformLabel(platform)}: ${getPublishFailureMessage(error, platform)}`,
+        );
+      }
+    }
+
+    if (successes.length === 0) {
+      const copied = await copyPost({ silent: true });
+      const baseMessage = failures[0] ?? "Unable to publish right now.";
+
+      feedbackMessage.value = copied
+        ? `${baseMessage} Optimized caption copied instead.`
+        : baseMessage;
+      return;
+    }
+
+    const publishedPlatforms = formatSelectedPlatformsLabel(successes.map((success) => success.platform));
+    feedbackMessage.value = successes.length === 1
+      ? `Posted to ${publishedPlatforms}. ${successes[0].url}`
+      : `Posted to ${publishedPlatforms}.`;
+
+    if (failures.length > 0) {
+      feedbackMessage.value = `${feedbackMessage.value} Failed: ${failures.join(" · ")}`;
+    }
   } catch (error) {
     const copied = await copyPost({ silent: true });
     const baseMessage = getPublishFailureMessage(error, selectedPublishingPlatform.value);
@@ -2635,20 +2805,65 @@ watch(
 );
 
 watch(
-  () => [route.query.linkedin, route.query.meta, route.query.message, route.query.session, route.query.platform],
-  async ([linkedInStatus, metaStatus, message, session, platform]) => {
+  selectablePublishingPlatforms,
+  (nextSelectable) => {
+    const nextSelected = PUBLISHABLE_SOCIAL_PLATFORMS.filter(
+      (platform) =>
+        nextSelectable.includes(platform) && selectedPublishingPlatforms.value.includes(platform),
+    );
+
+    if (
+      nextSelected.length !== selectedPublishingPlatforms.value.length
+      || nextSelected.some((platform, index) => platform !== selectedPublishingPlatforms.value[index])
+    ) {
+      selectedPublishingPlatforms.value = nextSelected;
+    }
+
+    if (
+      selectedPublishingPlatforms.value.length > 0
+      && !selectedPublishingPlatforms.value.includes(selectedPublishingPlatform.value)
+    ) {
+      selectedPublishingPlatform.value = selectedPublishingPlatforms.value[0];
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [route.query.linkedin, route.query.meta, route.query.message, route.query.session, route.query.platform, route.query.platforms],
+  async ([linkedInStatus, metaStatus, message, session, platform, platforms]) => {
     if (
       typeof linkedInStatus !== "string"
       && typeof metaStatus !== "string"
       && typeof message !== "string"
       && typeof session !== "string"
       && typeof platform !== "string"
+      && typeof platforms !== "string"
     ) {
       return;
     }
 
-    if (platform === "instagram" || platform === "facebook" || platform === "linkedin") {
-      selectedPublishingPlatform.value = platform;
+    const incomingPlatforms = parsePublishableSocialPlatforms(platforms);
+
+    if (incomingPlatforms.length > 0) {
+      selectedPublishingPlatforms.value = incomingPlatforms.filter(
+        (candidate) => resolvePublishingGuardrail(candidate) === "",
+      );
+    }
+
+    const incomingPlatform = parsePublishableSocialPlatform(platform);
+
+    if (incomingPlatform) {
+      selectedPublishingPlatform.value = incomingPlatform;
+      if (
+        resolvePublishingGuardrail(incomingPlatform) === ""
+        && !selectedPublishingPlatforms.value.includes(incomingPlatform)
+      ) {
+        selectedPublishingPlatforms.value = [
+          ...selectedPublishingPlatforms.value,
+          incomingPlatform,
+        ];
+      }
     }
 
     if (linkedInStatus === "connected") {
@@ -2686,6 +2901,7 @@ watch(
     delete nextQuery.message;
     delete nextQuery.session;
     delete nextQuery.platform;
+    delete nextQuery.platforms;
     void router.replace({ query: nextQuery });
     isConnectingLinkedIn.value = false;
   },
@@ -2774,40 +2990,50 @@ onBeforeUnmount(() => {
           <section class="channel-selector-card">
             <div>
               <p class="panel-meta">Destination</p>
-              <strong>Choose where this post should go live</strong>
+              <strong>Select platforms for this post</strong>
               <p class="shortcut-note">
-                LinkedIn, Facebook, and Instagram share the same worker path. Instagram requires 1-10 images. Facebook supports text and image sets.
+                Pick one, two, or all three. Instagram stays media-first, Facebook stays flexible, and LinkedIn remains text-first.
               </p>
             </div>
 
-            <div class="channel-selector-row">
-              <button
-                type="button"
-                class="channel-selector-button"
-                :data-active="selectedPublishingPlatform === 'linkedin'"
-                @click="selectedPublishingPlatform = 'linkedin'"
+            <div class="channel-selector-grid">
+              <article
+                v-for="platform in PUBLISHABLE_SOCIAL_PLATFORMS"
+                :key="platform"
+                class="channel-selector-option"
+                :data-focused="selectedPublishingPlatform === platform"
+                :data-selected="isPublishingPlatformSelected(platform)"
+                :data-disabled="Boolean(resolvePublishingGuardrail(platform))"
+                @click="selectedPublishingPlatform = platform"
               >
-                LinkedIn
-              </button>
-              <button
-                type="button"
-                class="channel-selector-button"
-                :data-active="selectedPublishingPlatform === 'facebook'"
-                @click="selectedPublishingPlatform = 'facebook'"
-              >
-                Facebook
-              </button>
-              <button
-                type="button"
-                class="channel-selector-button"
-                :data-active="selectedPublishingPlatform === 'instagram'"
-                @click="selectedPublishingPlatform = 'instagram'"
-              >
-                Instagram
-              </button>
+                <div class="channel-selector-option-topline">
+                  <label class="channel-selector-checkbox">
+                    <input
+                      type="checkbox"
+                      :checked="isPublishingPlatformSelected(platform)"
+                      :disabled="Boolean(resolvePublishingGuardrail(platform))"
+                      @click.stop="togglePublishingPlatform(platform)"
+                    />
+                    <span>{{ resolveSocialPlatformLabel(platform) }}</span>
+                  </label>
+                  <span class="channel-selector-state">
+                    {{
+                      isPublishingPlatformSelected(platform)
+                        ? "Selected"
+                        : resolvePublishingGuardrail(platform)
+                          ? "Unavailable"
+                          : "Ready"
+                    }}
+                  </span>
+                </div>
+                <p>{{ resolvePublishingPlatformHint(platform) }}</p>
+              </article>
             </div>
 
-            <p v-if="selectedPublishingGuardrail" class="result-feedback subtle">
+            <p v-if="selectedSchedulingCapacityGuardrail" class="result-feedback subtle">
+              {{ selectedSchedulingCapacityGuardrail }}
+            </p>
+            <p v-else-if="selectedPublishingGuardrail" class="result-feedback subtle">
               {{ selectedPublishingGuardrail }}
             </p>
           </section>
@@ -2927,31 +3153,26 @@ onBeforeUnmount(() => {
                 isConnectingMeta ||
                 isUploadingPostAssets ||
                 !activeBusinessId ||
-                Boolean(selectedPublishingGuardrail) && Boolean(selectedConnectedAccount)
+                !canRunPublishingAction
               "
-              @click="selectedConnectedAccount ? publishToLinkedIn() : connectSelectedPlatform()"
+              @click="canPublishSelectedPlatforms ? publishToSelectedPlatforms() : connectSelectedPlatform()"
             >
-              {{
-                selectedPublishingGuardrail && selectedConnectedAccount
-                  ? `${selectedPublishingPlatformLabel} needs valid media`
-                  : selectedConnectedAccount
-                  ? isPublishingToLinkedIn
-                    ? "Publishing..."
-                    : `Publish to ${selectedPublishingPlatformLabel}`
-                  : isConnectingSelectedPlatform
-                    ? "Redirecting..."
-                    : `Connect ${selectedPublishingPlatformLabel}`
-              }}
+              {{ primaryPublishActionLabel }}
             </button>
 
             <button
               v-if="canScheduleDraft"
               type="button"
               class="secondary-action"
-              :disabled="isSchedulingDraft || isUploadingPostAssets || Boolean(selectedPublishingGuardrail)"
+              :disabled="
+                isSchedulingDraft ||
+                isUploadingPostAssets ||
+                !canPublishSelectedPlatforms ||
+                Boolean(selectedSchedulingCapacityGuardrail)
+              "
               @click="void openSchedulePanel()"
             >
-              Choose time
+              {{ primaryScheduleActionLabel }}
             </button>
 
             <button
@@ -2995,21 +3216,11 @@ onBeforeUnmount(() => {
                 isConnectingMeta ||
                 isUploadingPostAssets ||
                 !activeBusinessId ||
-                Boolean(selectedPublishingGuardrail) && Boolean(selectedConnectedAccount)
+                !canRunPublishingAction
               "
-              @click="selectedConnectedAccount ? publishToLinkedIn() : connectSelectedPlatform()"
+              @click="canPublishSelectedPlatforms ? publishToSelectedPlatforms() : connectSelectedPlatform()"
             >
-              {{
-                selectedPublishingGuardrail && selectedConnectedAccount
-                  ? `${selectedPublishingPlatformLabel} needs valid media`
-                  : selectedConnectedAccount
-                  ? isPublishingToLinkedIn
-                    ? "Publishing..."
-                    : `Publish to ${selectedPublishingPlatformLabel}`
-                  : isConnectingSelectedPlatform
-                    ? "Redirecting..."
-                    : `Connect ${selectedPublishingPlatformLabel}`
-              }}
+              {{ primaryPublishActionLabel }}
             </button>
           </div>
 
@@ -3875,29 +4086,93 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.72);
 }
 
-.channel-selector-row {
+.channel-selector-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.channel-selector-option {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 82%, white 18%);
+  background: color-mix(in srgb, var(--fc-surface) 92%, white 8%);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.channel-selector-option:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 22px rgba(35, 21, 13, 0.08);
+}
+
+.channel-selector-option[data-focused="true"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 28%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 34%, white 66%);
+}
+
+.channel-selector-option[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--fc-success-text) 22%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg) 42%, var(--fc-panel-bg));
+}
+
+.channel-selector-option[data-disabled="true"] {
+  cursor: default;
+  opacity: 0.84;
+}
+
+.channel-selector-option-topline {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
-.channel-selector-button {
-  min-height: 44px;
-  padding: 0 16px;
-  border-radius: 999px;
-  border: 1px solid var(--fc-border);
-  background: rgba(255, 255, 255, 0.82);
-  color: var(--fc-text);
-  font: inherit;
-  font-weight: 700;
+.channel-selector-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
   cursor: pointer;
-  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
 }
 
-.channel-selector-button[data-active="true"] {
-  border-color: color-mix(in srgb, var(--fc-accent) 22%, var(--fc-border));
-  background: color-mix(in srgb, var(--fc-accent-soft) 42%, white 58%);
-  transform: translateY(-1px);
+.channel-selector-checkbox input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fc-accent);
+}
+
+.channel-selector-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface-subtle);
+  color: var(--fc-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.channel-selector-option[data-selected="true"] .channel-selector-state {
+  border-color: color-mix(in srgb, var(--fc-success-text) 16%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg) 84%, var(--fc-panel-bg));
+  color: var(--fc-success-text);
+}
+
+.channel-selector-option p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
 }
 
 .execution-status-card {
@@ -4706,6 +4981,7 @@ onBeforeUnmount(() => {
   }
 
   .result-signal-grid,
+  .channel-selector-grid,
   .execution-chip-row,
   .execution-status-grid,
   .execution-fact-grid,

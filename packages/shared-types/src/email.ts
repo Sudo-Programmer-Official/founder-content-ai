@@ -1,3 +1,5 @@
+import type { BillingEmailAddonSummary } from "./billing.ts";
+
 export type EmailContactStatus =
   | "active"
   | "unsubscribed"
@@ -355,6 +357,8 @@ export interface SendEmailCampaignRequest {
 export interface SendEmailCampaignResponse {
   campaign: EmailCampaign;
   stats: EmailCampaignStats;
+  billingWarnings?: string[];
+  emailAddon?: BillingEmailAddonSummary;
 }
 
 export interface EmailCampaignListResponse {

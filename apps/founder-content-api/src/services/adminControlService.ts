@@ -15,6 +15,10 @@ import type {
 import { queryDb, withDbTransaction } from "./db/client.ts";
 import { HttpError } from "../utils/http.ts";
 import { logInfo } from "../utils/logger.ts";
+import {
+  getBillingEmailAddonSummary,
+  upsertBillingEmailAddonConfig,
+} from "./billing/emailBillingService.ts";
 
 interface WorkspaceAccessRow extends QueryResultRow {
   id: string;
@@ -497,17 +501,25 @@ export async function listAdminWorkspacesWithAccess(): Promise<AdminWorkspaceLis
   );
 
   const items = await Promise.all(
-    result.rows.map(async (row) => ({
-      id: row.id,
-      name: row.name,
-      slug: row.slug,
-      status: row.status,
-      createdAt: toIsoString(row.created_at) ?? new Date().toISOString(),
-      ownerEmail: row.owner_email ?? undefined,
-      memberCount: toNumber(row.member_count),
-      lastActiveAt: toIsoString(row.last_active_at),
-      access: await buildWorkspaceAccessState(row.id),
-    })),
+    result.rows.map(async (row) => {
+      const access = await buildWorkspaceAccessState(row.id);
+      const emailAddon = await getBillingEmailAddonSummary(row.id, {
+        currentPlanCode: access.planCode,
+      });
+
+      return {
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        status: row.status,
+        createdAt: toIsoString(row.created_at) ?? new Date().toISOString(),
+        ownerEmail: row.owner_email ?? undefined,
+        memberCount: toNumber(row.member_count),
+        lastActiveAt: toIsoString(row.last_active_at),
+        access,
+        emailAddon,
+      };
+    }),
   );
 
   return items;
@@ -553,6 +565,25 @@ export async function updateAdminWorkspaceAccess(
             where id = $1
           `,
           [businessId, input.planCode, note],
+          client,
+        );
+        break;
+      case "set_email_billing":
+        if (!input.emailBillingTierCode) {
+          throw new HttpError(
+            400,
+            "email_billing_tier_required",
+            "emailBillingTierCode is required for set_email_billing.",
+          );
+        }
+        await upsertBillingEmailAddonConfig(
+          businessId,
+          {
+            tierCode: input.emailBillingTierCode,
+            source: input.emailBillingSource,
+            subscriberLimit: input.emailSubscriberLimit,
+            monthlyEmailLimit: input.emailMonthlyEmailLimit,
+          },
           client,
         );
         break;
@@ -644,6 +675,10 @@ export async function updateAdminWorkspaceAccess(
       note: note ?? undefined,
       planCodeBefore: workspace.plan_code,
       planCodeAfter: input.action === "grant_pro_access" ? "pro" : input.planCode,
+      emailBillingTierCode: input.emailBillingTierCode,
+      emailBillingSource: input.emailBillingSource,
+      emailSubscriberLimit: input.emailSubscriberLimit,
+      emailMonthlyEmailLimit: input.emailMonthlyEmailLimit,
       trialDays: input.trialDays,
       graceDays: input.graceDays,
     }, client);

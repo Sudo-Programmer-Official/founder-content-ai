@@ -4,6 +4,9 @@ import type {
 } from "../../middleware/auth.ts";
 import type {
   BillingOverviewResponse,
+  BillingEmailAddonSummary,
+  BillingEmailPlanOption,
+  BillingEmailAddonTierCode,
   BillingPlanOption,
   BillingSubscriptionSummary,
   BusinessMembership,
@@ -23,9 +26,17 @@ import {
   stripeApiRequest,
   type StripeCheckoutSession,
   type StripeEvent,
+  type StripeInvoice,
+  type StripePromotionCode,
   type StripeSubscription,
   verifyStripeWebhookEvent,
 } from "./stripe.ts";
+import {
+  getBillingEmailAddonSummary,
+  resolveBusinessPlanCode,
+  resolveDefaultEmailBillingTierForPlan,
+  upsertBillingEmailAddonConfig,
+} from "./emailBillingService.ts";
 
 interface BillingSubscriptionRow extends QueryResultRow {
   id: string;
@@ -69,6 +80,27 @@ interface BillingPlanBlueprint {
   ctaLabel: string;
   highlights: string[];
   envPriceKey?: "STRIPE_STARTER_PRICE_ID" | "STRIPE_PRO_PRICE_ID";
+}
+
+interface BillingEmailPlanBlueprint {
+  tierCode: BillingEmailAddonTierCode;
+  label: string;
+  description: string;
+  priceMonthlyCents: number;
+  priceDisplay: string;
+  ctaLabel: string;
+  highlights: string[];
+  envPriceKey: "STRIPE_EMAIL_STARTER_PRICE_ID" | "STRIPE_EMAIL_GROWTH_PRICE_ID" | "STRIPE_EMAIL_SCALE_PRICE_ID";
+}
+
+interface EmailBillingCustomerRow extends QueryResultRow {
+  provider_customer_id: string | null;
+}
+
+interface EmailBillingSubscriptionLookupRow extends QueryResultRow {
+  business_id: string;
+  provider_price_id: string | null;
+  tier_code: BillingEmailAddonTierCode;
 }
 
 const BILLING_DEFAULT_RETURN_PATH = "/app/billing";
@@ -130,6 +162,51 @@ const BILLING_PLAN_BLUEPRINTS: BillingPlanBlueprint[] = [
   },
 ];
 
+const BILLING_EMAIL_PLAN_BLUEPRINTS: BillingEmailPlanBlueprint[] = [
+  {
+    tierCode: "starter_email",
+    label: "Starter Email",
+    description: "For early distribution: up to 20K active subscribers and roughly 5 full-list campaigns per month.",
+    priceMonthlyCents: 3900,
+    priceDisplay: "$39/mo",
+    ctaLabel: "Add Starter Email",
+    envPriceKey: "STRIPE_EMAIL_STARTER_PRICE_ID",
+    highlights: [
+      "Up to 20K active subscribers",
+      "Up to 100K emails each month",
+      "About 5 full-list campaigns",
+    ],
+  },
+  {
+    tierCode: "growth_email",
+    label: "Growth Email",
+    description: "More monthly send volume without changing the active subscriber cap.",
+    priceMonthlyCents: 6900,
+    priceDisplay: "$69/mo",
+    ctaLabel: "Upgrade to Growth Email",
+    envPriceKey: "STRIPE_EMAIL_GROWTH_PRICE_ID",
+    highlights: [
+      "Up to 20K active subscribers",
+      "Up to 300K emails each month",
+      "Higher campaign frequency",
+    ],
+  },
+  {
+    tierCode: "scale_email",
+    label: "Scale Email",
+    description: "High-volume sending for teams already operating a consistent email cadence.",
+    priceMonthlyCents: 9900,
+    priceDisplay: "$99/mo",
+    ctaLabel: "Upgrade to Scale Email",
+    envPriceKey: "STRIPE_EMAIL_SCALE_PRICE_ID",
+    highlights: [
+      "Up to 20K active subscribers",
+      "Up to 600K emails each month",
+      "Best fit for frequent campaigns",
+    ],
+  },
+];
+
 function toIsoString(value: Date | string | null | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -171,7 +248,11 @@ function resolveFrontendOrigin(): string {
   return configuredOrigin ?? "https://foundercontent.ai";
 }
 
-function buildReturnUrl(returnPath: string | undefined, state: "success" | "canceled" | "portal"): string {
+function buildReturnUrl(
+  returnPath: string | undefined,
+  state: "success" | "canceled" | "portal",
+  checkoutTarget?: "workspace_plan" | "email_addon",
+): string {
   const url = new URL(resolveFrontendOrigin());
   url.pathname = normalizeReturnPath(returnPath);
 
@@ -181,6 +262,10 @@ function buildReturnUrl(returnPath: string | undefined, state: "success" | "canc
     url.searchParams.set("checkout", "canceled");
   } else if (state === "portal") {
     url.searchParams.set("portal", "return");
+  }
+
+  if (checkoutTarget) {
+    url.searchParams.set("checkoutTarget", checkoutTarget);
   }
 
   return url.toString();
@@ -204,6 +289,17 @@ function resolveStripePriceId(planCode: BusinessPlanCode): string | undefined {
   return priceId || undefined;
 }
 
+function resolveStripeEmailPriceId(tierCode: BillingEmailAddonTierCode): string | undefined {
+  const blueprint = BILLING_EMAIL_PLAN_BLUEPRINTS.find((plan) => plan.tierCode === tierCode);
+
+  if (!blueprint) {
+    return undefined;
+  }
+
+  const priceId = process.env[blueprint.envPriceKey]?.trim();
+  return priceId || undefined;
+}
+
 function resolvePlanCodeFromStripePriceId(priceId: string): BusinessPlanCode | null {
   const normalized = priceId.trim();
 
@@ -220,6 +316,53 @@ function resolvePlanCodeFromStripePriceId(priceId: string): BusinessPlanCode | n
   }
 
   return null;
+}
+
+function resolveEmailTierCodeFromStripePriceId(priceId: string): BillingEmailAddonTierCode | null {
+  const normalized = priceId.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  for (const blueprint of BILLING_EMAIL_PLAN_BLUEPRINTS) {
+    const candidatePriceId = process.env[blueprint.envPriceKey]?.trim();
+
+    if (candidatePriceId && candidatePriceId === normalized) {
+      return blueprint.tierCode;
+    }
+  }
+
+  return null;
+}
+
+function resolveCheckoutTargetFromPriceId(
+  priceId: string,
+): { kind: "workspace_plan"; planCode: BusinessPlanCode } | { kind: "email_addon"; tierCode: BillingEmailAddonTierCode } | null {
+  const workspacePlanCode = resolvePlanCodeFromStripePriceId(priceId);
+
+  if (workspacePlanCode) {
+    return {
+      kind: "workspace_plan",
+      planCode: workspacePlanCode,
+    };
+  }
+
+  const emailTierCode = resolveEmailTierCodeFromStripePriceId(priceId);
+
+  if (emailTierCode) {
+    return {
+      kind: "email_addon",
+      tierCode: emailTierCode,
+    };
+  }
+
+  return null;
+}
+
+function normalizePromotionCode(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
 }
 
 function isStripeSubscriptionEntitled(status: string): boolean {
@@ -262,6 +405,7 @@ async function loadLatestStripeSubscription(
       inner join plans p on p.id = s.plan_id
       where s.business_id = $1
         and s.provider = 'stripe'
+        and coalesce(s.metadata_json->>'billingKind', 'workspace_plan') = 'workspace_plan'
       order by
         case
           when s.status in ('active', 'trialing', 'past_due') then 0
@@ -340,6 +484,31 @@ function buildBillingPlans(currentPlanCode: BusinessPlanCode): BillingPlanOption
   });
 }
 
+function buildEmailBillingPlans(currentEmailAddon: BillingEmailAddonSummary): BillingEmailPlanOption[] {
+  return BILLING_EMAIL_PLAN_BLUEPRINTS.map((blueprint) => {
+    const current = currentEmailAddon.tierCode === blueprint.tierCode;
+    let ctaLabel = blueprint.ctaLabel;
+
+    if (current) {
+      ctaLabel = currentEmailAddon.source === "addon" ? "Current email add-on" : "Included now";
+    } else if (currentEmailAddon.source === "addon" && currentEmailAddon.portalAvailable) {
+      ctaLabel = `Manage ${blueprint.label} in billing`;
+    }
+
+    return {
+      tierCode: blueprint.tierCode,
+      label: blueprint.label,
+      description: blueprint.description,
+      priceMonthlyCents: blueprint.priceMonthlyCents,
+      priceDisplay: blueprint.priceDisplay,
+      priceId: resolveStripeEmailPriceId(blueprint.tierCode),
+      ctaLabel,
+      highlights: blueprint.highlights,
+      current,
+    };
+  });
+}
+
 async function resolvePlanId(planCode: BusinessPlanCode): Promise<string> {
   const result = await queryDb<BillingPlanRow>(
     `
@@ -359,6 +528,20 @@ async function resolvePlanId(planCode: BusinessPlanCode): Promise<string> {
   return row.id;
 }
 
+async function loadEmailBillingCustomerId(businessId: string): Promise<string | undefined> {
+  const result = await queryDb<EmailBillingCustomerRow>(
+    `
+      select provider_customer_id
+      from email_billing_configs
+      where business_id = $1::uuid
+      limit 1
+    `,
+    [businessId],
+  );
+
+  return result.rows[0]?.provider_customer_id?.trim() || undefined;
+}
+
 function toStripeTimestampDate(value: number | null | undefined): string | null {
   if (!value || !Number.isFinite(value)) {
     return null;
@@ -367,7 +550,7 @@ function toStripeTimestampDate(value: number | null | undefined): string | null 
   return new Date(value * 1000).toISOString();
 }
 
-async function syncStripeSubscriptionRecord(
+async function syncWorkspacePlanStripeSubscriptionRecord(
   subscription: StripeSubscription,
   options?: {
     businessId?: string;
@@ -386,6 +569,7 @@ async function syncStripeSubscriptionRecord(
         inner join plans p on p.id = s.plan_id
         where s.provider = 'stripe'
           and s.provider_subscription_id = $1
+          and coalesce(s.metadata_json->>'billingKind', 'workspace_plan') = 'workspace_plan'
         limit 1
       `,
       [subscription.id],
@@ -425,6 +609,10 @@ async function syncStripeSubscriptionRecord(
       ? subscribedPlanCode
       : "free";
     const planId = await resolvePlanId(subscribedPlanCode);
+    const subscriptionMetadata = {
+      ...(subscription.metadata ?? {}),
+      billingKind: "workspace_plan",
+    };
 
     await client.query(
       `
@@ -484,7 +672,7 @@ async function syncStripeSubscriptionRecord(
         toStripeTimestampDate(subscription.current_period_start),
         toStripeTimestampDate(subscription.current_period_end),
         Boolean(subscription.cancel_at_period_end),
-        JSON.stringify(subscription.metadata ?? {}),
+        JSON.stringify(subscriptionMetadata),
       ],
     );
 
@@ -501,6 +689,121 @@ async function syncStripeSubscriptionRecord(
   });
 }
 
+async function syncEmailAddonStripeSubscriptionRecord(
+  subscription: StripeSubscription,
+  options?: {
+    businessId?: string;
+  },
+): Promise<void> {
+  await withDbTransaction(async (client) => {
+    const existingResult = await client.query<EmailBillingSubscriptionLookupRow>(
+      `
+        select
+          business_id,
+          provider_price_id,
+          tier_code
+        from email_billing_configs
+        where provider_subscription_id = $1
+        limit 1
+      `,
+      [subscription.id],
+    );
+    const existing = existingResult.rows[0];
+    const businessId =
+      subscription.metadata?.businessId?.trim() ||
+      options?.businessId?.trim() ||
+      existing?.business_id?.trim();
+
+    if (!businessId) {
+      throw new HttpError(
+        400,
+        "stripe_business_missing",
+        "Stripe email add-on metadata does not include a workspace id.",
+      );
+    }
+
+    const providerPriceId =
+      extractStripeSubscriptionPriceId(subscription) ||
+      existing?.provider_price_id?.trim() ||
+      undefined;
+    const metadataTierCode = subscription.metadata?.emailTierCode?.trim() as BillingEmailAddonTierCode | undefined;
+    const subscribedTierCode =
+      (providerPriceId ? resolveEmailTierCodeFromStripePriceId(providerPriceId) : null) ||
+      metadataTierCode ||
+      existing?.tier_code ||
+      "none";
+    const currentPlanCode = await resolveBusinessPlanCode(businessId, client);
+
+    if (isStripeSubscriptionEntitled(subscription.status) && (subscribedTierCode === "none" || subscribedTierCode === "custom")) {
+      throw new HttpError(
+        500,
+        "stripe_email_price_mapping_missing",
+        "Stripe price id is not mapped to an internal email billing tier.",
+      );
+    }
+
+    if (isStripeSubscriptionEntitled(subscription.status)) {
+      await upsertBillingEmailAddonConfig(
+        businessId,
+        {
+          tierCode: subscribedTierCode,
+          source: "addon",
+          providerCustomerId: subscription.customer?.trim() || null,
+          providerSubscriptionId: subscription.id,
+          providerPriceId: providerPriceId ?? null,
+          subscriptionStatus: subscription.status,
+          currentPeriodStart: toStripeTimestampDate(subscription.current_period_start),
+          currentPeriodEnd: toStripeTimestampDate(subscription.current_period_end),
+          cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+        },
+        client,
+      );
+      return;
+    }
+
+    const fallbackTierCode = resolveDefaultEmailBillingTierForPlan(currentPlanCode);
+    const fallbackSource =
+      fallbackTierCode === "custom"
+        ? "custom"
+        : fallbackTierCode === "none"
+          ? "manual"
+          : "bundled";
+
+    await upsertBillingEmailAddonConfig(
+      businessId,
+      {
+        tierCode: fallbackTierCode,
+        source: fallbackSource,
+        providerCustomerId: subscription.customer?.trim() || null,
+        providerSubscriptionId: null,
+        providerPriceId: null,
+        subscriptionStatus: subscription.status,
+        currentPeriodStart: null,
+        currentPeriodEnd: null,
+        cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+      },
+      client,
+    );
+  });
+}
+
+async function syncStripeSubscriptionRecord(
+  subscription: StripeSubscription,
+  options?: {
+    businessId?: string;
+    checkoutSessionId?: string;
+  },
+): Promise<void> {
+  const billingKind = subscription.metadata?.billingKind?.trim() || "workspace_plan";
+
+  if (billingKind === "email_addon") {
+    await syncEmailAddonStripeSubscriptionRecord(subscription, options);
+    return;
+  }
+
+  await syncWorkspacePlanStripeSubscriptionRecord(subscription, options);
+}
+
 export async function getBillingOverview(
   principal: AuthenticatedPrincipal,
   businessId: string,
@@ -512,6 +815,11 @@ export async function getBillingOverview(
     loadLatestStripeSubscription(normalizedBusinessId),
   ]);
   const currentPlanCode = accessBootstrap.access?.planCode ?? "free";
+  const emailAddon = await getBillingEmailAddonSummary(normalizedBusinessId, {
+    currentPlanCode,
+    currentPeriodStart: toIsoString(subscription?.current_period_start),
+    currentPeriodEnd: toIsoString(subscription?.current_period_end),
+  });
 
   return {
     businessId: normalizedBusinessId,
@@ -520,8 +828,10 @@ export async function getBillingOverview(
     currentPlanCode,
     currentPlanLabel: resolveBillingPlanLabel(currentPlanCode),
     usage: accessBootstrap.limits ?? null,
+    emailAddon,
     subscription: mapSubscriptionSummary(subscription),
     plans: buildBillingPlans(currentPlanCode),
+    emailPlans: buildEmailBillingPlans(emailAddon),
   };
 }
 
@@ -531,14 +841,15 @@ export async function createBillingCheckoutSession(
 ): Promise<CreateBillingCheckoutSessionResponse> {
   const businessId = normalizeBusinessId(input.businessId);
   const requestedPriceId = input.priceId?.trim();
+  const requestedPromotionCode = normalizePromotionCode(input.promotionCode);
 
   if (!requestedPriceId) {
     throw new HttpError(400, "price_id_required", "Stripe price id is required.");
   }
 
-  const requestedPlanCode = resolvePlanCodeFromStripePriceId(requestedPriceId);
+  const checkoutTarget = resolveCheckoutTargetFromPriceId(requestedPriceId);
 
-  if (!requestedPlanCode || requestedPlanCode === "free" || requestedPlanCode === "custom") {
+  if (!checkoutTarget) {
     throw new HttpError(400, "price_id_invalid", "Selected billing plan is not available.");
   }
 
@@ -550,57 +861,196 @@ export async function createBillingCheckoutSession(
   ]);
   requireBillingManagerRole(membership);
 
-  if (currentPlanCode === requestedPlanCode) {
-    throw new HttpError(
-      409,
-      "plan_already_active",
-      `${resolveBillingPlanLabel(requestedPlanCode)} is already active for this workspace.`,
-    );
-  }
+  let promotionCodeId: string | undefined;
 
-  if (currentPlanCode === "custom") {
-    throw new HttpError(
-      409,
-      "billing_contact_support",
-      "Custom workspaces are managed manually. Contact support to change billing.",
-    );
-  }
-
-  if (subscription && isStripeSubscriptionEntitled(subscription.status)) {
-    throw new HttpError(
-      409,
-      "billing_portal_required",
-      "This workspace already has an active Stripe subscription. Use billing management to change plans.",
+  if (requestedPromotionCode) {
+    const promotionCodes = await stripeApiRequest<{ data?: StripePromotionCode[] }>(
+      "/promotion_codes",
       {
-        portalAvailable: Boolean(subscription.provider_customer_id),
+        method: "GET",
+        query: {
+          code: requestedPromotionCode,
+          active: true,
+          limit: 1,
+        },
       },
     );
+    promotionCodeId = promotionCodes.data?.[0]?.id?.trim();
+
+    if (!promotionCodeId) {
+      throw new HttpError(
+        400,
+        "promotion_code_invalid",
+        "That promotion code is invalid or inactive.",
+      );
+    }
   }
 
-  const checkoutSession = await stripeApiRequest<StripeCheckoutSession>("/checkout/sessions", {
-    body: {
-      mode: "subscription",
-      allow_promotion_codes: true,
-      client_reference_id: businessId,
-      success_url: buildReturnUrl(input.returnPath, "success"),
-      cancel_url: buildReturnUrl(input.returnPath, "canceled"),
-      "line_items[0][price]": requestedPriceId,
-      "line_items[0][quantity]": 1,
-      ...(subscription?.provider_customer_id
-        ? {
-            customer: subscription.provider_customer_id,
-          }
-        : {
-            customer_email: appSession.user.email,
-          }),
-      "metadata[businessId]": businessId,
-      "metadata[userId]": appSession.user.id,
-      "metadata[planCode]": requestedPlanCode,
-      "subscription_data[metadata][businessId]": businessId,
-      "subscription_data[metadata][userId]": appSession.user.id,
-      "subscription_data[metadata][planCode]": requestedPlanCode,
-    },
-  });
+  let checkoutSession: StripeCheckoutSession;
+
+  if (checkoutTarget.kind === "workspace_plan") {
+    const requestedPlanCode = checkoutTarget.planCode;
+
+    if (requestedPlanCode === "free" || requestedPlanCode === "custom") {
+      throw new HttpError(400, "price_id_invalid", "Selected billing plan is not available.");
+    }
+
+    if (currentPlanCode === requestedPlanCode) {
+      throw new HttpError(
+        409,
+        "plan_already_active",
+        `${resolveBillingPlanLabel(requestedPlanCode)} is already active for this workspace.`,
+      );
+    }
+
+    if (currentPlanCode === "custom") {
+      throw new HttpError(
+        409,
+        "billing_contact_support",
+        "Custom workspaces are managed manually. Contact support to change billing.",
+      );
+    }
+
+    if (subscription && isStripeSubscriptionEntitled(subscription.status)) {
+      throw new HttpError(
+        409,
+        "billing_portal_required",
+        "This workspace already has an active Stripe subscription. Use billing management to change plans.",
+        {
+          portalAvailable: Boolean(subscription.provider_customer_id),
+        },
+      );
+    }
+
+    const fallbackCustomerId = await loadEmailBillingCustomerId(businessId);
+
+    checkoutSession = await stripeApiRequest<StripeCheckoutSession>("/checkout/sessions", {
+      body: {
+        mode: "subscription",
+        ...(promotionCodeId
+          ? {
+              "discounts[0][promotion_code]": promotionCodeId,
+            }
+          : {
+              allow_promotion_codes: true,
+            }),
+        client_reference_id: businessId,
+        success_url: buildReturnUrl(input.returnPath, "success", "workspace_plan"),
+        cancel_url: buildReturnUrl(input.returnPath, "canceled", "workspace_plan"),
+        "line_items[0][price]": requestedPriceId,
+        "line_items[0][quantity]": 1,
+        ...(subscription?.provider_customer_id || fallbackCustomerId
+          ? {
+              customer: subscription?.provider_customer_id || fallbackCustomerId,
+            }
+          : {
+              customer_email: appSession.user.email,
+            }),
+        "metadata[businessId]": businessId,
+        "metadata[userId]": appSession.user.id,
+        "metadata[planCode]": requestedPlanCode,
+        "metadata[billingKind]": "workspace_plan",
+        "subscription_data[metadata][businessId]": businessId,
+        "subscription_data[metadata][userId]": appSession.user.id,
+        "subscription_data[metadata][planCode]": requestedPlanCode,
+        "subscription_data[metadata][billingKind]": "workspace_plan",
+      },
+    });
+
+    logInfo("Created Stripe checkout session.", {
+      businessId,
+      requestedPlanCode,
+      checkoutTarget: "workspace_plan",
+      promotionCodeApplied: Boolean(promotionCodeId),
+      stripeCheckoutSessionId: checkoutSession.id,
+    });
+  } else {
+    const requestedTierCode = checkoutTarget.tierCode;
+    const emailAddon = await getBillingEmailAddonSummary(businessId, {
+      currentPlanCode,
+      currentPeriodStart: toIsoString(subscription?.current_period_start),
+      currentPeriodEnd: toIsoString(subscription?.current_period_end),
+    });
+
+    if (emailAddon.source === "custom") {
+      throw new HttpError(
+        409,
+        "billing_contact_support",
+        "Custom email billing is managed manually. Contact support to change it.",
+      );
+    }
+
+    if (
+      emailAddon.source === "addon" &&
+      emailAddon.tierCode === requestedTierCode &&
+      emailAddon.subscriptionStatus &&
+      isStripeSubscriptionEntitled(emailAddon.subscriptionStatus)
+    ) {
+      throw new HttpError(
+        409,
+        "email_addon_already_active",
+        `${emailAddon.label} is already active for this workspace.`,
+      );
+    }
+
+    if (
+      emailAddon.source === "addon" &&
+      emailAddon.subscriptionStatus &&
+      isStripeSubscriptionEntitled(emailAddon.subscriptionStatus)
+    ) {
+      throw new HttpError(
+        409,
+        "billing_portal_required",
+        "This workspace already has an active email add-on. Use billing management to change it.",
+        {
+          portalAvailable: emailAddon.portalAvailable,
+        },
+      );
+    }
+
+    const existingCustomerId = subscription?.provider_customer_id || await loadEmailBillingCustomerId(businessId);
+
+    checkoutSession = await stripeApiRequest<StripeCheckoutSession>("/checkout/sessions", {
+      body: {
+        mode: "subscription",
+        ...(promotionCodeId
+          ? {
+              "discounts[0][promotion_code]": promotionCodeId,
+            }
+          : {
+              allow_promotion_codes: true,
+            }),
+        client_reference_id: businessId,
+        success_url: buildReturnUrl(input.returnPath, "success", "email_addon"),
+        cancel_url: buildReturnUrl(input.returnPath, "canceled", "email_addon"),
+        "line_items[0][price]": requestedPriceId,
+        "line_items[0][quantity]": 1,
+        ...(existingCustomerId
+          ? {
+              customer: existingCustomerId,
+            }
+          : {
+              customer_email: appSession.user.email,
+            }),
+        "metadata[businessId]": businessId,
+        "metadata[userId]": appSession.user.id,
+        "metadata[emailTierCode]": requestedTierCode,
+        "metadata[billingKind]": "email_addon",
+        "subscription_data[metadata][businessId]": businessId,
+        "subscription_data[metadata][userId]": appSession.user.id,
+        "subscription_data[metadata][emailTierCode]": requestedTierCode,
+        "subscription_data[metadata][billingKind]": "email_addon",
+      },
+    });
+
+    logInfo("Created Stripe checkout session.", {
+      businessId,
+      requestedEmailTierCode: requestedTierCode,
+      checkoutTarget: "email_addon",
+      promotionCodeApplied: Boolean(promotionCodeId),
+      stripeCheckoutSessionId: checkoutSession.id,
+    });
+  }
 
   if (!checkoutSession.url?.trim()) {
     throw new HttpError(
@@ -609,12 +1059,6 @@ export async function createBillingCheckoutSession(
       "Stripe checkout did not return a redirect URL.",
     );
   }
-
-  logInfo("Created Stripe checkout session.", {
-    businessId,
-    requestedPlanCode,
-    stripeCheckoutSessionId: checkoutSession.id,
-  });
 
   return {
     url: checkoutSession.url,
@@ -631,8 +1075,9 @@ export async function createBillingPortalSession(
     loadLatestStripeSubscription(businessId),
   ]);
   requireBillingManagerRole(membership);
+  const billingCustomerId = subscription?.provider_customer_id?.trim() || await loadEmailBillingCustomerId(businessId);
 
-  if (!subscription?.provider_customer_id?.trim()) {
+  if (!billingCustomerId) {
     throw new HttpError(
       409,
       "billing_portal_unavailable",
@@ -642,7 +1087,7 @@ export async function createBillingPortalSession(
 
   const portalSession = await stripeApiRequest<{ url?: string | null }>("/billing_portal/sessions", {
     body: {
-      customer: subscription.provider_customer_id,
+      customer: billingCustomerId,
       return_url: buildReturnUrl(input.returnPath, "portal"),
     },
   });
@@ -681,12 +1126,28 @@ async function handleSubscriptionEvent(event: StripeEvent<StripeSubscription>): 
   await syncStripeSubscriptionRecord(event.data.object);
 }
 
+async function handleInvoicePaymentSucceeded(event: StripeEvent<StripeInvoice>): Promise<void> {
+  const subscriptionId = event.data.object.subscription?.trim();
+
+  if (!subscriptionId) {
+    return;
+  }
+
+  const subscription = await stripeApiRequest<StripeSubscription>(`/subscriptions/${subscriptionId}`, {
+    method: "GET",
+  });
+  await syncStripeSubscriptionRecord(subscription);
+}
+
 export async function handleStripeWebhook(payload: Buffer, signatureHeader: string | undefined): Promise<void> {
   const event = verifyStripeWebhookEvent(payload, signatureHeader);
 
   switch (event.type) {
     case "checkout.session.completed":
       await handleCheckoutCompleted(event as StripeEvent<StripeCheckoutSession>);
+      return;
+    case "invoice.payment_succeeded":
+      await handleInvoicePaymentSucceeded(event as StripeEvent<StripeInvoice>);
       return;
     case "customer.subscription.updated":
     case "customer.subscription.deleted":

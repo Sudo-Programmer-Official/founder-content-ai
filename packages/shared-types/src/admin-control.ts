@@ -4,6 +4,10 @@ import type {
   MediaRecommendationGoal,
   MediaSuggestionType,
 } from "./media-intelligence.ts";
+import type {
+  BillingEmailAddonSource,
+  BillingEmailAddonTierCode,
+} from "./billing.ts";
 
 export type BusinessPlanCode = "free" | "pro" | "growth" | "custom";
 export type FeatureFlagTargetType = "business" | "user";
@@ -15,7 +19,8 @@ export type AdminWorkspaceAccessAction =
   | "extend_grace"
   | "reset_limits"
   | "disable_business"
-  | "enable_business";
+  | "enable_business"
+  | "set_email_billing";
 
 export interface AdminWorkspaceLimitSnapshot {
   date: string;
@@ -200,6 +205,10 @@ export interface UpsertAdminDecisionRuleResponse {
 export interface UpdateAdminWorkspaceAccessRequest {
   action: AdminWorkspaceAccessAction;
   planCode?: BusinessPlanCode;
+  emailBillingTierCode?: BillingEmailAddonTierCode;
+  emailBillingSource?: BillingEmailAddonSource;
+  emailSubscriberLimit?: number;
+  emailMonthlyEmailLimit?: number;
   trialDays?: number;
   graceDays?: number;
   note?: string;

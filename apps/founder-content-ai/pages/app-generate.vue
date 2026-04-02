@@ -41,6 +41,11 @@ import {
   resolveRepurposeStrategySubmitLabel,
 } from "../utils/repurpose-strategies";
 import { appRoutes } from "../utils/routes";
+import {
+  findConnectedFacebookAccount,
+  findConnectedInstagramAccount,
+  findConnectedLinkedInAccount,
+} from "../utils/social-platforms";
 
 const exampleIdeas = [
   "Building in public is messy, but it makes trust compound faster.",
@@ -214,9 +219,9 @@ const brandContextNarrativeFlow = computed(() => {
 const workspaceDefaultGenerationTone = computed(() =>
   resolveGenerationToneMode(brandProfile.value?.tone ?? brandProfile.value?.preferredTone),
 );
-const connectedLinkedInAccount = computed(() =>
-  socialAccounts.value.find((account) => account.platform === "linkedin" && account.status === "connected"),
-);
+const connectedLinkedInAccount = computed(() => findConnectedLinkedInAccount(socialAccounts.value));
+const connectedFacebookAccount = computed(() => findConnectedFacebookAccount(socialAccounts.value));
+const connectedInstagramAccount = computed(() => findConnectedInstagramAccount(socialAccounts.value));
 const linkedInOptimizationLabel = computed(() => {
   const connectedAccount = connectedLinkedInAccount.value;
   const selectedIdentityLabel = connectedAccount?.selectedIdentity?.displayName;
@@ -236,6 +241,34 @@ const linkedInOptimizationLabel = computed(() => {
   }
 
   return "this workspace";
+});
+
+const connectedPublishingPlatforms = computed(() =>
+  [
+    connectedLinkedInAccount.value ? "LinkedIn" : "",
+    connectedFacebookAccount.value ? "Facebook" : "",
+    connectedInstagramAccount.value ? "Instagram" : "",
+  ].filter((value) => value !== ""),
+);
+
+const channelContextTitle = computed(() => {
+  if (connectedPublishingPlatforms.value.length === 0) {
+    return "See publishing channels before you generate";
+  }
+
+  if (connectedPublishingPlatforms.value.length === 3) {
+    return "This workspace is ready for multi-platform publishing";
+  }
+
+  return `Connected: ${connectedPublishingPlatforms.value.join(" + ")}`;
+});
+
+const channelContextDescription = computed(() => {
+  if (connectedPublishingPlatforms.value.length === 0) {
+    return "Generation still works without connected channels, but destination-aware workspaces hand off cleanly into LinkedIn, Facebook, and Instagram publishing.";
+  }
+
+  return "Generate first, then choose the destination that fits the draft. The post view and planner will carry the same channel model forward.";
 });
 
 function pickSavedSource(...types: SavedContentSource["sourceType"][]): SavedContentSource | null {
@@ -746,30 +779,70 @@ onBeforeUnmount(() => {
         <span class="activation-chip">Hooks + post + next actions</span>
         <span class="activation-chip">Cmd/Ctrl + Enter to generate</span>
       </div>
-      <div class="channel-context-panel" :class="{ connected: Boolean(connectedLinkedInAccount) }">
+      <div
+        class="channel-context-panel"
+        :class="{ connected: connectedPublishingPlatforms.length > 0 }"
+      >
         <div class="channel-context-copy">
           <p class="panel-meta">Distribution context</p>
-          <h2>
-            {{
-              connectedLinkedInAccount
-                ? `Publishing to LinkedIn${linkedInOptimizationLabel ? ` (${linkedInOptimizationLabel})` : ""}`
-                : "Connect LinkedIn to optimize for publishing"
-            }}
-          </h2>
-          <p class="activation-helper">
-            {{
-              connectedLinkedInAccount
-                ? "This workspace will shape output for direct LinkedIn publishing and handoff to the post view."
-                : "Generation still works without a channel, but connected workspaces get formatting tuned for direct LinkedIn publishing."
-            }}
-          </p>
+          <h2>{{ channelContextTitle }}</h2>
+          <p class="activation-helper">{{ channelContextDescription }}</p>
+        </div>
+        <div class="channel-context-platforms" aria-label="Publishing channels">
+          <article class="channel-platform-card" :data-connected="Boolean(connectedLinkedInAccount)">
+            <div class="channel-platform-card-topline">
+              <strong>LinkedIn</strong>
+              <span class="channel-platform-state" :data-connected="Boolean(connectedLinkedInAccount)">
+                {{ connectedLinkedInAccount ? "Connected" : "Not connected" }}
+              </span>
+            </div>
+            <p>
+              {{
+                connectedLinkedInAccount
+                  ? linkedInOptimizationLabel
+                  : "Professional feed and company/profile publishing"
+              }}
+            </p>
+          </article>
+
+          <article class="channel-platform-card" :data-connected="Boolean(connectedFacebookAccount)">
+            <div class="channel-platform-card-topline">
+              <strong>Facebook</strong>
+              <span class="channel-platform-state" :data-connected="Boolean(connectedFacebookAccount)">
+                {{ connectedFacebookAccount ? "Connected" : "Not connected" }}
+              </span>
+            </div>
+            <p>
+              {{
+                connectedFacebookAccount
+                  ? "Workspace Page is ready for direct publishing."
+                  : "Connect a Facebook Page for text, image, and video publishing."
+              }}
+            </p>
+          </article>
+
+          <article class="channel-platform-card" :data-connected="Boolean(connectedInstagramAccount)">
+            <div class="channel-platform-card-topline">
+              <strong>Instagram</strong>
+              <span class="channel-platform-state" :data-connected="Boolean(connectedInstagramAccount)">
+                {{ connectedInstagramAccount ? "Connected" : "Not connected" }}
+              </span>
+            </div>
+            <p>
+              {{
+                connectedInstagramAccount
+                  ? "Derived from the linked Facebook Page for business publishing."
+                  : "Unlocks automatically when the connected Facebook Page has an Instagram business account."
+              }}
+            </p>
+          </article>
         </div>
         <div class="channel-context-actions">
           <span
-            v-if="connectedLinkedInAccount"
+            v-if="connectedPublishingPlatforms.length > 0"
             class="activation-chip channel-context-chip"
           >
-            Connected: LinkedIn
+            {{ `Ready: ${connectedPublishingPlatforms.join(" · ")}` }}
           </span>
           <span
             v-else-if="isLoadingSocialAccounts"
@@ -777,8 +850,11 @@ onBeforeUnmount(() => {
           >
             Checking channels...
           </span>
+          <span v-else class="activation-chip channel-context-chip">
+            Choose a destination after generation
+          </span>
           <router-link class="secondary-action inline-link" :to="appRoutes.settingsPreferences">
-            {{ connectedLinkedInAccount ? "Manage channels" : "Connect in settings" }}
+            {{ connectedPublishingPlatforms.length > 0 ? "Manage channels" : "Connect in settings" }}
           </router-link>
         </div>
       </div>
@@ -1239,10 +1315,8 @@ onBeforeUnmount(() => {
 }
 
 .channel-context-panel {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  display: grid;
+  gap: 18px;
   margin-top: 18px;
   padding: 18px 20px;
   border: 1px solid var(--fc-border);
@@ -1395,6 +1469,60 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.channel-context-platforms {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.channel-platform-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 84%, white 16%);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-surface) 92%, white 8%);
+}
+
+.channel-platform-card[data-connected="true"] {
+  border-color: color-mix(in srgb, var(--fc-success-text) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg) 42%, var(--fc-panel-bg));
+}
+
+.channel-platform-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.channel-platform-card p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.channel-platform-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface-subtle);
+  color: var(--fc-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.channel-platform-state[data-connected="true"] {
+  border-color: color-mix(in srgb, var(--fc-success-text) 16%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg) 82%, var(--fc-panel-bg));
+  color: var(--fc-success-text);
+}
+
 .channel-context-copy h2 {
   margin: 0;
   font-size: clamp(1.1rem, 2.2vw, 1.45rem);
@@ -1405,7 +1533,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 10px;
 }
 
@@ -1730,6 +1858,10 @@ onBeforeUnmount(() => {
   .generation-suggestion-grid,
   .brand-context-grid,
   .source-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .channel-context-platforms {
     grid-template-columns: 1fr;
   }
 }

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import type {
+  BillingEmailPlanOption,
   BillingOverviewResponse,
   BillingPlanOption,
 } from "../../../packages/shared-types";
@@ -22,7 +23,10 @@ const isLoading = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const activePlanAction = ref("");
+const activeEmailPlanAction = ref("");
 const isOpeningPortal = ref(false);
+const showPromotionCodeField = ref(false);
+const promotionCode = ref("");
 
 const resolvedBusinessId = computed(
   () => bootstrap.value?.activeBusinessId?.trim() || activeBusinessId.value?.trim() || "",
@@ -32,6 +36,8 @@ const currentPlanLabel = computed(() => overview.value?.currentPlanLabel ?? "Fre
 const currentPlanCode = computed(() => overview.value?.currentPlanCode ?? "free");
 const subscription = computed(() => overview.value?.subscription);
 const planCards = computed(() => overview.value?.plans ?? []);
+const emailAddon = computed(() => overview.value?.emailAddon);
+const emailPlanCards = computed(() => overview.value?.emailPlans ?? []);
 const usageCards = computed(() => {
   const limits = overview.value?.usage;
 
@@ -57,19 +63,18 @@ const usageCards = computed(() => {
           : `${limits.scheduledQueueRemaining} queue slot${limits.scheduledQueueRemaining === 1 ? "" : "s"} remaining.`,
     },
     {
-      label: "Email credits",
-      value: `${limits.emailsUsed} / ${formatLimit(limits.emailsLimit)}`,
-      detail: `${limits.emailsRemaining} sends remaining today.`,
-    },
-    {
       label: "Outreach credits",
       value: `${limits.outreachUsed} / ${formatLimit(limits.outreachLimit)}`,
       detail: `${limits.outreachRemaining} touches remaining today.`,
     },
   ];
 });
-const canOpenPortal = computed(() => Boolean(subscription.value?.portalAvailable));
+const canOpenPortal = computed(() => Boolean(subscription.value?.portalAvailable || emailAddon.value?.portalAvailable));
 const paidWorkspace = computed(() => currentPlanCode.value !== "free");
+const normalizedPromotionCode = computed(() => {
+  const normalized = promotionCode.value.trim();
+  return normalized ? normalized : undefined;
+});
 
 function readQueryString(value: unknown): string | undefined {
   if (Array.isArray(value)) {
@@ -87,6 +92,60 @@ function formatLimit(value: number | null | undefined): string {
   return String(value);
 }
 
+function formatNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "Custom";
+  }
+
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatBillingCap(value: number | null | undefined): string {
+  if (value === null || value === undefined) {
+    return "Custom";
+  }
+
+  if (value <= 0) {
+    return "Not configured";
+  }
+
+  return formatNumber(value);
+}
+
+function formatUsageState(value: string | undefined): string {
+  switch (value) {
+    case "warning":
+      return "Approaching limit";
+    case "over_limit":
+      return "Over soft limit";
+    case "inactive":
+      return "Not configured";
+    default:
+      return "Healthy";
+  }
+}
+
+function formatEmailAddonSource(value: string | undefined): string {
+  switch (value) {
+    case "bundled":
+      return "Included with current plan";
+    case "addon":
+      return "Separate email add-on";
+    case "custom":
+      return "Custom billing";
+    default:
+      return "Manual configuration";
+  }
+}
+
+function resolveUsageProgress(current: number, limit: number | null | undefined): number {
+  if (!limit || limit <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, (current / limit) * 100));
+}
+
 function formatSubscriptionStatus(value: string | undefined): string {
   if (!value) {
     return "No Stripe subscription";
@@ -101,28 +160,36 @@ function formatSubscriptionStatus(value: string | undefined): string {
 function applyRouteFeedback(): {
   checkoutState?: string;
   portalState?: string;
+  checkoutTarget?: string;
 } {
   const checkoutState = readQueryString(route.query.checkout);
   const portalState = readQueryString(route.query.portal);
+  const checkoutTarget = readQueryString(route.query.checkoutTarget);
 
   feedbackMessage.value = "";
 
   if (checkoutState === "success") {
-    feedbackMessage.value = "Billing updated. Refreshing workspace access now.";
-    return { checkoutState, portalState };
+    feedbackMessage.value =
+      checkoutTarget === "email_addon"
+        ? "Email billing updated. Refreshing workspace billing now."
+        : "Billing updated. Refreshing workspace access now.";
+    return { checkoutState, portalState, checkoutTarget };
   }
 
   if (checkoutState === "canceled") {
-    feedbackMessage.value = "Checkout was canceled before any billing change was made.";
-    return { checkoutState, portalState };
+    feedbackMessage.value =
+      checkoutTarget === "email_addon"
+        ? "Email add-on checkout was canceled before any billing change was made."
+        : "Checkout was canceled before any billing change was made.";
+    return { checkoutState, portalState, checkoutTarget };
   }
 
   if (portalState === "return") {
     feedbackMessage.value = "Returned from billing management. Workspace access has been refreshed.";
-    return { checkoutState, portalState };
+    return { checkoutState, portalState, checkoutTarget };
   }
 
-  return { checkoutState, portalState };
+  return { checkoutState, portalState, checkoutTarget };
 }
 
 async function loadOverview(options?: {
@@ -144,6 +211,24 @@ async function loadOverview(options?: {
       options?.refreshAccess ? refreshProductAccess(businessId) : Promise.resolve(null),
     ]);
     overview.value = nextOverview;
+
+    if (options?.refreshAccess) {
+      const checkoutState = readQueryString(route.query.checkout);
+      const portalState = readQueryString(route.query.portal);
+      const checkoutTarget = readQueryString(route.query.checkoutTarget);
+
+      if (checkoutState === "success") {
+        feedbackMessage.value = checkoutTarget === "email_addon"
+          ? nextOverview.emailAddon
+            ? `${nextOverview.emailAddon.label} is now active for this workspace.`
+            : "Email billing updated. Workspace access has been refreshed."
+          : nextOverview.currentPlanCode !== "free"
+            ? `You're now on ${nextOverview.currentPlanLabel}. Workspace access has been refreshed.`
+            : "Billing updated. Workspace access has been refreshed.";
+      } else if (portalState === "return") {
+        feedbackMessage.value = "Returned from billing management. Workspace access has been refreshed.";
+      }
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to load billing.";
   } finally {
@@ -177,6 +262,34 @@ function planActionDisabled(plan: BillingPlanOption): boolean {
   }
 
   if (paidWorkspace.value) {
+    return !canOpenPortal.value;
+  }
+
+  return !plan.priceId;
+}
+
+function getEmailPlanActionLabel(plan: BillingEmailPlanOption): string {
+  if (plan.current) {
+    return emailAddon.value?.source === "addon" ? "Current add-on" : "Included now";
+  }
+
+  if (emailAddon.value?.source === "addon" && canOpenPortal.value) {
+    return "Manage in billing";
+  }
+
+  return plan.ctaLabel;
+}
+
+function emailPlanActionDisabled(plan: BillingEmailPlanOption): boolean {
+  if (plan.current) {
+    return true;
+  }
+
+  if (emailAddon.value?.source === "custom") {
+    return true;
+  }
+
+  if (emailAddon.value?.source === "addon") {
     return !canOpenPortal.value;
   }
 
@@ -242,6 +355,7 @@ async function handlePlanAction(plan: BillingPlanOption): Promise<void> {
     const response = await requestCreateBillingCheckoutSession({
       businessId,
       priceId: plan.priceId,
+      promotionCode: normalizedPromotionCode.value,
       returnPath: appRoutes.appBilling,
     });
     window.location.href = response.url;
@@ -257,6 +371,51 @@ async function handlePlanAction(plan: BillingPlanOption): Promise<void> {
   }
 }
 
+async function handleEmailPlanAction(plan: BillingEmailPlanOption): Promise<void> {
+  if (plan.current) {
+    return;
+  }
+
+  if (emailAddon.value?.source === "addon") {
+    await openBillingPortal();
+    return;
+  }
+
+  if (!plan.priceId) {
+    errorMessage.value = "This email add-on is not configured in Stripe yet.";
+    return;
+  }
+
+  const businessId = resolvedBusinessId.value;
+
+  if (!businessId) {
+    errorMessage.value = "Select a workspace before starting checkout.";
+    return;
+  }
+
+  activeEmailPlanAction.value = plan.tierCode;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestCreateBillingCheckoutSession({
+      businessId,
+      priceId: plan.priceId,
+      promotionCode: normalizedPromotionCode.value,
+      returnPath: appRoutes.appBilling,
+    });
+    window.location.href = response.url;
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.code === "billing_portal_required") {
+      await openBillingPortal();
+      return;
+    }
+
+    errorMessage.value = error instanceof Error ? error.message : "Unable to start email add-on checkout.";
+  } finally {
+    activeEmailPlanAction.value = "";
+  }
+}
+
 watch(
   () => resolvedBusinessId.value,
   () => {
@@ -266,7 +425,11 @@ watch(
 );
 
 watch(
-  () => [readQueryString(route.query.checkout), readQueryString(route.query.portal)] as const,
+  () => [
+    readQueryString(route.query.checkout),
+    readQueryString(route.query.portal),
+    readQueryString(route.query.checkoutTarget),
+  ] as const,
   ([checkoutState, portalState]) => {
     const handledState =
       checkoutState === "success" || portalState === "return"
@@ -380,9 +543,170 @@ watch(
       <article class="billing-panel">
         <div class="billing-panel-header">
           <div>
+            <p class="billing-card-label">Email add-on</p>
+            <h2>Price email on active subscribers and monthly send volume.</h2>
+          </div>
+          <span
+            v-if="emailAddon"
+            class="billing-status-chip"
+            :class="`state-${emailAddon.usageState}`"
+          >
+            {{ formatUsageState(emailAddon.usageState) }}
+          </span>
+        </div>
+
+        <p class="billing-panel-copy">
+          Email billing now follows active mailable contacts and actual recipients sent in the current billing period. Daily email limits stay behind the scenes as an abuse guard.
+        </p>
+
+        <div v-if="emailAddon" class="billing-email-shell">
+          <article class="billing-email-summary-card" :class="`state-${emailAddon.usageState}`">
+            <div>
+              <p class="billing-card-label">Current email tier</p>
+              <strong>{{ emailAddon.label }}</strong>
+            </div>
+            <div class="billing-email-summary-meta">
+              <span class="billing-status-chip">{{ formatEmailAddonSource(emailAddon.source) }}</span>
+              <span>
+                {{ new Date(emailAddon.billingPeriodStart).toLocaleDateString() }} - {{ new Date(emailAddon.billingPeriodEnd).toLocaleDateString() }}
+              </span>
+            </div>
+            <p>{{ emailAddon.description }}</p>
+          </article>
+
+          <div class="billing-email-metrics">
+            <article class="billing-email-metric-card">
+              <div class="billing-email-metric-head">
+                <div>
+                  <p class="billing-card-label">Active subscribers</p>
+                  <strong>{{ formatNumber(emailAddon.currentSubscriberCount) }} / {{ formatBillingCap(emailAddon.subscriberLimit) }}</strong>
+                </div>
+                <span>
+                  {{
+                    emailAddon.subscriberRemaining === null
+                      ? "Custom"
+                      : emailAddon.subscriberLimit && emailAddon.subscriberLimit > 0
+                        ? `${formatNumber(emailAddon.subscriberRemaining)} left`
+                        : "No allowance"
+                  }}
+                </span>
+              </div>
+              <div class="billing-progress-track">
+                <span
+                  class="billing-progress-fill"
+                  :style="{ width: `${resolveUsageProgress(emailAddon.currentSubscriberCount, emailAddon.subscriberLimit)}%` }"
+                ></span>
+              </div>
+              <p>Only active, mailable contacts count toward subscriber billing.</p>
+            </article>
+
+            <article class="billing-email-metric-card">
+              <div class="billing-email-metric-head">
+                <div>
+                  <p class="billing-card-label">Emails this period</p>
+                  <strong>{{ formatNumber(emailAddon.currentPeriodEmailUsage) }} / {{ formatBillingCap(emailAddon.monthlyEmailLimit) }}</strong>
+                </div>
+                <span>
+                  {{
+                    emailAddon.monthlyEmailRemaining === null
+                      ? "Custom"
+                      : emailAddon.monthlyEmailLimit && emailAddon.monthlyEmailLimit > 0
+                        ? `${formatNumber(emailAddon.monthlyEmailRemaining)} left`
+                        : "No allowance"
+                  }}
+                </span>
+              </div>
+              <div class="billing-progress-track">
+                <span
+                  class="billing-progress-fill"
+                  :style="{ width: `${resolveUsageProgress(emailAddon.currentPeriodEmailUsage, emailAddon.monthlyEmailLimit)}%` }"
+                ></span>
+              </div>
+              <p>Usage reflects actual sent recipients in the current billing period.</p>
+            </article>
+          </div>
+
+          <p class="billing-email-footnote">
+            <template v-if="emailAddon.fullListCampaignCapacity !== null">
+              About {{ emailAddon.fullListCampaignCapacity }} full-list campaign{{ emailAddon.fullListCampaignCapacity === 1 ? "" : "s" }} fit inside this monthly allowance.
+            </template>
+            <template v-else>
+              This workspace uses a manual or custom email billing setup.
+            </template>
+          </p>
+
+          <div class="billing-plan-list email-addon">
+            <article
+              v-for="plan in emailPlanCards"
+              :key="plan.tierCode"
+              class="billing-plan-card"
+              :class="{ current: plan.current }"
+            >
+              <div class="billing-plan-head">
+                <div>
+                  <p class="billing-card-label">{{ plan.label }}</p>
+                  <strong>{{ plan.priceDisplay }}</strong>
+                </div>
+                <span v-if="plan.current" class="billing-current-badge">
+                  {{ emailAddon.source === "addon" ? "Add-on" : "Included" }}
+                </span>
+              </div>
+
+              <p class="billing-plan-description">{{ plan.description }}</p>
+
+              <ul class="billing-highlight-list">
+                <li v-for="highlight in plan.highlights" :key="highlight">{{ highlight }}</li>
+              </ul>
+
+              <button
+                type="button"
+                class="billing-plan-button"
+                :class="{ secondary: plan.current || emailAddon.source === 'addon' }"
+                :disabled="emailPlanActionDisabled(plan) || activeEmailPlanAction === plan.tierCode"
+                @click="void handleEmailPlanAction(plan)"
+              >
+                {{
+                  activeEmailPlanAction === plan.tierCode
+                    ? "Redirecting..."
+                    : getEmailPlanActionLabel(plan)
+                }}
+              </button>
+            </article>
+          </div>
+        </div>
+
+        <p v-else class="billing-empty-state">
+          Email billing details will appear once workspace billing is loaded.
+        </p>
+      </article>
+
+      <article class="billing-panel">
+        <div class="billing-panel-header">
+          <div>
             <p class="billing-card-label">Plans</p>
             <h2>Move from teaser access to a real publishing system.</h2>
           </div>
+        </div>
+
+        <div v-if="!paidWorkspace || emailAddon?.source !== 'addon'" class="billing-promo-shell">
+          <button
+            type="button"
+            class="billing-plan-button secondary billing-code-toggle"
+            @click="showPromotionCodeField = !showPromotionCodeField"
+          >
+            {{ showPromotionCodeField ? "Hide promo code" : "Have a promo code?" }}
+          </button>
+
+          <label v-if="showPromotionCodeField" class="billing-promo-field">
+            <span class="billing-card-label">Promotion code</span>
+            <input
+              v-model="promotionCode"
+              type="text"
+              autocomplete="off"
+              placeholder="Enter Stripe promotion code"
+            />
+            <small>Applied at Stripe checkout. Leave blank to continue without a discount.</small>
+          </label>
         </div>
 
         <div class="billing-plan-list">
@@ -473,6 +797,8 @@ watch(
 .billing-panel-copy,
 .billing-plan-description,
 .billing-usage-card p,
+.billing-email-summary-card p,
+.billing-email-metric-card p,
 .billing-meta-card p,
 .billing-current-plan-card p {
   margin: 0;
@@ -603,6 +929,95 @@ watch(
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.billing-email-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.billing-email-summary-card,
+.billing-email-metric-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 80%, white 20%);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.billing-email-summary-meta,
+.billing-email-metric-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.billing-email-summary-card strong,
+.billing-email-metric-card strong {
+  display: block;
+  margin-top: 10px;
+  font-size: 1.6rem;
+  line-height: 1;
+  color: var(--fc-text);
+}
+
+.billing-email-summary-meta span:last-child,
+.billing-email-metric-head span,
+.billing-email-footnote {
+  color: color-mix(in srgb, var(--fc-text) 76%, white 24%);
+  line-height: 1.5;
+}
+
+.billing-email-metrics {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.billing-progress-track {
+  position: relative;
+  overflow: hidden;
+  height: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-border) 80%, white 20%);
+}
+
+.billing-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #d85e2a 0%, #f08d2f 100%);
+}
+
+.billing-email-summary-card.state-warning,
+.billing-status-chip.state-warning {
+  border-color: rgba(206, 143, 21, 0.28);
+  background: rgba(255, 245, 214, 0.92);
+  color: #8c5d0a;
+}
+
+.billing-email-summary-card.state-over_limit,
+.billing-status-chip.state-over_limit {
+  border-color: rgba(209, 75, 47, 0.28);
+  background: rgba(255, 231, 224, 0.95);
+  color: #9f351f;
+}
+
+.billing-email-summary-card.state-healthy,
+.billing-status-chip.state-healthy {
+  border-color: rgba(79, 154, 104, 0.22);
+  background: rgba(232, 245, 235, 0.94);
+  color: #24613f;
+}
+
+.billing-email-summary-card.state-inactive,
+.billing-status-chip.state-inactive {
+  border-color: color-mix(in srgb, var(--fc-border) 80%, white 20%);
+  background: rgba(247, 242, 236, 0.92);
+  color: #7a5a47;
+}
+
 .billing-usage-card,
 .billing-meta-card {
   padding: 18px;
@@ -625,6 +1040,37 @@ watch(
 .billing-plan-list {
   display: grid;
   gap: 14px;
+  margin-top: 16px;
+}
+
+.billing-promo-shell {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.billing-code-toggle {
+  justify-self: start;
+}
+
+.billing-promo-field {
+  display: grid;
+  gap: 8px;
+}
+
+.billing-promo-field input {
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid rgba(126, 93, 72, 0.2);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--fc-text);
+  font: inherit;
+}
+
+.billing-promo-field small {
+  color: var(--fc-text-muted);
+  line-height: 1.5;
 }
 
 .billing-plan-card {
@@ -689,7 +1135,8 @@ watch(
   }
 
   .billing-usage-grid,
-  .billing-subscription-meta {
+  .billing-subscription-meta,
+  .billing-email-metrics {
     grid-template-columns: 1fr;
   }
 }

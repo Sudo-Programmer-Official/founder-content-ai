@@ -51,6 +51,7 @@ export async function createBillingCheckoutSessionController(
       await createBillingCheckoutSession(request.auth, {
         businessId: request.body.businessId ?? "",
         priceId: request.body.priceId ?? "",
+        promotionCode: request.body.promotionCode,
         returnPath: request.body.returnPath,
       }),
     );

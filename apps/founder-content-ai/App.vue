@@ -316,6 +316,17 @@ async function goToAdmin(): Promise<void> {
           />
         </router-link>
 
+        <button
+          type="button"
+          class="mobile-menu-button public-menu-button"
+          aria-label="Open site navigation"
+          @click="mobileMenuOpen = true"
+        >
+          <span></span>
+          <span></span>
+          <span></span>
+        </button>
+
         <nav class="site-nav" :class="{ 'public-nav': isPublicShell }">
           <template v-if="isPublicShell">
             <a href="/#how-it-works">How it works</a>
@@ -354,6 +365,64 @@ async function goToAdmin(): Promise<void> {
           </template>
         </div>
       </header>
+
+      <transition name="sidebar-fade">
+        <div
+          v-if="mobileMenuOpen"
+          class="mobile-sidebar-overlay public-mobile-overlay"
+          @click.self="mobileMenuOpen = false"
+        >
+          <aside class="mobile-sidebar public-mobile-sidebar">
+            <div class="mobile-sidebar-header">
+              <router-link class="sidebar-brand" to="/" @click="mobileMenuOpen = false">
+                <img
+                  class="brand-logo"
+                  src="/foundercontent-wordmark.svg"
+                  alt="FounderContent"
+                />
+              </router-link>
+
+              <button
+                type="button"
+                class="mobile-menu-button close-button"
+                aria-label="Close site navigation"
+                @click="mobileMenuOpen = false"
+              >
+                <span></span>
+                <span></span>
+              </button>
+            </div>
+
+            <nav class="public-mobile-nav" aria-label="Site navigation">
+              <a href="/#how-it-works" @click="mobileMenuOpen = false">How it works</a>
+              <a href="/#pricing" @click="mobileMenuOpen = false">Pricing</a>
+            </nav>
+
+            <div class="public-mobile-actions">
+              <template v-if="auth.isAuthenticated.value">
+                <router-link class="header-cta public-mobile-cta" :to="appRoutes.appGenerate" @click="mobileMenuOpen = false">
+                  Open App
+                </router-link>
+                <button
+                  class="header-secondary-button public-mobile-secondary"
+                  type="button"
+                  @click="mobileMenuOpen = false; void handleLogout()"
+                >
+                  Logout
+                </button>
+              </template>
+              <template v-else>
+                <router-link class="header-cta public-mobile-cta" :to="appRoutes.signup" @click="mobileMenuOpen = false">
+                  Get Started
+                </router-link>
+                <router-link class="header-secondary-button public-mobile-secondary" :to="appRoutes.login" @click="mobileMenuOpen = false">
+                  Login
+                </router-link>
+              </template>
+            </div>
+          </aside>
+        </div>
+      </transition>
 
       <router-view />
     </template>
@@ -467,7 +536,7 @@ async function goToAdmin(): Promise<void> {
                 <strong>{{ userLabel }}</strong>
                 <small>Account</small>
               </div>
-              <span class="sidebar-account-dots" aria-hidden="true">⋯</span>
+              <span class="sidebar-account-chevron" aria-hidden="true">⌄</span>
             </button>
 
             <transition name="sidebar-fade">
@@ -1012,7 +1081,7 @@ async function goToAdmin(): Promise<void> {
   color: var(--fc-text-muted);
 }
 
-.sidebar-account-dots {
+.sidebar-account-chevron {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1021,8 +1090,14 @@ async function goToAdmin(): Promise<void> {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.55);
   color: var(--fc-text-muted);
-  font-size: 1.3rem;
+  font-size: 0.95rem;
+  font-weight: 800;
   line-height: 1;
+  transition: transform 160ms ease;
+}
+
+.sidebar-account-shell.open .sidebar-account-chevron {
+  transform: rotate(180deg);
 }
 
 .sidebar-account-menu {
@@ -1208,6 +1283,38 @@ async function goToAdmin(): Promise<void> {
   overflow-y: auto;
 }
 
+.public-mobile-sidebar {
+  justify-content: space-between;
+}
+
+.public-mobile-nav,
+.public-mobile-actions {
+  display: grid;
+  gap: 12px;
+}
+
+.public-mobile-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 82%, white 18%);
+  color: var(--fc-text);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.public-mobile-nav a:hover {
+  border-color: color-mix(in srgb, var(--fc-accent) 22%, var(--fc-border));
+}
+
+.public-mobile-cta,
+.public-mobile-secondary {
+  width: 100%;
+}
+
 .mobile-sidebar-header {
   display: flex;
   align-items: center;
@@ -1268,7 +1375,7 @@ async function goToAdmin(): Promise<void> {
 }
 
 .sidebar-collapsed .sidebar-account-copy,
-.sidebar-collapsed .sidebar-account-dots {
+.sidebar-collapsed .sidebar-account-chevron {
   display: none;
 }
 
@@ -1318,6 +1425,22 @@ async function goToAdmin(): Promise<void> {
   }
 }
 
+@media (max-width: 720px) {
+  .site-header.public-shell {
+    flex-wrap: nowrap;
+  }
+
+  .site-header.public-shell .site-nav,
+  .site-header.public-shell .header-controls {
+    display: none;
+  }
+
+  .public-menu-button {
+    display: inline-flex;
+    margin-left: auto;
+  }
+}
+
 @media (max-width: 960px) {
   .workspace-sidebar {
     display: none;
@@ -1356,6 +1479,10 @@ async function goToAdmin(): Promise<void> {
 @media (max-width: 560px) {
   .brand-logo {
     width: 158px;
+  }
+
+  .site-header.public-shell {
+    padding: 16px 18px;
   }
 
   .site-nav {

@@ -10,12 +10,12 @@ const steps = [
   {
     title: "Shape the message",
     description:
-      "Turn raw input into attention-grabbing hooks and a polished LinkedIn post that still sounds like you.",
+      "Turn raw input into attention-grabbing hooks and platform-ready posts that still sound like you.",
   },
   {
     title: "Build consistency",
     description:
-      "Use scheduling and planning to keep showing up without burning time or relying on last-minute inspiration.",
+      "Use scheduling and multi-platform publishing to keep showing up without burning time or relying on last-minute inspiration.",
   },
 ];
 
@@ -26,11 +26,11 @@ const useCases = [
   },
   {
     title: "For businesses",
-    description: "Stay visible with consistent LinkedIn content without building a full internal content team.",
+    description: "Stay visible across LinkedIn, Instagram, and Facebook without building a full internal content team.",
   },
   {
     title: "For marketers",
-    description: "Scale content production from founder notes, customer language, and saved references.",
+    description: "Scale content production from founder notes, customer language, and saved references, then distribute it without extra handoff.",
   },
   {
     title: "For creators",
@@ -45,15 +45,38 @@ const features = [
   },
   {
     title: "Remix",
-    description: "Take inspiration from saved references and turn them into original founder-style LinkedIn content.",
+    description: "Take inspiration from saved references and turn them into original founder-style content built for multiple channels.",
   },
   {
     title: "Idea Vault",
     description: "Turn scattered notes and unfinished thoughts into a repeatable content workflow.",
   },
   {
+    title: "Publish anywhere",
+    description: "Post instantly or schedule across LinkedIn, Instagram, and Facebook from one place.",
+  },
+  {
     title: "Planning cues",
-    description: "See the next best post, timing suggestions, and queue prompts that help you stay consistent.",
+    description: "See the next best post, timing suggestions, and queue prompts that help you stay consistent instead of reactive.",
+  },
+];
+
+const publishFlow = [
+  {
+    title: "Capture",
+    description: "Note, screenshot, or raw idea.",
+  },
+  {
+    title: "Generate",
+    description: "Hooks, post copy, and media-ready direction.",
+  },
+  {
+    title: "Publish",
+    description: "Send it to LinkedIn, Instagram, and Facebook.",
+  },
+  {
+    title: "Schedule",
+    description: "Lock the next slot and keep momentum going.",
   },
 ];
 
@@ -98,22 +121,22 @@ const pricingPlans = [
   <main class="landing-shell">
     <section class="hero-section">
       <div class="hero-copy">
-        <p class="eyebrow">Consistency engine for founders, marketers, and business owners</p>
-        <h1>Turn captured ideas into LinkedIn content you can publish consistently.</h1>
+        <p class="eyebrow">Consistency engine for founders and lean teams</p>
+        <h1>Turn ideas into content you can publish across LinkedIn, Instagram, and Facebook.</h1>
         <p class="hero-description">
-          Upload a screenshot, paste a post, or drop an idea. FounderContent AI turns raw input
-          into hooks, posts, and a workflow that helps you keep showing up without burning out.
+          Capture a thought, turn it into a post, schedule it, and stay visible without burning out.
+          Founder Content is built for consistency, not one-off drafts.
         </p>
 
         <div class="cta-row">
           <router-link class="primary-cta" :to="appRoutes.signup">
-            Create your first post in 30 seconds
+            Create your first post → publish it in minutes
           </router-link>
           <a class="secondary-cta" href="/#demo">See how it works</a>
         </div>
 
-        <p class="hero-loop">Capture → Generate → Schedule → Stay visible.</p>
-        <p class="hero-hook">The goal is not more posts. It is consistent content that compounds.</p>
+        <p class="hero-loop">Capture → Generate → Schedule → Publish everywhere.</p>
+        <p class="hero-hook">Most people do not fail at content because they lack ideas. They fail because they do not publish consistently.</p>
       </div>
 
       <div class="hero-visual">
@@ -126,24 +149,45 @@ const pricingPlans = [
           <div class="output-stack">
             <span>3 hooks</span>
             <span>1 post</span>
-            <span>Score 86/100</span>
-            <span>Copy-ready</span>
+            <span>LinkedIn</span>
+            <span>Instagram + Facebook</span>
           </div>
         </article>
 
         <article class="proof-card">
-          <p class="panel-label">Why it converts</p>
+          <p class="panel-label">Ready to ship</p>
           <ul class="proof-points">
             <li>Clear hook with tension</li>
-            <li>Founder-native tone</li>
-            <li>Built for repeatable publishing, not one-off drafts</li>
+            <li>Founder-native tone that still adapts across channels</li>
+            <li>Ready to publish now or schedule for the next window</li>
           </ul>
-          <router-link class="proof-link" :to="appRoutes.signup">Generate your first post</router-link>
+          <router-link class="proof-link" :to="appRoutes.signup">Create a post and ship it</router-link>
+        </article>
+      </div>
+    </section>
+
+    <section class="content-section publish-bridge-section">
+      <div class="section-header">
+        <p class="eyebrow">From idea to published post in minutes</p>
+        <h2>Go from raw thought to scheduled multi-platform content without breaking the flow.</h2>
+        <p class="section-description">
+          Founder Content wins when the idea becomes something real fast: captured, shaped, published, and queued for the next slot.
+        </p>
+      </div>
+
+      <div class="publish-flow-grid">
+        <article v-for="(step, index) in publishFlow" :key="step.title" class="publish-flow-card">
+          <span class="publish-flow-index">0{{ index + 1 }}</span>
+          <strong>{{ step.title }}</strong>
+          <p>{{ step.description }}</p>
         </article>
       </div>
     </section>
 
     <section id="demo" class="content-section">
+      <p class="conversion-line">
+        Most people do not fail at content because they lack ideas. They fail because they do not publish consistently.
+      </p>
       <div class="section-header">
         <p class="eyebrow">Demo</p>
         <h2>Show the transformation instantly.</h2>
@@ -174,6 +218,10 @@ const pricingPlans = [
               Nobody tells you how isolating this journey can be. Not because you are alone, but
               because you cannot share every fear, every risk, or every hard call in real time.
             </p>
+          </div>
+          <div class="demo-block">
+            <span class="demo-label">Next</span>
+            <p>This post is ready to publish instantly or schedule across LinkedIn, Instagram, and Facebook.</p>
           </div>
         </article>
       </div>
@@ -211,9 +259,9 @@ const pricingPlans = [
     <section class="content-section">
       <div class="section-header">
         <p class="eyebrow">Features</p>
-        <h2>Keep the story tight.</h2>
+        <h2>Generate once. Publish everywhere.</h2>
         <p class="section-description">
-          This product wins by helping people start faster, remix smarter, and keep a publishing rhythm they can actually maintain.
+          This product wins by helping people start faster, shape stronger messages, and keep a publishing rhythm they can actually maintain.
         </p>
       </div>
 
@@ -261,14 +309,14 @@ const pricingPlans = [
 
     <section class="final-cta">
       <p class="eyebrow">Final CTA</p>
-      <h2>Build a content system you can actually keep.</h2>
+      <h2>Build a content system you can actually keep and publish everywhere.</h2>
       <p>
-        Turn anything you capture into a repeatable LinkedIn workflow, then move from scattered ideas
-        to consistent publishing without rebuilding momentum every day.
+        Turn ideas into posts and distribute them across platforms without losing momentum.
+        Capture once, generate faster, and stay visible without rebuilding the system every day.
       </p>
       <div class="cta-row">
         <router-link class="primary-cta" :to="appRoutes.signup">
-          Create your first post
+          Create your first post → publish it in minutes
         </router-link>
         <a class="secondary-cta" href="/#pricing">See pricing</a>
       </div>
@@ -557,6 +605,11 @@ h1 {
   margin-top: 24px;
 }
 
+.publish-bridge-section {
+  background:
+    linear-gradient(180deg, rgba(255, 245, 236, 0.94) 0%, rgba(255, 250, 245, 0.88) 100%);
+}
+
 .section-header {
   max-width: 760px;
 }
@@ -585,6 +638,49 @@ h1 {
   grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
 }
 
+.publish-flow-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 26px;
+}
+
+.publish-flow-card {
+  display: grid;
+  gap: 10px;
+  padding: 22px;
+  border: 1px solid rgba(112, 84, 62, 0.14);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 16px 38px rgba(76, 49, 26, 0.06);
+}
+
+.publish-flow-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: rgba(215, 102, 52, 0.12);
+  color: #9b5d34;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.publish-flow-card strong {
+  font-size: 1.2rem;
+  line-height: 1.1;
+  color: #1f1814;
+}
+
+.publish-flow-card p {
+  margin: 0;
+  color: #5b4f47;
+  line-height: 1.6;
+}
+
 .demo-card {
   padding: 28px;
 }
@@ -610,6 +706,14 @@ h1 {
 
 .demo-output-card {
   background: linear-gradient(180deg, rgba(240, 251, 247, 0.96) 0%, rgba(248, 252, 250, 0.94) 100%);
+}
+
+.conversion-line {
+  margin: 0 0 18px;
+  color: #24474d;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.5;
 }
 
 .steps-grid {
@@ -724,6 +828,7 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .publish-flow-grid,
   .steps-grid,
   .info-grid {
     grid-template-columns: 1fr 1fr;
@@ -747,10 +852,12 @@ h1 {
   .preview-card,
   .demo-card,
   .info-card,
-  .pricing-card {
+  .pricing-card,
+  .publish-flow-card {
     padding: 22px;
   }
 
+  .publish-flow-grid,
   .steps-grid,
   .info-grid {
     grid-template-columns: 1fr;

@@ -51,7 +51,12 @@ import {
 import {
   findConnectedFacebookAccount,
   findConnectedInstagramAccount,
+  findConnectedLinkedInAccount,
+  formatSelectedPlatformsLabel,
   looksLikeSocialReconnectIssue,
+  parsePublishableSocialPlatform,
+  parsePublishableSocialPlatforms,
+  PUBLISHABLE_SOCIAL_PLATFORMS,
   resolveExternalPostLabel,
   resolveScheduledIdentityLabel,
   resolveSocialPlatformLabel,
@@ -123,12 +128,14 @@ const scheduleTime = ref("09:00");
 const audienceTimezone = ref("");
 const isConnectingLinkedIn = ref(false);
 const isConnectingMeta = ref(false);
-const selectedSchedulingPlatform = ref<PublishableSocialPlatform>(
-  route.query.platform === "instagram"
-    ? "instagram"
-    : route.query.platform === "facebook"
-      ? "facebook"
-      : "linkedin",
+const initialSchedulingPlatforms = parsePublishableSocialPlatforms(route.query.platforms);
+const initialSchedulingPlatform =
+  parsePublishableSocialPlatform(route.query.platform)
+  ?? initialSchedulingPlatforms[0]
+  ?? "linkedin";
+const selectedSchedulingPlatform = ref<PublishableSocialPlatform>(initialSchedulingPlatform);
+const selectedSchedulingPlatforms = ref<PublishableSocialPlatform[]>(
+  initialSchedulingPlatforms.length > 0 ? initialSchedulingPlatforms : [initialSchedulingPlatform],
 );
 const isMetaSelectionModalOpen = ref(false);
 const pendingMetaSession = ref("");
@@ -242,10 +249,15 @@ const audienceTimezoneOptions = computed(() => {
   }));
 });
 
+const connectedLinkedInAccount = computed(() => findConnectedLinkedInAccount(socialAccounts.value));
 const connectedFacebookAccount = computed(() => findConnectedFacebookAccount(socialAccounts.value));
 const connectedInstagramAccount = computed(() => findConnectedInstagramAccount(socialAccounts.value));
 const selectedSchedulingPlatformLabel = computed(() => resolveSocialPlatformLabel(selectedSchedulingPlatform.value));
-const selectedSchedulingGuardrail = computed(() => {
+const selectedSchedulingPlatformsLabel = computed(() =>
+  formatSelectedPlatformsLabel(selectedSchedulingPlatforms.value),
+);
+
+function resolveSchedulingGuardrail(platform: PublishableSocialPlatform): string {
   const readyImageCount = selectedBacklogPostAssets.value.filter((asset) => asset.type === "image").length;
   const readyVideoCount = selectedBacklogPostAssets.value.filter((asset) => asset.type === "video").length;
 
@@ -253,15 +265,19 @@ const selectedSchedulingGuardrail = computed(() => {
     return "Mixed image and video drafts are not publishable yet. Use only one media type per post.";
   }
 
-  if (selectedSchedulingPlatform.value === "linkedin" && readyVideoCount > 0) {
+  if (platform === "linkedin" && !connectedLinkedInAccount.value) {
+    return "Connect LinkedIn before queueing LinkedIn posts.";
+  }
+
+  if (platform === "linkedin" && readyVideoCount > 0) {
     return "Video is publishable on Instagram and Facebook. LinkedIn video support is coming soon.";
   }
 
-  if (selectedSchedulingPlatform.value === "facebook" && !connectedFacebookAccount.value) {
+  if (platform === "facebook" && !connectedFacebookAccount.value) {
     return "Connect a Facebook Page before queueing Facebook posts.";
   }
 
-  if (selectedSchedulingPlatform.value === "instagram") {
+  if (platform === "instagram") {
     if (!connectedInstagramAccount.value) {
       return "Connect a Facebook Page with a linked Instagram business account before queueing Instagram posts.";
     }
@@ -279,7 +295,7 @@ const selectedSchedulingGuardrail = computed(() => {
     }
   }
 
-  if (selectedSchedulingPlatform.value === "facebook") {
+  if (platform === "facebook") {
     if (readyVideoCount > 1) {
       return "Facebook video scheduling currently supports exactly 1 ready video on the draft.";
     }
@@ -289,12 +305,104 @@ const selectedSchedulingGuardrail = computed(() => {
     }
   }
 
-  if (selectedSchedulingPlatform.value === "linkedin" && readyImageCount > 20) {
+  if (platform === "linkedin" && readyImageCount > 20) {
     return "LinkedIn image scheduling supports up to 20 ready images on the draft.";
   }
 
   return "";
+}
+
+const selectedSchedulingGuardrail = computed(() => resolveSchedulingGuardrail(selectedSchedulingPlatform.value));
+const selectableSchedulingPlatforms = computed(() =>
+  PUBLISHABLE_SOCIAL_PLATFORMS.filter((platform) => resolveSchedulingGuardrail(platform) === ""),
+);
+const canScheduleSelectedPlatforms = computed(() => selectedSchedulingPlatforms.value.length > 0);
+const selectedSchedulingCapacityGuardrail = computed(() => {
+  if (scheduledQueueRemaining.value === null || selectedSchedulingPlatforms.value.length === 0) {
+    return "";
+  }
+
+  if (selectedSchedulingPlatforms.value.length > scheduledQueueRemaining.value) {
+    return scheduledQueueRemaining.value === 0
+      ? queueLimitPrompt.value
+      : `This workspace can queue ${scheduledQueueRemaining.value} more post${scheduledQueueRemaining.value === 1 ? "" : "s"} right now. Select fewer platforms or upgrade to queue all destinations.`;
+  }
+
+  return "";
 });
+
+function isSchedulingPlatformSelected(platform: PublishableSocialPlatform): boolean {
+  return selectedSchedulingPlatforms.value.includes(platform);
+}
+
+function resolveSchedulingPlatformHint(platform: PublishableSocialPlatform): string {
+  const guardrail = resolveSchedulingGuardrail(platform);
+
+  if (guardrail) {
+    return guardrail;
+  }
+
+  if (platform === "instagram") {
+    return connectedInstagramAccount.value
+      ? "Instagram business account ready for queueing."
+      : "Connect Instagram through Meta.";
+  }
+
+  if (platform === "facebook") {
+    return connectedFacebookAccount.value
+      ? "Workspace Facebook Page is ready."
+      : "Connect a Facebook Page to enable queueing.";
+  }
+
+  return connectedLinkedInAccount.value
+    ? "LinkedIn identity ready for queueing."
+    : "Connect LinkedIn to enable queueing.";
+}
+
+function toggleSchedulingPlatform(platform: PublishableSocialPlatform): void {
+  selectedSchedulingPlatform.value = platform;
+
+  if (resolveSchedulingGuardrail(platform) !== "") {
+    return;
+  }
+
+  if (isSchedulingPlatformSelected(platform)) {
+    selectedSchedulingPlatforms.value = selectedSchedulingPlatforms.value.filter(
+      (candidate) => candidate !== platform,
+    );
+    return;
+  }
+
+  selectedSchedulingPlatforms.value = [
+    ...selectedSchedulingPlatforms.value,
+    platform,
+  ];
+}
+
+watch(
+  selectableSchedulingPlatforms,
+  (nextSelectable) => {
+    const nextSelected = PUBLISHABLE_SOCIAL_PLATFORMS.filter(
+      (platform) =>
+        nextSelectable.includes(platform) && selectedSchedulingPlatforms.value.includes(platform),
+    );
+
+    if (
+      nextSelected.length !== selectedSchedulingPlatforms.value.length
+      || nextSelected.some((platform, index) => platform !== selectedSchedulingPlatforms.value[index])
+    ) {
+      selectedSchedulingPlatforms.value = nextSelected;
+    }
+
+    if (
+      selectedSchedulingPlatforms.value.length > 0
+      && !selectedSchedulingPlatforms.value.includes(selectedSchedulingPlatform.value)
+    ) {
+      selectedSchedulingPlatform.value = selectedSchedulingPlatforms.value[0];
+    }
+  },
+  { immediate: true },
+);
 
 const postsByDayKey = computed(() => {
   const grouped = new Map<string, ScheduledPost[]>();
@@ -859,12 +967,11 @@ function syncSelection(): void {
 
 async function consumeIncomingDraftSelection(): Promise<void> {
   const incomingDraftId = typeof route.query.draftId === "string" ? route.query.draftId.trim() : "";
+  const incomingPlatforms = parsePublishableSocialPlatforms(route.query.platforms);
   const incomingPlatform =
-    route.query.platform === "instagram"
-      ? "instagram"
-      : route.query.platform === "facebook"
-        ? "facebook"
-        : "linkedin";
+    parsePublishableSocialPlatform(route.query.platform)
+    ?? incomingPlatforms[0]
+    ?? "linkedin";
 
   if (!incomingDraftId) {
     return;
@@ -873,11 +980,19 @@ async function consumeIncomingDraftSelection(): Promise<void> {
   const nextQuery = { ...route.query };
   delete nextQuery.draftId;
   delete nextQuery.platform;
+  delete nextQuery.platforms;
 
   const matchingDraft = unscheduledBacklog.value.find((asset) => asset.id === incomingDraftId);
 
   if (matchingDraft) {
     selectedSchedulingPlatform.value = incomingPlatform;
+    if (incomingPlatforms.length > 0) {
+      selectedSchedulingPlatforms.value = incomingPlatforms.filter(
+        (platform) => resolveSchedulingGuardrail(platform) === "",
+      );
+    } else if (resolveSchedulingGuardrail(incomingPlatform) === "") {
+      selectedSchedulingPlatforms.value = [incomingPlatform];
+    }
     selectBacklogAsset(matchingDraft.id, selectedGridDateKey.value || toDateKeyInTimezone(new Date(), userTimezone));
     feedbackMessage.value = "Draft loaded from the result page. Pick the slot and schedule it.";
     await router.replace({ query: nextQuery });
@@ -1107,13 +1222,18 @@ async function scheduleSelectedAsset(): Promise<void> {
     return;
   }
 
+  if (!canScheduleSelectedPlatforms.value) {
+    errorMessage.value = "Select at least one publishable platform before queueing this draft.";
+    return;
+  }
+
   if (queueLimitReached.value) {
     errorMessage.value = queueLimitPrompt.value;
     return;
   }
 
-  if (selectedSchedulingGuardrail.value) {
-    errorMessage.value = selectedSchedulingGuardrail.value;
+  if (selectedSchedulingCapacityGuardrail.value) {
+    errorMessage.value = selectedSchedulingCapacityGuardrail.value;
     return;
   }
 
@@ -1128,44 +1248,63 @@ async function scheduleSelectedAsset(): Promise<void> {
   errorMessage.value = "";
   feedbackMessage.value = "";
 
-  const scheduleRequest = {
-    businessId: resolvedBusinessId.value,
-    platform: selectedSchedulingPlatform.value,
-    contentText,
-    assetGroupId: selectedBacklogAsset.value.id,
-    slides: [],
-    scheduledAt: convertZonedDateTimeToUtcIso(
+  try {
+    const scheduledAt = convertZonedDateTimeToUtcIso(
       selectedAudienceDateKey.value,
       scheduleTime.value,
       audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
-    ),
-    audienceTimezone: audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
-  };
+    );
+    const successes: PublishableSocialPlatform[] = [];
+    const failures: string[] = [];
 
-  try {
-    let response;
+    for (const platform of selectedSchedulingPlatforms.value) {
+      const scheduleRequest = {
+        businessId: resolvedBusinessId.value,
+        platform,
+        contentText,
+        assetGroupId: selectedBacklogAsset.value.id,
+        slides: [],
+        scheduledAt,
+        audienceTimezone: audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
+      };
 
-    try {
-      response = await requestSchedulePost(scheduleRequest);
-    } catch (error) {
-      const warnings = extractSchedulingWarnings(error);
+      try {
+        try {
+          await requestSchedulePost(scheduleRequest);
+        } catch (error) {
+          const warnings = extractSchedulingWarnings(error);
 
-      if (warnings.length === 0 || !confirmSchedulingWarnings(warnings)) {
-        throw error;
+          if (warnings.length === 0 || !confirmSchedulingWarnings(warnings)) {
+            throw error;
+          }
+
+          await requestSchedulePost({
+            ...scheduleRequest,
+            ignoreSafetyWarnings: true,
+          });
+          feedbackMessage.value = "Draft scheduled with a manual safety override.";
+        }
+
+        successes.push(platform);
+      } catch (error) {
+        failures.push(
+          `${resolveSocialPlatformLabel(platform)}: ${error instanceof Error ? error.message : "Unable to queue."}`,
+        );
       }
+    }
 
-      response = await requestSchedulePost({
-        ...scheduleRequest,
-        ignoreSafetyWarnings: true,
-      });
-      feedbackMessage.value = "Draft scheduled with a manual safety override.";
+    if (successes.length === 0) {
+      errorMessage.value = failures[0] ?? "Unable to schedule this draft right now.";
+      return;
     }
 
     if (!feedbackMessage.value) {
-      feedbackMessage.value = `Added to ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value} for ${selectedSchedulingPlatformLabel.value}.`;
+      feedbackMessage.value = `Added to ${selectedAudienceDateLabel.value} at ${selectedAudienceTimeLabel.value} for ${formatSelectedPlatformsLabel(successes)}.`;
+    }
+    if (failures.length > 0) {
+      feedbackMessage.value = `${feedbackMessage.value} Failed: ${failures.join(" · ")}`;
     }
     selectedBacklogAssetId.value = "";
-    selectedScheduledPostId.value = response.scheduledPost.id;
     await loadPlannerData();
     const refreshedAccess = await refreshProductAccess(resolvedBusinessId.value);
     const queueFilledByThisSchedule =
@@ -2113,33 +2252,47 @@ onMounted(() => {
               </article>
 
               <div class="planner-inline-section">
-                <label class="planner-inline-label">Destination</label>
+                <label class="planner-inline-label">Select platforms</label>
                 <div class="planner-platform-selector">
-                  <button
-                    type="button"
-                    class="workspace-secondary-button compact"
-                    :data-active="selectedSchedulingPlatform === 'linkedin'"
-                    @click="selectedSchedulingPlatform = 'linkedin'"
+                  <article
+                    v-for="platform in PUBLISHABLE_SOCIAL_PLATFORMS"
+                    :key="platform"
+                    class="planner-platform-option"
+                    :data-active="selectedSchedulingPlatform === platform"
+                    :data-selected="isSchedulingPlatformSelected(platform)"
+                    :data-disabled="Boolean(resolveSchedulingGuardrail(platform))"
+                    @click="selectedSchedulingPlatform = platform"
                   >
-                    LinkedIn
-                  </button>
-                  <button
-                    type="button"
-                    class="workspace-secondary-button compact"
-                    :data-active="selectedSchedulingPlatform === 'facebook'"
-                    @click="selectedSchedulingPlatform = 'facebook'"
-                  >
-                    Facebook
-                  </button>
-                  <button
-                    type="button"
-                    class="workspace-secondary-button compact"
-                    :data-active="selectedSchedulingPlatform === 'instagram'"
-                    @click="selectedSchedulingPlatform = 'instagram'"
-                  >
-                    Instagram
-                  </button>
+                    <div class="planner-platform-option-topline">
+                      <label class="planner-platform-checkbox">
+                        <input
+                          type="checkbox"
+                          :checked="isSchedulingPlatformSelected(platform)"
+                          :disabled="Boolean(resolveSchedulingGuardrail(platform))"
+                          @click.stop="toggleSchedulingPlatform(platform)"
+                        />
+                        <span>{{ resolveSocialPlatformLabel(platform) }}</span>
+                      </label>
+                      <span class="planner-platform-state">
+                        {{
+                          isSchedulingPlatformSelected(platform)
+                            ? "Selected"
+                            : resolveSchedulingGuardrail(platform)
+                              ? "Unavailable"
+                              : "Ready"
+                        }}
+                      </span>
+                    </div>
+                    <p>{{ resolveSchedulingPlatformHint(platform) }}</p>
+                  </article>
                 </div>
+
+                <p v-if="selectedSchedulingCapacityGuardrail" class="planner-feedback danger">
+                  {{ selectedSchedulingCapacityGuardrail }}
+                </p>
+                <p v-else-if="selectedSchedulingGuardrail" class="planner-feedback danger">
+                  {{ selectedSchedulingGuardrail }}
+                </p>
 
                 <label class="planner-inline-label">Choose queue time</label>
                 <div class="planner-schedule-grid">
@@ -2167,9 +2320,6 @@ onMounted(() => {
 
                 <p class="workspace-description compact">
                   Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
-                </p>
-                <p v-if="selectedSchedulingGuardrail" class="planner-feedback danger">
-                  {{ selectedSchedulingGuardrail }}
                 </p>
                 <p
                   v-if="hasScheduledQueuePreview"
@@ -2212,7 +2362,12 @@ onMounted(() => {
                 <button
                   type="button"
                   class="workspace-primary-button"
-                  :disabled="isScheduling || !canQueueSelectedAsset || Boolean(selectedSchedulingGuardrail)"
+                  :disabled="
+                    isScheduling ||
+                    !canQueueSelectedAsset ||
+                    !canScheduleSelectedPlatforms ||
+                    Boolean(selectedSchedulingCapacityGuardrail)
+                  "
                   @click="scheduleSelectedAsset"
                 >
                   {{
@@ -2220,7 +2375,7 @@ onMounted(() => {
                       ? "Queue full"
                       : isScheduling
                         ? "Scheduling..."
-                        : `Add to ${selectedSchedulingPlatformLabel}`
+                        : `Queue for ${selectedSchedulingPlatformsLabel || selectedSchedulingPlatformLabel}`
                   }}
                 </button>
               </div>
@@ -2434,15 +2589,91 @@ onMounted(() => {
 }
 
 .planner-platform-selector {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 0.75rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.planner-platform-selector .workspace-secondary-button[data-active="true"] {
-  background: rgba(225, 104, 48, 0.12);
-  border-color: rgba(225, 104, 48, 0.38);
-  color: #b45321;
+.planner-platform-option {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(60, 41, 30, 0.12);
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+.planner-platform-option:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 14px 28px rgba(145, 84, 39, 0.08);
+}
+
+.planner-platform-option[data-active="true"] {
+  border-color: rgba(225, 104, 48, 0.34);
+  background: rgba(255, 247, 241, 0.96);
+}
+
+.planner-platform-option[data-selected="true"] {
+  border-color: color-mix(in srgb, var(--fc-success-text) 20%, rgba(60, 41, 30, 0.12));
+  background: color-mix(in srgb, var(--fc-success-bg) 44%, rgba(255, 255, 255, 0.92));
+}
+
+.planner-platform-option[data-disabled="true"] {
+  opacity: 0.84;
+}
+
+.planner-platform-option-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+}
+
+.planner-platform-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.planner-platform-checkbox input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fc-accent);
+}
+
+.planner-platform-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(60, 41, 30, 0.12);
+  background: rgba(249, 243, 237, 0.92);
+  color: rgba(74, 50, 34, 0.76);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.planner-platform-option[data-selected="true"] .planner-platform-state {
+  border-color: color-mix(in srgb, var(--fc-success-text) 16%, rgba(60, 41, 30, 0.12));
+  background: color-mix(in srgb, var(--fc-success-bg) 82%, rgba(255, 255, 255, 0.92));
+  color: var(--fc-success-text);
+}
+
+.planner-platform-option p {
+  margin: 0;
+  color: rgba(74, 50, 34, 0.72);
+  font-size: 0.92rem;
+  line-height: 1.45;
 }
 
 .planner-card-action-row {
@@ -3113,7 +3344,8 @@ onMounted(() => {
 
   .planner-command-summary,
   .planner-week-grid,
-  .planner-backlog-grid {
+  .planner-backlog-grid,
+  .planner-platform-selector {
     grid-template-columns: 1fr;
   }
 

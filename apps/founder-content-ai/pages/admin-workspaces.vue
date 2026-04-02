@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type {
   AdminWorkspaceListItem,
+  BillingEmailAddonTierCode,
   BusinessPlanCode,
   UpdateAdminWorkspaceAccessRequest,
 } from "../../../packages/shared-types";
@@ -17,6 +18,7 @@ const errorMessage = ref("");
 const feedbackMessage = ref("");
 const isMutating = ref(false);
 const selectedPlanByWorkspace = reactive<Record<string, BusinessPlanCode>>({});
+const selectedEmailTierByWorkspace = reactive<Record<string, BillingEmailAddonTierCode>>({});
 
 async function loadWorkspaces() {
   isLoading.value = true;
@@ -29,6 +31,7 @@ async function loadWorkspaces() {
 
     for (const workspace of response.workspaces) {
       selectedPlanByWorkspace[workspace.id] = workspace.access.planCode;
+      selectedEmailTierByWorkspace[workspace.id] = workspace.emailAddon?.tierCode ?? "none";
     }
   } catch (error) {
     errorMessage.value =
@@ -138,6 +141,24 @@ onMounted(() => {
           </article>
         </div>
 
+        <div v-if="workspace.emailAddon" class="workspace-email-billing-grid">
+          <article class="workspace-limit-chip">
+            <span>Email tier</span>
+            <strong>{{ workspace.emailAddon.label }}</strong>
+            <small>{{ workspace.emailAddon.source }}</small>
+          </article>
+          <article class="workspace-limit-chip">
+            <span>Subscribers</span>
+            <strong>{{ workspace.emailAddon.currentSubscriberCount }} / {{ workspace.emailAddon.subscriberLimit ?? "Custom" }}</strong>
+            <small>{{ workspace.emailAddon.usageState }}</small>
+          </article>
+          <article class="workspace-limit-chip">
+            <span>Emails this period</span>
+            <strong>{{ workspace.emailAddon.currentPeriodEmailUsage }} / {{ workspace.emailAddon.monthlyEmailLimit ?? "Custom" }}</strong>
+            <small>{{ workspace.emailAddon.billingPeriodStart.slice(0, 10) }} - {{ workspace.emailAddon.billingPeriodEnd.slice(0, 10) }}</small>
+          </article>
+        </div>
+
         <div class="workspace-plan-row">
           <label class="dashboard-field">
             <span>Plan</span>
@@ -166,6 +187,38 @@ onMounted(() => {
             "
           >
             Set plan
+          </button>
+        </div>
+
+        <div class="workspace-plan-row">
+          <label class="dashboard-field">
+            <span>Email tier</span>
+            <select v-model="selectedEmailTierByWorkspace[workspace.id]">
+              <option value="none">None</option>
+              <option value="starter_email">Starter Email</option>
+              <option value="growth_email">Growth Email</option>
+              <option value="scale_email">Scale Email</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+
+          <button
+            type="button"
+            class="dashboard-button secondary"
+            :disabled="isMutating"
+            @click="
+              applyWorkspaceAction(
+                workspace,
+                {
+                  action: 'set_email_billing',
+                  emailBillingTierCode: selectedEmailTierByWorkspace[workspace.id],
+                  note: 'Email billing tier changed from admin control.',
+                },
+                `${workspace.name} email tier updated.`,
+              )
+            "
+          >
+            Set email tier
           </button>
         </div>
 
@@ -292,6 +345,7 @@ onMounted(() => {
 
 .workspace-status-row,
 .workspace-limits-grid,
+.workspace-email-billing-grid,
 .workspace-action-row {
   display: flex;
   flex-wrap: wrap;
@@ -342,6 +396,11 @@ onMounted(() => {
 
 .workspace-plan-row .dashboard-field {
   min-width: 180px;
+}
+
+.workspace-limit-chip small {
+  color: var(--fc-text-muted);
+  line-height: 1.5;
 }
 
 .topbar-pill[data-state="active"] {

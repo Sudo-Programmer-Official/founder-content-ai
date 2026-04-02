@@ -17,6 +17,12 @@ export interface StripeCheckoutSession {
   metadata?: Record<string, string>;
 }
 
+export interface StripePromotionCode {
+  id: string;
+  code?: string | null;
+  active?: boolean;
+}
+
 export interface StripeSubscription {
   id: string;
   customer?: string | null;
@@ -40,6 +46,14 @@ export interface StripeEvent<TObject = unknown> {
   data: {
     object: TObject;
   };
+}
+
+export interface StripeInvoice {
+  id: string;
+  subscription?: string | null;
+  customer?: string | null;
+  billing_reason?: string | null;
+  paid?: boolean;
 }
 
 const STRIPE_API_BASE_URL = "https://api.stripe.com/v1";
@@ -95,10 +109,12 @@ export async function stripeApiRequest<TResponse>(
   options?: {
     method?: "GET" | "POST";
     body?: Record<string, string | number | boolean | null | undefined>;
+    query?: Record<string, string | number | boolean | null | undefined>;
   },
 ): Promise<TResponse> {
   const method = options?.method ?? "POST";
-  const requestUrl = `${STRIPE_API_BASE_URL}${path}`;
+  const queryString = buildStripeRequestBody(options?.query);
+  const requestUrl = `${STRIPE_API_BASE_URL}${path}${queryString ? `?${queryString}` : ""}`;
   const response = await fetch(requestUrl, {
     method,
     headers: {

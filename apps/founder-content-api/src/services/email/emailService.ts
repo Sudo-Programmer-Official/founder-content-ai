@@ -54,6 +54,11 @@ import { HttpError } from "../../utils/http.ts";
 import { logWarn } from "../../utils/logger.ts";
 import { safeCreateSystemErrorLog } from "../systemErrorLogService.ts";
 import { claimQueuedJobs, createJob, markJobCompleted, markJobFailed } from "../jobQueueService.ts";
+import {
+  buildEmailBillingSendWarnings,
+  getBillingEmailAddonSummary,
+  resolveBusinessPlanCode,
+} from "../billing/emailBillingService.ts";
 
 interface EmailSettingsRow extends QueryResultRow {
   id: string;
@@ -3552,6 +3557,8 @@ export async function sendEmailCampaign(
   actorUserId?: string,
 ): Promise<SendEmailCampaignResponse> {
   await ensureBusinessEmailSendingPreconditions(businessId);
+  let billingWarnings: string[] = [];
+  let emailAddon: SendEmailCampaignResponse["emailAddon"] | undefined;
 
   await withDbTransaction(async (client) => {
     const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
@@ -3569,6 +3576,12 @@ export async function sendEmailCampaign(
     if (contacts.length === 0) {
       throw new HttpError(400, "email_campaign_no_contacts", "This campaign has no active contacts.");
     }
+
+    const currentPlanCode = await resolveBusinessPlanCode(businessId, client);
+    emailAddon = await getBillingEmailAddonSummary(businessId, {
+      currentPlanCode,
+    });
+    billingWarnings = buildEmailBillingSendWarnings(emailAddon, contacts.length);
 
     await incrementBusinessDailyUsage(businessId, "emails", contacts.length);
     await ensureEmailSettingsRow(businessId, client);
@@ -3624,6 +3637,8 @@ export async function sendEmailCampaign(
   return {
     campaign,
     stats,
+    billingWarnings,
+    emailAddon,
   };
 }
 

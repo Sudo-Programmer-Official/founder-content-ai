@@ -158,6 +158,8 @@ export interface AICostSummary {
   }>;
 }
 
+import type { BillingEmailAddonSummary } from "./billing.ts";
+
 export interface PlatformOverview {
   totals: {
     totalUsers: number;
@@ -193,6 +195,7 @@ export interface AdminWorkspaceListItem {
   memberCount: number;
   lastActiveAt?: string;
   access: AdminWorkspaceAccessState;
+  emailAddon?: BillingEmailAddonSummary;
 }
 
 export interface UsageSummary {

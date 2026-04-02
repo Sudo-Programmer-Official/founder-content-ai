@@ -1,6 +1,55 @@
 import type { ScheduledPost, SocialAccount, SocialAccountIdentity } from "../../../packages/shared-types";
 
 export type PublishableSocialPlatform = "linkedin" | "instagram" | "facebook";
+export const PUBLISHABLE_SOCIAL_PLATFORMS: PublishableSocialPlatform[] = [
+  "linkedin",
+  "facebook",
+  "instagram",
+];
+
+export function parsePublishableSocialPlatform(
+  value: unknown,
+): PublishableSocialPlatform | null {
+  return value === "instagram" || value === "facebook" || value === "linkedin"
+    ? value
+    : null;
+}
+
+export function parsePublishableSocialPlatforms(
+  value: unknown,
+): PublishableSocialPlatform[] {
+  const rawValues = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",")
+      : [];
+
+  const parsed = rawValues
+    .map((candidate) => parsePublishableSocialPlatform(typeof candidate === "string" ? candidate.trim() : candidate))
+    .filter((candidate): candidate is PublishableSocialPlatform => candidate !== null);
+
+  return PUBLISHABLE_SOCIAL_PLATFORMS.filter((platform) => parsed.includes(platform));
+}
+
+export function formatSelectedPlatformsLabel(
+  platforms: PublishableSocialPlatform[],
+): string {
+  const labels = platforms.map((platform) => resolveSocialPlatformLabel(platform));
+
+  if (labels.length === 0) {
+    return "";
+  }
+
+  if (labels.length === 1) {
+    return labels[0];
+  }
+
+  if (labels.length === 2) {
+    return `${labels[0]} + ${labels[1]}`;
+  }
+
+  return `${labels[0]} + ${labels.length - 1} more`;
+}
 
 export function resolveSocialPlatformLabel(platform: PublishableSocialPlatform): string {
   if (platform === "instagram") {
