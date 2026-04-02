@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { isIP } from "node:net";
+import sharp from "sharp";
 import type { PostAsset, ScheduledPostSlide } from "../../../../packages/shared-types/index.ts";
 import { HttpError } from "../utils/http.ts";
 import { logInfo, logWarn } from "../utils/logger.ts";
@@ -7,6 +8,7 @@ import {
   createPostAssetDownloadUrl,
   createPostAssetPublicUrl,
   downloadPostAssetBytes,
+  uploadPostAssetBytesToStorage,
 } from "./postAssetService.ts";
 import {
   getLinkedInPublishingCredentialsForBusiness,
@@ -116,6 +118,11 @@ function resolvePublishingChannelLabel(channel: "linkedin" | "facebook" | "insta
     case "instagram":
       return "Instagram";
   }
+}
+
+function isAcceptedInstagramImageMimeType(mimeType: string): boolean {
+  const normalized = mimeType.trim().toLowerCase();
+  return normalized === "image/jpeg" || normalized === "image/jpg";
 }
 
 export function validatePublishMediaForChannel(input: {
@@ -993,14 +1000,66 @@ function isAcceptedInstagramMediaContentType(
   expectedKind: "image" | "video",
 ): boolean {
   if (expectedKind === "image") {
-    return (
-      contentType === "image/jpeg"
-      || contentType === "image/png"
-      || contentType === "image/webp"
-    );
+    return contentType === "image/jpeg";
   }
 
   return contentType.startsWith("video/");
+}
+
+function buildInstagramNormalizedStorageKey(asset: Pick<PostAsset, "storageKey" | "id">): string {
+  const lastSlashIndex = asset.storageKey.lastIndexOf("/");
+
+  if (lastSlashIndex < 0) {
+    return `${asset.storageKey}.instagram.jpg`;
+  }
+
+  const directory = asset.storageKey.slice(0, lastSlashIndex);
+  return `${directory}/instagram-normalized/${asset.id}.jpg`;
+}
+
+async function createInstagramReadyImageUrl(asset: PostAsset): Promise<string> {
+  if (asset.type !== "image") {
+    throw new HttpError(
+      400,
+      "instagram_invalid_image_format",
+      "Instagram image publishing requires a ready image asset.",
+    );
+  }
+
+  if (isAcceptedInstagramImageMimeType(asset.mimeType)) {
+    return resolveInstagramAssetUrl(
+      asset,
+      "Instagram publishing requires a stable public HTTPS image URL.",
+      "instagram_image_url_not_public",
+    );
+  }
+
+  logInfo("Normalizing non-JPEG image for Instagram publishing.", {
+    assetId: asset.id,
+    sourceMimeType: asset.mimeType,
+  });
+
+  const sourceBytes = await downloadPostAssetBytes(asset);
+  const normalizedBytes = await sharp(sourceBytes)
+    .flatten({ background: "#ffffff" })
+    .jpeg({
+      quality: 90,
+      mozjpeg: true,
+    })
+    .toBuffer();
+  const normalizedStorageKey = buildInstagramNormalizedStorageKey(asset);
+
+  await uploadPostAssetBytesToStorage({
+    storageKey: normalizedStorageKey,
+    bytes: normalizedBytes,
+    mimeType: "image/jpeg",
+  });
+
+  return resolveInstagramAssetUrl(
+    { storageKey: normalizedStorageKey },
+    "Instagram publishing requires a stable public HTTPS image URL.",
+    "instagram_image_url_not_public",
+  );
 }
 
 async function assertMetaCanFetchAssetUrl(
@@ -1104,10 +1163,15 @@ async function assertMetaCanFetchAssetUrl(
   const contentLength = resolveMediaContentLength(response);
 
   if (!isAcceptedInstagramMediaContentType(contentType, expectedKind)) {
+    const message =
+      expectedKind === "image"
+        ? `Instagram publishing requires image/jpeg assets. The selected media URL returned ${contentType || "an unknown content type"}.`
+        : `The selected media URL did not return a valid ${expectedKind} content type.`;
+
     throw new HttpError(
       422,
       errorCode,
-      `The selected media URL did not return a valid ${expectedKind} content type.`,
+      message,
       { mediaUrl: safeUrl, contentType },
     );
   }
@@ -1164,11 +1228,7 @@ async function createInstagramImageContainer(input: {
   caption?: string;
   isCarouselItem?: boolean;
 }): Promise<string> {
-  const imageUrl = resolveInstagramAssetUrl(
-    input.asset,
-    "Instagram publishing requires a stable public HTTPS image URL.",
-    "instagram_image_url_not_public",
-  );
+  const imageUrl = await createInstagramReadyImageUrl(input.asset);
   await assertMetaCanFetchAssetUrl(imageUrl, "image", "instagram_media_invalid");
   const creation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
     `${input.instagramUserId}/media`,

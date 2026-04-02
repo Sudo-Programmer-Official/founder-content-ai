@@ -1112,6 +1112,36 @@ export async function downloadPostAssetBytes(asset: Pick<PostAsset, "storageKey"
   return Buffer.from(arrayBuffer);
 }
 
+export async function uploadPostAssetBytesToStorage(input: {
+  storageKey: string;
+  bytes: Buffer;
+  mimeType: string;
+}): Promise<void> {
+  const uploadUrl = createS3PresignedUrl({
+    method: "PUT",
+    key: input.storageKey,
+    expiresInSeconds: 300,
+    contentType: input.mimeType,
+  });
+
+  const response = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      "Content-Type": input.mimeType,
+      "Content-Length": String(input.bytes.byteLength),
+    },
+    body: input.bytes,
+  });
+
+  if (!response.ok) {
+    throw new HttpError(
+      502,
+      "post_asset_upload_failed",
+      "Unable to store the normalized media asset in storage.",
+    );
+  }
+}
+
 export function createPostAssetDownloadUrl(
   asset: Pick<PostAsset, "storageKey">,
   expiresInSeconds = 3600,
