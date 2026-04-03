@@ -131,7 +131,7 @@ const PLAN_MONTHLY_GENERATION_LIMITS: Record<BusinessPlanCode, number | null> = 
 };
 
 const PLAN_SCHEDULED_QUEUE_LIMITS: Record<BusinessPlanCode, number | null> = {
-  free: 1,
+  free: 2,
   pro: null,
   growth: null,
   custom: null,

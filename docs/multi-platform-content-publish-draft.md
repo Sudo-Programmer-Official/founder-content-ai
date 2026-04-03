@@ -134,6 +134,65 @@ That guarantees:
 - retries stay platform-specific
 - rate limits and expired tokens stay isolated
 
+## Implemented Publish Ledger
+
+The repo now has a real publish ledger for both manual and scheduled delivery.
+
+Tables:
+
+- `publish_attempts`
+  - one parent row per publish action
+- `publish_attempt_platforms`
+  - one child row per selected platform
+
+Each platform row stores:
+
+- status
+- external platform ids
+- permalink or external URL when available
+- error code and message
+- media summary
+- retry lineage back to the failed platform row it replaces
+
+Parent attempt status is derived from child rows:
+
+- `processing`
+- `success`
+- `partial`
+- `failed`
+
+This is the current system-of-record for publish history.
+
+## Retry Model
+
+The implemented retry rule is:
+
+- retry only failed platforms
+- create a new publish attempt on every retry
+- link the new attempt back to the prior failed platform rows
+- never repost a platform that already succeeded for the same action
+
+This is important for both UX and data safety:
+
+- LinkedIn can remain posted while Instagram is retried
+- Facebook can recover later without creating duplicate LinkedIn posts
+- the history page can show the full attempt chain instead of collapsing failures
+
+## UI Model
+
+The current frontend behavior now matches the execution model:
+
+- result page shows per-platform status chips and external links
+- partial failures switch the CTA to `Retry failed only`
+- history page reads from the publish ledger, not ad hoc scheduled-post state
+- publish detail shows success links, failure reasons, and retry actions
+
+That means manual publish and scheduled publish now share one mental model:
+
+- one attempt
+- many platform results
+- selective recovery when a subset fails
+
 ### Worker Strategy
 
 Keep one shared worker process, but move toward one generic platform dispatcher:
@@ -237,6 +296,19 @@ Now it also creates:
 
 - `PATCH /api/schedule-items/:scheduleItemId`
   - edit one platform-specific delivery
+
+### Implemented Publish APIs
+
+The repo now exposes:
+
+- `POST /api/publish-attempts`
+  - manual multi-platform publish
+- `GET /api/publish-attempts`
+  - publish history list
+- `GET /api/publish-attempts/:publishAttemptId`
+  - publish attempt detail
+- `POST /api/publish-attempts/:publishAttemptId/retry-failed`
+  - retry failed platforms only
 
 ## UI Direction
 

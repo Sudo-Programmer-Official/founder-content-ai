@@ -651,7 +651,7 @@ const queuePreviewHeadline = computed(() => {
     return `${scheduledQueueLimit.value} of ${scheduledQueueLimit.value} queued`;
   }
 
-  return `${scheduledQueueRemaining.value} of ${scheduledQueueLimit.value} queue slots left`;
+  return `${scheduledQueueRemaining.value} of ${scheduledQueueLimit.value} queue slot${scheduledQueueRemaining.value === 1 ? "" : "s"} left`;
 });
 const queuePreviewCopy = computed(() => {
   if (!hasScheduledQueuePreview.value) {
@@ -659,10 +659,10 @@ const queuePreviewCopy = computed(() => {
   }
 
   if (queueLimitReached.value) {
-    return "Your first scheduled post is locked in. Upgrade to plan the rest of your week and stay consistent.";
+    return "Your free queue is full. Upgrade to plan the rest of your week and stay consistent.";
   }
 
-  return "Queue one post for free, keep the best-time guidance visible, then upgrade when you want a real scheduling cadence.";
+  return `Queue up to ${scheduledQueueLimit.value} post${scheduledQueueLimit.value === 1 ? "" : "s"} for free, keep the best-time guidance visible, then upgrade when you want a real scheduling cadence.`;
 });
 const queueLimitPrompt = computed(() =>
   queueLimitReached.value
@@ -768,10 +768,8 @@ const selectedSchedulingCapacityGuardrail = computed(() => {
     return "";
   }
 
-  if (selectedPublishingPlatforms.value.length > scheduledQueueRemaining.value) {
-    return scheduledQueueRemaining.value === 0
-      ? queueLimitPrompt.value
-      : `This workspace can queue ${scheduledQueueRemaining.value} more post${scheduledQueueRemaining.value === 1 ? "" : "s"} right now. Select fewer platforms or upgrade to queue all destinations.`;
+  if (scheduledQueueRemaining.value === 0) {
+    return queueLimitPrompt.value;
   }
 
   return "";

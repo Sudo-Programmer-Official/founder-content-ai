@@ -161,3 +161,4 @@ Use the canonical docs in `../../docs/` as the source of truth:
 - `../../docs/architecture.md`
 - `../../docs/feature-spec.md`
 - `../../docs/task-priority.md`
+- `../../docs/handbook/social-publishing-runbook.md`

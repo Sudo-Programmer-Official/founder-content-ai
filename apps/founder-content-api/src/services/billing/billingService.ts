@@ -115,7 +115,7 @@ const BILLING_PLAN_BLUEPRINTS: BillingPlanBlueprint[] = [
     ctaLabel: "Always included",
     highlights: [
       "2 posts per day",
-      "1 scheduled post in queue",
+      "2 scheduled posts in queue",
       "Basic best-time preview",
     ],
   },

@@ -380,6 +380,14 @@ async function postMetaGraphForm<TPayload extends MetaGraphErrorPayload>(
       502,
       options?.errorCode ?? "instagram_post_failed",
       extractMetaGraphErrorMessage(payload, options?.fallbackMessage ?? "Meta Graph request failed."),
+      {
+        path,
+        statusCode: response.status,
+        errorCode: payload.error?.code,
+        errorSubcode: payload.error?.error_subcode,
+        errorType: payload.error?.type,
+        fbTraceId: payload.error?.fbtrace_id,
+      },
     );
   }
 
@@ -424,6 +432,14 @@ async function getMetaGraphJson<TPayload extends MetaGraphErrorPayload>(
       502,
       options?.errorCode ?? "instagram_post_failed",
       extractMetaGraphErrorMessage(payload, options?.fallbackMessage ?? "Meta Graph request failed."),
+      {
+        path,
+        statusCode: response.status,
+        errorCode: payload.error?.code,
+        errorSubcode: payload.error?.error_subcode,
+        errorType: payload.error?.type,
+        fbTraceId: payload.error?.fbtrace_id,
+      },
     );
   }
 
@@ -1308,6 +1324,20 @@ function isInstagramMediaFetchFailure(error: unknown): boolean {
   );
 }
 
+function isRetryableInstagramContainerError(error: unknown): error is HttpError {
+  if (!(error instanceof HttpError) || error.code !== "instagram_post_failed") {
+    return false;
+  }
+
+  const statusCode = Number(error.details?.statusCode);
+  const errorCode = Number(error.details?.errorCode);
+
+  return (
+    (statusCode === 500 && errorCode === 2)
+    || /unexpected error has occurred/i.test(error.message)
+  );
+}
+
 async function createInstagramImageContainer(input: {
   instagramUserId: string;
   accessToken: string;
@@ -1348,6 +1378,35 @@ async function createInstagramImageContainer(input: {
       );
     };
 
+  const createContainerWithRetry = async (
+    imageUrl: string,
+  ): Promise<{ id?: string } & MetaGraphErrorPayload> => {
+    let attempt = 0;
+
+    while (true) {
+      try {
+        return await createContainer(imageUrl);
+      } catch (error) {
+        if (!isRetryableInstagramContainerError(error) || attempt >= 1) {
+          throw error;
+        }
+
+        attempt += 1;
+        logWarn("Instagram media container request failed transiently. Retrying.", {
+          instagramUserId: input.instagramUserId,
+          imageUrl: normalizeAssetUrlForLogs(imageUrl),
+          isCarouselItem: Boolean(input.isCarouselItem),
+          attempt,
+          statusCode: error.details?.statusCode ?? null,
+          errorCode: error.details?.errorCode ?? null,
+          errorSubcode: error.details?.errorSubcode ?? null,
+          fbTraceId: error.details?.fbTraceId ?? null,
+        });
+        await sleep(1500 * attempt);
+      }
+    }
+  };
+
   const imageTarget = await createInstagramReadyImageUrl(input.asset);
 
   logInfo("Resolved Instagram publish media target.", {
@@ -1364,7 +1423,7 @@ async function createInstagramImageContainer(input: {
   let creation: { id?: string } & MetaGraphErrorPayload;
 
   try {
-    creation = await createContainer(imageTarget.finalUrl);
+    creation = await createContainerWithRetry(imageTarget.finalUrl);
   } catch (error) {
     if (
       isInstagramMediaFetchFailure(error)
@@ -1397,7 +1456,7 @@ async function createInstagramImageContainer(input: {
         );
       }
       try {
-        creation = await createContainer(imageTarget.fallbackUrl);
+        creation = await createContainerWithRetry(imageTarget.fallbackUrl);
       } catch (fallbackError) {
         normalizeInstagramMediaFetchError(fallbackError, imageTarget.fallbackUrl);
       }

@@ -103,3 +103,8 @@ No manual deployment is required for normal code changes.
 3. Confirm backend root directory is `apps/founder-content-api`.
 4. Confirm the API custom domain points to Render.
 5. Verify `GET /api/health` returns `{"status":"ok"}` after deploy.
+
+## Related Runbooks
+
+- `./handbook/social-publishing-runbook.md`
+  - working DNS, media host, Instagram smoke test, and publish history recovery flow

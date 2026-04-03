@@ -53,10 +53,19 @@ function buildDisabledFeatureMap(): ProductFeatureMap {
 async function loadScheduledQueueUsage(businessId: string): Promise<number> {
   const result = await queryDb<{ total: string | number }>(
     `
-      select count(*)::int as total
+      select count(
+        distinct coalesce(
+          distribution_group_id::text,
+          case
+            when asset_group_id is not null then asset_group_id::text || '|' || scheduled_at::text
+            when content_fingerprint is not null then content_fingerprint || '|' || scheduled_at::text
+            else id::text
+          end
+        )
+      )::int as total
       from scheduled_posts
       where business_id = $1
-        and platform in ('linkedin', 'instagram')
+        and platform in ('linkedin', 'instagram', 'facebook')
         and status in ('scheduled', 'processing', 'paused', 'failed')
     `,
     [businessId],

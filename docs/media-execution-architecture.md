@@ -59,6 +59,10 @@ founder-content-media/
           processed/
             {timestamp}_{randomId}_compressed.{ext}
             {timestamp}_{randomId}_thumb.{ext}
+  public-instagram/
+    {workspaceId}/
+      {postId}/
+        {assetId}.jpg
 ```
 
 Why this structure:
@@ -67,6 +71,7 @@ Why this structure:
 - post cleanup is simple
 - original and processed assets are clearly separated
 - naming collisions are avoided
+- Instagram gets a platform-safe derivative path that can stay public without exposing the whole bucket
 
 ## File Naming
 
@@ -196,6 +201,12 @@ Recommended allowed MIME types:
 - `image/webp`
 - `video/mp4` later
 
+Important Instagram rule:
+
+- user uploads can still be `image/png`
+- Instagram publish targets must be converted to `image/jpeg`
+- the Instagram publish path should create a fresh JPEG derivative instead of trusting the original uploaded bytes
+
 ## Media Limits
 
 Keep limits strict.
@@ -257,6 +268,85 @@ Important rule:
 
 - do not store LinkedIn asset URNs as permanent source-of-truth media records
 - generate them at publish time from S3-backed assets
+
+## Instagram Publish-Safe Media Flow
+
+Instagram is stricter than LinkedIn and Facebook.
+
+The working production rule for this repo is:
+
+- original assets stay in normal workspace storage
+- Instagram publish creates a dedicated JPEG derivative under `public-instagram/...`
+- Instagram publish uses a stable public URL for that derivative
+- website routing and media routing stay on separate hosts
+
+Current derivative flow:
+
+1. load the original uploaded image from S3
+2. flatten transparency to white
+3. convert to `srgb`
+4. encode a baseline JPEG
+5. upload that JPEG to `public-instagram/{workspaceId}/{postId}/{assetId}.jpg`
+6. publish Instagram using the platform-safe public URL
+
+This isolates Instagram-specific constraints from the rest of the media system.
+
+## Publish-Safe Host Separation
+
+Do not use the website hostname as the Instagram media hostname.
+
+Keep these concerns separate:
+
+- `foundercontent.ai` and `www.foundercontent.ai`
+  - website and app traffic
+- `media.foundercontent.ai`
+  - public media delivery for social crawlers
+
+Why this matters:
+
+- website hosts need HTML behavior, redirects, and app routing
+- Instagram needs a boring direct file host that returns the asset with no auth, no redirect, and no app shell
+
+## Instagram Delivery Rules
+
+For Instagram image publishing, the media URL must be:
+
+- public
+- HTTPS
+- direct file response
+- no auth
+- no signed query params
+- no redirect chain
+- stable long enough for Meta to fetch and process the asset
+- `Content-Type: image/jpeg`
+- valid `Content-Length`
+
+The repo now supports a dedicated Instagram media base URL:
+
+- `S3_INSTAGRAM_PUBLIC_BASE_URL`
+
+Recommended production value:
+
+- `https://media.foundercontent.ai`
+
+If that value is unset, Instagram should fall back to a compatible public object URL strategy rather than reusing general-purpose app media URLs.
+
+## Lessons Learned
+
+The Instagram debugging cycle surfaced a few durable rules:
+
+- a URL that works in the browser is not automatically acceptable to Meta crawlers
+- CloudFront, regional S3, global S3, and custom domains are not interchangeable from Meta's perspective
+- signed URLs are not acceptable for Instagram publishing
+- raw uploaded PNGs should not be trusted as publish-ready Instagram assets
+- per-platform retry and ledger state are mandatory because Facebook, Instagram, and LinkedIn fail independently
+
+The winning approach is:
+
+- keep the bucket private by default
+- expose only a narrow public prefix for Instagram-ready derivatives
+- deliver those derivatives from a dedicated public media host
+- keep publish-time logging rich enough to inspect the final URL, MIME, and Meta error codes
 
 This avoids stale destination asset references and keeps retries clean.
 

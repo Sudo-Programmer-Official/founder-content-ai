@@ -197,6 +197,57 @@ Recommended default:
 
 - `workspaces`
 
+### `S3_MEDIA_PUBLIC_BASE_URL`
+
+Purpose:
+
+- general public media base URL used when the backend needs a stable public URL for workspace assets
+
+Example:
+
+- `https://d1dkmcyl4t10d7.cloudfront.net`
+
+Important note:
+
+- this is the generic media host, not the Instagram-specific publish host
+- website delivery and public media delivery should stay on separate hosts
+
+### `S3_INSTAGRAM_PUBLIC_PREFIX`
+
+Purpose:
+
+- bucket prefix used for Instagram-ready public JPEG derivatives
+
+Recommended default:
+
+- `public-instagram`
+
+Behavior:
+
+- the backend writes Instagram publish-safe images into this prefix
+- this lets the system expose only a narrow public path instead of opening the whole bucket
+
+### `S3_INSTAGRAM_PUBLIC_BASE_URL`
+
+Purpose:
+
+- dedicated public base URL for Instagram publish media
+
+Recommended production value:
+
+- `https://media.foundercontent.ai`
+
+Behavior:
+
+- when set, Instagram publish uses this host for `public-instagram/...` assets
+- when unset, the backend falls back to a compatible public object URL strategy
+
+Operational rule:
+
+- point this at a static media host only
+- do not point this at the main site host
+- the response must be a direct file response, not HTML or an app route
+
 ### `S3_PRESIGNED_UPLOAD_TTL_SECONDS`
 
 Purpose:
