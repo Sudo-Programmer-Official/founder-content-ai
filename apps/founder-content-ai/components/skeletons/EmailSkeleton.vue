@@ -59,6 +59,16 @@ import Skeleton from "../ui/Skeleton.vue";
 .email-skeleton {
   display: grid;
   gap: 20px;
+  width: 100%;
+  min-width: 0;
+}
+
+.email-tabs-skeleton,
+.email-overview-skeleton,
+.email-main-skeleton,
+.skeleton-panel {
+  width: 100%;
+  min-width: 0;
 }
 
 .email-tabs-header-skeleton,
