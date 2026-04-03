@@ -3,6 +3,7 @@ import { HttpError, toErrorContext } from "../../utils/http.ts";
 import { logError, logInfo } from "../../utils/logger.ts";
 
 let pool: Pool | null = null;
+const tableColumnsCache = new Map<string, Promise<Set<string>>>();
 
 function resolveDatabaseUrl(): string {
   const databaseUrl = process.env.DATABASE_URL?.trim();
@@ -85,6 +86,36 @@ export async function queryDb<TRow extends QueryResultRow = QueryResultRow>(
     });
     throw error;
   }
+}
+
+export async function getTableColumnSet(
+  tableName: string,
+  schemaName = "public",
+): Promise<Set<string>> {
+  const cacheKey = `${schemaName}.${tableName}`;
+  const cached = tableColumnsCache.get(cacheKey);
+
+  if (cached) {
+    return new Set(await cached);
+  }
+
+  const pending = queryDb<{ column_name: string }>(
+    `
+      select column_name
+      from information_schema.columns
+      where table_schema = $1
+        and table_name = $2
+    `,
+    [schemaName, tableName],
+  )
+    .then((result) => new Set(result.rows.map((row) => row.column_name)))
+    .catch((error) => {
+      tableColumnsCache.delete(cacheKey);
+      throw error;
+    });
+
+  tableColumnsCache.set(cacheKey, pending);
+  return new Set(await pending);
 }
 
 export async function withDbClient<TResult>(

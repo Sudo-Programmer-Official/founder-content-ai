@@ -41,7 +41,7 @@ import {
   resolveScheduledQueueLimit,
 } from "./adminControlService.ts";
 import { updateContentPipelineItem } from "./controlDashboardService.ts";
-import { queryDb, withDbTransaction } from "./db/client.ts";
+import { getTableColumnSet, queryDb, withDbTransaction } from "./db/client.ts";
 import {
   enforceWorkspaceReadAccess,
   enforceWorkspaceWriteAccess,
@@ -296,17 +296,34 @@ async function loadScheduledQueueUsage(
   businessId: string,
   client?: PoolClient,
 ): Promise<number> {
+  const scheduledPostColumns = await getTableColumnSet("scheduled_posts");
+  const groupingBranches: string[] = [];
+
+  if (scheduledPostColumns.has("asset_group_id")) {
+    groupingBranches.push(
+      "when asset_group_id is not null then asset_group_id::text || '|' || scheduled_at::text",
+    );
+  }
+
+  if (scheduledPostColumns.has("content_fingerprint")) {
+    groupingBranches.push(
+      "when content_fingerprint is not null then content_fingerprint || '|' || scheduled_at::text",
+    );
+  }
+
+  const fallbackGroupingExpression = groupingBranches.length > 0
+    ? `case
+            ${groupingBranches.join("\n            ")}
+            else id::text
+          end`
+    : "id::text";
+  const queueIdentityExpression = scheduledPostColumns.has("distribution_group_id")
+    ? `coalesce(distribution_group_id::text, ${fallbackGroupingExpression})`
+    : fallbackGroupingExpression;
   const result = await executeQuery<ScheduledQueueUsageRow>(
     `
       select count(
-        distinct coalesce(
-          distribution_group_id::text,
-          case
-            when asset_group_id is not null then asset_group_id::text || '|' || scheduled_at::text
-            when content_fingerprint is not null then content_fingerprint || '|' || scheduled_at::text
-            else id::text
-          end
-        )
+        distinct ${queueIdentityExpression}
       )::int as total
       from scheduled_posts
       where business_id = $1
