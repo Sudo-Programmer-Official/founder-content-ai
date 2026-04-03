@@ -134,6 +134,16 @@ export interface EmailList {
   updatedAt?: string;
 }
 
+export interface EmailContactAttributes {
+  state?: string;
+  city?: string;
+  business_type?: string;
+  audience_type?: string;
+  language?: string;
+  plan?: string;
+  [key: string]: string | undefined;
+}
+
 export interface EmailContact {
   id: string;
   businessId: string;
@@ -141,6 +151,7 @@ export interface EmailContact {
   firstName?: string;
   lastName?: string;
   tags: string[];
+  attributes: EmailContactAttributes;
   status: EmailContactStatus;
   unsubscribedAt?: string;
   lastBounceAt?: string;
@@ -220,7 +231,13 @@ export type EmailContactImportField =
   | "name"
   | "firstName"
   | "lastName"
-  | "tags";
+  | "tags"
+  | "state"
+  | "city"
+  | "business_type"
+  | "audience_type"
+  | "language"
+  | "plan";
 
 export type EmailContactImportDuplicateStrategy = "upsert" | "skip";
 export type EmailJobStatus = "queued" | "processing" | "completed" | "failed" | "paused";
@@ -267,6 +284,7 @@ export interface EmailContactImportPreviewRow {
   firstName?: string;
   lastName?: string;
   tags: string[];
+  attributes: EmailContactAttributes;
   issues: string[];
   raw: Record<string, string>;
 }
@@ -348,6 +366,28 @@ export interface CreateEmailCampaignRequest {
 
 export interface CreateEmailCampaignResponse {
   campaign: EmailCampaign;
+}
+
+export interface UpdateEmailCampaignRequest {
+  listId: string;
+  name: string;
+  subject: string;
+  bodyHtml?: string;
+  bodyText?: string;
+  replyToEmail?: string;
+  content?: EmailCampaignContent;
+  sourceAssetId?: string;
+  sourceIdeaId?: string;
+  sourceTitle?: string;
+}
+
+export interface UpdateEmailCampaignResponse {
+  campaign: EmailCampaign;
+}
+
+export interface DeleteEmailCampaignResponse {
+  success: true;
+  campaignId: string;
 }
 
 export interface SendEmailCampaignRequest {

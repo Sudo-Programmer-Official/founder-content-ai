@@ -3,6 +3,7 @@ import type {
   CreateEmailCampaignResponse,
   CreateEmailDomainRequest,
   CreateEmailDomainResponse,
+  DeleteEmailCampaignResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
   EmailContactImportJobListResponse,
@@ -18,9 +19,11 @@ import type {
   QueueEmailContactsImportRequest,
   QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
+  UpdateEmailCampaignRequest,
+  UpdateEmailCampaignResponse,
   VerifyEmailDomainResponse,
 } from "../../../packages/shared-types";
-import { apiGet, apiPost } from "./api-client";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./api-client";
 
 export async function requestEmailLists(businessId: string): Promise<EmailListListResponse> {
   const encodedBusinessId = encodeURIComponent(businessId);
@@ -73,6 +76,7 @@ export async function requestEmailContacts(
     search?: string;
     status?: EmailContactStatus;
     listId?: string;
+    attributeFilters?: Record<string, string>;
     limit?: number;
   } = {},
 ): Promise<EmailContactListResponse> {
@@ -89,6 +93,19 @@ export async function requestEmailContacts(
 
   if (options.listId) {
     params.set("listId", options.listId);
+  }
+
+  if (options.attributeFilters) {
+    for (const [key, value] of Object.entries(options.attributeFilters)) {
+      const normalizedKey = key.trim();
+      const normalizedValue = value.trim();
+
+      if (!normalizedKey || !normalizedValue) {
+        continue;
+      }
+
+      params.set(`attribute.${normalizedKey}`, normalizedValue);
+    }
   }
 
   if (typeof options.limit === "number") {
@@ -120,6 +137,30 @@ export async function requestEmailCampaignCreate(
   return apiPost<CreateEmailCampaignRequest, CreateEmailCampaignResponse>(
     `/businesses/${encodedBusinessId}/email/campaigns`,
     payload,
+  );
+}
+
+export async function requestEmailCampaignUpdate(
+  businessId: string,
+  campaignId: string,
+  payload: UpdateEmailCampaignRequest,
+): Promise<UpdateEmailCampaignResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedCampaignId = encodeURIComponent(campaignId);
+  return apiPatch<UpdateEmailCampaignRequest, UpdateEmailCampaignResponse>(
+    `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}`,
+    payload,
+  );
+}
+
+export async function requestEmailCampaignDelete(
+  businessId: string,
+  campaignId: string,
+): Promise<DeleteEmailCampaignResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedCampaignId = encodeURIComponent(campaignId);
+  return apiDelete<DeleteEmailCampaignResponse>(
+    `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}`,
   );
 }
 

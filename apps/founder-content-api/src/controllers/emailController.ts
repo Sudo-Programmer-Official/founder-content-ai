@@ -4,6 +4,7 @@ import type {
   CreateEmailCampaignResponse,
   CreateEmailDomainRequest,
   CreateEmailDomainResponse,
+  DeleteEmailCampaignResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
   EmailContactListResponse,
@@ -20,6 +21,8 @@ import type {
   QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
   UnsubscribeEmailResponse,
+  UpdateEmailCampaignRequest,
+  UpdateEmailCampaignResponse,
   VerifyEmailDomainResponse,
 } from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
@@ -27,6 +30,7 @@ import { ensureCurrentUser } from "../services/authBusinessService.ts";
 import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import {
   createEmailCampaign,
+  deleteEmailCampaign,
   createEmailDomain,
   getEmailContactImportJob,
   getEmailDomainSettings,
@@ -40,6 +44,7 @@ import {
   queueEmailContactsImport,
   sendEmailCampaign,
   unsubscribeEmail,
+  updateEmailCampaign,
   verifyEmailDomain,
 } from "../services/email/emailService.ts";
 import { processSesWebhookNotification } from "../services/email/emailProviderEventService.ts";
@@ -63,6 +68,27 @@ function readEmailContactStatus(value: unknown): EmailContactStatus | undefined 
     normalized === "suppressed"
     ? normalized
     : undefined;
+}
+
+function readEmailContactAttributeFilters(query: Request["query"]): Record<string, string> | undefined {
+  const filters: Record<string, string> = {};
+
+  for (const [key, value] of Object.entries(query)) {
+    if (!key.startsWith("attribute.")) {
+      continue;
+    }
+
+    const attributeKey = key.slice("attribute.".length).trim();
+    const attributeValue = typeof value === "string" ? value.trim() : "";
+
+    if (!attributeKey || !attributeValue) {
+      continue;
+    }
+
+    filters[attributeKey] = attributeValue;
+  }
+
+  return Object.keys(filters).length > 0 ? filters : undefined;
 }
 
 function buildUnsubscribeHtml(input: {
@@ -285,6 +311,89 @@ export async function postEmailCampaign(
   }
 }
 
+export async function patchEmailCampaign(
+  request: Request<{ businessId: string; campaignId: string }, unknown, UpdateEmailCampaignRequest>,
+  response: Response<UpdateEmailCampaignResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+    const actor = await ensureCurrentUser(request.auth);
+    const result = await updateEmailCampaign(businessId, request.params.campaignId, actor.id, request.body);
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_campaign_update_failed",
+      message: "Unable to update email campaign.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_campaign_update_failed",
+      message: "Unable to update email campaign.",
+      logMessage: "Failed to update email campaign.",
+    });
+  }
+}
+
+export async function deleteEmailCampaignController(
+  request: Request<{ businessId: string; campaignId: string }>,
+  response: Response<DeleteEmailCampaignResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+    const result = await deleteEmailCampaign(businessId, request.params.campaignId);
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_campaign_delete_failed",
+      message: "Unable to delete email campaign.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_campaign_delete_failed",
+      message: "Unable to delete email campaign.",
+      logMessage: "Failed to delete email campaign.",
+    });
+  }
+}
+
 export async function postEmailCampaignSend(
   request: Request<{ businessId: string; campaignId: string }>,
   response: Response<SendEmailCampaignResponse | ApiError>,
@@ -423,6 +532,7 @@ export async function getEmailContacts(
       search: typeof request.query.search === "string" ? request.query.search : undefined,
       listId: typeof request.query.listId === "string" ? request.query.listId : undefined,
       status: readEmailContactStatus(request.query.status),
+      attributeFilters: readEmailContactAttributeFilters(request.query),
       limit:
         typeof request.query.limit === "string"
           ? Number.parseInt(request.query.limit, 10)

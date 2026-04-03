@@ -3,6 +3,7 @@ import type {
   BusinessEmailSettings,
   BusinessMembership,
   EmailContact,
+  EmailContactAttributes,
   EmailCampaignContent,
   EmailContactImportDuplicateStrategy,
   EmailContactImportField,
@@ -33,9 +34,11 @@ import {
 import { requestMyBusinesses } from "../services/admin-analytics-service";
 import {
   requestEmailCampaignCreate,
+  requestEmailCampaignDelete,
   requestEmailCampaignSend,
   requestEmailCampaignStats,
   requestEmailCampaigns,
+  requestEmailCampaignUpdate,
   requestEmailContactImportJobs,
   requestEmailContacts,
   requestEmailContactsImportJobCreate,
@@ -119,6 +122,24 @@ function buildSourceTitle(text: string, fallback?: string): string {
 
 function buildSourcePreview(text: string): string {
   return text.replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
+function formatContactAttributeLabel(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function buildContactAttributeSummary(attributes: EmailContactAttributes): string {
+  return Object.entries(attributes)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim() !== "")
+    .map(([key, value]) => `${formatContactAttributeLabel(key)}: ${value}`)
+    .join(" · ");
+}
+
+function buildDuplicateCampaignName(value: string): string {
+  const normalized = value.trim();
+  return normalized ? `${normalized} Copy` : "Campaign Copy";
 }
 
 function buildEmailBodyFromSource(sourceText: string, tone: "direct" | "story" | "educational"): string {
@@ -213,6 +234,7 @@ const isLoading = ref(true);
 const isImporting = ref(false);
 const isCreatingCampaign = ref(false);
 const isSending = ref(false);
+const deletingCampaignId = ref("");
 const isSavingDomain = ref(false);
 const isEditingDomainSetup = ref(false);
 const isLoadingDraftMedia = ref(false);
@@ -223,6 +245,7 @@ const isGeneratingMediaRecommendationId = ref("");
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const latestStatsCampaignId = ref("");
+const editingCampaignId = ref("");
 const emailMediaAssets = ref<PostAsset[]>([]);
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
 let campaignProgressPollHandle: number | null = null;
@@ -249,6 +272,12 @@ const CONTACT_IMPORT_FIELDS: Array<{
   { field: "firstName", label: "First name", required: false },
   { field: "lastName", label: "Last name", required: false },
   { field: "tags", label: "Tags", required: false },
+  { field: "state", label: "State", required: false },
+  { field: "city", label: "City", required: false },
+  { field: "business_type", label: "Business type", required: false },
+  { field: "audience_type", label: "Audience type", required: false },
+  { field: "language", label: "Language", required: false },
+  { field: "plan", label: "Plan", required: false },
 ];
 
 const resolvedUserName = computed(
@@ -269,6 +298,9 @@ const contactImportFileName = ref("");
 const isPreviewingContacts = ref(false);
 const contactSearch = ref("");
 const contactStatusFilter = ref<EmailContactStatus | "all">("all");
+const contactStateFilter = ref("all");
+const contactPlanFilter = ref("all");
+const contactTagFilter = ref("all");
 const latestImportJobId = ref("");
 const activationDraftLibrary = ref<ActivationDraftRecord[]>([]);
 const campaignSourceMode = ref<CampaignSourceMode>("fresh");
@@ -396,6 +428,33 @@ const campaignDashboardCards = computed(() =>
     preview: htmlToPreviewText(campaign.bodyText || campaign.bodyHtml).slice(0, 180).trim(),
   })),
 );
+const selectedCampaignList = computed(
+  () => emailLists.value.find((list) => list.id === campaignForm.value.listId) ?? null,
+);
+const selectedCampaignAudienceCount = computed(() => selectedCampaignList.value?.contactCount ?? 0);
+const selectedCampaignAudienceSummary = computed(() => {
+  if (!selectedCampaignList.value) {
+    return "Pick a list to define who this campaign reaches.";
+  }
+
+  const count = selectedCampaignAudienceCount.value;
+  return `${selectedCampaignList.value.name} · ${count.toLocaleString()} contact${count === 1 ? "" : "s"} in this audience before suppressions.`;
+});
+const isEditingCampaign = computed(() => Boolean(editingCampaignId.value));
+const campaignComposerPrimaryLabel = computed(() =>
+  isEditingCampaign.value
+    ? isCreatingCampaign.value
+      ? "Saving..."
+      : "Save changes"
+    : isCreatingCampaign.value
+      ? "Creating..."
+      : "Create campaign",
+);
+const campaignSendHistory = computed(() =>
+  campaigns.value
+    .filter((campaign) => campaign.status !== "draft")
+    .slice(0, 5),
+);
 const contactImportColumns = computed(() => contactImportPreview.value?.columns ?? []);
 const canPreviewContacts = computed(() => contactImport.value.csvText.trim().length > 0);
 const canImportContacts = computed(
@@ -405,6 +464,18 @@ const canImportContacts = computed(
     contactImport.value.csvText.trim().length > 0 &&
     Boolean(contactImportMapping.value.email || contactImportPreview.value?.suggestedMapping.email),
 );
+const contactStateOptions = computed(() =>
+  [...new Set(emailContacts.value.map((contact) => contact.attributes.state?.trim()).filter((value): value is string => Boolean(value)))]
+    .sort((left, right) => left.localeCompare(right)),
+);
+const contactPlanOptions = computed(() =>
+  [...new Set(emailContacts.value.map((contact) => contact.attributes.plan?.trim()).filter((value): value is string => Boolean(value)))]
+    .sort((left, right) => left.localeCompare(right)),
+);
+const contactTagOptions = computed(() =>
+  [...new Set(emailContacts.value.flatMap((contact) => contact.tags))]
+    .sort((left, right) => left.localeCompare(right)),
+);
 const filteredContacts = computed(() => {
   const searchValue = contactSearch.value.trim().toLowerCase();
 
@@ -413,15 +484,31 @@ const filteredContacts = computed(() => {
       return false;
     }
 
+    if (contactStateFilter.value !== "all" && contact.attributes.state !== contactStateFilter.value) {
+      return false;
+    }
+
+    if (contactPlanFilter.value !== "all" && contact.attributes.plan !== contactPlanFilter.value) {
+      return false;
+    }
+
+    if (contactTagFilter.value !== "all" && !contact.tags.includes(contactTagFilter.value)) {
+      return false;
+    }
+
     if (!searchValue) {
       return true;
     }
 
     const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(" ").toLowerCase();
+    const attributeValues = Object.values(contact.attributes)
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.toLowerCase());
     return (
       contact.email.toLowerCase().includes(searchValue) ||
       fullName.includes(searchValue) ||
-      contact.tags.some((tag) => tag.toLowerCase().includes(searchValue))
+      contact.tags.some((tag) => tag.toLowerCase().includes(searchValue)) ||
+      attributeValues.some((value) => value.includes(searchValue))
     );
   });
 });
@@ -806,6 +893,7 @@ function useLibraryDraft(draftId: string): void {
 }
 
 function startFreshCampaign(): void {
+  editingCampaignId.value = "";
   campaignSourceMode.value = "fresh";
   campaignForm.value.subject = "";
   campaignForm.value.bodyText = "";
@@ -1450,6 +1538,40 @@ async function loadBusinesses(): Promise<void> {
   }
 }
 
+function buildContactDirectoryRequestOptions(): {
+  status?: EmailContactStatus;
+  attributeFilters?: Record<string, string>;
+  limit: number;
+} {
+  const attributeFilters: Record<string, string> = {};
+
+  if (contactStateFilter.value !== "all") {
+    attributeFilters.state = contactStateFilter.value;
+  }
+
+  if (contactPlanFilter.value !== "all") {
+    attributeFilters.plan = contactPlanFilter.value;
+  }
+
+  return {
+    status: contactStatusFilter.value !== "all" ? contactStatusFilter.value : undefined,
+    attributeFilters: Object.keys(attributeFilters).length > 0 ? attributeFilters : undefined,
+    limit: 500,
+  };
+}
+
+async function loadEmailContactsDirectory(): Promise<void> {
+  if (!selectedBusinessId.value || !emailFeatureEnabled.value) {
+    emailContacts.value = [];
+    emailContactsTotal.value = 0;
+    return;
+  }
+
+  const contactsResponse = await requestEmailContacts(selectedBusinessId.value, buildContactDirectoryRequestOptions());
+  emailContacts.value = contactsResponse.contacts;
+  emailContactsTotal.value = contactsResponse.total;
+}
+
 async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promise<void> {
   if (!selectedBusinessId.value || !emailFeatureEnabled.value) {
     stopCampaignProgressPolling();
@@ -1468,7 +1590,7 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     requestEmailLists(selectedBusinessId.value),
     requestEmailCampaigns(selectedBusinessId.value),
     requestEmailDomainSettings(selectedBusinessId.value),
-    requestEmailContacts(selectedBusinessId.value, { limit: 200 }),
+    requestEmailContacts(selectedBusinessId.value, buildContactDirectoryRequestOptions()),
     requestEmailContactImportJobs(selectedBusinessId.value),
   ]);
 
@@ -1599,7 +1721,7 @@ async function createCampaign(): Promise<void> {
   errorMessage.value = "";
 
   try {
-    const response = await requestEmailCampaignCreate(selectedBusinessId.value, {
+    const payload = {
       listId: campaignForm.value.listId,
       name: campaignForm.value.name,
       subject: campaignForm.value.subject,
@@ -1609,13 +1731,126 @@ async function createCampaign(): Promise<void> {
       sourceIdeaId: effectiveSourceIdeaId.value || undefined,
       sourceTitle: effectiveSourceTitle.value || undefined,
       content: campaignContentPayload.value,
-    });
-    feedbackMessage.value = `Campaign created: ${response.campaign.name}.`;
+    };
+    const response = editingCampaignId.value
+      ? await requestEmailCampaignUpdate(selectedBusinessId.value, editingCampaignId.value, payload)
+      : await requestEmailCampaignCreate(selectedBusinessId.value, payload);
+    feedbackMessage.value = editingCampaignId.value
+      ? `Campaign updated: ${response.campaign.name}.`
+      : `Campaign created: ${response.campaign.name}.`;
+    editingCampaignId.value = "";
     await loadEmailState();
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Unable to create campaign.";
+    errorMessage.value = error instanceof Error ? error.message : "Unable to save email campaign.";
   } finally {
     isCreatingCampaign.value = false;
+  }
+}
+
+function duplicateCampaign(campaign: EmailCampaign): void {
+  editingCampaignId.value = "";
+  campaignSourceMode.value = "fresh";
+  campaignEditorMode.value = "edit";
+  errorMessage.value = "";
+  campaignForm.value.listId = campaign.listId || emailLists.value[0]?.id || campaignForm.value.listId;
+  campaignForm.value.name = buildDuplicateCampaignName(campaign.name);
+  campaignForm.value.subject = campaign.subject;
+  campaignForm.value.bodyText = campaign.bodyText || htmlToPreviewText(campaign.bodyHtml);
+  campaignForm.value.replyToEmail = campaign.replyToEmail || domainSettings.value?.replyToEmail || "";
+  campaignForm.value.includeSignature = true;
+  resetSelectedMedia();
+  setEmailTab("campaigns");
+  feedbackMessage.value = "Campaign copied into the editor. Review audience, media, and signature before creating the new draft.";
+
+  if (typeof window !== "undefined") {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+
+function canEditCampaign(campaign: EmailCampaign): boolean {
+  return campaign.status === "draft" || campaign.status === "failed";
+}
+
+function canDeleteCampaign(campaign: EmailCampaign): boolean {
+  return campaign.status === "draft" || campaign.status === "failed";
+}
+
+function formatCampaignLifecycleLabel(campaign: EmailCampaign): string {
+  if (campaign.status === "sent" && campaign.sendCompletedAt) {
+    return `Sent ${new Date(campaign.sendCompletedAt).toLocaleDateString()}`;
+  }
+
+  if ((campaign.status === "queued" || campaign.status === "sending") && campaign.updatedAt) {
+    return `In progress · ${new Date(campaign.updatedAt).toLocaleDateString()}`;
+  }
+
+  if (campaign.status === "failed" && campaign.updatedAt) {
+    return `Needs review · ${new Date(campaign.updatedAt).toLocaleDateString()}`;
+  }
+
+  const timestamp = campaign.updatedAt || campaign.createdAt;
+  return `Draft · ${new Date(timestamp).toLocaleDateString()}`;
+}
+
+function resolveCampaignAudienceSize(campaign: EmailCampaign): number {
+  if (campaign.recipientCount > 0) {
+    return campaign.recipientCount;
+  }
+
+  const matchingList = emailLists.value.find((list) => list.id === campaign.listId);
+  return matchingList?.contactCount ?? 0;
+}
+
+function editCampaign(campaign: EmailCampaign): void {
+  editingCampaignId.value = campaign.id;
+  campaignSourceMode.value = "fresh";
+  campaignEditorMode.value = "edit";
+  errorMessage.value = "";
+  campaignForm.value.listId = campaign.listId || emailLists.value[0]?.id || campaignForm.value.listId;
+  campaignForm.value.name = campaign.name;
+  campaignForm.value.subject = campaign.subject;
+  campaignForm.value.bodyText = campaign.bodyText || htmlToPreviewText(campaign.bodyHtml);
+  campaignForm.value.replyToEmail = campaign.replyToEmail || domainSettings.value?.replyToEmail || "";
+  campaignForm.value.includeSignature = true;
+  resetSelectedMedia();
+  setEmailTab("campaigns");
+  feedbackMessage.value = campaign.bodyHtml.includes("<img")
+    ? "Campaign loaded into the editor. Review visuals before saving because media attachments are not reconstructed yet."
+    : "Campaign loaded into the editor. Review the audience and body, then save changes.";
+
+  if (typeof window !== "undefined") {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+}
+
+async function deleteCampaign(campaign: EmailCampaign): Promise<void> {
+  if (!selectedBusinessId.value || !canDeleteCampaign(campaign)) {
+    return;
+  }
+
+  const confirmed =
+    typeof window === "undefined" ||
+    window.confirm(`Delete "${campaign.name}"? This removes the draft and any unsent recipient state.`);
+
+  if (!confirmed) {
+    return;
+  }
+
+  deletingCampaignId.value = campaign.id;
+  errorMessage.value = "";
+
+  try {
+    await requestEmailCampaignDelete(selectedBusinessId.value, campaign.id);
+    if (editingCampaignId.value === campaign.id) {
+      editingCampaignId.value = "";
+      startFreshCampaign();
+    }
+    feedbackMessage.value = `Campaign deleted: ${campaign.name}.`;
+    await loadEmailState();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to delete email campaign.";
+  } finally {
+    deletingCampaignId.value = "";
   }
 }
 
@@ -1692,6 +1927,11 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
 
   selectedBusinessId.value = nextBusinessId;
   contactImportFileName.value = "";
+  contactSearch.value = "";
+  contactStatusFilter.value = "all";
+  contactStateFilter.value = "all";
+  contactPlanFilter.value = "all";
+  contactTagFilter.value = "all";
   resetContactImportPreview();
 
   void (async () => {
@@ -1732,6 +1972,36 @@ watch(
     void loadEmailMediaRecommendations();
   },
   { immediate: true },
+);
+
+watch(
+  () => [selectedBusinessId.value, contactStatusFilter.value, contactStateFilter.value, contactPlanFilter.value],
+  ([businessId], [, previousStatus, previousState, previousPlan]) => {
+    if (!businessId || !emailFeatureEnabled.value) {
+      return;
+    }
+
+    if (
+      previousStatus === undefined &&
+      previousState === undefined &&
+      previousPlan === undefined
+    ) {
+      return;
+    }
+
+    void loadEmailContactsDirectory().catch((error) => {
+      errorMessage.value = error instanceof Error ? error.message : "Unable to refresh contacts.";
+    });
+  },
+);
+
+watch(
+  () => [contactTagOptions.value.join("|"), contactTagFilter.value],
+  ([, selectedTag]) => {
+    if (selectedTag !== "all" && !contactTagOptions.value.includes(selectedTag)) {
+      contactTagFilter.value = "all";
+    }
+  },
 );
 
 watch(
@@ -1888,9 +2158,14 @@ onBeforeUnmount(() => {
                       </span>
                     </div>
                   </div>
-                  <button type="button" class="secondary-action" @click="setEmailTab('campaigns')">
-                    View
-                  </button>
+                  <div class="campaign-card-actions">
+                    <button type="button" class="secondary-action" @click="duplicateCampaign(campaign)">
+                      Duplicate
+                    </button>
+                    <button type="button" class="secondary-action" @click="setEmailTab('campaigns')">
+                      View
+                    </button>
+                  </div>
                 </article>
               </div>
               <div v-else class="empty-note overview-empty-state">
@@ -2099,6 +2374,20 @@ onBeforeUnmount(() => {
               {{ list.name }}
             </option>
           </select>
+          <div class="campaign-audience-card">
+            <div class="campaign-audience-header">
+              <div>
+                <strong>{{ selectedCampaignList?.name || "Choose a list to target" }}</strong>
+                <p class="panel-note">{{ selectedCampaignAudienceSummary }}</p>
+              </div>
+              <span v-if="selectedCampaignList" class="workspace-chip">
+                {{ selectedCampaignAudienceCount.toLocaleString() }} in list
+              </span>
+            </div>
+            <p class="panel-note campaign-audience-note">
+              Suppressed, bounced, and unsubscribed contacts stay excluded when the send job resolves recipients.
+            </p>
+          </div>
           <input v-model="campaignForm.name" class="workspace-input" placeholder="Campaign name" />
           <input v-model="campaignForm.subject" class="workspace-input" placeholder="Subject line" />
           <input
@@ -2298,10 +2587,19 @@ onBeforeUnmount(() => {
             />
           </section>
 
-          <p class="panel-meta">Step 5 · Create draft</p>
+          <p class="panel-meta">Step 5 · {{ isEditingCampaign ? "Save draft" : "Create draft" }}</p>
           <div class="workspace-actions">
             <button type="button" class="primary-action" :disabled="isCreatingCampaign" @click="createCampaign">
-              {{ isCreatingCampaign ? "Creating..." : "Create campaign" }}
+              {{ campaignComposerPrimaryLabel }}
+            </button>
+            <button
+              v-if="isEditingCampaign"
+              type="button"
+              class="secondary-action"
+              :disabled="isCreatingCampaign"
+              @click="startFreshCampaign"
+            >
+              Cancel edit
             </button>
             <router-link class="secondary-action" :to="appRoutes.appGenerate">
               Generate another post
@@ -2315,8 +2613,8 @@ onBeforeUnmount(() => {
                 <p>{{ campaign.subject }}</p>
                 <p v-if="campaign.sourceTitle" class="campaign-source-note">From {{ campaign.sourceTitle }}</p>
                 <p class="campaign-metrics">
-                  {{ formatStatus(campaign.status) }} · {{ formatCampaignProgress(campaign) }} · {{ campaign.deliveredCount }} delivered ·
-                  {{ campaign.failedCount }} failed
+                  {{ formatCampaignLifecycleLabel(campaign) }} · {{ resolveCampaignAudienceSize(campaign) }} audience ·
+                  {{ formatCampaignProgress(campaign) }} · {{ campaign.deliveredCount }} delivered · {{ campaign.failedCount }} failed
                 </p>
                 <div v-if="campaign.recipientCount > 0" class="campaign-progress">
                   <span class="campaign-progress-fill" :style="{ width: `${getCampaignProgressPercent(campaign)}%` }"></span>
@@ -2325,14 +2623,35 @@ onBeforeUnmount(() => {
                   {{ getCampaignProgressPercent(campaign) }}% complete
                 </p>
               </div>
-              <button
-                type="button"
-                class="secondary-action"
-                :disabled="isSending || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
-                @click="sendCampaign(campaign.id)"
-              >
-                {{ getCampaignActionLabel(campaign) }}
-              </button>
+              <div class="campaign-card-actions">
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="!canEditCampaign(campaign)"
+                  @click="editCampaign(campaign)"
+                >
+                  Edit
+                </button>
+                <button type="button" class="secondary-action" @click="duplicateCampaign(campaign)">
+                  Duplicate
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="!canDeleteCampaign(campaign) || deletingCampaignId === campaign.id"
+                  @click="void deleteCampaign(campaign)"
+                >
+                  {{ deletingCampaignId === campaign.id ? "Deleting..." : "Delete" }}
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="isSending || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
+                  @click="sendCampaign(campaign.id)"
+                >
+                  {{ getCampaignActionLabel(campaign) }}
+                </button>
+              </div>
             </article>
           </div>
 
@@ -2342,6 +2661,29 @@ onBeforeUnmount(() => {
             <span>Failed: {{ latestStats.failedCount }}</span>
             <span>Unsubscribed: {{ latestStats.unsubscribedCount }}</span>
           </div>
+
+          <section v-if="campaignSendHistory.length > 0" class="campaign-history-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-meta">Send history</p>
+                <h3>Recent sends and retries</h3>
+              </div>
+            </div>
+            <div class="campaign-history-list">
+              <article v-for="campaign in campaignSendHistory" :key="`history-${campaign.id}`" class="campaign-history-card">
+                <div>
+                  <strong>{{ campaign.name }}</strong>
+                  <p>{{ formatCampaignLifecycleLabel(campaign) }}</p>
+                </div>
+                <div class="campaign-history-metrics">
+                  <span class="workspace-chip">{{ resolveCampaignAudienceSize(campaign) }} audience</span>
+                  <span class="workspace-chip">{{ campaign.sentCount }} sent</span>
+                  <span class="workspace-chip">{{ campaign.deliveredCount }} delivered</span>
+                  <span class="workspace-chip" :class="{ warning: campaign.failedCount > 0 }">{{ campaign.failedCount }} failed</span>
+                </div>
+              </article>
+            </div>
+          </section>
         </section>
 
         <section v-else-if="activeEmailTab === 'contacts'" class="workspace-card">
@@ -2444,6 +2786,7 @@ onBeforeUnmount(() => {
                 <div class="contact-preview-row contact-preview-head">
                   <span>Email</span>
                   <span>Name</span>
+                  <span>Attributes</span>
                   <span>Tags</span>
                   <span>Issues</span>
                 </div>
@@ -2454,6 +2797,7 @@ onBeforeUnmount(() => {
                 >
                   <span>{{ row.email || "—" }}</span>
                   <span>{{ row.name || [row.firstName, row.lastName].filter(Boolean).join(' ') || "—" }}</span>
+                  <span>{{ buildContactAttributeSummary(row.attributes) || "—" }}</span>
                   <span>{{ row.tags.join(", ") || "—" }}</span>
                   <span>{{ row.issues.join(", ") || "Looks good" }}</span>
                 </div>
@@ -2520,7 +2864,7 @@ onBeforeUnmount(() => {
             <div class="panel-header">
               <div>
                 <p class="panel-meta">Contact directory</p>
-                <h3>{{ emailContactsTotal }} contacts in this workspace</h3>
+                <h3>{{ emailContactsTotal }} matching contacts</h3>
                 <p class="panel-note">
                   Active {{ contactCoverageSummary.active }} · Unsubscribed {{ contactCoverageSummary.unsubscribed }} ·
                   Suppressed {{ contactCoverageSummary.suppressed }}
@@ -2542,6 +2886,18 @@ onBeforeUnmount(() => {
                 <option value="complained">Complained</option>
                 <option value="suppressed">Suppressed</option>
               </select>
+              <select v-model="contactStateFilter" class="workspace-select toolbar-select">
+                <option value="all">All states</option>
+                <option v-for="state in contactStateOptions" :key="`state-${state}`" :value="state">{{ state }}</option>
+              </select>
+              <select v-model="contactPlanFilter" class="workspace-select toolbar-select">
+                <option value="all">All plans</option>
+                <option v-for="plan in contactPlanOptions" :key="`plan-${plan}`" :value="plan">{{ plan }}</option>
+              </select>
+              <select v-model="contactTagFilter" class="workspace-select toolbar-select">
+                <option value="all">All tags</option>
+                <option v-for="tag in contactTagOptions" :key="`tag-${tag}`" :value="tag">{{ tag }}</option>
+              </select>
             </div>
 
             <div v-if="filteredContacts.length > 0" class="contact-directory-table">
@@ -2549,6 +2905,8 @@ onBeforeUnmount(() => {
                 <span>Email</span>
                 <span>Name</span>
                 <span>Status</span>
+                <span>State</span>
+                <span>Plan</span>
                 <span>Tags</span>
                 <span>Updated</span>
               </div>
@@ -2560,6 +2918,8 @@ onBeforeUnmount(() => {
                 <span>{{ contact.email }}</span>
                 <span>{{ [contact.firstName, contact.lastName].filter(Boolean).join(" ") || "—" }}</span>
                 <span>{{ formatStatus(contact.status) }}</span>
+                <span>{{ contact.attributes.state || "—" }}</span>
+                <span>{{ contact.attributes.plan || "—" }}</span>
                 <span>{{ contact.tags.join(", ") || "—" }}</span>
                 <span>{{ contact.updatedAt ? new Date(contact.updatedAt).toLocaleDateString() : "—" }}</span>
               </div>
@@ -3606,7 +3966,12 @@ onBeforeUnmount(() => {
 
 .contact-preview-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) minmax(140px, 0.9fr) minmax(120px, 0.8fr) minmax(180px, 1.2fr);
+  grid-template-columns:
+    minmax(180px, 1.2fr)
+    minmax(140px, 0.9fr)
+    minmax(180px, 1.1fr)
+    minmax(120px, 0.8fr)
+    minmax(180px, 1.2fr);
   gap: 12px;
   padding: 12px 14px;
   border: 1px solid var(--fc-border);
@@ -3677,7 +4042,14 @@ onBeforeUnmount(() => {
 
 .contact-directory-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.4fr) minmax(140px, 1fr) minmax(120px, 0.8fr) minmax(120px, 0.9fr) minmax(110px, 0.7fr);
+  grid-template-columns:
+    minmax(180px, 1.4fr)
+    minmax(140px, 1fr)
+    minmax(120px, 0.8fr)
+    minmax(100px, 0.7fr)
+    minmax(100px, 0.7fr)
+    minmax(140px, 0.9fr)
+    minmax(110px, 0.7fr);
   gap: 12px;
   padding: 14px 16px;
   border: 1px solid var(--fc-border);
@@ -3759,6 +4131,13 @@ onBeforeUnmount(() => {
   background: var(--fc-surface);
 }
 
+.campaign-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
 .campaign-card p,
 .empty-note {
   margin: 4px 0 0;
@@ -3790,6 +4169,63 @@ onBeforeUnmount(() => {
 
 .campaign-progress-copy {
   font-size: 0.8rem;
+}
+
+.campaign-audience-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--fc-surface) 90%, white 10%);
+}
+
+.campaign-audience-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.campaign-audience-header strong {
+  display: block;
+  font-size: 1rem;
+  color: var(--fc-text);
+}
+
+.campaign-audience-note {
+  margin: 0;
+}
+
+.campaign-history-panel,
+.campaign-history-list {
+  display: grid;
+  gap: 14px;
+}
+
+.campaign-history-panel {
+  margin-top: 24px;
+}
+
+.campaign-history-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: color-mix(in srgb, var(--fc-surface) 92%, white 8%);
+}
+
+.campaign-history-card p {
+  margin: 4px 0 0;
+  color: var(--fc-text-muted);
+}
+
+.campaign-history-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .stats-strip {

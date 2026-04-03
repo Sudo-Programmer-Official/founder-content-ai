@@ -5,12 +5,14 @@ import type {
   CreateEmailCampaignResponse,
   CreateEmailDomainRequest,
   CreateEmailDomainResponse,
+  DeleteEmailCampaignResponse,
   EmailCampaign,
   EmailCampaignListResponse,
   EmailCampaignRecipient,
   EmailCampaignStats,
   EmailCampaignStatsResponse,
   EmailContact,
+  EmailContactAttributes,
   EmailContactImportJob,
   EmailContactImportJobError,
   EmailContactStatus,
@@ -39,12 +41,14 @@ import type {
   QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
   UnsubscribeEmailResponse,
+  UpdateEmailCampaignRequest,
+  UpdateEmailCampaignResponse,
   VerifyEmailDomainResponse,
 } from "../../../../../packages/shared-types/index.ts";
 import type { PoolClient, QueryResultRow } from "pg";
 import { incrementBusinessDailyUsage } from "../adminControlService.ts";
 import { safeLogEvent } from "../analytics/eventLoggingService.ts";
-import { queryDb, withDbTransaction } from "../db/client.ts";
+import { getTableColumnSet, queryDb, withDbTransaction } from "../db/client.ts";
 import { deriveProviderSignals, inspectDomainDns } from "./dnsInspectionService.ts";
 import { sendEmailCampaignLifecycleNotification } from "./emailCampaignNotificationService.ts";
 import { recalculateEmailDomainReputation } from "./emailDeliverabilityService.ts";
@@ -101,6 +105,7 @@ interface EmailContactRow extends QueryResultRow {
   first_name: string | null;
   last_name: string | null;
   tags_json: unknown;
+  attributes_json: unknown;
   status: EmailContactStatus;
   unsubscribe_token: string;
   unsubscribed_at: Date | string | null;
@@ -339,6 +344,238 @@ function parseJsonObject<T>(value: unknown): T {
   }
 
   return {} as T;
+}
+
+const EMAIL_CONTACT_ATTRIBUTE_KEYS = [
+  "state",
+  "city",
+  "business_type",
+  "audience_type",
+  "language",
+  "plan",
+] as const;
+
+type EmailContactAttributeKey = (typeof EMAIL_CONTACT_ATTRIBUTE_KEYS)[number];
+
+const US_STATE_NAME_BY_CODE: Record<string, string> = {
+  AL: "Alabama",
+  AK: "Alaska",
+  AZ: "Arizona",
+  AR: "Arkansas",
+  CA: "California",
+  CO: "Colorado",
+  CT: "Connecticut",
+  DE: "Delaware",
+  FL: "Florida",
+  GA: "Georgia",
+  HI: "Hawaii",
+  ID: "Idaho",
+  IL: "Illinois",
+  IN: "Indiana",
+  IA: "Iowa",
+  KS: "Kansas",
+  KY: "Kentucky",
+  LA: "Louisiana",
+  ME: "Maine",
+  MD: "Maryland",
+  MA: "Massachusetts",
+  MI: "Michigan",
+  MN: "Minnesota",
+  MS: "Mississippi",
+  MO: "Missouri",
+  MT: "Montana",
+  NE: "Nebraska",
+  NV: "Nevada",
+  NH: "New Hampshire",
+  NJ: "New Jersey",
+  NM: "New Mexico",
+  NY: "New York",
+  NC: "North Carolina",
+  ND: "North Dakota",
+  OH: "Ohio",
+  OK: "Oklahoma",
+  OR: "Oregon",
+  PA: "Pennsylvania",
+  RI: "Rhode Island",
+  SC: "South Carolina",
+  SD: "South Dakota",
+  TN: "Tennessee",
+  TX: "Texas",
+  UT: "Utah",
+  VT: "Vermont",
+  VA: "Virginia",
+  WA: "Washington",
+  WV: "West Virginia",
+  WI: "Wisconsin",
+  WY: "Wyoming",
+  DC: "District Of Columbia",
+  AS: "American Samoa",
+  GU: "Guam",
+  MP: "Northern Mariana Islands",
+  PR: "Puerto Rico",
+  VI: "Virgin Islands",
+};
+
+const STATE_LOOKUP_TO_NAME = Object.fromEntries(
+  Object.entries(US_STATE_NAME_BY_CODE).flatMap(([code, name]) => [
+    [code.toLowerCase(), name],
+    [name.toLowerCase().replace(/[^a-z]/g, ""), name],
+  ]),
+) as Record<string, string>;
+
+const STATE_NAME_TO_CODE = Object.fromEntries(
+  Object.entries(US_STATE_NAME_BY_CODE).map(([code, name]) => [name, code]),
+) as Record<string, string>;
+
+const PLAN_LOOKUP_TO_LABEL: Record<string, string> = {
+  basic: "Basic",
+  free: "Free",
+  starter: "Starter",
+  standard: "Standard",
+  premium: "Premium",
+  pro: "Pro",
+  professional: "Professional",
+  enterprise: "Enterprise",
+  team: "Team",
+};
+
+let emailContactCapabilitiesPromise: Promise<{ hasAttributesJson: boolean }> | null = null;
+
+async function getEmailContactCapabilities(): Promise<{ hasAttributesJson: boolean }> {
+  if (!emailContactCapabilitiesPromise) {
+    emailContactCapabilitiesPromise = getTableColumnSet("email_contacts")
+      .then((columns) => ({
+        hasAttributesJson: columns.has("attributes_json"),
+      }))
+      .catch((error) => {
+        emailContactCapabilitiesPromise = null;
+        throw error;
+      });
+  }
+
+  return emailContactCapabilitiesPromise;
+}
+
+function normalizeContactAttributeValue(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? normalized : undefined;
+}
+
+function toTitleCase(value: string): string {
+  return value.replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function normalizeContactAttributeLookupKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function normalizeStateAttributeValue(value: string | undefined): string | undefined {
+  const normalized = normalizeContactAttributeValue(value);
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  const match = STATE_LOOKUP_TO_NAME[normalizeContactAttributeLookupKey(normalized)];
+  return match ?? toTitleCase(normalized.toLowerCase().replace(/\s+/g, " "));
+}
+
+function normalizePlanAttributeValue(value: string | undefined): string | undefined {
+  const normalized = normalizeContactAttributeValue(value)
+    ?.toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ");
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  return PLAN_LOOKUP_TO_LABEL[normalized] ?? toTitleCase(normalized);
+}
+
+function normalizeGenericContactAttributeValue(value: string | undefined): string | undefined {
+  const normalized = normalizeContactAttributeValue(value)?.replace(/\s+/g, " ");
+  return normalized ? toTitleCase(normalized.toLowerCase()) : undefined;
+}
+
+function normalizeContactAttributeValueByKey(
+  key: EmailContactAttributeKey,
+  value: string | undefined,
+): string | undefined {
+  if (key === "state") {
+    return normalizeStateAttributeValue(value);
+  }
+
+  if (key === "plan") {
+    return normalizePlanAttributeValue(value);
+  }
+
+  return normalizeGenericContactAttributeValue(value);
+}
+
+function normalizeContactAttributes(attributes: EmailContactAttributes | undefined): EmailContactAttributes {
+  const normalized: EmailContactAttributes = {};
+
+  for (const [key, value] of Object.entries(attributes ?? {})) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    const attributeKey = key as EmailContactAttributeKey;
+    const normalizedValue = EMAIL_CONTACT_ATTRIBUTE_KEYS.includes(attributeKey)
+      ? normalizeContactAttributeValueByKey(attributeKey, value)
+      : normalizeContactAttributeValue(value);
+
+    if (normalizedValue) {
+      normalized[key] = normalizedValue;
+    }
+  }
+
+  return normalized;
+}
+
+function buildContactAttributeFilterVariants(key: string, value: string): string[] {
+  if (key === "state") {
+    const normalizedState = normalizeStateAttributeValue(value);
+
+    if (!normalizedState) {
+      return [];
+    }
+
+    const stateCode = STATE_NAME_TO_CODE[normalizedState];
+    return [...new Set([normalizedState.toLowerCase(), stateCode?.toLowerCase()].filter(Boolean))];
+  }
+
+  if (key === "plan") {
+    const normalizedPlan = normalizePlanAttributeValue(value);
+    return normalizedPlan ? [normalizedPlan.toLowerCase()] : [];
+  }
+
+  const normalizedValue = normalizeContactAttributeValue(value)?.toLowerCase();
+  return normalizedValue ? [normalizedValue] : [];
+}
+
+function extractContactAttributesFromRaw(
+  raw: Record<string, string>,
+  mapping: EmailContactImportMapping,
+): EmailContactAttributes {
+  const attributes: EmailContactAttributes = {};
+
+  for (const key of EMAIL_CONTACT_ATTRIBUTE_KEYS) {
+    const columnName = mapping[key];
+
+    if (!columnName) {
+      continue;
+    }
+
+    const value = normalizeContactAttributeValueByKey(key, raw[columnName]);
+
+    if (value) {
+      attributes[key] = value;
+    }
+  }
+
+  return attributes;
 }
 
 function normalizeEmail(value: string): string {
@@ -636,6 +873,7 @@ function mapEmailContact(row: EmailContactRow): EmailContact {
     firstName: row.first_name ?? undefined,
     lastName: row.last_name ?? undefined,
     tags: parseJsonArray<string>(row.tags_json),
+    attributes: normalizeContactAttributes(parseJsonObject<EmailContactAttributes>(row.attributes_json)),
     status: row.status,
     unsubscribedAt: toIsoString(row.unsubscribed_at),
     lastBounceAt: toIsoString(row.last_bounce_at),
@@ -823,6 +1061,23 @@ function mapEmailRecipient(row: EmailCampaignRecipientRow): EmailCampaignRecipie
   };
 }
 
+function assertEmailCampaignEditable(
+  campaign: Pick<EmailCampaignRow, "status">,
+  action: "edit" | "delete",
+): void {
+  if (campaign.status === "draft" || campaign.status === "failed") {
+    return;
+  }
+
+  throw new HttpError(
+    409,
+    "email_campaign_not_editable",
+    action === "edit"
+      ? "Only draft or failed campaigns can be edited."
+      : "Only draft or failed campaigns can be deleted.",
+  );
+}
+
 async function executeQuery<TRow extends QueryResultRow>(
   text: string,
   values: unknown[],
@@ -833,6 +1088,59 @@ async function executeQuery<TRow extends QueryResultRow>(
   }
 
   return queryDb<TRow>(text, values);
+}
+
+async function buildEmailContactSelectProjection(alias: string): Promise<string> {
+  const { hasAttributesJson } = await getEmailContactCapabilities();
+  const prefix = alias ? `${alias}.` : "";
+
+  return `
+    ${prefix}id,
+    ${prefix}business_id,
+    ${prefix}email,
+    ${prefix}first_name,
+    ${prefix}last_name,
+    ${prefix}tags_json,
+    ${hasAttributesJson ? `${prefix}attributes_json` : `'{}'::jsonb as attributes_json`},
+    ${prefix}status,
+    ${prefix}unsubscribe_token,
+    ${prefix}unsubscribed_at,
+    ${prefix}last_bounce_at,
+    ${prefix}last_complaint_at,
+    ${prefix}last_provider_event_at,
+    ${prefix}created_at,
+    ${prefix}updated_at
+  `;
+}
+
+function buildEmailContactAttributeFilterClauses(input: {
+  values: unknown[];
+  attributeFilters?: Record<string, string>;
+  hasAttributesJson: boolean;
+  columnExpression?: string;
+}): string {
+  if (!input.hasAttributesJson || !input.attributeFilters) {
+    return "";
+  }
+
+  const clauses: string[] = [];
+  const columnExpression = input.columnExpression ?? "c.attributes_json";
+
+  for (const [key, value] of Object.entries(input.attributeFilters)) {
+    const normalizedKey = key.trim();
+    const normalizedValues = buildContactAttributeFilterVariants(normalizedKey, value);
+
+    if (!normalizedKey || normalizedValues.length === 0) {
+      continue;
+    }
+
+    input.values.push(normalizedKey, normalizedValues);
+    const keyPosition = input.values.length - 1;
+    const valuePosition = input.values.length;
+    clauses.push(`and lower(coalesce(${columnExpression} ->> $${keyPosition}, '')) = any($${valuePosition}::text[])`);
+  }
+
+  return clauses.length > 0 ? `\n        ${clauses.join("\n        ")}` : "";
 }
 
 async function inspectDomainSafety(input: {
@@ -1141,6 +1449,7 @@ interface ParsedEmailImportContact {
   firstName?: string;
   lastName?: string;
   tags: string[];
+  attributes: EmailContactAttributes;
   raw: Record<string, string>;
   issues: string[];
 }
@@ -1169,6 +1478,12 @@ const EMAIL_CONTACT_IMPORT_FIELDS: Array<{
   { field: "firstName", label: "First name", required: false },
   { field: "lastName", label: "Last name", required: false },
   { field: "tags", label: "Tags", required: false },
+  { field: "state", label: "State", required: false },
+  { field: "city", label: "City", required: false },
+  { field: "business_type", label: "Business type", required: false },
+  { field: "audience_type", label: "Audience type", required: false },
+  { field: "language", label: "Language", required: false },
+  { field: "plan", label: "Plan", required: false },
 ];
 
 const EMAIL_CONTACT_IMPORT_FIELD_ALIASES: Record<EmailContactImportField, string[]> = {
@@ -1206,6 +1521,12 @@ const EMAIL_CONTACT_IMPORT_FIELD_ALIASES: Record<EmailContactImportField, string
     "family_name",
   ],
   tags: ["tags", "tag", "labels", "segments", "interests"],
+  state: ["state", "region", "province", "territory"],
+  city: ["city", "town", "municipality"],
+  business_type: ["business_type", "business type", "industry", "vertical", "businesscategory"],
+  audience_type: ["audience_type", "audience type", "audience", "persona", "segment_type"],
+  language: ["language", "locale", "preferredlanguage", "preferred_language"],
+  plan: ["plan", "tier", "account_type", "account type", "membership", "subscription"],
 };
 
 function parseCsvRows(csvText: string): string[][] {
@@ -1528,11 +1849,13 @@ function parseContactImportPayload(
     }
 
     const tags = splitTags(sanitizedMapping.tags ? raw[sanitizedMapping.tags] : undefined);
+    const attributes = extractContactAttributesFromRaw(raw, sanitizedMapping);
     const parsedContact: ParsedEmailImportContact = {
       email,
       firstName: firstNameValue || fallbackFirstName || undefined,
       lastName: lastNameValue || (fallbackRest.length > 0 ? fallbackRest.join(" ") : undefined),
       tags,
+      attributes,
       raw,
       issues,
     };
@@ -1551,6 +1874,7 @@ function parseContactImportPayload(
         firstName: parsedContact.firstName,
         lastName: parsedContact.lastName,
         tags,
+        attributes,
         issues,
         raw,
       });
@@ -1752,29 +2076,19 @@ async function upsertContact(
     firstName?: string;
     lastName?: string;
     tags: string[];
+    attributes: EmailContactAttributes;
   },
   strategy: EmailContactImportDuplicateStrategy,
   client: PoolClient,
 ): Promise<UpsertContactResult> {
   const normalizedEmail = normalizeEmail(input.email);
   const isSuppressed = await isEmailUnsubscribed(businessId, normalizedEmail, client);
+  const { hasAttributesJson } = await getEmailContactCapabilities();
+  const projection = await buildEmailContactSelectProjection("");
   const existingResult = await executeQuery<EmailContactRow>(
     `
       select
-        id,
-        business_id,
-        email,
-        first_name,
-        last_name,
-        tags_json,
-        status,
-        unsubscribe_token,
-        unsubscribed_at,
-        last_bounce_at,
-        last_complaint_at,
-        last_provider_event_at,
-        created_at,
-        updated_at
+        ${projection}
       from email_contacts
       where business_id = $1::uuid
         and lower(email) = lower($2)
@@ -1785,6 +2099,7 @@ async function upsertContact(
   );
 
   const tagJson = JSON.stringify(input.tags);
+  const attributeJson = JSON.stringify(input.attributes ?? {});
 
   if (existingResult.rows[0]) {
     if (strategy === "skip") {
@@ -1812,23 +2127,11 @@ async function upsertContact(
             when jsonb_array_length($4::jsonb) > 0 then $4::jsonb
             else tags_json
           end,
+          ${hasAttributesJson ? "attributes_json = case when $6::jsonb <> '{}'::jsonb then coalesce(attributes_json, '{}'::jsonb) || $6::jsonb else attributes_json end," : ""}
           updated_at = now()
         where id = $1::uuid
         returning
-          id,
-          business_id,
-          email,
-          first_name,
-          last_name,
-          tags_json,
-          status,
-          unsubscribe_token,
-          unsubscribed_at,
-          last_bounce_at,
-          last_complaint_at,
-          last_provider_event_at,
-          created_at,
-          updated_at
+          ${projection}
       `,
       [
         existingResult.rows[0].id,
@@ -1836,6 +2139,7 @@ async function upsertContact(
         input.lastName ?? null,
         tagJson,
         isSuppressed,
+        ...(hasAttributesJson ? [attributeJson] : []),
       ],
       client,
     );
@@ -1854,6 +2158,7 @@ async function upsertContact(
         first_name,
         last_name,
         tags_json,
+        ${hasAttributesJson ? "attributes_json," : ""}
         status,
         unsubscribed_at
       ) values (
@@ -1862,24 +2167,12 @@ async function upsertContact(
         $3,
         $4,
         $5::jsonb,
-        $6,
-        $7::timestamptz
+        ${hasAttributesJson ? "$6::jsonb," : ""}
+        $${hasAttributesJson ? "7" : "6"},
+        $${hasAttributesJson ? "8" : "7"}::timestamptz
       )
       returning
-        id,
-        business_id,
-        email,
-        first_name,
-        last_name,
-        tags_json,
-        status,
-        unsubscribe_token,
-        unsubscribed_at,
-        last_bounce_at,
-        last_complaint_at,
-        last_provider_event_at,
-        created_at,
-        updated_at
+        ${projection}
     `,
     [
       businessId,
@@ -1887,6 +2180,7 @@ async function upsertContact(
       input.firstName ?? null,
       input.lastName ?? null,
       tagJson,
+      ...(hasAttributesJson ? [attributeJson] : []),
       isSuppressed ? "unsubscribed" : "active",
       isSuppressed ? new Date().toISOString() : null,
     ],
@@ -2858,12 +3152,21 @@ export async function listEmailContacts(
     search?: string;
     status?: EmailContactStatus;
     listId?: string;
+    attributeFilters?: Record<string, string>;
     limit?: number;
   } = {},
 ): Promise<EmailContactListResponse> {
   const normalizedSearch = input.search?.trim().toLowerCase() ?? "";
   const searchPattern = normalizedSearch ? `%${normalizedSearch}%` : "";
-  const limit = Math.max(1, Math.min(input.limit ?? 100, 250));
+  const limit = Math.max(1, Math.min(input.limit ?? 100, 500));
+  const { hasAttributesJson } = await getEmailContactCapabilities();
+  const projection = await buildEmailContactSelectProjection("c");
+  const countValues: unknown[] = [businessId, normalizedSearch, searchPattern, input.listId ?? null, input.status ?? null];
+  const countAttributeClauses = buildEmailContactAttributeFilterClauses({
+    values: countValues,
+    attributeFilters: input.attributeFilters,
+    hasAttributesJson,
+  });
 
   const countResult = await executeQuery<CountRow>(
     `
@@ -2880,27 +3183,22 @@ export async function listEmailContacts(
         ))
         and ($5::text is null or c.status = $5::text)
         and ($4::uuid is null or lm.id is not null)
+        ${countAttributeClauses}
     `,
-    [businessId, normalizedSearch, searchPattern, input.listId ?? null, input.status ?? null],
+    countValues,
   );
 
+  const resultValues: unknown[] = [businessId, normalizedSearch, searchPattern, input.listId ?? null, input.status ?? null];
+  const resultAttributeClauses = buildEmailContactAttributeFilterClauses({
+    values: resultValues,
+    attributeFilters: input.attributeFilters,
+    hasAttributesJson,
+  });
+  resultValues.push(limit);
   const result = await executeQuery<EmailContactRow>(
     `
       select
-        c.id,
-        c.business_id,
-        c.email,
-        c.first_name,
-        c.last_name,
-        c.tags_json,
-        c.status,
-        c.unsubscribe_token,
-        c.unsubscribed_at,
-        c.last_bounce_at,
-        c.last_complaint_at,
-        c.last_provider_event_at,
-        c.created_at,
-        c.updated_at
+        ${projection}
       from email_contacts c
       left join email_list_members lm
         on lm.contact_id = c.id
@@ -2913,10 +3211,11 @@ export async function listEmailContacts(
         ))
         and ($5::text is null or c.status = $5::text)
         and ($4::uuid is null or lm.id is not null)
+        ${resultAttributeClauses}
       order by c.updated_at desc, c.created_at desc
-      limit $6::int
+      limit $${resultValues.length}::int
     `,
-    [businessId, normalizedSearch, searchPattern, input.listId ?? null, input.status ?? null, limit],
+    resultValues,
   );
 
   return {
@@ -3164,6 +3463,128 @@ export async function createEmailCampaign(
 
     return {
       campaign: mapEmailCampaign(result.rows[0]),
+    };
+  });
+}
+
+export async function updateEmailCampaign(
+  businessId: string,
+  campaignId: string,
+  actorUserId: string | undefined,
+  input: UpdateEmailCampaignRequest,
+): Promise<UpdateEmailCampaignResponse> {
+  if (input.subject.trim() === "" || (input.bodyText?.trim() || "") === "") {
+    throw new HttpError(400, "email_campaign_invalid", "Subject and email body are required.");
+  }
+
+  return withDbTransaction(async (client) => {
+    const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
+    assertEmailCampaignEditable(campaign, "edit");
+    await loadEmailListOrThrow(businessId, input.listId, client);
+    const settingsRow = await ensureEmailSettingsRow(businessId, client);
+    const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow));
+    const campaignSource = await resolveCampaignSource(businessId, input, client);
+
+    await executeQuery(
+      `
+        delete from email_campaign_recipients
+        where campaign_id = $1::uuid
+      `,
+      [campaignId],
+      client,
+    );
+
+    const result = await executeQuery<EmailCampaignRow>(
+      `
+        update email_campaigns
+        set
+          list_id = $2::uuid,
+          source_asset_id = $3::uuid,
+          source_idea_id = $4::uuid,
+          source_title = $5,
+          name = $6,
+          subject = $7,
+          body_html = $8,
+          body_text = $9,
+          reply_to_email = $10,
+          created_by_user_id = coalesce($11::uuid, created_by_user_id),
+          status = 'draft',
+          send_started_at = null,
+          send_completed_at = null,
+          start_notification_sent_at = null,
+          completion_notification_sent_at = null,
+          failure_notification_sent_at = null,
+          updated_at = now()
+        where id = $1::uuid
+        returning
+          id,
+          business_id,
+          list_id,
+          source_asset_id,
+          source_idea_id,
+          source_title,
+          name,
+          subject,
+          body_html,
+          body_text,
+          status,
+          reply_to_email,
+          created_by_user_id,
+          scheduled_at,
+          send_started_at,
+          send_completed_at,
+          created_at,
+          updated_at,
+          0::int as recipient_count,
+          0::int as pending_count,
+          0::int as sent_count,
+          0::int as delivered_count,
+          0::int as failed_count,
+          0::int as unsubscribed_count
+      `,
+      [
+        campaignId,
+        input.listId,
+        campaignSource.sourceAssetId,
+        campaignSource.sourceIdeaId,
+        campaignSource.sourceTitle,
+        input.name.trim() || input.subject.trim(),
+        input.subject.trim(),
+        renderedBody.html,
+        renderedBody.text,
+        input.replyToEmail?.trim() || null,
+        actorUserId ?? null,
+      ],
+      client,
+    );
+
+    return {
+      campaign: mapEmailCampaign(result.rows[0]),
+    };
+  });
+}
+
+export async function deleteEmailCampaign(
+  businessId: string,
+  campaignId: string,
+): Promise<DeleteEmailCampaignResponse> {
+  return withDbTransaction(async (client) => {
+    const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
+    assertEmailCampaignEditable(campaign, "delete");
+
+    await executeQuery(
+      `
+        delete from email_campaigns
+        where business_id = $1::uuid
+          and id = $2::uuid
+      `,
+      [businessId, campaignId],
+      client,
+    );
+
+    return {
+      success: true,
+      campaignId,
     };
   });
 }
@@ -3831,23 +4252,11 @@ export async function verifyEmailDomain(
 
 export async function unsubscribeEmail(token: string): Promise<UnsubscribeEmailResponse> {
   return withDbTransaction(async (client) => {
+    const projection = await buildEmailContactSelectProjection("");
     const contactResult = await executeQuery<EmailContactRow>(
       `
         select
-          id,
-          business_id,
-          email,
-          first_name,
-          last_name,
-        tags_json,
-        status,
-        unsubscribe_token,
-        unsubscribed_at,
-        last_bounce_at,
-        last_complaint_at,
-        last_provider_event_at,
-        created_at,
-        updated_at
+          ${projection}
       from email_contacts
         where unsubscribe_token = $1
         limit 1
