@@ -7,6 +7,7 @@ import type {
   CreateEmailDomainResponse,
   DeleteEmailCampaignResponse,
   EmailCampaign,
+  EmailCampaignSend,
   EmailCampaignListResponse,
   EmailCampaignRecipient,
   EmailCampaignStats,
@@ -52,6 +53,11 @@ import { getTableColumnSet, queryDb, withDbTransaction } from "../db/client.ts";
 import { deriveProviderSignals, inspectDomainDns } from "./dnsInspectionService.ts";
 import { sendEmailCampaignLifecycleNotification } from "./emailCampaignNotificationService.ts";
 import { recalculateEmailDomainReputation } from "./emailDeliverabilityService.ts";
+import {
+  appendEmailOpenTrackingPixel,
+  createEmailTrackingContextForSend,
+  rewriteEmailTrackingLinksForRecipient,
+} from "./emailTrackingService.ts";
 import { ensureSesDomainIdentity, getSesDomainIdentity } from "./sesIdentityService.ts";
 import { sendPlatformEmail } from "./emailTransportService.ts";
 import { HttpError } from "../../utils/http.ts";
@@ -153,9 +159,26 @@ interface EmailCampaignRow extends QueryResultRow {
   unsubscribed_count?: string | number;
 }
 
+interface EmailCampaignSendRow extends QueryResultRow {
+  id: string;
+  campaign_id: string;
+  business_id: string;
+  status: EmailCampaignSend["status"];
+  recipient_count: string | number;
+  delivered_count: string | number;
+  failed_count: string | number;
+  unsubscribed_count: string | number;
+  send_started_at: Date | string | null;
+  send_completed_at: Date | string | null;
+  created_by_user_id: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
 interface EmailCampaignRecipientRow extends QueryResultRow {
   id: string;
   campaign_id: string;
+  send_id: string;
   contact_id: string;
   personalized_subject: string;
   personalized_body_html: string;
@@ -165,6 +188,12 @@ interface EmailCampaignRecipientRow extends QueryResultRow {
   sent_at: Date | string | null;
   delivered_at: Date | string | null;
   failed_at: Date | string | null;
+  open_count: string | number;
+  first_opened_at: Date | string | null;
+  last_opened_at: Date | string | null;
+  click_count: string | number;
+  first_clicked_at: Date | string | null;
+  last_clicked_at: Date | string | null;
   failure_reason: string | null;
   created_at: Date | string;
   updated_at: Date | string;
@@ -202,6 +231,9 @@ interface EmailCampaignRecipientProgressRow extends QueryResultRow {
   queued_total: string | number;
   sending_total: string | number;
   failed_total: string | number;
+  recipient_total?: string | number;
+  delivered_total?: string | number;
+  unsubscribed_total?: string | number;
 }
 
 interface EmailContactImportJobRow extends QueryResultRow {
@@ -1046,6 +1078,7 @@ function mapEmailRecipient(row: EmailCampaignRecipientRow): EmailCampaignRecipie
   return {
     id: row.id,
     campaignId: row.campaign_id,
+    sendId: row.send_id,
     contactId: row.contact_id,
     personalizedSubject: row.personalized_subject,
     personalizedBodyHtml: row.personalized_body_html,
@@ -1055,6 +1088,12 @@ function mapEmailRecipient(row: EmailCampaignRecipientRow): EmailCampaignRecipie
     sentAt: toIsoString(row.sent_at),
     deliveredAt: toIsoString(row.delivered_at),
     failedAt: toIsoString(row.failed_at),
+    openCount: toNumber(row.open_count),
+    firstOpenedAt: toIsoString(row.first_opened_at),
+    lastOpenedAt: toIsoString(row.last_opened_at),
+    clickCount: toNumber(row.click_count),
+    firstClickedAt: toIsoString(row.first_clicked_at),
+    lastClickedAt: toIsoString(row.last_clicked_at),
     failureReason: row.failure_reason ?? undefined,
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: toIsoString(row.updated_at),
@@ -2226,10 +2265,17 @@ async function loadEmailCampaignOrThrow(
         count(r.id) filter (where r.status = 'failed')::int as failed_count,
         count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_count
       from email_campaigns c
-      left join email_campaign_recipients r on r.campaign_id = c.id
+      left join lateral (
+        select s.id
+        from email_campaign_sends s
+        where s.campaign_id = c.id
+        order by s.created_at desc, s.id desc
+        limit 1
+      ) latest_send on true
+      left join email_campaign_recipients r on r.send_id = latest_send.id
       where c.business_id = $1::uuid
         and c.id = $2::uuid
-      group by c.id
+      group by c.id, latest_send.id
       limit 1
     `,
     [businessId, campaignId],
@@ -2345,6 +2391,120 @@ async function ensureEmailListByName(
   return insertedResult.rows[0];
 }
 
+async function loadLatestCampaignSend(
+  campaignId: string,
+  client?: PoolClient,
+): Promise<EmailCampaignSendRow | null> {
+  const result = await executeQuery<EmailCampaignSendRow>(
+    `
+      select
+        id,
+        campaign_id,
+        business_id,
+        status,
+        recipient_count,
+        delivered_count,
+        failed_count,
+        unsubscribed_count,
+        send_started_at,
+        send_completed_at,
+        created_by_user_id,
+        created_at,
+        updated_at
+      from email_campaign_sends
+      where campaign_id = $1::uuid
+      order by created_at desc, id desc
+      limit 1
+    `,
+    [campaignId],
+    client,
+  );
+
+  return result.rows[0] ?? null;
+}
+
+async function loadActiveCampaignSendOrThrow(
+  campaignId: string,
+  client?: PoolClient,
+): Promise<EmailCampaignSendRow> {
+  const result = await executeQuery<EmailCampaignSendRow>(
+    `
+      select
+        id,
+        campaign_id,
+        business_id,
+        status,
+        recipient_count,
+        delivered_count,
+        failed_count,
+        unsubscribed_count,
+        send_started_at,
+        send_completed_at,
+        created_by_user_id,
+        created_at,
+        updated_at
+      from email_campaign_sends
+      where campaign_id = $1::uuid
+        and status in ('queued', 'sending')
+      order by created_at desc, id desc
+      limit 1
+    `,
+    [campaignId],
+    client,
+  );
+
+  const row = result.rows[0];
+
+  if (!row) {
+    throw new HttpError(404, "email_campaign_send_not_found", "Email campaign send not found.");
+  }
+
+  return row;
+}
+
+async function createCampaignSend(
+  campaign: EmailCampaignRow,
+  recipientCount: number,
+  actorUserId: string | undefined,
+  client: PoolClient,
+): Promise<EmailCampaignSendRow> {
+  const result = await executeQuery<EmailCampaignSendRow>(
+    `
+      insert into email_campaign_sends (
+        campaign_id,
+        business_id,
+        status,
+        recipient_count,
+        created_by_user_id
+      ) values (
+        $1::uuid,
+        $2::uuid,
+        'queued',
+        $3::int,
+        $4::uuid
+      )
+      returning
+        id,
+        campaign_id,
+        business_id,
+        status,
+        recipient_count,
+        delivered_count,
+        failed_count,
+        unsubscribed_count,
+        send_started_at,
+        send_completed_at,
+        created_by_user_id,
+        created_at,
+        updated_at
+    `,
+    [campaign.id, campaign.business_id, recipientCount, actorUserId ?? campaign.created_by_user_id ?? null],
+    client,
+  );
+
+  return result.rows[0];
+}
+
 async function loadCampaignContacts(
   businessId: string,
   campaignId: string,
@@ -2391,26 +2551,54 @@ async function loadCampaignContacts(
   }));
 }
 
-async function upsertCampaignRecipients(
+async function createCampaignRecipientsForSend(
+  send: EmailCampaignSendRow,
   campaign: EmailCampaignRow,
   contacts: Array<EmailContact & { unsubscribeToken: string }>,
   client: PoolClient,
 ): Promise<void> {
   const apiBaseUrl = resolveApiBaseUrl();
+  const trackingContext = await createEmailTrackingContextForSend({
+    businessId: campaign.business_id,
+    campaignId: campaign.id,
+    sendId: send.id,
+    bodyHtml: campaign.body_html,
+    bodyText: campaign.body_text || stripHtml(campaign.body_html),
+    client,
+  });
 
   for (const contact of contacts) {
+    const recipientId = crypto.randomUUID();
     const subject = personalizeTemplate(campaign.subject, contact);
     const htmlBody = personalizeTemplate(campaign.body_html, contact);
     const textBody = personalizeTemplate(campaign.body_text || stripHtml(campaign.body_html), contact);
+    const trackedBody = rewriteEmailTrackingLinksForRecipient({
+      businessId: campaign.business_id,
+      campaignId: campaign.id,
+      sendId: send.id,
+      recipientId,
+      html: htmlBody,
+      text: textBody,
+      trackingContext,
+    });
     const footer = appendUnsubscribeFooter(
-      htmlBody,
-      textBody,
+      trackedBody.html,
+      trackedBody.text,
       `${apiBaseUrl}/email/unsubscribe/${contact.unsubscribeToken}`,
     );
+    const trackedHtml = appendEmailOpenTrackingPixel({
+      businessId: campaign.business_id,
+      campaignId: campaign.id,
+      sendId: send.id,
+      recipientId,
+      html: footer.html,
+    });
 
     await executeQuery(
       `
         insert into email_campaign_recipients (
+          id,
+          send_id,
           campaign_id,
           contact_id,
           personalized_subject,
@@ -2420,20 +2608,15 @@ async function upsertCampaignRecipients(
         ) values (
           $1::uuid,
           $2::uuid,
-          $3,
-          $4,
+          $3::uuid,
+          $4::uuid,
           $5,
+          $6,
+          $7,
           'queued'
         )
-        on conflict (campaign_id, contact_id)
-        do update set
-          personalized_subject = excluded.personalized_subject,
-          personalized_body_html = excluded.personalized_body_html,
-          personalized_body_text = excluded.personalized_body_text,
-          status = 'queued',
-          updated_at = now()
       `,
-      [campaign.id, contact.id, subject, footer.html, footer.text],
+      [recipientId, send.id, campaign.id, contact.id, subject, trackedHtml, footer.text],
       client,
     );
   }
@@ -2445,25 +2628,50 @@ async function getCampaignStats(
   client?: PoolClient,
 ): Promise<EmailCampaignStats> {
   const result = await executeQuery<{
+    send_count: string | number;
     total: string | number;
     pending_total: string | number;
     sent_total: string | number;
     delivered_total: string | number;
     failed_total: string | number;
     unsubscribed_total: string | number;
+    unique_opens: string | number;
+    total_opens: string | number;
+    unique_clicks: string | number;
+    total_clicks: string | number;
   }>(
     `
+      with send_counts as (
+        select count(*)::int as send_count
+        from email_campaign_sends
+        where campaign_id = $2::uuid
+      ),
+      latest_send as (
+        select id
+        from email_campaign_sends
+        where campaign_id = $2::uuid
+        order by created_at desc, id desc
+        limit 1
+      )
       select
-        count(*)::int as total,
-        count(*) filter (where r.status in ('queued', 'sending'))::int as pending_total,
-        count(*) filter (where r.status in ('sent', 'delivered'))::int as sent_total,
-        count(*) filter (where r.status = 'delivered')::int as delivered_total,
-        count(*) filter (where r.status = 'failed')::int as failed_total,
-        count(*) filter (where r.status = 'unsubscribed')::int as unsubscribed_total
-      from email_campaign_recipients r
-      inner join email_campaigns c on c.id = r.campaign_id
-      where c.business_id = $1::uuid
-        and c.id = $2::uuid
+        send_counts.send_count,
+        count(r.id)::int as total,
+        count(r.id) filter (where r.status in ('queued', 'sending'))::int as pending_total,
+        count(r.id) filter (where r.status in ('sent', 'delivered'))::int as sent_total,
+        count(r.id) filter (where r.status = 'delivered')::int as delivered_total,
+        count(r.id) filter (where r.status = 'failed')::int as failed_total,
+        count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_total,
+        count(r.id) filter (where r.open_count > 0)::int as unique_opens,
+        coalesce(sum(r.open_count), 0)::int as total_opens,
+        count(r.id) filter (where r.click_count > 0)::int as unique_clicks,
+        coalesce(sum(r.click_count), 0)::int as total_clicks
+      from send_counts
+      inner join email_campaigns c
+        on c.id = $2::uuid
+       and c.business_id = $1::uuid
+      left join latest_send on true
+      left join email_campaign_recipients r on r.send_id = latest_send.id
+      group by send_counts.send_count
     `,
     [businessId, campaignId],
     client,
@@ -2473,17 +2681,22 @@ async function getCampaignStats(
 
   return {
     campaignId,
+    sendCount: toNumber(row?.send_count),
     recipientCount: toNumber(row?.total),
     pendingCount: toNumber(row?.pending_total),
     sentCount: toNumber(row?.sent_total),
     deliveredCount: toNumber(row?.delivered_total),
     failedCount: toNumber(row?.failed_total),
     unsubscribedCount: toNumber(row?.unsubscribed_total),
+    uniqueOpens: toNumber(row?.unique_opens),
+    totalOpens: toNumber(row?.total_opens),
+    uniqueClicks: toNumber(row?.unique_clicks),
+    totalClicks: toNumber(row?.total_clicks),
   };
 }
 
 async function requeueStaleSendingRecipients(
-  campaignId: string,
+  sendId: string,
   leaseMinutes: number,
   client?: PoolClient,
 ): Promise<number> {
@@ -2494,7 +2707,7 @@ async function requeueStaleSendingRecipients(
         set
           status = 'queued',
           updated_at = now()
-        where campaign_id = $1::uuid
+        where send_id = $1::uuid
           and status = 'sending'
           and updated_at < now() - ($2::int * interval '1 minute')
         returning 1
@@ -2502,7 +2715,7 @@ async function requeueStaleSendingRecipients(
       select count(*)::int as total
       from requeued
     `,
-    [campaignId, leaseMinutes],
+    [sendId, leaseMinutes],
     client,
   );
 
@@ -2510,7 +2723,7 @@ async function requeueStaleSendingRecipients(
 }
 
 async function claimQueuedCampaignRecipients(
-  campaignId: string,
+  sendId: string,
   batchSize: number,
   client?: PoolClient,
 ): Promise<EmailCampaignRecipientRow[]> {
@@ -2519,7 +2732,7 @@ async function claimQueuedCampaignRecipients(
       with candidate_ids as (
         select r.id
         from email_campaign_recipients r
-        where r.campaign_id = $1::uuid
+        where r.send_id = $1::uuid
           and r.status = 'queued'
         order by r.created_at asc
         limit $2
@@ -2535,6 +2748,7 @@ async function claimQueuedCampaignRecipients(
         returning
           r.id,
           r.campaign_id,
+          r.send_id,
           r.contact_id,
           r.personalized_subject,
           r.personalized_body_html,
@@ -2544,6 +2758,12 @@ async function claimQueuedCampaignRecipients(
           r.sent_at,
           r.delivered_at,
           r.failed_at,
+          r.open_count,
+          r.first_opened_at,
+          r.last_opened_at,
+          r.click_count,
+          r.first_clicked_at,
+          r.last_clicked_at,
           r.failure_reason,
           r.created_at,
           r.updated_at
@@ -2551,6 +2771,7 @@ async function claimQueuedCampaignRecipients(
       select
         claimed.id,
         claimed.campaign_id,
+        claimed.send_id,
         claimed.contact_id,
         claimed.personalized_subject,
         claimed.personalized_body_html,
@@ -2560,6 +2781,12 @@ async function claimQueuedCampaignRecipients(
         claimed.sent_at,
         claimed.delivered_at,
         claimed.failed_at,
+        claimed.open_count,
+        claimed.first_opened_at,
+        claimed.last_opened_at,
+        claimed.click_count,
+        claimed.first_clicked_at,
+        claimed.last_clicked_at,
         claimed.failure_reason,
         claimed.created_at,
         claimed.updated_at,
@@ -2572,7 +2799,7 @@ async function claimQueuedCampaignRecipients(
       inner join email_contacts c on c.id = claimed.contact_id
       order by claimed.created_at asc
     `,
-    [campaignId, batchSize],
+    [sendId, batchSize],
     client,
   );
 
@@ -2580,29 +2807,115 @@ async function claimQueuedCampaignRecipients(
 }
 
 async function syncCampaignSendStatusFromRecipients(
-  campaignId: string,
+  sendId: string,
   client?: PoolClient,
-): Promise<EmailCampaign["status"]> {
+): Promise<EmailCampaignSend["status"]> {
   const result = await executeQuery<EmailCampaignRecipientProgressRow>(
     `
       select
+        count(*)::int as recipient_total,
         count(*) filter (where status = 'queued')::int as queued_total,
         count(*) filter (where status = 'sending')::int as sending_total,
-        count(*) filter (where status = 'failed')::int as failed_total
+        count(*) filter (where status = 'failed')::int as failed_total,
+        count(*) filter (where status = 'delivered')::int as delivered_total,
+        count(*) filter (where status = 'unsubscribed')::int as unsubscribed_total
       from email_campaign_recipients
-      where campaign_id = $1::uuid
+      where send_id = $1::uuid
+    `,
+    [sendId],
+    client,
+  );
+
+  const row = result.rows[0];
+  const recipientTotal = toNumber(row?.recipient_total);
+  const queuedTotal = toNumber(row?.queued_total);
+  const sendingTotal = toNumber(row?.sending_total);
+  const failedTotal = toNumber(row?.failed_total);
+  const deliveredTotal = toNumber(row?.delivered_total);
+  const unsubscribedTotal = toNumber(row?.unsubscribed_total);
+
+  const nextStatus: EmailCampaignSend["status"] =
+    sendingTotal > 0 ? "sending" : queuedTotal > 0 ? "queued" : failedTotal > 0 ? "failed" : "sent";
+
+  await executeQuery(
+    `
+      update email_campaign_sends
+      set
+        status = $2,
+        recipient_count = $3::int,
+        delivered_count = $4::int,
+        failed_count = $5::int,
+        unsubscribed_count = $6::int,
+        send_started_at = case
+          when $2 = 'sending' then coalesce(send_started_at, now())
+          when $2 = 'queued' then send_started_at
+          else send_started_at
+        end,
+        send_completed_at = case
+          when $2 in ('queued', 'sending') then null
+          else now()
+        end,
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [sendId, nextStatus, recipientTotal, deliveredTotal, failedTotal, unsubscribedTotal],
+    client,
+  );
+
+  return nextStatus;
+}
+
+async function syncCampaignStatusFromSends(
+  campaignId: string,
+  client?: PoolClient,
+): Promise<EmailCampaign["status"]> {
+  const result = await executeQuery<{
+    queued_total: string | number;
+    sending_total: string | number;
+    latest_status: EmailCampaignSend["status"] | null;
+    latest_send_started_at: Date | string | null;
+    latest_send_completed_at: Date | string | null;
+  }>(
+    `
+      with send_rollup as (
+        select
+          count(*) filter (where status = 'queued')::int as queued_total,
+          count(*) filter (where status = 'sending')::int as sending_total
+        from email_campaign_sends
+        where campaign_id = $1::uuid
+      ),
+      latest_send as (
+        select
+          status as latest_status,
+          send_started_at as latest_send_started_at,
+          send_completed_at as latest_send_completed_at
+        from email_campaign_sends
+        where campaign_id = $1::uuid
+        order by created_at desc, id desc
+        limit 1
+      )
+      select
+        send_rollup.queued_total,
+        send_rollup.sending_total,
+        latest_send.latest_status,
+        latest_send.latest_send_started_at,
+        latest_send.latest_send_completed_at
+      from send_rollup
+      left join latest_send on true
     `,
     [campaignId],
     client,
   );
 
   const row = result.rows[0];
-  const queuedTotal = toNumber(row?.queued_total);
   const sendingTotal = toNumber(row?.sending_total);
-  const failedTotal = toNumber(row?.failed_total);
+  const queuedTotal = toNumber(row?.queued_total);
 
-  const nextStatus: EmailCampaign["status"] =
-    queuedTotal + sendingTotal > 0 ? "sending" : failedTotal > 0 ? "failed" : "sent";
+  const nextStatus: EmailCampaign["status"] = sendingTotal > 0
+    ? "sending"
+    : queuedTotal > 0
+      ? "queued"
+      : row?.latest_status ?? "draft";
 
   await executeQuery(
     `
@@ -2610,17 +2923,18 @@ async function syncCampaignSendStatusFromRecipients(
       set
         status = $2,
         send_started_at = case
-          when $2 = 'sending' then coalesce(send_started_at, now())
-          else send_started_at
+          when $2 = 'queued' then null
+          when $2 = 'draft' then null
+          else $3::timestamptz
         end,
         send_completed_at = case
-          when $2 = 'sending' then null
-          else now()
+          when $2 in ('sent', 'failed') then $4::timestamptz
+          else null
         end,
         updated_at = now()
       where id = $1::uuid
     `,
-    [campaignId, nextStatus],
+    [campaignId, nextStatus, row?.latest_send_started_at ?? null, row?.latest_send_completed_at ?? null],
     client,
   );
 
@@ -2633,28 +2947,28 @@ async function markCampaignRecipientUnsubscribed(
 ): Promise<void> {
   await executeQuery(
     `
-      update email_campaign_recipients
-      set
-        status = 'unsubscribed',
-        updated_at = now()
-      where id = $1::uuid
-    `,
-    [recipientId],
-  );
-
-  await executeQuery(
-    `
+      with updated as (
+        update email_campaign_recipients
+        set
+          status = 'unsubscribed',
+          updated_at = now()
+        where id = $1::uuid
+        returning send_id
+      )
       insert into email_events (
         campaign_recipient_id,
+        send_id,
         event_type,
         payload_json,
         occurred_at
-      ) values (
+      )
+      select
         $1::uuid,
+        updated.send_id,
         'unsubscribe',
         $2::jsonb,
         now()
-      )
+      from updated
     `,
     [
       recipientId,
@@ -2671,30 +2985,30 @@ async function markCampaignRecipientFailure(
 ): Promise<void> {
   await executeQuery(
     `
-      update email_campaign_recipients
-      set
-        status = 'failed',
-        failed_at = now(),
-        failure_reason = $2,
-        updated_at = now()
-      where id = $1::uuid
-    `,
-    [recipientId, failureMessage],
-  );
-
-  await executeQuery(
-    `
+      with updated as (
+        update email_campaign_recipients
+        set
+          status = 'failed',
+          failed_at = now(),
+          failure_reason = $2,
+          updated_at = now()
+        where id = $1::uuid
+        returning send_id
+      )
       insert into email_events (
         campaign_recipient_id,
+        send_id,
         event_type,
         payload_json,
         occurred_at
-      ) values (
+      )
+      select
         $1::uuid,
+        updated.send_id,
         'failed',
         $2::jsonb,
         now()
-      )
+      from updated
     `,
     [
       recipientId,
@@ -2715,32 +3029,32 @@ async function markCampaignRecipientSent(
 ): Promise<void> {
   await executeQuery(
     `
-      update email_campaign_recipients
-      set
-        status = 'sent',
-        ses_message_id = $2,
-        sent_at = $3::timestamptz,
-        updated_at = now()
-      where id = $1::uuid
-    `,
-    [recipientId, sent.messageId, sent.sentAt],
-  );
-
-  await executeQuery(
-    `
+      with updated as (
+        update email_campaign_recipients
+        set
+          status = 'sent',
+          ses_message_id = $2,
+          sent_at = $3::timestamptz,
+          updated_at = now()
+        where id = $1::uuid
+        returning send_id
+      )
       insert into email_events (
         campaign_recipient_id,
+        send_id,
         event_type,
         provider_message_id,
         payload_json,
         occurred_at
-      ) values (
+      )
+      select
         $1::uuid,
+        updated.send_id,
         'sent',
         $2,
         $3::jsonb,
         $4::timestamptz
-      )
+      from updated
     `,
     [
       recipientId,
@@ -3480,19 +3794,22 @@ export async function updateEmailCampaign(
   return withDbTransaction(async (client) => {
     const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
     assertEmailCampaignEditable(campaign, "edit");
+    const latestSend = await loadLatestCampaignSend(campaignId, client);
     await loadEmailListOrThrow(businessId, input.listId, client);
     const settingsRow = await ensureEmailSettingsRow(businessId, client);
     const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow));
     const campaignSource = await resolveCampaignSource(businessId, input, client);
 
-    await executeQuery(
-      `
-        delete from email_campaign_recipients
-        where campaign_id = $1::uuid
-      `,
-      [campaignId],
-      client,
-    );
+    if (latestSend && campaign.status === "failed") {
+      await executeQuery(
+        `
+          delete from email_campaign_sends
+          where id = $1::uuid
+        `,
+        [latestSend.id],
+        client,
+      );
+    }
 
     const result = await executeQuery<EmailCampaignRow>(
       `
@@ -3643,9 +3960,16 @@ export async function listEmailCampaigns(businessId: string): Promise<EmailCampa
         count(r.id) filter (where r.status = 'failed')::int as failed_count,
         count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_count
       from email_campaigns c
-      left join email_campaign_recipients r on r.campaign_id = c.id
+      left join lateral (
+        select s.id
+        from email_campaign_sends s
+        where s.campaign_id = c.id
+        order by s.created_at desc, s.id desc
+        limit 1
+      ) latest_send on true
+      left join email_campaign_recipients r on r.send_id = latest_send.id
       where c.business_id = $1::uuid
-      group by c.id
+      group by c.id, latest_send.id
       order by c.created_at desc
     `,
     [businessId],
@@ -3721,7 +4045,16 @@ export async function processQueuedEmailCampaigns(
   for (const campaign of campaignResult.rows) {
     summary.campaignsVisited += 1;
 
-    const recoveredRecipients = await requeueStaleSendingRecipients(campaign.id, recipientLeaseMinutes);
+    let activeSend: EmailCampaignSendRow;
+
+    try {
+      activeSend = await loadActiveCampaignSendOrThrow(campaign.id);
+    } catch {
+      await syncCampaignStatusFromSends(campaign.id);
+      continue;
+    }
+
+    const recoveredRecipients = await requeueStaleSendingRecipients(activeSend.id, recipientLeaseMinutes);
     summary.requeuedRecipients += recoveredRecipients;
 
     try {
@@ -3741,18 +4074,19 @@ export async function processQueuedEmailCampaigns(
               failed_at = coalesce(failed_at, now()),
               failure_reason = $2,
               updated_at = now()
-            where campaign_id = $1::uuid
+            where send_id = $1::uuid
               and status = 'queued'
           `,
           [
-            campaign.id,
+            activeSend.id,
             JSON.stringify({
               message: failureMessage,
             }),
           ],
           client,
         );
-        await syncCampaignSendStatusFromRecipients(campaign.id, client);
+        await syncCampaignSendStatusFromRecipients(activeSend.id, client);
+        await syncCampaignStatusFromSends(campaign.id, client);
       });
 
       summary.campaignsFinalized += 1;
@@ -3793,6 +4127,20 @@ export async function processQueuedEmailCampaigns(
     const claimedRecipients = await withDbTransaction(async (client) => {
       await executeQuery(
         `
+          update email_campaign_sends
+          set
+            status = 'sending',
+            send_started_at = coalesce(send_started_at, now()),
+            send_completed_at = null,
+            updated_at = now()
+          where id = $1::uuid
+        `,
+        [activeSend.id],
+        client,
+      );
+
+      await executeQuery(
+        `
           update email_campaigns
           set
             status = 'sending',
@@ -3805,7 +4153,7 @@ export async function processQueuedEmailCampaigns(
         client,
       );
 
-      return claimQueuedCampaignRecipients(campaign.id, batchSize, client);
+      return claimQueuedCampaignRecipients(activeSend.id, batchSize, client);
     });
 
     summary.recipientsClaimed += claimedRecipients.length;
@@ -3824,8 +4172,9 @@ export async function processQueuedEmailCampaigns(
     }
 
     if (claimedRecipients.length === 0) {
-      const finalStatus = await syncCampaignSendStatusFromRecipients(campaign.id);
-      if (finalStatus !== "sending") {
+      await syncCampaignSendStatusFromRecipients(activeSend.id);
+      const finalStatus = await syncCampaignStatusFromSends(campaign.id);
+      if (finalStatus !== "sending" && finalStatus !== "queued") {
         summary.campaignsFinalized += 1;
         void sendEmailCampaignLifecycleNotification({
           campaignId: campaign.id,
@@ -3888,6 +4237,7 @@ export async function processQueuedEmailCampaigns(
           tags: {
             campaign_id: campaign.id,
             business_id: campaign.business_id,
+            send_id: activeSend.id,
             recipient_id: recipientRow.id,
           },
         });
@@ -3913,8 +4263,9 @@ export async function processQueuedEmailCampaigns(
       }
     }
 
-    const finalStatus = await syncCampaignSendStatusFromRecipients(campaign.id);
-    if (finalStatus !== "sending") {
+    await syncCampaignSendStatusFromRecipients(activeSend.id);
+    const finalStatus = await syncCampaignStatusFromSends(campaign.id);
+    if (finalStatus !== "sending" && finalStatus !== "queued") {
       summary.campaignsFinalized += 1;
       void sendEmailCampaignLifecycleNotification({
         campaignId: campaign.id,
@@ -4006,7 +4357,8 @@ export async function sendEmailCampaign(
 
     await incrementBusinessDailyUsage(businessId, "emails", contacts.length);
     await ensureEmailSettingsRow(businessId, client);
-    await upsertCampaignRecipients(campaign, contacts, client);
+    const send = await createCampaignSend(campaign, contacts.length, actorUserId, client);
+    await createCampaignRecipientsForSend(send, campaign, contacts, client);
     await executeQuery(
       `
         update email_campaigns

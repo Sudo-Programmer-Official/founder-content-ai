@@ -23,12 +23,17 @@ interface EmailCampaignNotificationRow extends QueryResultRow {
 }
 
 interface EmailCampaignStatsRow extends QueryResultRow {
+  send_count: string | number;
   total: string | number;
   pending_total: string | number;
   sent_total: string | number;
   delivered_total: string | number;
   failed_total: string | number;
   unsubscribed_total: string | number;
+  unique_opens: string | number;
+  total_opens: string | number;
+  unique_clicks: string | number;
+  total_clicks: string | number;
 }
 
 function getPrimaryFrontendOrigin(): string | null {
@@ -263,15 +268,34 @@ async function loadEmailCampaignNotificationRow(
 async function loadEmailCampaignStats(campaignId: string): Promise<EmailCampaignStats> {
   const result = await queryDb<EmailCampaignStatsRow>(
     `
+      with send_counts as (
+        select count(*)::int as send_count
+        from email_campaign_sends
+        where campaign_id = $1::uuid
+      ),
+      latest_send as (
+        select id
+        from email_campaign_sends
+        where campaign_id = $1::uuid
+        order by created_at desc, id desc
+        limit 1
+      )
       select
-        count(*)::int as total,
-        count(*) filter (where status in ('queued', 'sending'))::int as pending_total,
-        count(*) filter (where status in ('sent', 'delivered'))::int as sent_total,
-        count(*) filter (where status = 'delivered')::int as delivered_total,
-        count(*) filter (where status = 'failed')::int as failed_total,
-        count(*) filter (where status = 'unsubscribed')::int as unsubscribed_total
-      from email_campaign_recipients
-      where campaign_id = $1::uuid
+        send_counts.send_count,
+        count(r.id)::int as total,
+        count(*) filter (where r.status in ('queued', 'sending'))::int as pending_total,
+        count(*) filter (where r.status in ('sent', 'delivered'))::int as sent_total,
+        count(*) filter (where r.status = 'delivered')::int as delivered_total,
+        count(*) filter (where r.status = 'failed')::int as failed_total,
+        count(*) filter (where r.status = 'unsubscribed')::int as unsubscribed_total,
+        count(*) filter (where r.open_count > 0)::int as unique_opens,
+        coalesce(sum(r.open_count), 0)::int as total_opens,
+        count(*) filter (where r.click_count > 0)::int as unique_clicks,
+        coalesce(sum(r.click_count), 0)::int as total_clicks
+      from send_counts
+      left join latest_send on true
+      left join email_campaign_recipients r on r.send_id = latest_send.id
+      group by send_counts.send_count
     `,
     [campaignId],
   );
@@ -279,12 +303,17 @@ async function loadEmailCampaignStats(campaignId: string): Promise<EmailCampaign
   const row = result.rows[0];
   return {
     campaignId,
+    sendCount: toNumber(row?.send_count),
     recipientCount: toNumber(row?.total),
     pendingCount: toNumber(row?.pending_total),
     sentCount: toNumber(row?.sent_total),
     deliveredCount: toNumber(row?.delivered_total),
     failedCount: toNumber(row?.failed_total),
     unsubscribedCount: toNumber(row?.unsubscribed_total),
+    uniqueOpens: toNumber(row?.unique_opens),
+    totalOpens: toNumber(row?.total_opens),
+    uniqueClicks: toNumber(row?.unique_clicks),
+    totalClicks: toNumber(row?.total_clicks),
   };
 }
 

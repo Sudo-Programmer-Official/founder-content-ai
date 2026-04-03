@@ -3,11 +3,13 @@ import {
   deleteEmailCampaignController,
   getEmailCampaignStats,
   getEmailCampaigns,
+  getEmailClickTracking,
   getEmailContacts,
   getEmailContactImportJobController,
   getEmailContactImportJobsController,
   getEmailDomainSettingsController,
   getEmailLists,
+  getEmailOpenTracking,
   getEmailUnsubscribe,
   patchEmailCampaign,
   postEmailCampaign,
@@ -40,4 +42,6 @@ emailRoute.get("/api/businesses/:businessId/email/campaigns", requireAuth(), get
 emailRoute.get("/api/businesses/:businessId/email/campaigns/:campaignId/stats", requireAuth(), getEmailCampaignStats);
 emailRoute.post("/api/businesses/:businessId/email/domains", requireAuth(), postEmailDomain);
 emailRoute.post("/api/businesses/:businessId/email/domains/:domainId/verify", requireAuth(), postEmailDomainVerify);
+emailRoute.get("/api/email/track/open", getEmailOpenTracking);
+emailRoute.get("/api/email/track/click", getEmailClickTracking);
 emailRoute.get("/api/email/unsubscribe/:token", getEmailUnsubscribe);

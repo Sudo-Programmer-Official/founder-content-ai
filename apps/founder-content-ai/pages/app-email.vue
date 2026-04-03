@@ -1374,6 +1374,78 @@ function getCampaignActionLabel(campaign: EmailCampaign): string {
   return isSending.value ? "Starting..." : "Send";
 }
 
+function resolveCampaignListName(campaign: EmailCampaign): string {
+  return emailLists.value.find((list) => list.id === campaign.listId)?.name || "Selected audience";
+}
+
+function formatCampaignStatusChipLabel(campaign: EmailCampaign): string {
+  if (campaign.status === "queued") {
+    return "Queued";
+  }
+
+  if (campaign.status === "sending") {
+    return "Sending";
+  }
+
+  return formatStatus(campaign.status);
+}
+
+function getCampaignStatusChipClass(campaign: EmailCampaign): string {
+  if (campaign.status === "sent") {
+    return "success";
+  }
+
+  if (campaign.status === "failed") {
+    return "warning";
+  }
+
+  if (campaign.status === "queued" || campaign.status === "sending") {
+    return "info";
+  }
+
+  return "draft";
+}
+
+function formatCampaignReadySummary(campaign: EmailCampaign): string {
+  const prefix =
+    campaign.status === "queued" || campaign.status === "sending"
+      ? "Current send"
+      : campaign.status === "failed"
+        ? "Retry target"
+        : "Next send";
+  return `${prefix}: ${resolveCampaignListName(campaign)} · ${resolveCampaignAudienceSize(campaign).toLocaleString()} contacts before suppressions`;
+}
+
+function formatCampaignLastSendSummary(campaign: EmailCampaign): string | null {
+  if (campaign.status === "sent" && campaign.sendCompletedAt) {
+    const sentCount = Math.max(campaign.sentCount, campaign.deliveredCount, campaign.recipientCount);
+    return `Last sent ${new Date(campaign.sendCompletedAt).toLocaleDateString()} · ${sentCount.toLocaleString()} contacts`;
+  }
+
+  if (campaign.status === "failed") {
+    const timestamp = campaign.sendStartedAt || campaign.updatedAt;
+    if (!timestamp) {
+      return null;
+    }
+    return `Last attempt ${new Date(timestamp).toLocaleDateString()} · ${resolveCampaignAudienceSize(campaign).toLocaleString()} contacts`;
+  }
+
+  return null;
+}
+
+function buildCampaignSendConfirmationMessage(campaign: EmailCampaign): string {
+  const verb = campaign.status === "failed" ? "Retry" : "Send";
+  return [
+    `${verb} "${campaign.name}" now?`,
+    "",
+    "You are sending to:",
+    `- ${resolveCampaignListName(campaign)}`,
+    `- ${resolveCampaignAudienceSize(campaign).toLocaleString()} contacts before suppressions`,
+    "",
+    "Unsubscribed, bounced, and complained contacts stay excluded.",
+  ].join("\n");
+}
+
 function stopCampaignProgressPolling(): void {
   if (campaignProgressPollHandle === null || typeof window === "undefined") {
     return;
@@ -1610,12 +1682,17 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     } else {
       latestStats.value = {
         campaignId: matchingCampaign.id,
+        sendCount: 0,
         recipientCount: matchingCampaign.recipientCount,
         pendingCount: matchingCampaign.pendingCount,
         sentCount: matchingCampaign.sentCount,
         deliveredCount: matchingCampaign.deliveredCount,
         failedCount: matchingCampaign.failedCount,
         unsubscribedCount: matchingCampaign.unsubscribedCount,
+        uniqueOpens: 0,
+        totalOpens: 0,
+        uniqueClicks: 0,
+        totalClicks: 0,
       };
     }
   }
@@ -1830,7 +1907,7 @@ async function deleteCampaign(campaign: EmailCampaign): Promise<void> {
 
   const confirmed =
     typeof window === "undefined" ||
-    window.confirm(`Delete "${campaign.name}"? This removes the draft and any unsent recipient state.`);
+    window.confirm(`Delete "${campaign.name}"?\n\nThis cannot be undone. Only draft or failed campaigns can be removed.`);
 
   if (!confirmed) {
     return;
@@ -1854,8 +1931,16 @@ async function deleteCampaign(campaign: EmailCampaign): Promise<void> {
   }
 }
 
-async function sendCampaign(campaignId: string): Promise<void> {
+async function sendCampaign(campaign: EmailCampaign): Promise<void> {
   if (!selectedBusinessId.value) {
+    return;
+  }
+
+  const confirmed =
+    typeof window === "undefined" ||
+    window.confirm(buildCampaignSendConfirmationMessage(campaign));
+
+  if (!confirmed) {
     return;
   }
 
@@ -1863,14 +1948,14 @@ async function sendCampaign(campaignId: string): Promise<void> {
   errorMessage.value = "";
 
   try {
-    const response = await requestEmailCampaignSend(selectedBusinessId.value, campaignId);
-    latestStatsCampaignId.value = campaignId;
+    const response = await requestEmailCampaignSend(selectedBusinessId.value, campaign.id);
+    latestStatsCampaignId.value = campaign.id;
     latestStats.value = response.stats;
     feedbackMessage.value = `Campaign queued. Processing ${response.stats.recipientCount} recipients in the background.`;
     await Promise.all([
       loadEmailState(),
       refreshProductAccess(selectedBusinessId.value),
-      requestEmailCampaignStats(selectedBusinessId.value, campaignId).then((statsResponse) => {
+      requestEmailCampaignStats(selectedBusinessId.value, campaign.id).then((statsResponse) => {
         latestStats.value = statsResponse.stats;
       }),
     ]);
@@ -2609,12 +2694,23 @@ onBeforeUnmount(() => {
           <div class="campaign-list">
             <article v-for="campaign in campaigns" :key="campaign.id" class="campaign-card">
               <div>
-                <strong>{{ campaign.name }}</strong>
+                <div class="campaign-card-heading">
+                  <strong>{{ campaign.name }}</strong>
+                  <span class="workspace-chip campaign-status-chip" :class="getCampaignStatusChipClass(campaign)">
+                    {{ formatCampaignStatusChipLabel(campaign) }}
+                  </span>
+                </div>
                 <p>{{ campaign.subject }}</p>
                 <p v-if="campaign.sourceTitle" class="campaign-source-note">From {{ campaign.sourceTitle }}</p>
                 <p class="campaign-metrics">
                   {{ formatCampaignLifecycleLabel(campaign) }} · {{ resolveCampaignAudienceSize(campaign) }} audience ·
                   {{ formatCampaignProgress(campaign) }} · {{ campaign.deliveredCount }} delivered · {{ campaign.failedCount }} failed
+                </p>
+                <p v-if="formatCampaignLastSendSummary(campaign)" class="campaign-last-send">
+                  {{ formatCampaignLastSendSummary(campaign) }}
+                </p>
+                <p v-else class="campaign-send-summary">
+                  {{ formatCampaignReadySummary(campaign) }}
                 </p>
                 <div v-if="campaign.recipientCount > 0" class="campaign-progress">
                   <span class="campaign-progress-fill" :style="{ width: `${getCampaignProgressPercent(campaign)}%` }"></span>
@@ -2647,7 +2743,7 @@ onBeforeUnmount(() => {
                   type="button"
                   class="secondary-action"
                   :disabled="isSending || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
-                  @click="sendCampaign(campaign.id)"
+                  @click="sendCampaign(campaign)"
                 >
                   {{ getCampaignActionLabel(campaign) }}
                 </button>
@@ -3751,6 +3847,18 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, #f8b84e 12%, white 88%);
 }
 
+.workspace-chip.success {
+  border-color: color-mix(in srgb, #1f8f4d 18%, var(--fc-border));
+  color: #1f7a43;
+  background: color-mix(in srgb, #7fd39e 16%, white 84%);
+}
+
+.workspace-chip.info {
+  border-color: color-mix(in srgb, #2563eb 16%, var(--fc-border));
+  color: #1f4bb8;
+  background: color-mix(in srgb, #7ba8ff 14%, white 86%);
+}
+
 .overview-empty-state {
   display: grid;
   gap: 18px;
@@ -4138,6 +4246,17 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 
+.campaign-card-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.campaign-status-chip.draft {
+  background: color-mix(in srgb, var(--fc-surface-subtle) 92%, white 8%);
+}
+
 .campaign-card p,
 .empty-note {
   margin: 4px 0 0;
@@ -4147,6 +4266,11 @@ onBeforeUnmount(() => {
 
 .campaign-metrics {
   font-size: 0.88rem;
+}
+
+.campaign-last-send,
+.campaign-send-summary {
+  font-size: 0.82rem;
 }
 
 .campaign-progress {

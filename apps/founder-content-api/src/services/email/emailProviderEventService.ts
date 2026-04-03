@@ -407,12 +407,18 @@ async function insertEmailEvent(
     `
       insert into email_events (
         campaign_recipient_id,
+        send_id,
         event_type,
         provider_message_id,
         payload_json,
         occurred_at
       ) values (
         $1::uuid,
+        (
+          select send_id
+          from email_campaign_recipients
+          where id = $1::uuid
+        ),
         $2,
         $3,
         $4::jsonb,
@@ -426,6 +432,112 @@ async function insertEmailEvent(
       input.payloadJson,
       input.occurredAt,
     ],
+  );
+}
+
+async function syncCampaignSendTrackingState(
+  client: PoolClient,
+  campaignRecipientId: string,
+): Promise<void> {
+  const contextResult = await executeQuery<{ send_id: string | null; campaign_id: string }>(
+    client,
+    `
+      select send_id, campaign_id
+      from email_campaign_recipients
+      where id = $1::uuid
+      limit 1
+    `,
+    [campaignRecipientId],
+  );
+
+  const context = contextResult.rows[0];
+
+  if (!context?.send_id) {
+    return;
+  }
+
+  await executeQuery(
+    client,
+    `
+      with rollup as (
+        select
+          count(*)::int as recipient_total,
+          count(*) filter (where status = 'queued')::int as queued_total,
+          count(*) filter (where status = 'sending')::int as sending_total,
+          count(*) filter (where status = 'failed')::int as failed_total,
+          count(*) filter (where status = 'delivered')::int as delivered_total,
+          count(*) filter (where status = 'unsubscribed')::int as unsubscribed_total
+        from email_campaign_recipients
+        where send_id = $1::uuid
+      )
+      update email_campaign_sends s
+      set
+        recipient_count = rollup.recipient_total,
+        delivered_count = rollup.delivered_total,
+        failed_count = rollup.failed_total,
+        unsubscribed_count = rollup.unsubscribed_total,
+        status = case
+          when rollup.sending_total > 0 then 'sending'
+          when rollup.queued_total > 0 then 'queued'
+          when rollup.failed_total > 0 then 'failed'
+          else 'sent'
+        end,
+        send_started_at = coalesce(s.send_started_at, now()),
+        send_completed_at = case
+          when rollup.sending_total > 0 or rollup.queued_total > 0 then null
+          else now()
+        end,
+        updated_at = now()
+      from rollup
+      where s.id = $1::uuid
+    `,
+    [context.send_id],
+  );
+
+  await executeQuery(
+    client,
+    `
+      with send_rollup as (
+        select
+          count(*) filter (where status = 'queued')::int as queued_total,
+          count(*) filter (where status = 'sending')::int as sending_total
+        from email_campaign_sends
+        where campaign_id = $1::uuid
+      ),
+      latest_send as (
+        select
+          status,
+          send_started_at,
+          send_completed_at
+        from email_campaign_sends
+        where campaign_id = $1::uuid
+        order by created_at desc, id desc
+        limit 1
+      )
+      update email_campaigns c
+      set
+        status = case
+          when send_rollup.sending_total > 0 then 'sending'
+          when send_rollup.queued_total > 0 then 'queued'
+          else coalesce(latest_send.status, c.status)
+        end,
+        send_started_at = case
+          when send_rollup.sending_total > 0 then latest_send.send_started_at
+          when send_rollup.queued_total > 0 then null
+          when latest_send.status in ('sent', 'failed') then latest_send.send_started_at
+          else c.send_started_at
+        end,
+        send_completed_at = case
+          when send_rollup.sending_total > 0 or send_rollup.queued_total > 0 then null
+          when latest_send.status in ('sent', 'failed') then latest_send.send_completed_at
+          else c.send_completed_at
+        end,
+        updated_at = now()
+      from send_rollup
+      left join latest_send on true
+      where c.id = $1::uuid
+    `,
+    [context.campaign_id],
   );
 }
 
@@ -656,6 +768,7 @@ export async function processSesWebhookNotification(body: unknown): Promise<SesW
           payloadJson: event.rawPayloadJson,
           occurredAt: event.occurredAt,
         });
+        await syncCampaignSendTrackingState(client, event.context.campaignRecipientId);
 
         await recordGrowthProviderFeedbackEvent(
           {
@@ -687,6 +800,7 @@ export async function processSesWebhookNotification(body: unknown): Promise<SesW
           payloadJson: event.rawPayloadJson,
           occurredAt: event.occurredAt,
         });
+        await syncCampaignSendTrackingState(client, event.context.campaignRecipientId);
 
         if (event.context.contactId) {
           await updateContactForProviderEvent(client, {
@@ -739,6 +853,7 @@ export async function processSesWebhookNotification(body: unknown): Promise<SesW
           payloadJson: event.rawPayloadJson,
           occurredAt: event.occurredAt,
         });
+        await syncCampaignSendTrackingState(client, event.context.campaignRecipientId);
 
         if (event.context.contactId) {
           await updateContactForProviderEvent(client, {
@@ -787,6 +902,7 @@ export async function processSesWebhookNotification(body: unknown): Promise<SesW
           payloadJson: event.rawPayloadJson,
           occurredAt: event.occurredAt,
         });
+        await syncCampaignSendTrackingState(client, event.context.campaignRecipientId);
       }
     }
 

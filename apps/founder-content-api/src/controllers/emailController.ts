@@ -47,9 +47,14 @@ import {
   updateEmailCampaign,
   verifyEmailDomain,
 } from "../services/email/emailService.ts";
+import {
+  getEmailTrackingPixelBuffer,
+  trackEmailClick,
+  trackEmailOpen,
+} from "../services/email/emailTrackingService.ts";
 import { processSesWebhookNotification } from "../services/email/emailProviderEventService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
-import { handleApiError, sendApiError } from "../utils/http.ts";
+import { handleApiError, isHttpError, sendApiError } from "../utils/http.ts";
 
 function readBusinessId(request: Request<{ businessId: string }>): string | undefined {
   return request.params.businessId?.trim() || undefined;
@@ -153,6 +158,13 @@ function buildUnsubscribeHtml(input: {
     </main>
   </body>
 </html>`;
+}
+
+function applyTrackingResponseHeaders(response: Response): void {
+  response.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0");
+  response.setHeader("Pragma", "no-cache");
+  response.setHeader("Expires", "0");
+  response.setHeader("X-Robots-Tag", "noindex, nofollow");
 }
 
 export async function postEmailContactsImport(
@@ -837,5 +849,53 @@ export async function getEmailUnsubscribe(
       message: "Unable to unsubscribe this contact.",
       logMessage: "Failed to unsubscribe email contact.",
     });
+  }
+}
+
+export async function getEmailOpenTracking(
+  request: Request<unknown, unknown, unknown, { t?: string }>,
+  response: Response,
+): Promise<void> {
+  try {
+    await trackEmailOpen({
+      token: typeof request.query.t === "string" ? request.query.t : "",
+      userAgent: request.get("user-agent") ?? undefined,
+      ipAddress: request.ip,
+    });
+  } catch {
+    // Always return the tracking pixel so image rendering does not surface token errors.
+  }
+
+  applyTrackingResponseHeaders(response);
+  response.status(200).type("gif").send(getEmailTrackingPixelBuffer());
+}
+
+export async function getEmailClickTracking(
+  request: Request<unknown, unknown, unknown, { t?: string }>,
+  response: Response<string>,
+): Promise<void> {
+  try {
+    const result = await trackEmailClick({
+      token: typeof request.query.t === "string" ? request.query.t : "",
+      userAgent: request.get("user-agent") ?? undefined,
+      ipAddress: request.ip,
+    });
+
+    applyTrackingResponseHeaders(response);
+    response.redirect(302, result.redirectUrl);
+  } catch (error) {
+    if (isHttpError(error)) {
+      applyTrackingResponseHeaders(response);
+      response.status(error.statusCode).type("text/plain").send(error.message);
+      return;
+    }
+
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "email_click_tracking_failed",
+      message: "Unable to resolve tracked email click.",
+    });
+    applyTrackingResponseHeaders(response);
+    response.status(500).type("text/plain").send("Unable to resolve this tracked email link.");
   }
 }

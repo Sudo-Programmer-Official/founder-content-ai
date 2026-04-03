@@ -7,6 +7,7 @@ export type EmailContactStatus =
   | "complained"
   | "suppressed";
 export type EmailCampaignStatus = "draft" | "queued" | "sending" | "sent" | "failed";
+export type EmailCampaignSendStatus = "queued" | "sending" | "sent" | "failed";
 export type EmailCampaignRecipientStatus =
   | "queued"
   | "sending"
@@ -19,10 +20,12 @@ export type EmailEventType =
   | "sent"
   | "delivered"
   | "open"
+  | "click"
   | "bounce"
   | "complaint"
   | "unsubscribe"
   | "failed";
+export type EmailTrackingSourceType = "unknown" | "human_likely" | "bot_suspected" | "prefetch";
 
 export interface EmailDnsRecord {
   type: "TXT" | "CNAME";
@@ -188,9 +191,26 @@ export interface EmailCampaign {
   unsubscribedCount: number;
 }
 
+export interface EmailCampaignSend {
+  id: string;
+  campaignId: string;
+  businessId: string;
+  status: EmailCampaignSendStatus;
+  recipientCount: number;
+  deliveredCount: number;
+  failedCount: number;
+  unsubscribedCount: number;
+  sendStartedAt?: string;
+  sendCompletedAt?: string;
+  createdByUserId?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface EmailCampaignRecipient {
   id: string;
   campaignId: string;
+  sendId: string;
   contactId: string;
   personalizedSubject: string;
   personalizedBodyHtml: string;
@@ -200,6 +220,12 @@ export interface EmailCampaignRecipient {
   sentAt?: string;
   deliveredAt?: string;
   failedAt?: string;
+  openCount: number;
+  firstOpenedAt?: string;
+  lastOpenedAt?: string;
+  clickCount: number;
+  firstClickedAt?: string;
+  lastClickedAt?: string;
   failureReason?: string;
   createdAt: string;
   updatedAt?: string;
@@ -207,12 +233,31 @@ export interface EmailCampaignRecipient {
 
 export interface EmailCampaignStats {
   campaignId: string;
+  sendCount: number;
   recipientCount: number;
   pendingCount: number;
   sentCount: number;
   deliveredCount: number;
   failedCount: number;
   unsubscribedCount: number;
+  uniqueOpens: number;
+  totalOpens: number;
+  uniqueClicks: number;
+  totalClicks: number;
+}
+
+export interface EmailCampaignLink {
+  id: string;
+  campaignId: string;
+  sendId: string;
+  businessId: string;
+  originalUrl: string;
+  normalizedUrl: string;
+  label?: string;
+  positionIndex?: number;
+  uniqueClicks?: number;
+  totalClicks?: number;
+  createdAt: string;
 }
 
 export interface EmailCampaignImage {
@@ -407,6 +452,14 @@ export interface EmailCampaignListResponse {
 
 export interface EmailCampaignStatsResponse {
   stats: EmailCampaignStats;
+}
+
+export interface EmailCampaignSendListResponse {
+  sends: EmailCampaignSend[];
+}
+
+export interface EmailCampaignLinkListResponse {
+  links: EmailCampaignLink[];
 }
 
 export interface CreateEmailDomainRequest {
