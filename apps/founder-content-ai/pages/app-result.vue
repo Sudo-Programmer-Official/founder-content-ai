@@ -17,6 +17,7 @@ import type {
   GenerateVisualResponse,
   MediaRecommendationGoal,
   MediaRecommendationSuggestion,
+  MotionTemplateId,
   PostAsset,
   PublishAttempt,
   PublishAttemptPlatform,
@@ -60,6 +61,7 @@ import {
 import {
   requestCreatePostAsset,
   requestDeletePostAsset,
+  requestGenerateMotionPostAsset,
   requestMediaUploadUrl,
   requestPostAssets,
 } from "../services/post-assets-service";
@@ -134,14 +136,18 @@ const isMetaSelectionModalOpen = ref(false);
 const pendingMetaSession = ref("");
 const isLoadingPostAssets = ref(false);
 const isUploadingPostAssets = ref(false);
+const isGeneratingMotionLite = ref(false);
 const removingPostAssetId = ref("");
 const mediaFeedback = ref("");
 const postAssets = ref<PostAsset[]>([]);
 const isWorkspaceAssetPickerOpen = ref(false);
+const selectedMotionTemplateId = ref<MotionTemplateId>("subtle_zoom");
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
 const isLoadingMediaRecommendations = ref(false);
 const isGeneratingRecommendationId = ref("");
 const mediaRecommendationPanelRef = ref<HTMLElement | null>(null);
+type VisualStylePreference = "auto" | "photo_overlay" | "stat_card" | "quote_card" | "framework_card";
+const selectedVisualStylePreference = ref<VisualStylePreference>("auto");
 const aiEditInstruction = ref("");
 const aiEditPreview = ref<ContentAiEditPreview | null>(null);
 const aiEditFeedback = ref("");
@@ -844,6 +850,31 @@ function getMediaSuggestionReason(suggestion: MediaRecommendationSuggestion): st
   return suggestion.reason;
 }
 
+function matchesVisualStylePreference(
+  suggestion: MediaRecommendationSuggestion,
+  preference: VisualStylePreference,
+): boolean {
+  return preference !== "auto"
+    && suggestion.actionType === "generate_visual"
+    && suggestion.suggestedMediaType === preference;
+}
+
+function getVisualStyleOptionLabel(preference: Exclude<VisualStylePreference, "auto">): string {
+  if (preference === "photo_overlay") {
+    return isBusinessMode.value ? "Launch image" : "Realistic image";
+  }
+
+  if (preference === "stat_card") {
+    return "Stat / proof card";
+  }
+
+  if (preference === "quote_card") {
+    return "Quote card";
+  }
+
+  return isBusinessMode.value ? "Feature visual" : "Carousel";
+}
+
 const postScore = computed(() =>
   draft.value
     ? calculateContentScore({
@@ -1215,9 +1246,115 @@ const readyImageCount = computed(() =>
 const readyVideoCount = computed(() =>
   postAssets.value.filter((asset) => asset.type === "video" && asset.status === "ready").length,
 );
+const readyImageAssets = computed(() =>
+  postAssets.value.filter((asset) => asset.type === "image" && asset.status === "ready"),
+);
+const motionLiteSourceAsset = computed(() => readyImageAssets.value[0] ?? null);
+const motionLiteAspectRatio = computed(() =>
+  motionLiteSourceAsset.value?.metadata.aspectRatio === "9:16" ? "portrait" : "square",
+);
+const motionLiteUnavailableReason = computed(() => {
+  if (readyVideoCount.value > 0) {
+    return "This draft already has video attached. Remove it before generating another motion teaser.";
+  }
+
+  if (readyImageCount.value === 0) {
+    return "Generate or attach one image first, then animate it into a short promo teaser.";
+  }
+
+  if (readyImageCount.value > 1) {
+    return "Motion-lite currently works on one image at a time. Narrow this draft to a single image first.";
+  }
+
+  return "";
+});
+const canGenerateMotionLite = computed(() => motionLiteUnavailableReason.value === "");
+
+function getMotionTemplateLabel(templateId: MotionTemplateId): string {
+  switch (templateId) {
+    case "caption_pulse":
+      return "Caption pulse";
+    case "story_pan":
+      return "Story pan";
+    default:
+      return "Subtle zoom";
+  }
+}
+
+function isMotionDerivedVideoAsset(asset: PostAsset): asset is Extract<PostAsset, { type: "video" }> {
+  return asset.type === "video"
+    && asset.metadata.source === "motion_template"
+    && typeof asset.metadata.posterAssetId === "string"
+    && asset.metadata.posterAssetId.trim() !== "";
+}
+
+function resolveEffectivePostAssetsForPlatform(
+  platform: PublishableSocialPlatform,
+  assets: PostAsset[] = postAssets.value,
+): PostAsset[] {
+  const readyAssets = assets.filter((asset) => asset.status === "ready");
+  const motionVideos = readyAssets.filter((asset) => {
+    if (!isMotionDerivedVideoAsset(asset)) {
+      return false;
+    }
+
+    const posterAssetId = asset.metadata.posterAssetId?.trim();
+    return readyAssets.some((candidate) => candidate.type === "image" && candidate.id === posterAssetId);
+  });
+  const nonMotionVideos = readyAssets.filter((asset) => asset.type === "video" && !isMotionDerivedVideoAsset(asset));
+
+  if (motionVideos.length !== 1 || nonMotionVideos.length > 0) {
+    return readyAssets;
+  }
+
+  const motionVideo = motionVideos[0];
+
+  if (platform === "linkedin") {
+    return readyAssets.filter((asset) => asset.id !== motionVideo.id);
+  }
+
+  return [motionVideo];
+}
+
+function summarizeEffectivePostAssetsForPlatform(platform: PublishableSocialPlatform): {
+  imageCount: number;
+  videoCount: number;
+} {
+  let imageCount = 0;
+  let videoCount = 0;
+
+  for (const asset of resolveEffectivePostAssetsForPlatform(platform)) {
+    if (asset.type === "image") {
+      imageCount += 1;
+      continue;
+    }
+
+    if (asset.type === "video") {
+      videoCount += 1;
+    }
+  }
+
+  return { imageCount, videoCount };
+}
+
+function getMediaAssetRoleLabel(asset: PostAsset): string {
+  if (isMotionDerivedVideoAsset(asset)) {
+    return "Primary for Instagram/Facebook";
+  }
+
+  const pairedMotionVideo = postAssets.value.find((candidate) =>
+    candidate.type === "video"
+    && candidate.metadata.source === "motion_template"
+    && candidate.metadata.posterAssetId === asset.id,
+  );
+
+  return pairedMotionVideo ? "Fallback for LinkedIn" : "";
+}
 
 function resolvePublishingGuardrail(platform: PublishableSocialPlatform): string {
-  if (readyImageCount.value > 0 && readyVideoCount.value > 0) {
+  const { imageCount, videoCount } = summarizeEffectivePostAssetsForPlatform(platform);
+
+  if (imageCount > 0 && videoCount > 0) {
     return "Mixed image and video drafts are not publishable yet. Use only one media type per post.";
   }
 
@@ -1225,7 +1362,7 @@ function resolvePublishingGuardrail(platform: PublishableSocialPlatform): string
     return "Connect LinkedIn before publishing.";
   }
 
-  if (platform === "linkedin" && readyVideoCount.value > 0) {
+  if (platform === "linkedin" && videoCount > 0) {
     return "Video is publishable on Instagram and Facebook. LinkedIn video support is coming soon.";
   }
 
@@ -1234,11 +1371,11 @@ function resolvePublishingGuardrail(platform: PublishableSocialPlatform): string
       return "Connect a Facebook Page with a linked Instagram business account before publishing.";
     }
 
-    if (readyVideoCount.value > 1) {
+    if (videoCount > 1) {
       return "Instagram video publishing currently supports exactly 1 ready video.";
     }
 
-    if (readyVideoCount.value === 0 && (readyImageCount.value < 1 || readyImageCount.value > 10)) {
+    if (videoCount === 0 && (imageCount < 1 || imageCount > 10)) {
       return "Instagram publishing requires either 1 ready video or between 1 and 10 ready images.";
     }
   }
@@ -1248,11 +1385,11 @@ function resolvePublishingGuardrail(platform: PublishableSocialPlatform): string
   }
 
   if (platform === "facebook") {
-    if (readyVideoCount.value > 1) {
+    if (videoCount > 1) {
       return "Facebook video publishing currently supports exactly 1 ready video.";
     }
 
-    if (readyVideoCount.value === 0 && readyImageCount.value > 10) {
+    if (videoCount === 0 && imageCount > 10) {
       return "Facebook publishing supports up to 10 ready images.";
     }
   }
@@ -1669,6 +1806,13 @@ const displayedMediaRecommendations = computed(() => {
   return sourceSuggestions
     .slice()
     .sort((left, right) => {
+      const leftMatchesPreference = matchesVisualStylePreference(left, selectedVisualStylePreference.value);
+      const rightMatchesPreference = matchesVisualStylePreference(right, selectedVisualStylePreference.value);
+
+      if (leftMatchesPreference !== rightMatchesPreference) {
+        return leftMatchesPreference ? -1 : 1;
+      }
+
       const resolvePriority = (suggestion: MediaRecommendationSuggestion): number => {
         if (isBusinessMode.value) {
           return suggestion.suggestedMediaType === "photo_overlay"
@@ -1725,6 +1869,50 @@ const displayedMediaRecommendations = computed(() => {
       const rightPriority = resolvePriority(right);
       return leftPriority - rightPriority;
     });
+});
+const selectableVisualStyleOptions = computed(() => [
+  {
+    value: "auto" as const,
+    label: "Auto",
+  },
+  {
+    value: "photo_overlay" as const,
+    label: getVisualStyleOptionLabel("photo_overlay"),
+  },
+  {
+    value: "stat_card" as const,
+    label: getVisualStyleOptionLabel("stat_card"),
+  },
+  {
+    value: "quote_card" as const,
+    label: getVisualStyleOptionLabel("quote_card"),
+  },
+  {
+    value: "framework_card" as const,
+    label: getVisualStyleOptionLabel("framework_card"),
+  },
+]);
+const preferredMediaSuggestion = computed<MediaRecommendationSuggestion | null>(() => {
+  if (selectedVisualStylePreference.value === "auto") {
+    return null;
+  }
+
+  return displayedMediaRecommendations.value.find((suggestion) =>
+    matchesVisualStylePreference(suggestion, selectedVisualStylePreference.value),
+  ) ?? fallbackMediaRecommendations.value.find((suggestion) =>
+    matchesVisualStylePreference(suggestion, selectedVisualStylePreference.value),
+  ) ?? null;
+});
+const mediaPrimaryActionLabel = computed(() => {
+  if (selectedVisualStylePreference.value === "auto" || !preferredMediaSuggestion.value) {
+    return isLoadingMediaRecommendations.value ? "Loading options..." : "Choose visual format";
+  }
+
+  if (isGeneratingRecommendationId.value === preferredMediaSuggestion.value.id) {
+    return "Generating...";
+  }
+
+  return `Generate ${getVisualStyleOptionLabel(selectedVisualStylePreference.value)}`;
 });
 const isUsingFallbackMediaRecommendations = computed(
   () => !isLoadingMediaRecommendations.value && eligibleMediaRecommendations.value.length === 0,
@@ -2829,6 +3017,64 @@ async function openGenerateMediaOptions(): Promise<void> {
 
   if (isUsingFallbackMediaRecommendations.value) {
     mediaFeedback.value = "No strong visual match yet. You can still generate media manually.";
+  }
+}
+
+async function triggerPreferredMediaGeneration(): Promise<void> {
+  if (selectedVisualStylePreference.value === "auto" || !preferredMediaSuggestion.value) {
+    await openGenerateMediaOptions();
+    return;
+  }
+
+  await applyMediaRecommendation(preferredMediaSuggestion.value);
+}
+
+async function generateMotionLiteFromCurrentVisual(): Promise<void> {
+  if (!activeBusinessId.value) {
+    mediaFeedback.value = "Select a workspace before generating motion.";
+    return;
+  }
+
+  if (!canGenerateMotionLite.value || !motionLiteSourceAsset.value) {
+    mediaFeedback.value = motionLiteUnavailableReason.value || "Attach one image first, then animate it.";
+    return;
+  }
+
+  isGeneratingMotionLite.value = true;
+  mediaFeedback.value = "";
+
+  try {
+    const persistedId = await ensurePersistedDraft();
+
+    if (!persistedId) {
+      mediaFeedback.value = "Save this draft first, then generate motion.";
+      return;
+    }
+
+    const response = await requestGenerateMotionPostAsset({
+      businessId: activeBusinessId.value,
+      postId: persistedId,
+      sourceAssetId: motionLiteSourceAsset.value.id,
+      motionTemplate: {
+        id: selectedMotionTemplateId.value,
+        aspectRatio: motionLiteAspectRatio.value,
+        durationMs: 7000,
+        loop: false,
+      },
+    });
+
+    await loadPostAssets();
+    mediaFeedback.value =
+      `Created a short ${getMotionTemplateLabel(selectedMotionTemplateId.value).toLowerCase()} teaser and kept the original image attached as a fallback.`;
+
+    if (response.removedAssetIds.length === 0) {
+      mediaFeedback.value = `Created a short ${getMotionTemplateLabel(selectedMotionTemplateId.value).toLowerCase()} teaser. Instagram and Facebook will prefer the video, while LinkedIn keeps the poster image.`;
+    }
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to generate a motion teaser right now.";
+  } finally {
+    isGeneratingMotionLite.value = false;
   }
 }
 
@@ -4647,13 +4893,25 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="media-panel-actions">
+                <label class="media-style-select-wrap">
+                  <span class="panel-meta media-style-select-label">Visual style</span>
+                  <select v-model="selectedVisualStylePreference" class="media-style-select">
+                    <option
+                      v-for="option in selectableVisualStyleOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </label>
                 <button
                   type="button"
                   class="primary-action media-generate-button"
                   :disabled="isLoadingMediaRecommendations || isUploadingPostAssets"
-                  @click="void openGenerateMediaOptions()"
+                  @click="void triggerPreferredMediaGeneration()"
                 >
-                  {{ isLoadingMediaRecommendations ? "Loading options..." : "Choose visual format" }}
+                  {{ mediaPrimaryActionLabel }}
                 </button>
                 <button
                   type="button"
@@ -4674,6 +4932,38 @@ onBeforeUnmount(() => {
                 </label>
               </div>
             </div>
+
+            <div class="motion-lite-panel">
+              <div>
+                <p class="panel-meta">Motion-lite</p>
+                <strong>Animate the current visual into a short promo teaser</strong>
+                <p class="ai-command-copy">
+                  Turns one attached image into a 7-second MP4 and replaces the still image on this draft so it stays publishable.
+                </p>
+              </div>
+              <div class="motion-lite-actions">
+                <label class="media-style-select-wrap">
+                  <span class="panel-meta media-style-select-label">Motion style</span>
+                  <select v-model="selectedMotionTemplateId" class="media-style-select">
+                    <option value="subtle_zoom">Subtle zoom</option>
+                    <option value="caption_pulse">Caption pulse</option>
+                    <option value="story_pan">Story pan</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  class="secondary-action media-generate-button"
+                  :disabled="!canGenerateMotionLite || isGeneratingMotionLite || isUploadingPostAssets"
+                  @click="void generateMotionLiteFromCurrentVisual()"
+                >
+                  {{ isGeneratingMotionLite ? "Animating..." : "Animate this visual" }}
+                </button>
+              </div>
+            </div>
+
+            <p v-if="motionLiteUnavailableReason" class="result-feedback subtle">
+              {{ motionLiteUnavailableReason }}
+            </p>
 
             <section
               v-if="shouldShowCarouselBlueprint && carouselDraft && carouselDraft.slides.length > 0"
@@ -4800,6 +5090,9 @@ onBeforeUnmount(() => {
                   <span>{{ asset.mimeType }}</span>
                   <strong>{{ Math.max(1, Math.round(asset.sizeBytes / 1024)) }} KB</strong>
                 </div>
+                <span v-if="getMediaAssetRoleLabel(asset)" class="media-role-chip">
+                  {{ getMediaAssetRoleLabel(asset) }}
+                </span>
                 <button
                   type="button"
                   class="secondary-action media-remove-button"
@@ -5923,9 +6216,66 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.media-style-select-wrap {
+  display: grid;
+  gap: 6px;
+}
+
+.media-style-select-label {
+  margin: 0;
+}
+
+.media-style-select {
+  min-width: 200px;
+  min-height: 46px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--fc-text);
+  font: inherit;
+}
+
 .media-generate-button {
   min-width: 170px;
   justify-content: center;
+}
+
+.media-role-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 24%, white 76%);
+  color: var(--fc-text);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.motion-lite-panel {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 14%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 16%, white 84%);
+}
+
+.motion-lite-panel strong {
+  display: block;
+}
+
+.motion-lite-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
 }
 
 .carousel-blueprint-panel {

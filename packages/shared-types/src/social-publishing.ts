@@ -453,6 +453,18 @@ export interface CreatePostAssetResponse {
   asset: PostAsset;
 }
 
+export interface GenerateMotionPostAssetRequest {
+  businessId: string;
+  postId: string;
+  sourceAssetId: string;
+  motionTemplate: MotionTemplateMetadata;
+}
+
+export interface GenerateMotionPostAssetResponse {
+  asset: PostAsset;
+  removedAssetIds: string[];
+}
+
 export interface ListPostAssetsQuery {
   businessId: string;
   postId: string;

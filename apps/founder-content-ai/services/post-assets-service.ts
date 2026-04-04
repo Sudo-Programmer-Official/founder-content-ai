@@ -1,6 +1,8 @@
 import type {
   CreateMediaUploadUrlRequest,
   CreateMediaUploadUrlResponse,
+  GenerateMotionPostAssetRequest,
+  GenerateMotionPostAssetResponse,
   CreatePostAssetRequest,
   CreatePostAssetResponse,
   DeletePostAssetResponse,
@@ -31,6 +33,22 @@ export async function requestCreatePostAsset(
     return await apiPost<CreatePostAssetRequest, CreatePostAssetResponse>("/post-assets", input);
   } catch (error) {
     throw toFriendlyMediaStorageError(error, "Unable to attach media right now.");
+  }
+}
+
+export async function requestGenerateMotionPostAsset(
+  input: GenerateMotionPostAssetRequest,
+): Promise<GenerateMotionPostAssetResponse> {
+  try {
+    return await apiPost<GenerateMotionPostAssetRequest, GenerateMotionPostAssetResponse>(
+      "/post-assets/motion-lite",
+      input,
+      {
+        timeoutMs: 45000,
+      },
+    );
+  } catch (error) {
+    throw toFriendlyMediaStorageError(error, "Unable to animate this visual right now.");
   }
 }
 

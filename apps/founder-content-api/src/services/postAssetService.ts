@@ -1,8 +1,15 @@
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import sharp from "sharp";
 import type { QueryResultRow } from "pg";
 import type {
   CreateMediaUploadUrlRequest,
   CreateMediaUploadUrlResponse,
+  GenerateMotionPostAssetRequest,
+  GenerateMotionPostAssetResponse,
   CreatePostAssetRequest,
   CreatePostAssetResponse,
   DeletePostAssetResponse,
@@ -22,6 +29,7 @@ import type {
   PostAssetType,
   VideoPostAssetMetadata,
 } from "../../../../packages/shared-types/index.ts";
+import { promisify } from "node:util";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { requireBusinessMembership } from "./authBusinessService.ts";
 import { queryDb } from "./db/client.ts";
@@ -35,6 +43,8 @@ import {
   releaseWorkspacePostAssetUsage,
   syncWorkspaceAssetFromPostAsset,
 } from "./workspaceAssetService.ts";
+
+const execFileAsync = promisify(execFile);
 
 interface AwsCredentials {
   accessKeyId: string;
@@ -74,6 +84,23 @@ const POST_ASSET_ASPECT_RATIOS = new Set<PostAssetAspectRatio>(["1:1", "9:16"]);
 const POST_ASSET_METADATA_SOURCES = new Set<PostAssetMetadataSource>(["upload", "motion_template"]);
 const MOTION_TEMPLATE_IDS = new Set<MotionTemplateId>(["subtle_zoom", "caption_pulse", "story_pan"]);
 const MOTION_TEMPLATE_ASPECT_RATIOS = new Set<MotionTemplateAspectRatio>(["square", "portrait"]);
+const MOTION_RENDER_FPS = 30;
+const DEFAULT_MOTION_DURATION_MS = 7000;
+const MIN_MOTION_DURATION_MS = 4000;
+const MAX_MOTION_DURATION_MS = 12000;
+
+const MOTION_DIMENSIONS: Record<MotionTemplateAspectRatio, { width: number; height: number; assetAspectRatio: PostAssetAspectRatio }> = {
+  square: {
+    width: 1080,
+    height: 1080,
+    assetAspectRatio: "1:1",
+  },
+  portrait: {
+    width: 1080,
+    height: 1920,
+    assetAspectRatio: "9:16",
+  },
+};
 
 function resolveAwsRegion(): string {
   return process.env.AWS_REGION?.trim() || "us-east-1";
@@ -349,6 +376,148 @@ function normalizePostAssetMetadata(type: PostAssetType, value: unknown): PostAs
     motionTemplate: parseMotionTemplateMetadata(record.motionTemplate),
     posterAssetId: parseOptionalString(record.posterAssetId, "metadata.posterAssetId"),
   };
+}
+
+function resolveMotionDurationMs(template: MotionTemplateMetadata): number {
+  const candidate = typeof template.durationMs === "number" ? Math.floor(template.durationMs) : DEFAULT_MOTION_DURATION_MS;
+  return Math.min(Math.max(candidate, MIN_MOTION_DURATION_MS), MAX_MOTION_DURATION_MS);
+}
+
+function resolveMotionAspectRatio(template: MotionTemplateMetadata): MotionTemplateAspectRatio {
+  return template.aspectRatio === "portrait" ? "portrait" : "square";
+}
+
+function resolveMotionFilter(input: {
+  templateId: MotionTemplateId;
+  width: number;
+  height: number;
+  totalFrames: number;
+  durationSeconds: number;
+  aspectRatio: MotionTemplateAspectRatio;
+}): string {
+  const { templateId, width, height, totalFrames, durationSeconds, aspectRatio } = input;
+  const clampedFrames = Math.max(totalFrames - 1, 1);
+  const fadeOutStart = Math.max(durationSeconds - 0.35, 0.1).toFixed(2);
+  let animationFilter = "";
+
+  if (templateId === "caption_pulse") {
+    animationFilter =
+      `zoompan=z='1+0.018*sin(on/12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+      `d=1:s=${width}x${height}:fps=${MOTION_RENDER_FPS}`;
+  } else if (templateId === "story_pan") {
+    animationFilter =
+      aspectRatio === "portrait"
+        ? `zoompan=z='1.10':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${clampedFrames})':d=1:s=${width}x${height}:fps=${MOTION_RENDER_FPS}`
+        : `zoompan=z='1.10':x='(iw-iw/zoom)*(on/${clampedFrames})':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${MOTION_RENDER_FPS}`;
+  } else {
+    animationFilter =
+      `zoompan=z='min(zoom+0.00045,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
+      `d=1:s=${width}x${height}:fps=${MOTION_RENDER_FPS}`;
+  }
+
+  return [
+    animationFilter,
+    "setsar=1",
+    "format=yuv420p",
+    "fade=t=in:st=0:d=0.25",
+    `fade=t=out:st=${fadeOutStart}:d=0.35`,
+  ].join(",");
+}
+
+async function renderMotionVideoFromImage(input: {
+  sourceBytes: Buffer;
+  template: MotionTemplateMetadata;
+}): Promise<{
+  bytes: Buffer;
+  width: number;
+  height: number;
+  aspectRatio: PostAssetAspectRatio;
+  durationMs: number;
+}> {
+  const aspectRatio = resolveMotionAspectRatio(input.template);
+  const dimensions = MOTION_DIMENSIONS[aspectRatio];
+  const durationMs = resolveMotionDurationMs(input.template);
+  const durationSeconds = Number((durationMs / 1000).toFixed(2));
+  const totalFrames = Math.max(Math.round((durationMs / 1000) * MOTION_RENDER_FPS), 1);
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "motion-lite-"));
+  const framePath = path.join(tempDir, "frame.png");
+  const outputPath = path.join(tempDir, "motion-lite.mp4");
+
+  try {
+    await sharp(input.sourceBytes)
+      .resize(dimensions.width, dimensions.height, {
+        fit: "cover",
+        position: "attention",
+      })
+      .png()
+      .toFile(framePath);
+
+    await execFileAsync(
+      process.env.FFMPEG_PATH?.trim() || "ffmpeg",
+      [
+        "-y",
+        "-loop",
+        "1",
+        "-framerate",
+        String(MOTION_RENDER_FPS),
+        "-i",
+        framePath,
+        "-t",
+        durationSeconds.toFixed(2),
+        "-vf",
+        resolveMotionFilter({
+          templateId: input.template.id,
+          width: dimensions.width,
+          height: dimensions.height,
+          totalFrames,
+          durationSeconds,
+          aspectRatio,
+        }),
+        "-an",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-preset",
+        "veryfast",
+        "-movflags",
+        "+faststart",
+        outputPath,
+      ],
+      {
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
+
+    return {
+      bytes: await fs.readFile(outputPath),
+      width: dimensions.width,
+      height: dimensions.height,
+      aspectRatio: dimensions.assetAspectRatio,
+      durationMs,
+    };
+  } catch (error) {
+    if (
+      typeof error === "object"
+      && error !== null
+      && "code" in error
+      && (error as { code?: string }).code === "ENOENT"
+    ) {
+      throw new HttpError(
+        503,
+        "motion_rendering_not_configured",
+        "Motion generation is unavailable because ffmpeg is not installed on the server.",
+      );
+    }
+
+    throw new HttpError(
+      500,
+      "motion_rendering_failed",
+      "Unable to render the motion teaser from this visual right now.",
+    );
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 }
 
 function toAmzDate(date: Date): string {
@@ -876,6 +1045,107 @@ export async function createPostAsset(
   });
 
   return { asset };
+}
+
+export async function generateMotionPostAsset(
+  principal: AuthenticatedPrincipal,
+  input: GenerateMotionPostAssetRequest,
+): Promise<GenerateMotionPostAssetResponse> {
+  const businessId = input.businessId.trim();
+  const postId = input.postId.trim();
+  const sourceAssetId = input.sourceAssetId.trim();
+  const motionTemplate = parseMotionTemplateMetadata(input.motionTemplate);
+
+  if (!motionTemplate) {
+    throw new HttpError(400, "bad_request", "motionTemplate is required.");
+  }
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "control_dashboard",
+  });
+  await requireBusinessMembership(principal, businessId);
+  await ensureContentPostOwnership(businessId, postId);
+
+  const sourceAssetRow = await loadPostAssetRow(sourceAssetId, businessId);
+
+  if (!sourceAssetRow || sourceAssetRow.post_id !== postId || sourceAssetRow.type !== "image" || sourceAssetRow.status !== "ready") {
+    throw new HttpError(
+      404,
+      "post_asset_not_found",
+      "Select one ready image on this draft before creating a motion teaser.",
+    );
+  }
+
+  const readyAssets = await loadReadyPostAssets(businessId, postId);
+  const readyImageAssets = readyAssets.filter((asset) => asset.type === "image");
+  const readyVideoAssets = readyAssets.filter((asset) => asset.type === "video");
+
+  if (readyVideoAssets.length > 0) {
+    throw new HttpError(
+      400,
+      "motion_already_attached",
+      "This draft already has video attached. Remove the current video before generating another motion teaser.",
+    );
+  }
+
+  if (readyImageAssets.length !== 1 || readyImageAssets[0]?.id !== sourceAssetId) {
+    throw new HttpError(
+      400,
+      "motion_requires_single_image",
+      "Motion-lite currently works on exactly one ready image. Narrow the draft to a single image first.",
+    );
+  }
+
+  const sourceAsset = mapPostAsset(sourceAssetRow, false);
+  const renderedVideo = await renderMotionVideoFromImage({
+    sourceBytes: await downloadPostAssetBytes(sourceAsset),
+    template: motionTemplate,
+  });
+  const storageKey = buildStorageKey({
+    businessId,
+    postId,
+    mimeType: "video/mp4",
+    fileName: `${motionTemplate.id}.mp4`,
+  });
+
+  await uploadPostAssetBytesToStorage({
+    storageKey,
+    bytes: renderedVideo.bytes,
+    mimeType: "video/mp4",
+  });
+
+  const createResponse = await createPostAsset(principal, {
+    businessId,
+    postId,
+    storageKey,
+    storageUrl: buildStorageUrl(storageKey),
+    mimeType: "video/mp4",
+    sizeBytes: renderedVideo.bytes.byteLength,
+    type: "video",
+    source: "generated",
+    metadata: {
+      aspectRatio: renderedVideo.aspectRatio,
+      source: "motion_template",
+      durationMs: renderedVideo.durationMs,
+      width: renderedVideo.width,
+      height: renderedVideo.height,
+      motionTemplate: {
+        id: motionTemplate.id,
+        aspectRatio: resolveMotionAspectRatio(motionTemplate),
+        durationMs: renderedVideo.durationMs,
+        loop: false,
+        sourceSlideCount: 1,
+      },
+      posterAssetId: sourceAssetId,
+    },
+  });
+
+  return {
+    asset: createResponse.asset,
+    removedAssetIds: [],
+  };
 }
 
 export async function listPostAssets(

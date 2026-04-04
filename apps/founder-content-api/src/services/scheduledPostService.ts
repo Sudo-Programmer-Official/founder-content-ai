@@ -56,7 +56,11 @@ import {
   releaseJob,
 } from "./jobQueueService.ts";
 import { loadPostAssetsByPostIds, loadReadyPostAssets } from "./postAssetService.ts";
-import { publishPlatformPost, validatePublishMediaForChannel } from "./publishingService.ts";
+import {
+  publishPlatformPost,
+  resolvePublishAssetsForChannel,
+  validatePublishMediaForChannel,
+} from "./publishingService.ts";
 import {
   safeRecordContentGenerationSuggestionPerformance,
   safeRecordContentGenerationSuggestionPublished,
@@ -1495,12 +1499,13 @@ async function loadValidatedReadyAssetsForPlatform(
   slides: ScheduledPostSlide[] = [],
 ): Promise<PostAsset[]> {
   const readyAssets = await loadReadyAssetsForPostGroup(businessId, assetGroupId);
+  const resolvedAssets = resolvePublishAssetsForChannel(platform, readyAssets);
   validatePublishMediaForChannel({
     channel: platform,
-    assets: readyAssets,
+    assets: resolvedAssets,
     slides,
   });
-  return readyAssets;
+  return resolvedAssets;
 }
 
 function resolvePublishedExternalPostUrl(

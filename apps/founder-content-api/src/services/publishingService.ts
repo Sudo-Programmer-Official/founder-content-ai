@@ -117,6 +117,41 @@ function countPostAssetsByType(assets: PostAsset[]): { imageCount: number; video
   return { imageCount, videoCount };
 }
 
+function isMotionTemplateVideoAsset(asset: PostAsset): asset is Extract<PostAsset, { type: "video" }> {
+  return asset.type === "video"
+    && asset.metadata.source === "motion_template"
+    && typeof asset.metadata.posterAssetId === "string"
+    && asset.metadata.posterAssetId.trim() !== "";
+}
+
+export function resolvePublishAssetsForChannel(
+  channel: "linkedin" | "facebook" | "instagram",
+  assets?: PostAsset[],
+): PostAsset[] {
+  const readyAssets = (assets ?? []).filter((asset) => asset.status === "ready");
+  const motionVideos = readyAssets.filter((asset) => {
+    if (!isMotionTemplateVideoAsset(asset)) {
+      return false;
+    }
+
+    const posterAssetId = asset.metadata.posterAssetId?.trim();
+    return readyAssets.some((candidate) => candidate.type === "image" && candidate.id === posterAssetId);
+  });
+  const nonMotionVideos = readyAssets.filter((asset) => asset.type === "video" && !isMotionTemplateVideoAsset(asset));
+
+  if (motionVideos.length !== 1 || nonMotionVideos.length > 0) {
+    return readyAssets;
+  }
+
+  const motionVideo = motionVideos[0];
+
+  if (channel === "linkedin") {
+    return readyAssets.filter((asset) => asset.id !== motionVideo.id);
+  }
+
+  return [motionVideo];
+}
+
 function resolvePublishingChannelLabel(channel: "linkedin" | "facebook" | "instagram"): string {
   switch (channel) {
     case "linkedin":
@@ -138,7 +173,7 @@ export function validatePublishMediaForChannel(input: {
   assets?: PostAsset[];
   slides?: ScheduledPostSlide[];
 }): PublishMediaValidationSummary {
-  const assets = input.assets ?? [];
+  const assets = resolvePublishAssetsForChannel(input.channel, input.assets);
   const slides = input.slides ?? [];
   const { imageCount, videoCount } = countPostAssetsByType(assets);
   const slideCount = slides.length;
@@ -1878,21 +1913,31 @@ async function publishFacebook(
 export async function publishPlatformPost(
   input: PublishPlatformPostInput,
 ): Promise<{ externalPostId: string; externalPostUrl?: string; response: Record<string, unknown> }> {
+  const resolvedAssets =
+    input.channel === "linkedin" || input.channel === "instagram" || input.channel === "facebook"
+      ? resolvePublishAssetsForChannel(input.channel, input.assets)
+      : input.assets;
+
   if (input.channel === "linkedin" || input.channel === "instagram" || input.channel === "facebook") {
     validatePublishMediaForChannel({
       channel: input.channel,
-      assets: input.assets,
+      assets: resolvedAssets,
       slides: input.slides,
     });
   }
 
+  const normalizedInput = {
+    ...input,
+    assets: resolvedAssets,
+  };
+
   switch (input.channel) {
     case "linkedin":
-      return publishLinkedInPost(input);
+      return publishLinkedInPost(normalizedInput);
     case "instagram":
-      return publishInstagram(input);
+      return publishInstagram(normalizedInput);
     case "facebook":
-      return publishFacebook(input);
+      return publishFacebook(normalizedInput);
     case "x":
       throw new HttpError(
         501,

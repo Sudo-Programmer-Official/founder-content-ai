@@ -2,6 +2,8 @@ import type {
   ApiError,
   CreateMediaUploadUrlRequest,
   CreateMediaUploadUrlResponse,
+  GenerateMotionPostAssetRequest,
+  GenerateMotionPostAssetResponse,
   CreatePostAssetRequest,
   CreatePostAssetResponse,
   DeletePostAssetResponse,
@@ -17,6 +19,7 @@ import {
   createMediaUploadUrl,
   createPostAsset,
   deletePostAsset,
+  generateMotionPostAsset,
   getPostAsset,
   getPostAssetDownload,
   listPostAssets,
@@ -115,6 +118,48 @@ export async function createPostAssetController(
       code: "post_asset_create_failed",
       message: "Unable to save media metadata.",
       logMessage: "Failed to save post asset metadata.",
+    });
+  }
+}
+
+export async function generateMotionPostAssetController(
+  request: Request<unknown, GenerateMotionPostAssetResponse | ApiError, Partial<GenerateMotionPostAssetRequest>>,
+  response: Response<GenerateMotionPostAssetResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const postId = request.body?.postId?.trim();
+  const sourceAssetId = request.body?.sourceAssetId?.trim();
+
+  if (!businessId || !postId || !sourceAssetId || !request.body?.motionTemplate) {
+    sendApiError(
+      response,
+      400,
+      "bad_request",
+      "businessId, postId, sourceAssetId, and motionTemplate are required.",
+    );
+    return;
+  }
+
+  try {
+    response.status(201).json(
+      await generateMotionPostAsset(request.auth, {
+        businessId,
+        postId,
+        sourceAssetId,
+        motionTemplate: request.body.motionTemplate,
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "post_asset_motion_failed",
+      message: "Unable to generate a motion teaser right now.",
+      logMessage: "Failed to generate motion teaser for post asset.",
     });
   }
 }
