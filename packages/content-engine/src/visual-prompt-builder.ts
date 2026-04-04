@@ -7,6 +7,7 @@ import type {
   BrandKitInput,
   BrandKitTone,
   BrandKitVisualStyle,
+  MediaSuggestionType,
   VisualPromptContent,
   VisualTemplateType,
 } from "../../shared-types/index.ts";
@@ -216,6 +217,7 @@ function resolveLayoutBlock(
   templateType: VisualTemplateType,
   brandKit: BrandKitInput,
   options?: {
+    generatedMediaType?: MediaSuggestionType;
     brandSignatureMode?: "subtle" | "closing";
     slideVisualRole?: "hook" | "problem" | "story" | "breakdown" | "takeaway";
   },
@@ -253,6 +255,10 @@ function resolveLayoutBlock(
     takeaway: "takeaway slide with a strong close and decisive finish",
   };
 
+  if (options?.generatedMediaType === "photo_overlay") {
+    return `photo-led social ad, realistic lifestyle photography, authentic environment, generous negative space for headline overlay, subtle brand integration, readable text zone, mobile-first crop, trustworthy and conversion-focused`;
+  }
+
   switch (templateType) {
     case "quote":
       return `contrast quote card, ${brandPlacementDescription[brandPlacement]}, neutral intro line, ${accentDescription[accentStyle]}, optional closing line below, maximum 4 text blocks, keep content padding and brand padding aligned`;
@@ -270,6 +276,9 @@ function resolveLayoutBlock(
 function resolveContentBlock(
   templateType: VisualTemplateType,
   content: VisualPromptContent,
+  options?: {
+    generatedMediaType?: MediaSuggestionType;
+  },
 ): string {
   const headline = toPunchyLine(content.headline, 120);
   const supportingText = toPunchyLine(content.supportingText, 90);
@@ -284,6 +293,21 @@ function resolveContentBlock(
   const eyebrowText = sanitizePhrase(content.eyebrowText, 36);
   const footerText = sanitizePhrase(content.footerText, 42);
   const closingText = toPunchyLine(content.closingText, 72);
+  const sceneDescription = collapseWhitespace(content.sceneDescription);
+
+  if (options?.generatedMediaType === "photo_overlay") {
+    return [
+      sceneDescription ? `Scene: "${truncateAtWordBoundary(sceneDescription, 220)}"` : undefined,
+      `Headline overlay: "${headline}"`,
+      supportingText ? `Support line: "${supportingText}"` : undefined,
+      closingText ? `CTA overlay: "${closingText}"` : undefined,
+      eyebrowText ? `Eyebrow: "${eyebrowText}"` : undefined,
+      footerText ? `Brand footer: "${footerText}"` : undefined,
+      "Keep any visible text short and secondary to the photography.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
 
   if (templateType === "insight") {
     return [
@@ -457,6 +481,7 @@ export function buildVisualPrompt(input: {
   content: VisualPromptContent;
   brandKit?: BrandKitInput;
   renderContext?: {
+    generatedMediaType?: MediaSuggestionType;
     brandSignatureMode?: "subtle" | "closing";
     slideVisualRole?: "hook" | "problem" | "story" | "breakdown" | "takeaway";
     highlightMode?: "none" | "single";
@@ -472,12 +497,15 @@ export function buildVisualPrompt(input: {
     resolveLayoutBlock(input.templateType, resolvedBrandKit, input.renderContext),
     "",
     "CONTENT:",
-    resolveContentBlock(input.templateType, input.content),
+    resolveContentBlock(input.templateType, input.content, input.renderContext),
     "",
     "BRAND:",
     resolveBrandBlock(resolvedBrandKit, input.renderContext),
     "",
     "QUALITY:",
+    input.renderContext?.generatedMediaType === "photo_overlay"
+      ? "ultra sharp, high resolution, visually balanced, realistic photography, authentic lighting, natural textures, trustworthy expressions, clean overlay space, mobile-friendly framing, no uncanny faces or hands, no generic stock-business look, no bottom-centered branding"
+      :
     input.templateType === "carousel"
       ? `ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding, subtle branding on every slide, maximum one accent phrase per slide${input.renderContext?.highlightMode === "none" ? ", do not add a highlight treatment on this slide" : ""}`
       : "ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding",

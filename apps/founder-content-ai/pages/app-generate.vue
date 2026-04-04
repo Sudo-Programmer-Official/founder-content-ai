@@ -984,7 +984,10 @@ function buildBusinessDraftResult(
       title: draftTitle,
       angle: draftAngle,
     },
-    hooks: [draftTitle],
+    hooks:
+      response.kind === "business_campaign" && response.content.hooks.length > 0
+        ? response.content.hooks
+        : [draftTitle],
     post: fallbackCaption,
     variations: [],
     visualNarrative: {

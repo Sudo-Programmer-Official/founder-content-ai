@@ -1139,6 +1139,7 @@ function mapMediaTypeToVisualTemplate(mediaType: MediaSuggestionType): import(".
     case "quote_card":
       return "quote";
     case "stat_card":
+    case "photo_overlay":
       return "insight";
     case "framework_card":
       return "carousel";
@@ -1156,7 +1157,7 @@ function getMediaSuggestionLabel(mediaType: MediaSuggestionType): string {
     case "framework_card":
       return "Carousel";
     case "photo_overlay":
-      return "Photo overlay";
+      return "Brand image";
     case "screenshot_highlight":
       return "Screenshot highlight";
   }
@@ -1234,15 +1235,20 @@ async function resolveWorkspaceMediaConfigurationInternal(input: {
 
   const disallowedMediaTypes = new Set<MediaSuggestionType>(ruleResolution.disallowedMediaTypes);
 
-  if (profile.avoidRealisticPeople || profile.businessType === "daycare") {
-    disallowedMediaTypes.add("photo_overlay");
-  }
-
   if (!profile.allowScreenshotHighlights) {
     disallowedMediaTypes.add("screenshot_highlight");
   }
 
   let orderedMediaTypes = [...new Set(candidateMediaTypes)].filter((mediaType) => !disallowedMediaTypes.has(mediaType));
+
+  if (
+    input.goal === "conversion"
+    && profile.businessType !== "saas"
+    && profile.allowGeneratedIllustrations
+    && !orderedMediaTypes.includes("photo_overlay")
+  ) {
+    orderedMediaTypes = ["photo_overlay", ...orderedMediaTypes];
+  }
 
   if (profile.preferTextVisuals) {
     orderedMediaTypes = [
@@ -1562,7 +1568,7 @@ export async function getMediaRecommendations(
     const preset = resolution.matchingPresets.find((candidate) => candidate.mediaTypes.includes(mediaType));
     const promptSelection = promptSelectionMap.get(mediaType);
 
-    if (!preset) {
+    if (!preset && mediaType !== "photo_overlay") {
       continue;
     }
 
@@ -1570,17 +1576,21 @@ export async function getMediaRecommendations(
       id: `generate-${mediaType}`,
       actionType: "generate_visual",
       title: `Generate ${getMediaSuggestionLabel(mediaType)}`,
-      description: `Use the ${preset.uiLabel || preset.name} preset to create a safe, context-aware visual.`,
+      description: preset
+        ? `Use the ${preset.uiLabel || preset.name} preset to create a safe, context-aware visual.`
+        : "Create a realistic branded image with room for headline overlay and a stronger promotional feel.",
       reason:
         mediaType === "framework_card"
           ? "This content is structured enough to become a 3-5 slide carousel with a clear narrative flow."
+          : mediaType === "photo_overlay"
+            ? "A realistic lifestyle image makes the offer feel local, trustworthy, and easier to act on."
           : mediaType === "stat_card"
             ? "A compact stat-style visual can add proof without making the post feel overproduced."
             : "A quote-style card keeps the message text-first and brand-safe.",
       suggestedMediaType: mediaType,
       visualTemplateType,
-      mediaPresetId: preset.id,
-      mediaPresetSlug: preset.slug,
+      mediaPresetId: preset?.id,
+      mediaPresetSlug: preset?.slug,
       promptTemplateId: promptSelection?.promptTemplateId,
       recommendedAssetIds: [],
     });

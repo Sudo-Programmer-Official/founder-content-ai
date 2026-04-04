@@ -60,6 +60,7 @@ export async function generateVisualController(
         headline: request.body.content.headline?.trim() ?? "",
         supportingText: request.body.content.supportingText?.trim() || undefined,
         bulletPoints: request.body.content.bulletPoints,
+        sceneDescription: request.body.content.sceneDescription?.trim() || undefined,
         highlightText: request.body.content.highlightText?.trim() || undefined,
         eyebrowText: request.body.content.eyebrowText?.trim() || undefined,
         footerText: request.body.content.footerText?.trim() || undefined,

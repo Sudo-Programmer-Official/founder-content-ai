@@ -21,10 +21,12 @@ export interface BusinessGenerationRequest {
 }
 
 export interface BusinessContentOutput {
+  hooks: string[];
   visual: {
     headline: string;
     subheadline?: string;
     imagePrompt: string;
+    visualDirection?: string;
   };
   captions: {
     instagram?: string;
@@ -33,7 +35,9 @@ export interface BusinessContentOutput {
   cta: {
     label: string;
     url: string;
+    alternatives?: string[];
   };
+  hashtags?: string[];
   email?: {
     subject: string;
     body: string;

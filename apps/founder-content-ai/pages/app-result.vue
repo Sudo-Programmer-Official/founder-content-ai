@@ -556,6 +556,10 @@ function isBusinessDraft(): boolean {
 }
 
 function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): string {
+  if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
+    return "Generate brand image";
+  }
+
   if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
     return "Generate post visual";
   }
@@ -568,6 +572,10 @@ function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): str
 }
 
 function getMediaSuggestionDescription(suggestion: MediaRecommendationSuggestion): string {
+  if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
+    return "Create a realistic, brand-led image that matches the campaign hook, CTA, and local audience.";
+  }
+
   if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
     return "Create a single promotional visual that matches the generated CTA and platform captions.";
   }
@@ -580,6 +588,10 @@ function getMediaSuggestionDescription(suggestion: MediaRecommendationSuggestion
 }
 
 function getMediaSuggestionReason(suggestion: MediaRecommendationSuggestion): string {
+  if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
+    return "Business mode works better with trust-building lifestyle creative than founder-style quote cards.";
+  }
+
   if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
     return "Business mode stays visual-first and CTA-first, so single-post creative beats slide storytelling.";
   }
@@ -1103,6 +1115,20 @@ const eligibleMediaRecommendations = computed(() =>
   ),
 );
 const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>(() => [
+  ...(isBusinessMode.value
+    ? [
+        {
+          id: "fallback-brand-image",
+          actionType: "generate_visual" as const,
+          title: "Generate brand image",
+          description: "Create a realistic promotional image that feels local, trustworthy, and campaign-ready.",
+          reason: "Business mode benefits from photo-led creative that supports the offer before it asks for the click.",
+          suggestedMediaType: "photo_overlay" as const,
+          visualTemplateType: "insight" as const,
+          recommendedAssetIds: [],
+        },
+      ]
+    : []),
   {
     id: "fallback-carousel",
     actionType: "generate_visual",
@@ -1145,10 +1171,14 @@ const displayedMediaRecommendations = computed(() =>
     .slice()
     .sort((left, right) => {
       const leftPriority = isBusinessMode.value
-        ? (left.visualTemplateType === "quote" ? 1 : 0)
+        ? left.suggestedMediaType === "photo_overlay"
+          ? 0
+          : left.visualTemplateType === "quote" ? 2 : 1
         : left.visualTemplateType === "carousel" ? 0 : 1;
       const rightPriority = isBusinessMode.value
-        ? (right.visualTemplateType === "quote" ? 1 : 0)
+        ? right.suggestedMediaType === "photo_overlay"
+          ? 0
+          : right.visualTemplateType === "quote" ? 2 : 1
         : right.visualTemplateType === "carousel" ? 0 : 1;
       return leftPriority - rightPriority;
     }),
@@ -2115,7 +2145,7 @@ async function loadMediaRecommendations(): Promise<void> {
       businessId: activeBusinessId.value,
       contentText: postContent.value,
       contentType: "post",
-      goal: "authority",
+      goal: isBusinessMode.value ? "conversion" : "authority",
       sourceAssetIds: postAssets.value.map((asset) => asset.id),
     });
 
@@ -2300,6 +2330,7 @@ async function generateRecommendedMedia(
           "Founder insight",
         supportingText:
           coverSlide?.supportingText ||
+          businessOutput.value?.visual.subheadline ||
           previewLeadLines.value[1] ||
           previewBodyParagraphs.value[0]?.replace(/\s+/g, " ").trim().slice(0, 140) ||
           undefined,
@@ -2307,6 +2338,14 @@ async function generateRecommendedMedia(
           suggestion.visualTemplateType === "carousel"
             ? coverSlide?.bulletPoints || buildVisualBulletPoints()
             : buildVisualBulletPoints(),
+        sceneDescription:
+          suggestion.suggestedMediaType === "photo_overlay"
+            ? businessOutput.value?.visual.imagePrompt
+            : undefined,
+        closingText:
+          suggestion.suggestedMediaType === "photo_overlay"
+            ? businessOutput.value?.cta.label
+            : undefined,
       },
       narrative:
         suggestion.visualTemplateType === "carousel"
@@ -3348,7 +3387,7 @@ onBeforeUnmount(() => {
             <article class="result-signal-card">
               <p class="panel-meta">Visual brief</p>
               <strong>{{ businessOutput.visual.headline }}</strong>
-              <span>{{ businessOutput.visual.subheadline || "Headline-first creative ready for generation." }}</span>
+              <span>{{ businessOutput.visual.visualDirection || businessOutput.visual.subheadline || "Headline-first creative ready for generation." }}</span>
             </article>
             <article class="result-signal-card">
               <p class="panel-meta">CTA</p>
@@ -3371,6 +3410,13 @@ onBeforeUnmount(() => {
           </section>
 
           <section v-if="isBusinessMode && businessOutput" class="execution-status-grid">
+            <article v-if="businessOutput.hooks?.length" class="execution-status-block">
+              <p class="panel-meta">Hook options</p>
+              <ul class="result-bullet-list">
+                <li v-for="hook in businessOutput.hooks" :key="hook">{{ hook }}</li>
+              </ul>
+            </article>
+
             <article class="execution-status-block">
               <p class="panel-meta">Instagram caption</p>
               <p class="execution-status-description">
@@ -3389,6 +3435,23 @@ onBeforeUnmount(() => {
               <p class="panel-meta">Email subject</p>
               <strong>{{ businessOutput.email.subject }}</strong>
               <p class="execution-status-description">{{ businessOutput.email.body }}</p>
+            </article>
+
+            <article v-if="businessOutput.cta.alternatives?.length" class="execution-status-block">
+              <p class="panel-meta">CTA options</p>
+              <ul class="result-bullet-list">
+                <li v-for="option in businessOutput.cta.alternatives" :key="option">{{ option }}</li>
+              </ul>
+            </article>
+
+            <article v-if="businessOutput.hashtags?.length" class="execution-status-block">
+              <p class="panel-meta">Hashtags</p>
+              <p class="execution-status-description">{{ businessOutput.hashtags.join(" ") }}</p>
+            </article>
+
+            <article class="execution-status-block">
+              <p class="panel-meta">Image prompt</p>
+              <p class="execution-status-description">{{ businessOutput.visual.imagePrompt }}</p>
             </article>
           </section>
 
@@ -3953,6 +4016,8 @@ onBeforeUnmount(() => {
                       suggestion.actionType === "generate_visual"
                         ? isGeneratingRecommendationId === suggestion.id
                           ? "Generating..."
+                          : suggestion.suggestedMediaType === "photo_overlay"
+                            ? "Generate image"
                           : suggestion.visualTemplateType === "carousel"
                             ? "Generate carousel"
                             : "Generate visual"
@@ -4735,6 +4800,15 @@ onBeforeUnmount(() => {
   margin: 6px 0 0;
   color: var(--fc-text-muted);
   line-height: 1.6;
+}
+
+.result-bullet-list {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--fc-text-muted);
+  line-height: 1.55;
 }
 
 .execution-status-grid {

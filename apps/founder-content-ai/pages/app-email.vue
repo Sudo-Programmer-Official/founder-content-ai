@@ -305,18 +305,25 @@ const isLoadingMediaRecommendations = ref(false);
 const isGeneratingMediaRecommendationId = ref("");
 const errorMessage = ref("");
 const feedbackMessage = ref("");
+const domainSaveErrorMessage = ref("");
+const emailToast = ref<{
+  message: string;
+  tone: "neutral" | "error";
+} | null>(null);
 const latestStatsCampaignId = ref("");
 const editingCampaignId = ref("");
 const emailMediaAssets = ref<PostAsset[]>([]);
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
 let campaignProgressPollHandle: number | null = null;
 let importJobPollHandle: number | null = null;
+let emailToastTimeoutHandle: number | null = null;
 
 type EmailTabKey = "campaigns" | "contacts" | "settings";
 type CampaignSourceMode = "current" | "draft-library" | "fresh";
 type CampaignToneMode = "direct" | "story" | "educational";
 type CampaignEditorMode = "edit" | "preview";
 type CampaignComposerIntent = "quick_update" | "promotion" | "story_email" | "weekly_newsletter";
+type DomainValidationField = "domainName" | "fromEmail";
 
 const EMAIL_TABS: Array<{ key: EmailTabKey; label: string }> = [
   { key: "campaigns", label: "Campaigns" },
@@ -983,6 +990,87 @@ const domainSetupHints = computed(() => {
 
   return hints.slice(0, 3);
 });
+const domainValidationState = computed<{
+  field: DomainValidationField;
+  message: string;
+} | null>(() => {
+  if (!normalizedDomainForm.value.domainName) {
+    return {
+      field: "domainName",
+      message: "Add a website URL, sender email, or root domain before saving.",
+    };
+  }
+
+  if (!isValidDomainInput(normalizedDomainForm.value.domainName)) {
+    return {
+      field: "domainName",
+      message: "Use a root domain like yourbrand.com.",
+    };
+  }
+
+  if (
+    normalizedDomainForm.value.fromEmail &&
+    normalizeDomainInput(normalizedDomainForm.value.fromEmail) !== normalizedDomainForm.value.domainName
+  ) {
+    return {
+      field: "fromEmail",
+      message: "From email must use the same domain you are setting up for sending.",
+    };
+  }
+
+  return null;
+});
+const domainValidationField = computed(() => domainValidationState.value?.field || "");
+const domainValidationMessage = computed(() => domainValidationState.value?.message || "");
+const canSaveDomainSetup = computed(
+  () => Boolean(selectedBusinessId.value) && !domainValidationState.value && !isSavingDomain.value,
+);
+const campaignSendBlockReason = computed(() => {
+  if (!campaignForm.value.listId) {
+    return "Select an audience before sending.";
+  }
+
+  if (!campaignForm.value.subject.trim()) {
+    return "Add a subject line before sending.";
+  }
+
+  if (!campaignForm.value.bodyText.trim()) {
+    return "Write the email before sending.";
+  }
+
+  if (!hasConfiguredDomain.value) {
+    return "Finish sender setup before sending.";
+  }
+
+  return "";
+});
+
+function clearEmailToastTimer(): void {
+  if (emailToastTimeoutHandle === null || typeof window === "undefined") {
+    return;
+  }
+
+  window.clearTimeout(emailToastTimeoutHandle);
+  emailToastTimeoutHandle = null;
+}
+
+function showEmailToast(message: string, tone: "neutral" | "error" = "neutral"): void {
+  if (!message) {
+    return;
+  }
+
+  emailToast.value = { message, tone };
+  clearEmailToastTimer();
+
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  emailToastTimeoutHandle = window.setTimeout(() => {
+    emailToast.value = null;
+    emailToastTimeoutHandle = null;
+  }, tone === "error" ? 5200 : 3600);
+}
 
 function loadActivationDraftLibrary(): void {
   activationDraftLibrary.value = listActivationDrafts().slice(0, 8);
@@ -1806,6 +1894,7 @@ function applyDomainSettings(
   options: { syncForm?: boolean } = {},
 ): void {
   domainSettings.value = settings;
+  domainSaveErrorMessage.value = "";
 
   if (!options.syncForm) {
     return;
@@ -1824,6 +1913,7 @@ function applyDomainSettings(
 
 function applyRecommendedDomainSetup(): void {
   domainForm.value = { ...recommendedDomainForm.value };
+  domainSaveErrorMessage.value = "";
   feedbackMessage.value = workspaceSuggestedDomain.value
     ? `Prefilled sender setup from ${workspaceSuggestedDomain.value}.`
     : "Prefilled the recommended sender defaults for this workspace.";
@@ -2229,6 +2319,12 @@ async function sendCampaign(campaign: EmailCampaign): Promise<void> {
     return;
   }
 
+  if (!hasConfiguredDomain.value) {
+    showEmailToast("Finish sender setup before sending.", "error");
+    setEmailTab("settings");
+    return;
+  }
+
   const confirmed =
     typeof window === "undefined" ||
     window.confirm(buildCampaignSendConfirmationMessage(campaign));
@@ -2265,26 +2361,18 @@ async function sendCampaign(campaign: EmailCampaign): Promise<void> {
 async function saveDomainUpgrade(): Promise<void> {
   const normalizedPayload = normalizedDomainForm.value;
 
-  if (!selectedBusinessId.value || !normalizedPayload.domainName) {
-    errorMessage.value = "Add a website URL, sender email, or root domain before saving the brand sender setup.";
+  if (!selectedBusinessId.value) {
+    domainSaveErrorMessage.value = "Select a workspace before saving the sender setup.";
     return;
   }
 
-  if (!isValidDomainInput(normalizedPayload.domainName)) {
-    errorMessage.value = "Use a root domain like yourbrand.com so we can generate the DNS records correctly.";
-    return;
-  }
-
-  if (
-    normalizedPayload.fromEmail &&
-    normalizeDomainInput(normalizedPayload.fromEmail) !== normalizedPayload.domainName
-  ) {
-    errorMessage.value = "From email must use the same domain you are setting up for sending.";
+  if (domainValidationMessage.value) {
+    domainSaveErrorMessage.value = domainValidationMessage.value;
     return;
   }
 
   isSavingDomain.value = true;
-  errorMessage.value = "";
+  domainSaveErrorMessage.value = "";
 
   try {
     const response = await requestEmailDomainCreate(selectedBusinessId.value, normalizedPayload);
@@ -2292,11 +2380,37 @@ async function saveDomainUpgrade(): Promise<void> {
     isEditingDomainSetup.value = false;
     feedbackMessage.value = `Domain setup saved for ${response.settings.domainName}.`;
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "Unable to save domain settings.";
+    domainSaveErrorMessage.value = error instanceof Error ? error.message : "Unable to save domain settings.";
   } finally {
     isSavingDomain.value = false;
   }
 }
+
+watch(errorMessage, (nextMessage) => {
+  if (!nextMessage) {
+    return;
+  }
+
+  showEmailToast(nextMessage, "error");
+  errorMessage.value = "";
+});
+
+watch(feedbackMessage, (nextMessage) => {
+  if (!nextMessage) {
+    return;
+  }
+
+  showEmailToast(nextMessage, "neutral");
+  feedbackMessage.value = "";
+});
+
+watch(
+  () => ({ ...domainForm.value }),
+  () => {
+    domainSaveErrorMessage.value = "";
+  },
+  { deep: true },
+);
 
 watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (nextBusinessId, previousBusinessId) => {
   if (!nextBusinessId || nextBusinessId === previousBusinessId) {
@@ -2397,13 +2511,12 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopCampaignProgressPolling();
   stopImportJobPolling();
+  clearEmailToastTimer();
 });
 </script>
 
 <template>
   <main class="workspace-shell">
-    <p v-if="errorMessage" class="workspace-feedback error">{{ errorMessage }}</p>
-
     <EmailSkeleton v-if="isLoading" />
 
     <template v-else>
@@ -2699,10 +2812,14 @@ onBeforeUnmount(() => {
                 />
 
                 <div class="workspace-actions">
+                  <p v-if="campaignSendBlockReason" class="inline-form-message warning">
+                    {{ campaignSendBlockReason }}
+                  </p>
                   <button
                     type="button"
                     class="primary-action"
-                    :disabled="isCreatingCampaign || !hasConfiguredDomain"
+                    :disabled="isCreatingCampaign || Boolean(campaignSendBlockReason)"
+                    :title="campaignSendBlockReason || undefined"
                     @click="void createCampaign(true)"
                   >
                     {{ campaignComposerPrimaryLabel }}
@@ -2965,7 +3082,8 @@ onBeforeUnmount(() => {
                         <button
                           type="button"
                           class="secondary-action"
-                          :disabled="isSending || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
+                          :disabled="isSending || !hasConfiguredDomain || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
+                          :title="!hasConfiguredDomain ? 'Finish sender setup before sending.' : undefined"
                           @click="sendCampaign(campaign)"
                         >
                           {{ getCampaignActionLabel(campaign) }}
@@ -3322,18 +3440,37 @@ onBeforeUnmount(() => {
             </article>
 
             <div class="domain-grid">
-              <input
-                v-model="domainForm.domainName"
-                class="workspace-input"
-                placeholder="yourbrand.com or https://yourbrand.com"
-              />
-              <input v-model="domainForm.fromName" class="workspace-input" placeholder="Founder Content" />
-              <input v-model="domainForm.fromEmail" class="workspace-input" placeholder="hello@yourbrand.com" />
-              <input v-model="domainForm.replyToEmail" class="workspace-input" placeholder="reply@yourbrand.com" />
+              <label class="domain-field">
+                <span>Website or domain</span>
+                <input
+                  v-model="domainForm.domainName"
+                  class="workspace-input"
+                  placeholder="yourbrand.com or https://yourbrand.com"
+                />
+                <small v-if="domainValidationField === 'domainName'" class="field-validation error">
+                  {{ domainValidationMessage }}
+                </small>
+              </label>
+              <label class="domain-field">
+                <span>From name</span>
+                <input v-model="domainForm.fromName" class="workspace-input" placeholder="Founder Content" />
+              </label>
+              <label class="domain-field">
+                <span>From email</span>
+                <input v-model="domainForm.fromEmail" class="workspace-input" placeholder="hello@yourbrand.com" />
+                <small v-if="domainValidationField === 'fromEmail'" class="field-validation error">
+                  {{ domainValidationMessage }}
+                </small>
+              </label>
+              <label class="domain-field">
+                <span>Reply-to</span>
+                <input v-model="domainForm.replyToEmail" class="workspace-input" placeholder="reply@yourbrand.com" />
+              </label>
             </div>
             <p class="panel-note">
               Domain can be a website URL, the root domain, or the sender email. Saving this generates the DNS records you need next.
             </p>
+            <p v-if="domainSaveErrorMessage" class="inline-form-message error">{{ domainSaveErrorMessage }}</p>
 
             <div class="sender-setup-preview-grid">
               <article class="sender-setup-preview-card">
@@ -3360,7 +3497,13 @@ onBeforeUnmount(() => {
             />
 
             <div class="workspace-actions">
-              <button type="button" class="primary-action" :disabled="isSavingDomain" @click="saveDomainUpgrade">
+              <button
+                type="button"
+                class="primary-action"
+                :disabled="!canSaveDomainSetup"
+                :title="domainValidationMessage || undefined"
+                @click="saveDomainUpgrade"
+              >
                 {{ isSavingDomain ? "Saving..." : hasConfiguredDomain ? "Update domain setup" : "Save domain setup" }}
               </button>
               <button
@@ -3377,6 +3520,11 @@ onBeforeUnmount(() => {
         </section>
       </section>
     </template>
+    <transition name="email-toast">
+      <div v-if="emailToast" class="email-toast" :class="`tone-${emailToast.tone}`" role="status" aria-live="polite">
+        {{ emailToast.message }}
+      </div>
+    </transition>
   </main>
 </template>
 
@@ -3425,17 +3573,56 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-.workspace-feedback {
-  margin: 0 0 18px;
+.workspace-description.compact {
+  margin-top: 10px;
+}
+
+.inline-form-message {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 0.92rem;
   font-weight: 700;
 }
 
-.workspace-feedback.error {
+.inline-form-message.warning {
+  color: color-mix(in srgb, var(--fc-text) 72%, var(--fc-accent-strong) 28%);
+}
+
+.inline-form-message.error {
   color: var(--fc-danger-text, #a63d32);
 }
 
-.workspace-description.compact {
-  margin-top: 10px;
+.email-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 40;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 251, 247, 0.98);
+  box-shadow: 0 18px 44px rgba(44, 24, 14, 0.18);
+  color: var(--fc-text);
+  font-size: 0.94rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.email-toast.tone-error {
+  border-color: color-mix(in srgb, var(--fc-danger-text, #a63d32) 26%, var(--fc-border) 74%);
+  color: var(--fc-danger-text, #a63d32);
+}
+
+.email-toast-enter-active,
+.email-toast-leave-active {
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.email-toast-enter-from,
+.email-toast-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 .workspace-card {
@@ -4738,6 +4925,29 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.domain-field {
+  display: grid;
+  gap: 8px;
+}
+
+.domain-field span {
+  color: var(--fc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.field-validation {
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.field-validation.error {
+  color: var(--fc-danger-text, #a63d32);
 }
 
 .sender-setup-preview-grid {

@@ -295,6 +295,7 @@ function normalizeContent(
       sanitizePhrase(content.footerText, 42) ||
       sanitizePhrase(defaults?.footerText, 42) ||
       undefined,
+    sceneDescription: content.sceneDescription?.trim() || undefined,
     closingText: sanitizePhrase(content.closingText, 72) || undefined,
   };
 }
@@ -1552,6 +1553,7 @@ async function generateSingleVisualAsset(input: {
   businessContext: BusinessVisualContext | null;
   captionFooterCredit?: string;
   renderContext?: {
+    generatedMediaType?: GenerateVisualRequest["generatedMediaType"];
     brandSignatureMode?: BrandSignatureMode;
     slideVisualRole?: CarouselSlideVisualRole;
     highlightMode?: "none" | "single";
@@ -1559,9 +1561,9 @@ async function generateSingleVisualAsset(input: {
 }): Promise<GenerateVisualResponse> {
   const basePrompt = buildVisualPrompt({
     templateType: input.templateType,
-    content: input.content,
-    brandKit: input.brandKit,
-    renderContext: input.renderContext,
+      content: input.content,
+      brandKit: input.brandKit,
+      renderContext: input.renderContext,
   });
   const prompt = buildPromptWithBranding(basePrompt, input.brandingPolicy);
   const brandConsistency = evaluateBrandConsistency({
@@ -1930,6 +1932,7 @@ function buildFallbackImage(
   brandingPolicy: ReturnType<typeof resolveBrandingPolicy>,
   businessContext: BusinessVisualContext | null,
   renderContext?: {
+    generatedMediaType?: GenerateVisualRequest["generatedMediaType"];
     brandSignatureMode?: BrandSignatureMode;
     slideVisualRole?: CarouselSlideVisualRole;
     highlightMode?: "none" | "single";
@@ -2040,5 +2043,8 @@ export async function generateVisualAsset(
     brandingPolicy,
     businessContext,
     captionFooterCredit: input.captionFooterCredit,
+    renderContext: {
+      generatedMediaType: input.generatedMediaType,
+    },
   });
 }

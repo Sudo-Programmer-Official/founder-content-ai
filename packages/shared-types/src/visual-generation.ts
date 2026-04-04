@@ -58,6 +58,7 @@ export interface VisualPromptContent {
   headline: string;
   supportingText?: string;
   bulletPoints?: string[];
+  sceneDescription?: string;
   highlightText?: string;
   eyebrowText?: string;
   footerText?: string;

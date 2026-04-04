@@ -26,6 +26,17 @@ interface WeeklyPlanPromptResponse {
   };
 }
 
+function normalizeStringList(value: unknown, maxItems: number): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => (typeof item === "string" ? normalizeOptionalString(item) : undefined))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, maxItems);
+}
+
 function normalizeOptionalString(value: string | undefined | null): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
@@ -99,6 +110,10 @@ function buildPromptRequestContext(input: {
       location: input.request.location,
       offer: input.request.offer,
       sourceIdea: input.request.sourceIdea,
+      preferredVisualDirection:
+        input.request.businessType === "daycare"
+          ? "realistic lifestyle image with warm, trustworthy daycare environment and headline-safe negative space"
+          : "branded conversion visual with clear promotional focus",
       websiteUrl: input.websiteUrl,
       writingStyle: input.brandContext?.writingStyle,
       visualStyle: input.brandContext?.visualStyle,
@@ -129,10 +144,12 @@ function buildCampaignPrompt(input: {
     JSON.stringify(
       {
         output: {
+          hooks: ["string", "string", "string"],
           visual: {
             headline: "string",
             subheadline: "string",
             imagePrompt: "string",
+            visualDirection: "string",
           },
           captions: {
             instagram: "string",
@@ -141,7 +158,9 @@ function buildCampaignPrompt(input: {
           cta: {
             label: "string",
             url: "string",
+            alternatives: ["string", "string"],
           },
+          hashtags: ["string", "string", "string"],
           email: {
             subject: "string",
             body: "string",
@@ -156,13 +175,128 @@ function buildCampaignPrompt(input: {
     "- Do not mention LinkedIn.",
     "- Do not return slides, stories, or multi-step carousels.",
     "- Optimize for short-form social and business conversion.",
+    "- Return 3 to 5 hooks that could lead this campaign.",
     "- Use the requested channels only; omit email when email is not requested.",
     "- Keep captions platform-native: Instagram shorter, Facebook slightly fuller.",
     "- Make the CTA concrete and aligned to the offer.",
+    "- Make the visual direction specific enough to generate a usable image.",
+    "- For daycare, prefer realistic, trustworthy local-business imagery over founder quote cards.",
     "",
     "REQUEST",
     buildPromptRequestContext(input),
   ].join("\n");
+}
+
+function buildFallbackHooks(
+  request: BusinessGenerationRequest,
+  headline: string,
+  subheadline: string,
+): string[] {
+  if (request.businessType === "daycare") {
+    return [
+      "Struggling to fill your daycare spots?",
+      headline,
+      request.location
+        ? `${request.location} parents are already searching for care options`
+        : "Parents decide faster when your daycare is easy to discover",
+      subheadline,
+    ].filter((value, index, list) => value && list.indexOf(value) === index);
+  }
+
+  return [
+    headline,
+    subheadline,
+    request.offer ? `Promote ${request.offer}` : "Turn attention into clear next steps",
+  ].filter((value, index, list) => value && list.indexOf(value) === index);
+}
+
+function buildFallbackCtaAlternatives(
+  request: BusinessGenerationRequest,
+  primaryLabel: string,
+): string[] {
+  if (request.businessType === "daycare") {
+    return [
+      primaryLabel,
+      "Get discovered by more parents",
+      "Fill your open spots",
+    ].filter((value, index, list) => list.indexOf(value) === index);
+  }
+
+  if (request.goal === "bookings") {
+    return [primaryLabel, "Check availability", "Reserve your spot"].filter(
+      (value, index, list) => list.indexOf(value) === index,
+    );
+  }
+
+  return [primaryLabel, "Learn more", "See how it works"].filter(
+    (value, index, list) => list.indexOf(value) === index,
+  );
+}
+
+function buildFallbackHashtags(request: BusinessGenerationRequest): string[] {
+  const locationTag = request.location
+    ? `#${request.location.replace(/[^a-z0-9]+/gi, "")}`
+    : "";
+
+  if (request.businessType === "daycare") {
+    return [
+      "#DaycareSpots",
+      "#ChildCare",
+      "#DaycareMarketing",
+      "#ParentSearch",
+      locationTag,
+    ].filter(Boolean);
+  }
+
+  if (request.businessType === "salon") {
+    return ["#SalonMarketing", "#BookNow", "#LocalBusiness", locationTag].filter(Boolean);
+  }
+
+  if (request.businessType === "fitness") {
+    return ["#FitnessMarketing", "#MemberGrowth", "#LocalBusiness", locationTag].filter(Boolean);
+  }
+
+  return ["#LocalBusiness", "#GrowthMarketing", "#CustomerAcquisition", locationTag].filter(Boolean);
+}
+
+function buildFallbackBusinessImagePrompt(
+  request: BusinessGenerationRequest,
+  headline: string,
+  subheadline: string,
+): { imagePrompt: string; visualDirection: string } {
+  if (request.businessType === "daycare") {
+    return {
+      imagePrompt: [
+        "Realistic lifestyle photo for daycare marketing",
+        "bright welcoming daycare classroom or reception area",
+        "warm natural light",
+        "clean safe environment",
+        "trustworthy childcare brand tone",
+        "authentic parent-decision moment",
+        "headline-safe negative space for promotional text overlay",
+        `message focus: ${headline}`,
+        subheadline ? `supporting line: ${subheadline}` : "",
+        "no dark SaaS styling, no uncanny faces, no generic stock-business look",
+      ]
+        .filter(Boolean)
+        .join(", "),
+      visualDirection:
+        "Photo-led creative with a realistic daycare environment, warm trust-building tone, and clean room for a bold headline overlay.",
+    };
+  }
+
+  return {
+    imagePrompt: [
+      "Realistic branded marketing image",
+      "local-business lifestyle scene",
+      "clean promotional composition",
+      "natural lighting",
+      "clear headline-safe negative space",
+      `message focus: ${headline}`,
+    ].join(", "),
+    visualDirection:
+      "Single-image promotional creative with realistic photography, readable overlay space, and clear CTA support.",
+  };
 }
 
 function buildWeeklyPlanPrompt(input: {
@@ -250,6 +384,7 @@ function buildFallbackCampaignContent(
         ? "Book now"
         : "Learn more";
   const ctaUrl = websiteUrl ?? "https://foundercontent.ai";
+  const imageBrief = buildFallbackBusinessImagePrompt(request, headline, subheadline);
   const instagramCaption = [
     headline,
     subheadline,
@@ -269,13 +404,12 @@ function buildFallbackCampaignContent(
     .join("\n\n");
 
   return {
+    hooks: buildFallbackHooks(request, headline, subheadline),
     visual: {
       headline,
       subheadline,
-      imagePrompt:
-        request.businessType === "daycare"
-          ? "Bright daycare marketing graphic, friendly childcare branding, clear headline area, clean promotional layout, playful but professional, no dark SaaS style."
-          : "Clean local-business marketing graphic, strong headline area, bold readable layout, promotional design.",
+      imagePrompt: imageBrief.imagePrompt,
+      visualDirection: imageBrief.visualDirection,
     },
     captions: {
       ...(request.channels.includes("instagram") ? { instagram: instagramCaption } : {}),
@@ -284,7 +418,9 @@ function buildFallbackCampaignContent(
     cta: {
       label: ctaLabel,
       url: ctaUrl,
+      alternatives: buildFallbackCtaAlternatives(request, ctaLabel),
     },
+    hashtags: buildFallbackHashtags(request),
     ...(request.channels.includes("email")
       ? {
           email: {
@@ -322,12 +458,18 @@ function normalizeCampaignContent(
   const fallback = buildFallbackCampaignContent(input, websiteUrl);
 
   return {
+    hooks:
+      normalizeStringList((output as { hooks?: unknown }).hooks, 5).length > 0
+        ? normalizeStringList((output as { hooks?: unknown }).hooks, 5)
+        : fallback.hooks,
     visual: {
       headline: normalizeOptionalString(output.visual?.headline) ?? fallback.visual.headline,
       subheadline:
         normalizeOptionalString(output.visual?.subheadline) ?? fallback.visual.subheadline,
       imagePrompt:
         normalizeOptionalString(output.visual?.imagePrompt) ?? fallback.visual.imagePrompt,
+      visualDirection:
+        normalizeOptionalString(output.visual?.visualDirection) ?? fallback.visual.visualDirection,
     },
     captions: {
       ...(input.channels.includes("instagram")
@@ -346,7 +488,15 @@ function normalizeCampaignContent(
     cta: {
       label: normalizeOptionalString(output.cta?.label) ?? fallback.cta.label,
       url: normalizeOptionalString(output.cta?.url) ?? websiteUrl ?? fallback.cta.url,
+      alternatives:
+        normalizeStringList(output.cta?.alternatives, 4).length > 0
+          ? normalizeStringList(output.cta?.alternatives, 4)
+          : fallback.cta.alternatives,
     },
+    hashtags:
+      normalizeStringList((output as { hashtags?: unknown }).hashtags, 8).length > 0
+        ? normalizeStringList((output as { hashtags?: unknown }).hashtags, 8)
+        : fallback.hashtags,
     ...(input.channels.includes("email")
       ? {
           email: {
