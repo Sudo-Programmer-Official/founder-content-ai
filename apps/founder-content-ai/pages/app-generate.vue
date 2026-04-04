@@ -38,7 +38,10 @@ import {
   requestRepurposeContent,
   requestSavedContentSources,
 } from "../services/generation-service";
-import { requestBrandProfile } from "../services/brand-profile-service";
+import {
+  requestBrandProfile,
+  requestUpdateBrandProfile,
+} from "../services/brand-profile-service";
 import {
   getActivationDraft,
   replaceActivationDraft,
@@ -89,6 +92,35 @@ const businessChannelOptions = [
   { label: "Facebook", value: "facebook" },
   { label: "Email", value: "email" },
 ] as const;
+
+const DEFAULT_BUSINESS_GENERATION_INTENT: BusinessGenerationIntent = "get_leads";
+const DEFAULT_BUSINESS_TONE: BusinessGenerationTone = "friendly";
+const DEFAULT_BUSINESS_CHANNELS: BusinessGenerationChannel[] = ["instagram", "facebook", "email"];
+const BUSINESS_CAMPAIGN_SETUP_STORAGE_PREFIX = "founder-content-business-campaign-setup";
+const BUSINESS_GENERATION_INTENT_VALUES: readonly BusinessGenerationIntent[] = [
+  "get_leads",
+  "get_bookings",
+  "weekly_plan",
+  "promote_offer",
+];
+const BUSINESS_TONE_VALUES: readonly BusinessGenerationTone[] = [
+  "friendly",
+  "premium",
+  "urgent",
+];
+const BUSINESS_CHANNEL_VALUES: readonly BusinessGenerationChannel[] = [
+  "instagram",
+  "facebook",
+  "email",
+];
+
+type StoredBusinessCampaignSetup = {
+  intent?: BusinessGenerationIntent;
+  tone?: BusinessGenerationTone;
+  location?: string;
+  offer?: string;
+  channels?: BusinessGenerationChannel[];
+};
 
 const creatorContentTypeOptions: Array<{
   value: CreatorContentType;
@@ -583,11 +615,15 @@ const pendingAutoGenerate = ref(false);
 const creatorGenerationIntent = ref<CreatorGenerationIntent>("post_idea");
 const creatorContentType = ref<CreatorContentType>("text_post");
 const creatorVisualStyle = ref<CreatorVisualStyle>("minimal_text_card");
-const businessGenerationIntent = ref<BusinessGenerationIntent>("get_leads");
-const businessTone = ref<BusinessGenerationTone>("friendly");
+const businessGenerationIntent = ref<BusinessGenerationIntent>(DEFAULT_BUSINESS_GENERATION_INTENT);
+const businessTone = ref<BusinessGenerationTone>(DEFAULT_BUSINESS_TONE);
 const businessLocation = ref("");
 const businessOffer = ref("");
-const businessChannels = ref<BusinessGenerationChannel[]>(["instagram", "facebook", "email"]);
+const businessChannels = ref<BusinessGenerationChannel[]>([...DEFAULT_BUSINESS_CHANNELS]);
+const isHydratingBusinessCampaignSetup = ref(false);
+const businessCampaignSetupSaveState = ref<"idle" | "saving" | "saved" | "error">("idle");
+let businessLocationSyncTimer: ReturnType<typeof setTimeout> | null = null;
+let businessCampaignSetupFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isEditMode = computed(() => improvementSourceId.value !== "");
 const pageTitle = computed(() =>
@@ -601,7 +637,11 @@ const pageDescription = computed(() =>
   isEditMode.value
       ? "Editor mode keeps the current draft intact. Save manual changes, ask AI for a specific improvement, or regenerate only when you want a new version."
     : isBusinessWorkspace.value
-      ? "Choose the customer outcome first, then generate a visual-first campaign pack with captions, CTA, and optional email."
+      ? isSingleBusinessChannelFlow.value
+        ? businessPrimaryChannel.value === "email"
+          ? "Choose the customer outcome first, then generate a ready-to-send email with clear copy and CTA."
+          : `Choose the customer outcome first, then generate a ready-to-publish ${businessPrimaryChannelLabel.value.toLowerCase()} ${businessSingleOutputLabel.value} with visual direction and CTA.`
+        : "Choose the customer outcome first, then generate a visual-first campaign pack with captions, CTA, and optional email."
       : "Choose the post intent first, then write from scratch or repurpose existing content without leaving the workflow.",
 );
 const isStrategyFlow = computed(
@@ -630,7 +670,11 @@ const submitLabel = computed(() => {
   }
 
   if (isBusinessWorkspace.value) {
-    return "Generate post pack";
+    return isSingleBusinessChannelFlow.value
+      ? businessPrimaryChannel.value === "email"
+        ? "Generate email"
+        : "Generate post"
+      : "Generate post pack";
   }
 
   if (creatorContentType.value === "image_post") {
@@ -661,6 +705,47 @@ const businessIntentOptions = computed(() => buildBusinessIntentOptions(business
 const businessIntentSelection = computed(
   () => businessIntentOptions.value.find((option) => option.value === businessGenerationIntent.value) ?? businessIntentOptions.value[0],
 );
+const selectedBusinessChannels = computed<BusinessGenerationChannel[]>(() => [...businessChannels.value]);
+const selectedBusinessChannelCount = computed(() => selectedBusinessChannels.value.length);
+const isSingleBusinessChannelFlow = computed(
+  () => isBusinessWorkspace.value && selectedBusinessChannelCount.value === 1,
+);
+const businessPrimaryChannel = computed<BusinessGenerationChannel | null>(
+  () => selectedBusinessChannels.value[0] ?? null,
+);
+const businessPrimaryChannelLabel = computed(() => {
+  if (businessPrimaryChannel.value === "instagram") {
+    return "Instagram";
+  }
+
+  if (businessPrimaryChannel.value === "facebook") {
+    return "Facebook";
+  }
+
+  if (businessPrimaryChannel.value === "email") {
+    return "Email";
+  }
+
+  return "Channel";
+});
+const businessSingleOutputLabel = computed(() =>
+  businessPrimaryChannel.value === "email" ? "email" : "post",
+);
+const businessCampaignSetupHelper = computed(() => {
+  if (businessCampaignSetupSaveState.value === "saving") {
+    return "Saving campaign setup for this workspace...";
+  }
+
+  if (businessCampaignSetupSaveState.value === "saved") {
+    return "Campaign setup saved for this workspace.";
+  }
+
+  if (businessCampaignSetupSaveState.value === "error") {
+    return "Campaign setup is saved on this device. Location sync will retry when the workspace is available.";
+  }
+
+  return "Campaign setup is saved automatically for this workspace.";
+});
 const activeGenerationIntent = computed<GenerationIntent>(() =>
   isBusinessWorkspace.value ? businessGenerationIntent.value : creatorGenerationIntent.value,
 );
@@ -968,6 +1053,171 @@ function extractEditablePostFromAssetContent(assetText: string | undefined, cont
   return assetText?.trim() ?? "";
 }
 
+function getBusinessCampaignSetupStorageKey(businessId: string): string {
+  return `${BUSINESS_CAMPAIGN_SETUP_STORAGE_PREFIX}:${businessId}`;
+}
+
+function isBusinessGenerationIntentValue(value: unknown): value is BusinessGenerationIntent {
+  return typeof value === "string" && BUSINESS_GENERATION_INTENT_VALUES.includes(value as BusinessGenerationIntent);
+}
+
+function isBusinessToneValue(value: unknown): value is BusinessGenerationTone {
+  return typeof value === "string" && BUSINESS_TONE_VALUES.includes(value as BusinessGenerationTone);
+}
+
+function normalizeBusinessChannelList(value: unknown): BusinessGenerationChannel[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const nextChannels = BUSINESS_CHANNEL_VALUES.filter((channel) => value.includes(channel));
+  return nextChannels.length > 0 ? [...nextChannels] : undefined;
+}
+
+function readStoredBusinessCampaignSetup(
+  businessId: string | undefined,
+): StoredBusinessCampaignSetup | null {
+  if (!businessId || typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(getBusinessCampaignSetupStorageKey(businessId));
+
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue) as Record<string, unknown>;
+    const nextState: StoredBusinessCampaignSetup = {};
+
+    if (isBusinessGenerationIntentValue(parsed.intent)) {
+      nextState.intent = parsed.intent;
+    }
+
+    if (isBusinessToneValue(parsed.tone)) {
+      nextState.tone = parsed.tone;
+    }
+
+    if (typeof parsed.location === "string") {
+      nextState.location = parsed.location;
+    }
+
+    if (typeof parsed.offer === "string") {
+      nextState.offer = parsed.offer;
+    }
+
+    const nextChannels = normalizeBusinessChannelList(parsed.channels);
+
+    if (nextChannels) {
+      nextState.channels = nextChannels;
+    }
+
+    return nextState;
+  } catch {
+    return null;
+  }
+}
+
+function persistBusinessCampaignSetupToStorage(): void {
+  const businessId = bootstrap.value?.activeBusinessId;
+
+  if (!businessId || !isBusinessWorkspace.value || typeof window === "undefined") {
+    return;
+  }
+
+  const payload: StoredBusinessCampaignSetup = {
+    intent: businessGenerationIntent.value,
+    tone: businessTone.value,
+    location: businessLocation.value,
+    offer: businessOffer.value,
+    channels: [...businessChannels.value],
+  };
+
+  try {
+    window.localStorage.setItem(
+      getBusinessCampaignSetupStorageKey(businessId),
+      JSON.stringify(payload),
+    );
+  } catch {
+    // Ignore local storage failures and keep the create flow usable.
+  }
+}
+
+function scheduleBusinessCampaignSetupFeedbackReset(): void {
+  if (businessCampaignSetupFeedbackTimer) {
+    clearTimeout(businessCampaignSetupFeedbackTimer);
+  }
+
+  businessCampaignSetupFeedbackTimer = setTimeout(() => {
+    if (businessCampaignSetupSaveState.value === "saved") {
+      businessCampaignSetupSaveState.value = "idle";
+    }
+  }, 1800);
+}
+
+function hydrateBusinessCampaignSetupFromWorkspaceDefaults(force = false): void {
+  const businessId = bootstrap.value?.activeBusinessId;
+
+  if (!businessId || !isBusinessWorkspace.value) {
+    if (!force) {
+      return;
+    }
+
+    isHydratingBusinessCampaignSetup.value = true;
+
+    try {
+      businessGenerationIntent.value = DEFAULT_BUSINESS_GENERATION_INTENT;
+      businessTone.value = DEFAULT_BUSINESS_TONE;
+      businessLocation.value = "";
+      businessOffer.value = "";
+      businessChannels.value = [...DEFAULT_BUSINESS_CHANNELS];
+    } finally {
+      isHydratingBusinessCampaignSetup.value = false;
+    }
+
+    return;
+  }
+
+  const storedSetup = readStoredBusinessCampaignSetup(businessId);
+  const profileLocation =
+    brandProfile.value?.businessId === businessId
+      ? brandProfile.value.location ?? ""
+      : "";
+  const hasStoredLocation = Boolean(storedSetup && Object.prototype.hasOwnProperty.call(storedSetup, "location"));
+  const nextLocation = hasStoredLocation
+    ? storedSetup?.location ?? ""
+    : profileLocation;
+
+  isHydratingBusinessCampaignSetup.value = true;
+
+  try {
+    if (force || storedSetup?.intent !== undefined) {
+      businessGenerationIntent.value = storedSetup?.intent ?? DEFAULT_BUSINESS_GENERATION_INTENT;
+    }
+
+    if (force || storedSetup?.tone !== undefined) {
+      businessTone.value = storedSetup?.tone ?? DEFAULT_BUSINESS_TONE;
+    }
+
+    if (force || storedSetup?.offer !== undefined) {
+      businessOffer.value = storedSetup?.offer ?? "";
+    }
+
+    if (force || storedSetup?.channels !== undefined) {
+      businessChannels.value = storedSetup?.channels?.length
+        ? [...storedSetup.channels]
+        : [...DEFAULT_BUSINESS_CHANNELS];
+    }
+
+    if (force || hasStoredLocation || businessLocation.value.trim() === "") {
+      businessLocation.value = nextLocation;
+    }
+  } finally {
+    isHydratingBusinessCampaignSetup.value = false;
+  }
+}
+
 async function loadSavedSources(): Promise<void> {
   const businessId = bootstrap.value?.activeBusinessId;
 
@@ -1005,10 +1255,8 @@ async function loadBrandProfile(): Promise<void> {
   try {
     const response = await requestBrandProfile(businessId);
     brandProfile.value = response.brandProfile;
+    hydrateBusinessCampaignSetupFromWorkspaceDefaults();
     const shouldForceHydrate = hydratedSourceBusinessId.value !== businessId;
-    if (shouldForceHydrate || businessLocation.value.trim() === "") {
-      businessLocation.value = response.brandProfile.location ?? "";
-    }
     hydrateFeedDefaultsFromWorkspaceDefaults(shouldForceHydrate);
   } catch {
     brandProfile.value = null;
@@ -1547,13 +1795,16 @@ function buildBusinessDraftResult(
       ? response.days.map((day) => `Day ${day.dayNumber}: ${day.headline}\n${day.summary}`).join("\n\n")
       : [campaignOutput?.visual.headline, campaignOutput?.visual.subheadline].filter(Boolean).join("\n\n"));
   const channelList = businessChannels.value.map((channel) => channel.charAt(0).toUpperCase() + channel.slice(1));
+  const isSingleChannel = businessChannels.value.length === 1;
+  const primaryChannelLabel = channelList[0] ?? "Business";
   const draftTitle =
     response.kind === "business_campaign"
       ? response.content.visual.headline
       : response.days[0]?.headline || "Weekly campaign plan";
   const draftAngle =
     response.kind === "business_campaign"
-      ? response.content.visual.subheadline ?? `${channelList.join(" + ")} campaign ready`
+      ? response.content.visual.subheadline
+        ?? (isSingleChannel ? `${primaryChannelLabel} post ready` : `${channelList.join(" + ")} campaign ready`)
       : "7-day business content plan ready";
 
   return {
@@ -1598,7 +1849,9 @@ function buildBusinessDraftResult(
       formatLabel:
         response.kind === "weekly_plan"
           ? "7-day business content plan ready for review."
-          : `${channelList.join(" + ")} post pack with CTA${businessChannels.value.includes("email") ? " and email" : ""}.`,
+          : isSingleChannel
+            ? `${primaryChannelLabel} post with CTA ready to review.`
+            : `${channelList.join(" + ")} post pack with CTA${businessChannels.value.includes("email") ? " and email" : ""}.`,
     },
     captionFooterCredit: "",
     businessOutput: campaignOutput,
@@ -1790,12 +2043,76 @@ watch(
 watch(
   () => bootstrap.value?.activeBusinessId,
   () => {
+    brandProfile.value = null;
+    hydrateBusinessCampaignSetupFromWorkspaceDefaults(true);
     void loadGenerationSuggestions();
     void loadSavedSources();
     void loadBrandProfile();
     void loadSocialAccounts();
   },
   { immediate: true },
+);
+
+watch(
+  [
+    () => bootstrap.value?.activeBusinessId,
+    isBusinessWorkspace,
+    businessGenerationIntent,
+    businessTone,
+    businessLocation,
+    businessOffer,
+    () => businessChannels.value.join("|"),
+  ],
+  () => {
+    if (isHydratingBusinessCampaignSetup.value || !isBusinessWorkspace.value) {
+      return;
+    }
+
+    persistBusinessCampaignSetupToStorage();
+  },
+);
+
+watch(
+  [() => bootstrap.value?.activeBusinessId, isBusinessWorkspace, businessLocation],
+  ([businessId, nextIsBusinessWorkspace, nextLocation]) => {
+    if (businessLocationSyncTimer) {
+      clearTimeout(businessLocationSyncTimer);
+      businessLocationSyncTimer = null;
+    }
+
+    if (
+      !businessId ||
+      !nextIsBusinessWorkspace ||
+      isHydratingBusinessCampaignSetup.value
+    ) {
+      return;
+    }
+
+    const normalizedNextLocation = nextLocation.trim();
+    const normalizedProfileLocation = brandProfile.value?.location?.trim() ?? "";
+
+    if (normalizedNextLocation === normalizedProfileLocation) {
+      return;
+    }
+
+    businessCampaignSetupSaveState.value = "saving";
+    businessLocationSyncTimer = setTimeout(async () => {
+      try {
+        const response = await requestUpdateBrandProfile({
+          businessId,
+          location: normalizedNextLocation,
+          refreshFromSignals: false,
+        });
+        brandProfile.value = response.brandProfile;
+        businessCampaignSetupSaveState.value = "saved";
+        scheduleBusinessCampaignSetupFeedbackReset();
+      } catch {
+        businessCampaignSetupSaveState.value = "error";
+      } finally {
+        businessLocationSyncTimer = null;
+      }
+    }, 700);
+  },
 );
 
 watch(
@@ -1837,6 +2154,14 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleKeydown);
+
+  if (businessLocationSyncTimer) {
+    clearTimeout(businessLocationSyncTimer);
+  }
+
+  if (businessCampaignSetupFeedbackTimer) {
+    clearTimeout(businessCampaignSetupFeedbackTimer);
+  }
 });
 </script>
 
@@ -2250,12 +2575,14 @@ onBeforeUnmount(() => {
             />
           </label>
         </div>
+        <p class="activation-helper business-campaign-save-note">{{ businessCampaignSetupHelper }}</p>
 
         <div class="saved-sources-panel inline-saved-sources-panel">
           <div class="saved-sources-header">
             <div>
               <p class="panel-meta">Delivery channels</p>
-              <h3>Choose where this pack should be ready to publish</h3>
+              <h3>{{ isSingleBusinessChannelFlow ? "Choose where this post should be ready to publish" : "Choose where this pack should be ready to publish" }}</h3>
+              <p class="activation-helper">Select one channel for a single post or multiple channels for a campaign pack.</p>
             </div>
           </div>
           <div class="saved-source-list">

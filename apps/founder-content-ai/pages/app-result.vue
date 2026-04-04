@@ -880,6 +880,23 @@ const businessOutput = computed<BusinessContentOutput | undefined>(() => {
 
   return draft.value?.result.businessOutput;
 });
+const businessSelectedChannels = computed<Array<"instagram" | "facebook" | "email">>(() =>
+  businessOutput.value ? inferBusinessChannelsFromOutput(businessOutput.value) : [],
+);
+const businessChannelSummary = computed(() =>
+  businessSelectedChannels.value
+    .map((channel) => channel.charAt(0).toUpperCase() + channel.slice(1))
+    .join(" + "),
+);
+const isSingleBusinessPost = computed(
+  () =>
+    isBusinessMode.value
+    && !businessWeeklyPlan.value
+    && businessSelectedChannels.value.length === 1,
+);
+const businessSingleOutputLabel = computed(() =>
+  businessSelectedChannels.value[0] === "email" ? "email" : "post",
+);
 const creatorOutput = computed<CreatorPostGenerationOutput | null>(() =>
   generationOutput.value?.kind === "creator_post" ? generationOutput.value : null,
 );
@@ -1620,10 +1637,36 @@ const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>((
     recommendedAssetIds: [],
   },
 ]);
-const displayedMediaRecommendations = computed(() =>
-  (eligibleMediaRecommendations.value.length > 0
-    ? eligibleMediaRecommendations.value
-    : fallbackMediaRecommendations.value)
+const ensuredMediaRecommendations = computed<MediaRecommendationSuggestion[]>(() => {
+  const baseSuggestions = eligibleMediaRecommendations.value;
+  const hasGenerateVisual = baseSuggestions.some((suggestion) => suggestion.actionType === "generate_visual");
+
+  if (hasGenerateVisual) {
+    return baseSuggestions;
+  }
+
+  const generateFallbacks = fallbackMediaRecommendations.value.filter(
+    (suggestion) => suggestion.actionType === "generate_visual",
+  );
+
+  if (generateFallbacks.length === 0) {
+    return baseSuggestions;
+  }
+
+  const seenIds = new Set(baseSuggestions.map((suggestion) => suggestion.id));
+
+  return [
+    ...baseSuggestions,
+    ...generateFallbacks.filter((suggestion) => !seenIds.has(suggestion.id)),
+  ];
+});
+const displayedMediaRecommendations = computed(() => {
+  const sourceSuggestions =
+    eligibleMediaRecommendations.value.length > 0
+      ? ensuredMediaRecommendations.value
+      : fallbackMediaRecommendations.value;
+
+  return sourceSuggestions
     .slice()
     .sort((left, right) => {
       const resolvePriority = (suggestion: MediaRecommendationSuggestion): number => {
@@ -1677,11 +1720,12 @@ const displayedMediaRecommendations = computed(() =>
                 ? 3
                 : 2;
       };
+
       const leftPriority = resolvePriority(left);
       const rightPriority = resolvePriority(right);
       return leftPriority - rightPriority;
-    }),
-);
+    });
+});
 const isUsingFallbackMediaRecommendations = computed(
   () => !isLoadingMediaRecommendations.value && eligibleMediaRecommendations.value.length === 0,
 );
@@ -3974,7 +4018,9 @@ onBeforeUnmount(() => {
           {{
             businessWeeklyPlan
               ? "Your weekly campaign plan is ready."
-              : isBusinessMode
+              : isSingleBusinessPost
+                ? `Your ${businessSingleOutputLabel} is ready.`
+                : isBusinessMode
                 ? "Your campaign pack is ready."
                 : "Your post is ready."
           }}
@@ -3983,6 +4029,10 @@ onBeforeUnmount(() => {
           {{
             businessWeeklyPlan
               ? "Review the 7-day plan, tighten the headlines, and turn the best items into channel-ready campaigns."
+              : isSingleBusinessPost
+              ? businessSingleOutputLabel === "email"
+                ? "Review the email copy and CTA, then send it without turning it into a bigger campaign."
+                : "Review the post, CTA, and visual direction, then publish it without turning it into a bigger campaign."
               : isBusinessMode
               ? "Review the visual direction, platform captions, CTA, and email copy without rebuilding the campaign by hand."
               : "This is the activation moment: improve the draft, send it into outreach, or turn it into an email without rewriting from scratch."
@@ -4002,7 +4052,9 @@ onBeforeUnmount(() => {
                 {{
                   businessWeeklyPlan
                     ? "Generated weekly plan"
-                    : isBusinessMode
+                    : isSingleBusinessPost
+                      ? `Generated ${businessSingleOutputLabel}`
+                      : isBusinessMode
                       ? "Generated campaign"
                       : "Generated post"
                 }}
@@ -4049,16 +4101,14 @@ onBeforeUnmount(() => {
             </article>
             <article class="result-signal-card">
               <p class="panel-meta">Channels</p>
-              <strong>
+              <strong>{{ businessChannelSummary || "Business" }}</strong>
+              <span>
                 {{
-                  [
-                    businessOutput.captions.instagram ? "Instagram" : "",
-                    businessOutput.captions.facebook ? "Facebook" : "",
-                    businessOutput.email ? "Email" : "",
-                  ].filter(Boolean).join(" + ")
+                  isSingleBusinessPost
+                    ? "This output is focused on one destination."
+                    : "Campaign copy is already adapted per destination."
                 }}
-              </strong>
-              <span>Campaign copy is already adapted per destination.</span>
+              </span>
             </article>
           </section>
 
@@ -4070,22 +4120,22 @@ onBeforeUnmount(() => {
               </ul>
             </article>
 
-            <article class="execution-status-block">
-              <p class="panel-meta">Instagram caption</p>
+            <article v-if="businessOutput.captions.instagram" class="execution-status-block">
+              <p class="panel-meta">{{ isSingleBusinessPost ? "Instagram post" : "Instagram caption" }}</p>
               <p class="execution-status-description">
-                {{ businessOutput.captions.instagram || "Instagram was not selected for this pack." }}
+                {{ businessOutput.captions.instagram }}
               </p>
             </article>
 
-            <article class="execution-status-block">
-              <p class="panel-meta">Facebook caption</p>
+            <article v-if="businessOutput.captions.facebook" class="execution-status-block">
+              <p class="panel-meta">{{ isSingleBusinessPost ? "Facebook post" : "Facebook caption" }}</p>
               <p class="execution-status-description">
-                {{ businessOutput.captions.facebook || "Facebook was not selected for this pack." }}
+                {{ businessOutput.captions.facebook }}
               </p>
             </article>
 
             <article v-if="businessOutput.email" class="execution-status-block">
-              <p class="panel-meta">Email subject</p>
+              <p class="panel-meta">{{ isSingleBusinessPost ? "Email draft" : "Email subject" }}</p>
               <strong>{{ businessOutput.email.subject }}</strong>
               <p class="execution-status-description">{{ businessOutput.email.body }}</p>
             </article>
@@ -4588,7 +4638,11 @@ onBeforeUnmount(() => {
                 <p class="panel-meta">Media</p>
                 <strong>Turn this post into visuals</strong>
                 <p class="ai-command-copy">
-                  Keep the workflow text-first. When the post earns visuals, generate a narrative deck before you add or upload anything manually.
+                  {{
+                    isBusinessMode
+                      ? "Generate a launch image here, or upload a short MP4 promo if you already have motion ready."
+                      : "Keep the workflow text-first. When the post earns visuals, generate a narrative deck before you add or upload anything manually."
+                  }}
                 </p>
               </div>
 
