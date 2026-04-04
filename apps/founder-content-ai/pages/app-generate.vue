@@ -2,10 +2,18 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
+  BusinessGenerationChannel,
+  BusinessGenerationGoal,
+  BusinessGenerationIntent,
+  BusinessGenerationResponse,
+  BusinessGenerationTone,
   BrandProfile,
   ContentGenerationSuggestion,
   ContentIngestionItem,
+  CreatorGenerationIntent,
   GenerationToneMode,
+  GenerationIntent,
+  RepurposeContentResponse,
   RepurposeSuggestionSelection,
   RepurposeStrategy,
   RepurposeSourceUrlInput,
@@ -21,6 +29,7 @@ import { useProductAccessContext } from "../access/product-access-context";
 import VoiceRecorder from "../components/VoiceRecorder.vue";
 import {
   requestContentIngestionPreview,
+  requestBusinessGeneration,
   requestRepurposeContent,
   requestSavedContentSources,
 } from "../services/generation-service";
@@ -54,9 +63,21 @@ const exampleIdeas = [
 ];
 
 const toneOptions = [
-  { label: "Founder", value: "storytelling" },
+  { label: "Creator", value: "storytelling" },
   { label: "Direct", value: "direct" },
   { label: "Structured", value: "professional" },
+] as const;
+
+const businessToneOptions = [
+  { label: "Friendly", value: "friendly" },
+  { label: "Premium", value: "premium" },
+  { label: "Urgent", value: "urgent" },
+] as const;
+
+const businessChannelOptions = [
+  { label: "Instagram", value: "instagram" },
+  { label: "Facebook", value: "facebook" },
+  { label: "Email", value: "email" },
 ] as const;
 
 const route = useRoute();
@@ -64,6 +85,208 @@ const router = useRouter();
 const { bootstrap, isReady: isProductAccessReady } = useProductAccessContext();
 
 type GenerationSourceMode = "fresh" | "feed";
+type WorkspaceBusinessType = "daycare" | "salon" | "fitness" | "general";
+type IntentOption<TIntent extends string> = {
+  value: TIntent;
+  label: string;
+  description: string;
+  inputLabel: string;
+  freshPlaceholder: string;
+  feedPlaceholder?: string;
+  disabled?: boolean;
+};
+
+const creatorIntentOptions: IntentOption<CreatorGenerationIntent>[] = [
+  {
+    value: "post_idea",
+    label: "Post an idea",
+    description: "Start from one idea, insight, or rough note and turn it into a strong post.",
+    inputLabel: "What idea do you want to turn into a post?",
+    freshPlaceholder: "Share the idea, lesson, or point you want to publish.",
+    feedPlaceholder:
+      "Example: turn these sources into a sharp post around one clear insight, lesson, or observation.",
+  },
+  {
+    value: "grow_audience",
+    label: "Grow audience",
+    description: "Create a post that sharpens what you want to be known for and compounds authority.",
+    inputLabel: "What do you want to become known for?",
+    freshPlaceholder: "Describe the perspective, belief, or lesson you want your audience to remember.",
+    feedPlaceholder:
+      "Example: turn these sources into a positioning post that sharpens your expertise and earns trust.",
+  },
+  {
+    value: "promote_offer",
+    label: "Promote offer",
+    description: "Write a post that builds trust and moves readers toward a product, service, or CTA.",
+    inputLabel: "What offer should this post move people toward?",
+    freshPlaceholder: "Describe the offer, outcome, and why someone should care right now.",
+    feedPlaceholder:
+      "Example: turn these sources into a post that builds trust, shows proof, and points readers toward the offer.",
+  },
+  {
+    value: "weekly_plan",
+    label: "Weekly plan (Soon)",
+    description: "Soon: generate a reusable multi-post weekly plan from one clear focus.",
+    inputLabel: "What should the weekly plan focus on?",
+    freshPlaceholder: "Describe the theme or campaign focus for the week.",
+    disabled: true,
+  },
+];
+
+function buildBusinessIntentOptions(
+  businessType: WorkspaceBusinessType,
+): IntentOption<BusinessGenerationIntent>[] {
+  if (businessType === "daycare") {
+    return [
+      {
+        value: "get_leads",
+        label: "Fill empty spots",
+        description: "Generate customer-facing marketing built around visibility, trust, and daycare enrollment demand.",
+        inputLabel: "What campaign angle should help fill open spots?",
+        freshPlaceholder: "Describe the enrollment push, local angle, or parent problem you want this campaign to solve.",
+      },
+      {
+        value: "get_bookings",
+        label: "Drive tours and inquiries",
+        description: "Create a campaign pack that pushes parents toward tours, calls, and direct inquiries.",
+        inputLabel: "What should make parents book a tour or reach out?",
+        freshPlaceholder: "Describe the hook, proof, or reason parents should schedule a tour now.",
+      },
+      {
+        value: "promote_offer",
+        label: "Promote your daycare",
+        description: "Package the offer, trust signals, and CTA into a visual-first post pack ready for business channels.",
+        inputLabel: "What should this campaign promote?",
+        freshPlaceholder: "Describe the listing, offer, or trust angle you want this campaign to push.",
+      },
+      {
+        value: "weekly_plan",
+        label: "Create weekly content (Soon)",
+        description: "Soon: map a full week of daycare content from one customer outcome.",
+        inputLabel: "What should the weekly plan focus on?",
+        freshPlaceholder: "Describe the weekly campaign focus.",
+        disabled: true,
+      },
+    ];
+  }
+
+  if (businessType === "salon") {
+    return [
+      {
+        value: "get_bookings",
+        label: "Get more appointments",
+        description: "Create a local campaign that drives appointment demand, timely bookings, and clear service interest.",
+        inputLabel: "What should make someone book now?",
+        freshPlaceholder: "Describe the service, seasonal push, or reason clients should book this week.",
+      },
+      {
+        value: "get_leads",
+        label: "Capture more leads",
+        description: "Generate marketing that attracts new local prospects and turns attention into inquiries.",
+        inputLabel: "What customer problem should this campaign solve?",
+        freshPlaceholder: "Describe the audience pain, transformation, or local demand you want to target.",
+      },
+      {
+        value: "promote_offer",
+        label: "Promote your salon",
+        description: "Turn one offer, service, or promotion into a channel-ready visual pack with CTA.",
+        inputLabel: "What offer should this campaign promote?",
+        freshPlaceholder: "Describe the service, bundle, or promotion you want to feature.",
+      },
+      {
+        value: "weekly_plan",
+        label: "Create weekly content (Soon)",
+        description: "Soon: map a week of salon posts from one offer or customer outcome.",
+        inputLabel: "What should the weekly plan focus on?",
+        freshPlaceholder: "Describe the weekly campaign focus.",
+        disabled: true,
+      },
+    ];
+  }
+
+  if (businessType === "fitness") {
+    return [
+      {
+        value: "get_bookings",
+        label: "Drive memberships",
+        description: "Generate a campaign that moves prospects into trials, memberships, and class signups.",
+        inputLabel: "What should make someone join or sign up?",
+        freshPlaceholder: "Describe the membership, class, or transformation angle you want this campaign to push.",
+      },
+      {
+        value: "get_leads",
+        label: "Capture more leads",
+        description: "Create a direct-response campaign that brings in local leads and new member interest.",
+        inputLabel: "What audience problem should this campaign address?",
+        freshPlaceholder: "Describe the pain point, offer, or local angle you want to lead with.",
+      },
+      {
+        value: "promote_offer",
+        label: "Promote your fitness brand",
+        description: "Turn one offer or positioning angle into a visual-first post pack ready for conversion.",
+        inputLabel: "What offer should this campaign promote?",
+        freshPlaceholder: "Describe the membership offer, class push, or promotion you want to feature.",
+      },
+      {
+        value: "weekly_plan",
+        label: "Create weekly content (Soon)",
+        description: "Soon: map a weekly content run from one fitness offer or customer outcome.",
+        inputLabel: "What should the weekly plan focus on?",
+        freshPlaceholder: "Describe the weekly campaign focus.",
+        disabled: true,
+      },
+    ];
+  }
+
+  return [
+    {
+      value: "get_leads",
+      label: "Get more leads",
+      description: "Generate a campaign pack aimed at attracting attention and turning it into inquiries.",
+      inputLabel: "What campaign angle should drive more leads?",
+      freshPlaceholder: "Describe the offer, audience pain, or reason someone should reach out.",
+    },
+    {
+      value: "get_bookings",
+      label: "Get more bookings",
+      description: "Create a direct-response campaign designed to drive appointments, demos, or calls.",
+      inputLabel: "What should make someone book now?",
+      freshPlaceholder: "Describe the hook, offer, or urgency behind the booking push.",
+    },
+    {
+      value: "promote_offer",
+      label: "Promote an offer",
+      description: "Package the offer and CTA into a visual-first campaign built for business channels.",
+      inputLabel: "What offer should this campaign promote?",
+      freshPlaceholder: "Describe the offer, service, or promotion you want to feature.",
+    },
+    {
+      value: "weekly_plan",
+      label: "Create weekly content (Soon)",
+      description: "Soon: map a weekly content plan from one clear business outcome.",
+      inputLabel: "What should the weekly plan focus on?",
+      freshPlaceholder: "Describe the weekly campaign focus.",
+      disabled: true,
+    },
+  ];
+}
+
+function resolveBusinessGoal(intent: BusinessGenerationIntent): BusinessGenerationGoal {
+  if (intent === "get_leads") {
+    return "leads";
+  }
+
+  if (intent === "get_bookings") {
+    return "bookings";
+  }
+
+  if (intent === "weekly_plan") {
+    return "traffic";
+  }
+
+  return "awareness";
+}
 
 const input = ref("");
 const tone = ref<GenerationToneMode>(DEFAULT_GENERATION_TONE);
@@ -71,7 +294,7 @@ const generationStrategy = ref<RepurposeStrategy>(DEFAULT_REPURPOSE_STRATEGY);
 const hasToneOverride = ref(false);
 const isLoading = ref(false);
 const errorMessage = ref("");
-const helperMessage = ref("Paste a thought, saved post, or rough idea. Voice works too.");
+const helperMessage = ref("Add a starting direction, offer, or rough note. Voice works too.");
 const improvementSourceId = ref("");
 const sourceMode = ref<GenerationSourceMode>("fresh");
 const linkedinSourceUrl = ref("");
@@ -96,20 +319,33 @@ const isHydratingFeedDefaults = ref(false);
 const hydratedSourceBusinessId = ref("");
 const seededRepurposeSource = ref<RepurposeSeedPayload["source"] | "">("");
 const pendingAutoGenerate = ref(false);
+const creatorGenerationIntent = ref<CreatorGenerationIntent>("post_idea");
+const businessGenerationIntent = ref<BusinessGenerationIntent>("get_leads");
+const businessTone = ref<BusinessGenerationTone>("friendly");
+const businessLocation = ref("");
+const businessOffer = ref("");
+const businessChannels = ref<BusinessGenerationChannel[]>(["instagram", "facebook", "email"]);
 
 const pageTitle = computed(() =>
-  improvementSourceId.value ? "Improve the post you already have" : "Create your next post",
+  isBusinessWorkspace.value
+    ? "What do you want to do today?"
+    : improvementSourceId.value
+      ? "Improve the post you already have"
+      : "What do you want to do today?",
 );
 const pageDescription = computed(() =>
-  improvementSourceId.value
-    ? "We will use your previous draft as input and tighten the hook, structure, and clarity."
-    : "Write from scratch or repurpose existing content in one place. Generate, refine, and move toward publishing without switching tools.",
+  isBusinessWorkspace.value
+    ? "Choose the customer outcome first, then generate a visual-first campaign pack with captions, CTA, and optional email."
+    : improvementSourceId.value
+      ? "We will use your previous draft as input and tighten the hook, structure, and clarity."
+      : "Choose the post intent first, then write from scratch or repurpose existing content without leaving the workflow.",
 );
 const isStrategyFlow = computed(
   () => !improvementSourceId.value && sourceMode.value === "fresh" && seededRepurposeSource.value !== "",
 );
 const showSuggestionPanel = computed(
   () =>
+    !isBusinessWorkspace.value &&
     !improvementSourceId.value &&
     sourceMode.value === "fresh" &&
     seededRepurposeSource.value === "" &&
@@ -125,23 +361,54 @@ const submitLabel = computed(() => {
     return "Generating...";
   }
 
+  if (isBusinessWorkspace.value) {
+    return "Generate post pack";
+  }
+
   return isStrategyFlow.value
     ? resolveRepurposeStrategySubmitLabel(generationStrategy.value)
     : "Generate post";
 });
+const creatorIntentSelection = computed(
+  () => creatorIntentOptions.find((option) => option.value === creatorGenerationIntent.value) ?? creatorIntentOptions[0],
+);
+const businessIntentOptions = computed(() => buildBusinessIntentOptions(businessWorkspaceType.value));
+const businessIntentSelection = computed(
+  () => businessIntentOptions.value.find((option) => option.value === businessGenerationIntent.value) ?? businessIntentOptions.value[0],
+);
+const activeGenerationIntent = computed<GenerationIntent>(() =>
+  isBusinessWorkspace.value ? businessGenerationIntent.value : creatorGenerationIntent.value,
+);
+const activeIntentOptions = computed(() =>
+  isBusinessWorkspace.value ? businessIntentOptions.value : creatorIntentOptions,
+);
+const activeIntentSelection = computed(() =>
+  isBusinessWorkspace.value ? businessIntentSelection.value : creatorIntentSelection.value,
+);
+const inputPanelMeta = computed(() => (isBusinessWorkspace.value ? "Brief" : "Input"));
+const intentPanelTitle = computed(() =>
+  isBusinessWorkspace.value
+    ? businessWorkspaceType.value === "daycare"
+      ? "Choose the daycare outcome first"
+      : "Choose the business outcome first"
+    : "Choose the post intent first",
+);
+const intentHelperCopy = computed(() => activeIntentSelection.value.description);
 const sourceInputLabel = computed(() =>
-  isStrategyFlow.value
-    ? activeStrategyOption.value.label
-    : sourceMode.value === "feed"
-      ? "Repurpose with context"
-      : "Bring one idea",
+  isBusinessWorkspace.value
+    ? activeIntentSelection.value.inputLabel
+    : isStrategyFlow.value
+      ? activeStrategyOption.value.label
+      : activeIntentSelection.value.inputLabel,
 );
 const sourceInputPlaceholder = computed(() =>
-  isStrategyFlow.value
-    ? "Review the seeded post, tighten the framing if needed, then generate the next move."
-    : sourceMode.value === "feed"
-      ? "Example: turn these sources into a founder post about customer trust, product lessons, and practical proof. Your saved brand context will still shape the result."
-      : "Paste your idea, tweet, thought, or rough note here...",
+  isBusinessWorkspace.value
+    ? activeIntentSelection.value.freshPlaceholder
+    : isStrategyFlow.value
+      ? "Review the seeded post, tighten the framing if needed, then generate the next move."
+      : sourceMode.value === "feed"
+        ? (activeIntentSelection.value.feedPlaceholder ?? activeIntentSelection.value.freshPlaceholder)
+        : activeIntentSelection.value.freshPlaceholder,
 );
 const hasFeedSources = computed(() => buildFeedSourceUrls().length > 0);
 const isFeedPreviewReady = computed(() => feedPreviewText.value.trim() !== "" && !isFeedPreviewDirty.value);
@@ -298,6 +565,8 @@ const workspaceDefaultSources = computed(() =>
 );
 
 const hasWorkspaceSourceDefaults = computed(() => workspaceDefaultSources.value.length > 0);
+const isBusinessWorkspace = computed(() => brandProfile.value?.workspaceMode === "business");
+const businessWorkspaceType = computed(() => inferBusinessTypeFromBrandProfile(brandProfile.value));
 
 function resolveSourceModeFromRoute(): GenerationSourceMode {
   return route.query.mode === "repurpose" ? "feed" : "fresh";
@@ -353,6 +622,9 @@ async function loadBrandProfile(): Promise<void> {
     const response = await requestBrandProfile(businessId);
     brandProfile.value = response.brandProfile;
     const shouldForceHydrate = hydratedSourceBusinessId.value !== businessId;
+    if (shouldForceHydrate || businessLocation.value.trim() === "") {
+      businessLocation.value = response.brandProfile.location ?? "";
+    }
     hydrateFeedDefaultsFromWorkspaceDefaults(shouldForceHydrate);
   } catch {
     brandProfile.value = null;
@@ -441,7 +713,7 @@ async function hydrateImprovementState(): Promise<void> {
     sourceMode.value = resolveSourceModeFromRoute();
     input.value = typeof route.query.prefill === "string" ? route.query.prefill : "";
     if (!route.query.prefill && helperMessage.value.includes("improving")) {
-      helperMessage.value = "Paste a thought, saved post, or rough idea. Voice works too.";
+      helperMessage.value = "Add a starting direction, offer, or rough note. Voice works too.";
     }
     return;
   }
@@ -475,6 +747,10 @@ async function hydrateImprovementState(): Promise<void> {
 }
 
 function setSourceMode(nextMode: GenerationSourceMode): void {
+  if (isBusinessWorkspace.value) {
+    return;
+  }
+
   sourceMode.value = nextMode;
   errorMessage.value = "";
 
@@ -591,8 +867,13 @@ async function previewFeedSources(): Promise<void> {
 }
 
 async function generatePost(selectedSuggestion?: RepurposeSuggestionSelection): Promise<void> {
+  if (isBusinessWorkspace.value) {
+    await generateBusinessCampaign();
+    return;
+  }
+
   if (sourceMode.value === "fresh" && !input.value.trim()) {
-    errorMessage.value = "Add one idea before generating.";
+    errorMessage.value = "Add a starting direction before generating.";
     return;
   }
 
@@ -625,6 +906,7 @@ async function generatePost(selectedSuggestion?: RepurposeSuggestionSelection): 
       selectedSuggestion,
       text: usingFeedSources ? feedPreviewText.value.trim() : input.value.trim() || undefined,
       tone: tone.value,
+      generationIntent: creatorGenerationIntent.value,
       businessId: bootstrap.value?.activeBusinessId ?? undefined,
     });
     const draft = saveActivationDraft({
@@ -649,6 +931,165 @@ async function generatePost(selectedSuggestion?: RepurposeSuggestionSelection): 
   } finally {
     isLoading.value = false;
   }
+}
+
+function inferBusinessTypeFromBrandProfile(
+  profile: BrandProfile | null,
+): "daycare" | "salon" | "fitness" | "general" {
+  const normalized = [
+    profile?.industry ?? "",
+    ...(profile?.topics ?? []),
+    profile?.websiteUrl ?? "",
+    profile?.instagramUrl ?? "",
+    profile?.facebookUrl ?? "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    normalized.includes("daycare")
+    || normalized.includes("childcare")
+    || normalized.includes("preschool")
+    || normalized.includes("kids")
+  ) {
+    return "daycare";
+  }
+
+  if (normalized.includes("salon") || normalized.includes("beauty") || normalized.includes("spa")) {
+    return "salon";
+  }
+
+  if (normalized.includes("fitness") || normalized.includes("gym") || normalized.includes("wellness")) {
+    return "fitness";
+  }
+
+  return "general";
+}
+
+function buildBusinessDraftResult(
+  response: BusinessGenerationResponse,
+  sourceText: string,
+): RepurposeContentResponse {
+  const fallbackCaption =
+    response.output.captions.instagram
+    ?? response.output.captions.facebook
+    ?? response.output.email?.body
+    ?? [response.output.visual.headline, response.output.visual.subheadline].filter(Boolean).join("\n\n");
+  const channelList = businessChannels.value.map((channel) => channel.charAt(0).toUpperCase() + channel.slice(1));
+
+  return {
+    inputType: "text",
+    intent: "capture",
+    strategy: "continue",
+    workspaceMode: "business",
+    generationIntent: businessGenerationIntent.value,
+    sourceText,
+    idea: {
+      title: response.output.visual.headline,
+      angle:
+        response.output.visual.subheadline
+        ?? `${channelList.join(" + ")} campaign ready`,
+    },
+    hooks: [response.output.visual.headline],
+    post: fallbackCaption,
+    variations: [],
+    visualNarrative: {
+      format: "carousel",
+      type: "framework",
+      title: response.output.visual.headline,
+      subtitle: response.output.visual.subheadline ?? response.output.cta.label,
+      slides: [],
+    },
+    carouselDraft: {
+      title: response.output.visual.headline,
+      subtitle: response.output.visual.subheadline ?? response.output.cta.label,
+      narrativeType: "framework",
+      slides: [],
+    },
+    quickSignals: {
+      readyLabel: "Ready to launch",
+      formatLabel: `${channelList.join(" + ")} post pack with CTA${businessChannels.value.includes("email") ? " and email" : ""}.`,
+    },
+    captionFooterCredit: "",
+    businessOutput: response.output,
+  };
+}
+
+async function generateBusinessCampaign(): Promise<void> {
+  if (!bootstrap.value?.activeBusinessId) {
+    errorMessage.value = "Select a workspace before generating.";
+    return;
+  }
+
+  if (businessChannels.value.length === 0) {
+    errorMessage.value = "Select at least one delivery channel.";
+    return;
+  }
+
+  if (!input.value.trim() && !businessOffer.value.trim()) {
+    errorMessage.value = "Add the campaign angle or offer before generating.";
+    return;
+  }
+
+  isLoading.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestBusinessGeneration({
+      businessId: bootstrap.value.activeBusinessId,
+      goal: resolveBusinessGoal(businessGenerationIntent.value),
+      generationIntent: businessGenerationIntent.value,
+      businessType: inferBusinessTypeFromBrandProfile(brandProfile.value),
+      location: businessLocation.value.trim() || undefined,
+      offer: businessOffer.value.trim() || undefined,
+      sourceIdea: input.value.trim() || undefined,
+      tone: businessTone.value,
+      channels: businessChannels.value,
+    });
+
+    const sourceText = [
+      input.value.trim(),
+      businessOffer.value.trim(),
+      businessLocation.value.trim(),
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const draft = saveActivationDraft({
+      input: sourceText,
+      mode: "generate",
+      result: buildBusinessDraftResult(response, sourceText),
+    });
+
+    await router.push({
+      path: appRoutes.appResult,
+      query: {
+        id: draft.id,
+      },
+    });
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to generate a business campaign right now.";
+  } finally {
+    isLoading.value = false;
+  }
+}
+
+function toggleBusinessChannel(channel: BusinessGenerationChannel): void {
+  if (businessChannels.value.includes(channel)) {
+    businessChannels.value = businessChannels.value.filter((value) => value !== channel);
+    return;
+  }
+
+  businessChannels.value = [...businessChannels.value, channel];
+}
+
+function selectGenerationIntent(intent: GenerationIntent): void {
+  if (isBusinessWorkspace.value) {
+    businessGenerationIntent.value = intent as BusinessGenerationIntent;
+    return;
+  }
+
+  creatorGenerationIntent.value = intent as CreatorGenerationIntent;
 }
 
 async function runSuggestedGeneration(suggestion: ContentGenerationSuggestion): Promise<void> {
@@ -747,6 +1188,16 @@ watch(
 );
 
 watch(
+  isBusinessWorkspace,
+  (nextValue) => {
+    if (nextValue) {
+      sourceMode.value = "fresh";
+    }
+  },
+  { immediate: true },
+);
+
+watch(
   [pendingAutoGenerate, isProductAccessReady],
   ([shouldAutoGenerate, productAccessReady]) => {
     if (!shouldAutoGenerate || !productAccessReady || isLoading.value) {
@@ -776,7 +1227,9 @@ onBeforeUnmount(() => {
       <p class="activation-description">{{ pageDescription }}</p>
       <div class="activation-chip-row">
         <span class="activation-chip">Value in one step</span>
-        <span class="activation-chip">Hooks + post + next actions</span>
+        <span class="activation-chip">
+          {{ isBusinessWorkspace ? "Visual + captions + CTA" : "Hooks + post + next actions" }}
+        </span>
         <span class="activation-chip">Cmd/Ctrl + Enter to generate</span>
       </div>
       <div
@@ -1008,7 +1461,7 @@ onBeforeUnmount(() => {
     </section>
 
     <section class="activation-panel">
-      <div v-if="!improvementSourceId" class="source-mode-row create-mode-row">
+      <div v-if="!improvementSourceId && !isBusinessWorkspace" class="source-mode-row create-mode-row">
         <button
           type="button"
           class="tone-chip"
@@ -1027,22 +1480,108 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <div class="activation-panel-header">
-        <div class="activation-panel-copy">
-          <p class="panel-meta">Input</p>
-          <h2>{{ sourceInputLabel }}</h2>
+      <div v-if="!improvementSourceId" class="strategy-panel">
+        <div class="strategy-panel-copy">
+          <p class="panel-meta">Intent</p>
+          <h3>{{ intentPanelTitle }}</h3>
+          <p class="activation-helper">
+            {{ intentHelperCopy }}
+          </p>
         </div>
-        <div class="tone-selector">
+        <div class="strategy-selector">
           <button
-            v-for="option in toneOptions"
+            v-for="option in activeIntentOptions"
             :key="option.value"
             type="button"
             class="tone-chip"
-            :class="{ active: tone === option.value }"
-            @click="hasToneOverride = true; tone = option.value"
+            :class="{ active: activeGenerationIntent === option.value }"
+            :disabled="option.disabled"
+            @click="selectGenerationIntent(option.value)"
           >
             {{ option.label }}
           </button>
+        </div>
+      </div>
+
+      <div class="activation-panel-header">
+        <div class="activation-panel-copy">
+          <p class="panel-meta">{{ inputPanelMeta }}</p>
+          <h2>{{ sourceInputLabel }}</h2>
+        </div>
+        <div class="tone-selector">
+          <template v-if="isBusinessWorkspace">
+            <button
+              v-for="option in businessToneOptions"
+              :key="option.value"
+              type="button"
+              class="tone-chip"
+              :class="{ active: businessTone === option.value }"
+              @click="businessTone = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </template>
+          <template v-else>
+            <button
+              v-for="option in toneOptions"
+              :key="option.value"
+              type="button"
+              class="tone-chip"
+              :class="{ active: tone === option.value }"
+              @click="hasToneOverride = true; tone = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </template>
+        </div>
+      </div>
+
+      <div v-if="isBusinessWorkspace" class="strategy-panel">
+        <div class="strategy-panel-copy">
+          <p class="panel-meta">Campaign setup</p>
+          <h3>Give the engine the local context</h3>
+          <p class="activation-helper">
+            Location and offer sharpen the visual direction, CTA, and channel copy automatically.
+          </p>
+        </div>
+        <div class="source-grid business-campaign-grid">
+          <label>
+            <span>Location</span>
+            <input
+              v-model="businessLocation"
+              type="text"
+              placeholder="Texas, Dallas, Chicago, etc."
+            />
+          </label>
+          <label>
+            <span>Offer or CTA angle</span>
+            <input
+              v-model="businessOffer"
+              type="text"
+              placeholder="Claim your daycare listing"
+            />
+          </label>
+        </div>
+
+        <div class="saved-sources-panel inline-saved-sources-panel">
+          <div class="saved-sources-header">
+            <div>
+              <p class="panel-meta">Delivery channels</p>
+              <h3>Choose where this pack should be ready to publish</h3>
+            </div>
+          </div>
+          <div class="saved-source-list">
+            <button
+              v-for="option in businessChannelOptions"
+              :key="option.value"
+              type="button"
+              class="tone-chip"
+              :class="{ active: businessChannels.includes(option.value) }"
+              @click="toggleBusinessChannel(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1106,7 +1645,7 @@ onBeforeUnmount(() => {
       />
 
       <div
-        v-if="!improvementSourceId && sourceMode === 'feed'"
+        v-if="!improvementSourceId && !isBusinessWorkspace && sourceMode === 'feed'"
         id="repurpose-panel"
         class="feed-ingest-panel"
       >
@@ -1228,7 +1767,7 @@ onBeforeUnmount(() => {
         />
       </div>
 
-      <div v-if="sourceMode === 'fresh' && !improvementSourceId" class="example-row">
+      <div v-if="sourceMode === 'fresh' && !improvementSourceId && !isBusinessWorkspace" class="example-row">
         <button
           v-for="example in exampleIdeas"
           :key="example"
@@ -1241,7 +1780,7 @@ onBeforeUnmount(() => {
       </div>
 
       <p v-if="errorMessage" class="activation-feedback error">{{ errorMessage }}</p>
-      <p v-else-if="sourceMode === 'feed' && !improvementSourceId" class="activation-feedback">
+      <p v-else-if="!isBusinessWorkspace && sourceMode === 'feed' && !improvementSourceId" class="activation-feedback">
         {{
           isFeedPreviewReady
             ? "Preview ready. Generation will use the reviewed source text plus your workspace brand context."
@@ -1255,7 +1794,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="primary-action"
-          :disabled="isLoading || (!improvementSourceId && sourceMode === 'feed' && (!isFeedPreviewReady || isPreviewingFeed))"
+          :disabled="isLoading || (!isBusinessWorkspace && !improvementSourceId && sourceMode === 'feed' && (!isFeedPreviewReady || isPreviewingFeed))"
           @click="void generatePost()"
         >
           {{ submitLabel }}

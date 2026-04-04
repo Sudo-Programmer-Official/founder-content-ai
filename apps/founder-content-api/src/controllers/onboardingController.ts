@@ -20,6 +20,12 @@ import {
 } from "../services/onboardingService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
+function isValidOnboardingBusinessType(
+  value: unknown,
+): value is NonNullable<CreateOnboardingWorkspaceRequest["businessType"]> {
+  return value === "daycare" || value === "salon" || value === "fitness" || value === "other";
+}
+
 export async function getStatus(
   request: Request,
   response: Response<OnboardingStatusResponse | ApiError>,
@@ -125,7 +131,12 @@ export async function createWorkspace(
     response.status(201).json(
       await createOnboardingWorkspace(request.auth, {
         name: request.body.name,
+        useCase: request.body.useCase,
+        businessType: isValidOnboardingBusinessType(request.body.businessType)
+          ? request.body.businessType
+          : undefined,
         websiteUrl: request.body.websiteUrl,
+        location: request.body.location?.trim(),
         timezone: request.body.timezone,
         industry: request.body.industry,
         tone: request.body.tone,

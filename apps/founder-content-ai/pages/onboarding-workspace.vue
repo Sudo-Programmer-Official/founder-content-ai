@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import type { BrandTone, OnboardingUseCase } from "../../../packages/shared-types";
+import type {
+  BrandTone,
+  OnboardingBusinessType,
+  OnboardingUseCase,
+} from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import { useAuthContext } from "../auth/auth-context";
 import { requestOnboardingWorkspace } from "../services/onboarding-service";
@@ -14,7 +18,9 @@ const { setActiveBusinessId } = useProductAccessContext();
 
 const workspaceName = ref("");
 const websiteUrl = ref("");
-const selectedUseCase = ref<OnboardingUseCase>("personal_brand");
+const businessLocation = ref("");
+const selectedUseCase = ref<OnboardingUseCase>("business_marketing");
+const selectedBusinessType = ref<OnboardingBusinessType>("daycare");
 const isCreating = ref(false);
 const errorMessage = ref("");
 const hasTouchedWorkspaceName = ref(false);
@@ -26,22 +32,49 @@ const useCaseOptions: Array<{
   description: string;
 }> = [
   {
+    value: "business_marketing",
+    label: "Grow my business",
+    eyebrow: "Business mode",
+    description: "Generate campaigns, offers, and local marketing that drive customers.",
+  },
+  {
     value: "personal_brand",
-    label: "Personal brand",
-    eyebrow: "Founder-led",
+    label: "Build my personal brand",
+    eyebrow: "Creator mode",
     description: "Build content around your own voice, proof, and reputation.",
   },
   {
-    value: "business_marketing",
-    label: "Startup",
-    eyebrow: "Product-led",
-    description: "Keep one product or company visible with a consistent content engine.",
+    value: "agency_clients",
+    label: "Manage multiple clients",
+    eyebrow: "Client mode",
+    description: "Run repeatable content operations across multiple brands and offers.",
+  },
+];
+
+const businessTypeOptions: Array<{
+  value: OnboardingBusinessType;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "daycare",
+    label: "Daycare",
+    description: "Fill open spots, drive local discovery, and promote trust fast.",
   },
   {
-    value: "agency_clients",
-    label: "Agency",
-    eyebrow: "Client-led",
-    description: "Run repeatable content operations across multiple brands and offers.",
+    value: "salon",
+    label: "Salon",
+    description: "Promote services, offers, and local appointment demand.",
+  },
+  {
+    value: "fitness",
+    label: "Fitness",
+    description: "Drive memberships, classes, and local campaign momentum.",
+  },
+  {
+    value: "other",
+    label: "Other",
+    description: "Use business mode for another local or service business.",
   },
 ];
 
@@ -94,6 +127,53 @@ const redirectTarget = computed(() => {
 const selectedUseCaseDetails = computed(
   () => useCaseOptions.find((option) => option.value === selectedUseCase.value) ?? useCaseOptions[0],
 );
+const selectedBusinessTypeDetails = computed(
+  () => businessTypeOptions.find((option) => option.value === selectedBusinessType.value) ?? businessTypeOptions[0],
+);
+const isBusinessUseCase = computed(() => selectedUseCase.value === "business_marketing");
+const cardTitle = computed(() =>
+  isBusinessUseCase.value ? "Let’s help you get more customers" : "Choose how this workspace should operate",
+);
+const cardDescription = computed(() =>
+  isBusinessUseCase.value
+    ? "Pick the growth mode first, tell us what kind of business this is, and add the few details the system needs to generate local campaigns."
+    : "Pick the operating mode, name the workspace, and refine the rest later without landing in an empty app.",
+);
+const workspaceNameLabel = computed(() => {
+  if (selectedUseCase.value === "agency_clients") {
+    return "Agency name";
+  }
+
+  if (selectedUseCase.value === "personal_brand") {
+    return "Brand name";
+  }
+
+  return "Business name";
+});
+const workspaceNamePlaceholder = computed(() => {
+  if (selectedUseCase.value === "agency_clients") {
+    return "North Star Creative";
+  }
+
+  if (selectedUseCase.value === "personal_brand") {
+    return "Jenny Chopra";
+  }
+
+  return "Daycare Spots";
+});
+const selectedSetupSummary = computed(() => {
+  if (!isBusinessUseCase.value) {
+    return selectedUseCaseDetails.value.description;
+  }
+
+  return [
+    selectedBusinessTypeDetails.value.label,
+    businessLocation.value.trim() ? `Local focus: ${businessLocation.value.trim()}` : "",
+    "Business mode will start from customer outcomes instead of creator-style ideas.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+});
 
 function resolveToneForUseCase(value: OnboardingUseCase): BrandTone {
   if (value === "agency_clients") {
@@ -107,23 +187,38 @@ function resolveToneForUseCase(value: OnboardingUseCase): BrandTone {
   return "professional";
 }
 
-function resolveIndustryForUseCase(value: OnboardingUseCase): string {
-  if (value === "agency_clients") {
+function resolveIndustryForWorkspace(
+  useCase: OnboardingUseCase,
+  businessType: OnboardingBusinessType,
+): string {
+  if (useCase === "agency_clients") {
     return "Agency";
   }
 
-  if (value === "personal_brand") {
+  if (useCase === "personal_brand") {
     return "Personal Brand";
   }
 
-  return "Startup";
+  if (businessType === "daycare") {
+    return "Daycare";
+  }
+
+  if (businessType === "salon") {
+    return "Salon";
+  }
+
+  if (businessType === "fitness") {
+    return "Fitness";
+  }
+
+  return "Other";
 }
 
 watch(
-  suggestedWorkspaceName,
-  (nextValue) => {
+  [suggestedWorkspaceName, selectedUseCase],
+  ([nextValue, nextUseCase]) => {
     if (!hasTouchedWorkspaceName.value && !workspaceName.value.trim()) {
-      workspaceName.value = nextValue;
+      workspaceName.value = nextUseCase === "business_marketing" ? "" : nextValue;
     }
   },
   { immediate: true },
@@ -131,7 +226,12 @@ watch(
 
 async function handleCreateWorkspace(): Promise<void> {
   if (!workspaceName.value.trim()) {
-    errorMessage.value = "Workspace name is required.";
+    errorMessage.value = `${workspaceNameLabel.value} is required.`;
+    return;
+  }
+
+  if (isBusinessUseCase.value && !businessLocation.value.trim()) {
+    errorMessage.value = "Location is required for business mode.";
     return;
   }
 
@@ -141,9 +241,12 @@ async function handleCreateWorkspace(): Promise<void> {
   try {
     const response = await requestOnboardingWorkspace({
       name: workspaceName.value.trim(),
+      useCase: selectedUseCase.value,
+      businessType: isBusinessUseCase.value ? selectedBusinessType.value : undefined,
       websiteUrl: websiteUrl.value.trim() || undefined,
+      location: isBusinessUseCase.value ? businessLocation.value.trim() : undefined,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-      industry: resolveIndustryForUseCase(selectedUseCase.value),
+      industry: resolveIndustryForWorkspace(selectedUseCase.value, selectedBusinessType.value),
       tone: resolveToneForUseCase(selectedUseCase.value),
     });
 
@@ -164,22 +267,22 @@ async function handleCreateWorkspace(): Promise<void> {
       <p class="workspace-onboarding-eyebrow">/onboarding/workspace</p>
       <h1>Create your workspace</h1>
       <p class="workspace-onboarding-copy">
-        Workspaces keep your content, assets, publishing, and analytics organized. Create the first
-        one now so the rest of the app has a clear home.
+        This step decides how the system should think. Pick the growth mode first, then give the
+        workspace just enough context to generate the right kind of content.
       </p>
 
       <div class="workspace-onboarding-benefits">
         <article class="workspace-benefit-card">
-          <strong>Content stays scoped</strong>
-          <p>Posts, hooks, assets, and brand context all stay attached to the right business.</p>
+          <strong>Mode drives behavior</strong>
+          <p>Business mode starts from customers and offers. Creator mode starts from voice and ideas.</p>
         </article>
         <article class="workspace-benefit-card">
-          <strong>Analytics stay believable</strong>
-          <p>Performance and publishing signals stop mixing across brands or experiments.</p>
+          <strong>Brand context stays scoped</strong>
+          <p>Posts, assets, publishing, and analytics stay attached to the right business or brand.</p>
         </article>
         <article class="workspace-benefit-card">
-          <strong>Setup friction drops later</strong>
-          <p>Your workspace becomes the default home for generation, repurpose, and scheduling.</p>
+          <strong>Local context becomes usable</strong>
+          <p>Website and location make local campaigns, offers, and trust-driven visuals much sharper.</p>
         </article>
       </div>
     </section>
@@ -187,11 +290,8 @@ async function handleCreateWorkspace(): Promise<void> {
     <section class="workspace-onboarding-card">
       <div class="workspace-onboarding-card-copy">
         <p class="workspace-onboarding-section-kicker">Step 1</p>
-        <h2>Start with the business context</h2>
-        <p>
-          Pick what you’re building content for, then name the workspace. You can refine the rest
-          later without hitting an empty app first.
-        </p>
+        <h2>{{ cardTitle }}</h2>
+        <p>{{ cardDescription }}</p>
       </div>
 
       <form class="workspace-onboarding-form" @submit.prevent="void handleCreateWorkspace()">
@@ -210,20 +310,40 @@ async function handleCreateWorkspace(): Promise<void> {
           </button>
         </div>
 
+        <div v-if="isBusinessUseCase" class="workspace-business-type-section">
+          <div class="workspace-business-type-copy">
+            <p class="workspace-onboarding-section-kicker">Step 2</p>
+            <h3>What kind of business is this?</h3>
+          </div>
+          <div class="workspace-business-types">
+            <button
+              v-for="option in businessTypeOptions"
+              :key="option.value"
+              type="button"
+              class="workspace-use-case compact"
+              :class="{ active: option.value === selectedBusinessType }"
+              @click="selectedBusinessType = option.value"
+            >
+              <strong>{{ option.label }}</strong>
+              <span>{{ option.description }}</span>
+            </button>
+          </div>
+        </div>
+
         <div class="workspace-onboarding-fields">
           <label class="workspace-onboarding-field">
-            <span>Workspace name</span>
+            <span>{{ workspaceNameLabel }}</span>
             <input
               v-model="workspaceName"
               type="text"
               autocomplete="organization"
-              placeholder="Abhishek's Workspace"
+              :placeholder="workspaceNamePlaceholder"
               @input="hasTouchedWorkspaceName = true"
             />
           </label>
 
           <label class="workspace-onboarding-field">
-            <span>Website URL <small>Optional</small></span>
+            <span>Website <small>Optional</small></span>
             <input
               v-model="websiteUrl"
               type="url"
@@ -231,12 +351,22 @@ async function handleCreateWorkspace(): Promise<void> {
               placeholder="https://example.com"
             />
           </label>
+
+          <label v-if="isBusinessUseCase" class="workspace-onboarding-field">
+            <span>Location</span>
+            <input
+              v-model="businessLocation"
+              type="text"
+              autocomplete="address-level1"
+              placeholder="Dallas, TX"
+            />
+          </label>
         </div>
 
         <div class="workspace-onboarding-preview">
           <p class="workspace-onboarding-section-kicker">Selected setup</p>
           <strong>{{ selectedUseCaseDetails.label }}</strong>
-          <span>{{ selectedUseCaseDetails.description }}</span>
+          <span>{{ selectedSetupSummary }}</span>
         </div>
 
         <p v-if="errorMessage" class="workspace-onboarding-error">{{ errorMessage }}</p>
@@ -349,6 +479,27 @@ async function handleCreateWorkspace(): Promise<void> {
   gap: 12px;
 }
 
+.workspace-business-type-section {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-business-type-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.workspace-business-type-copy h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.workspace-business-types {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .workspace-use-case {
   display: grid;
   gap: 8px;
@@ -373,6 +524,10 @@ async function handleCreateWorkspace(): Promise<void> {
   border-color: color-mix(in srgb, var(--fc-accent) 32%, var(--fc-border));
   background: color-mix(in srgb, var(--fc-surface) 82%, rgba(255, 208, 167, 0.34));
   box-shadow: 0 18px 34px rgba(78, 50, 24, 0.08);
+}
+
+.workspace-use-case.compact {
+  min-height: 124px;
 }
 
 .workspace-use-case small {
@@ -467,6 +622,10 @@ async function handleCreateWorkspace(): Promise<void> {
   }
 
   .workspace-onboarding-use-cases {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-business-types {
     grid-template-columns: 1fr;
   }
 

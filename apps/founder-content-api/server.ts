@@ -1,5 +1,6 @@
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { brandKitRoute } from "./src/routes/brandKit.ts";
+import { businessGenerationRoute } from "./src/routes/businessGeneration.ts";
 import { businessesRoute } from "./src/routes/businesses.ts";
 import { brandProfileRoute } from "./src/routes/brandProfile.ts";
 import { captureRoute } from "./src/routes/capture.ts";
@@ -124,6 +125,7 @@ export function createServerApp(): Express {
   app.use(generateIdeasRoute);
   app.use(generateHookRoute);
   app.use(generatePostRoute);
+  app.use(businessGenerationRoute);
   app.use(transcribeRoute);
   app.use(generateVisualRoute);
   app.use(growthRoute);

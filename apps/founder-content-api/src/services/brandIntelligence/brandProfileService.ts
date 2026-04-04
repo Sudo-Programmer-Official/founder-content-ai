@@ -15,6 +15,7 @@ import type {
   ContentAsset,
   OnboardingChannel,
   OnboardingGoal,
+  WorkspaceMode,
   SourceItemAnalysis,
   TrendSignal,
   UpdateBrandProfileRequest,
@@ -33,7 +34,9 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 interface BrandProfileRow extends QueryResultRow {
   id: string;
   business_id: string;
+  workspace_mode: WorkspaceMode | null;
   industry: string | null;
+  location: string | null;
   preferred_tone: string | null;
   target_channels: unknown;
   goals: unknown;
@@ -339,7 +342,9 @@ function mapBrandProfile(row: BrandProfileRow): BrandProfile {
   return {
     id: row.id,
     businessId: row.business_id,
+    workspaceMode: row.workspace_mode ?? "founder",
     industry: row.industry ?? undefined,
+    location: row.location ?? undefined,
     preferredTone: (row.preferred_tone as BrandProfile["preferredTone"]) ?? undefined,
     targetChannels: parseStringArray<OnboardingChannel>(row.target_channels),
     goals: parseStringArray<OnboardingGoal>(row.goals),
@@ -389,7 +394,9 @@ async function loadBrandProfileRecord(businessId: string): Promise<BrandProfile 
       select
         id,
         business_id,
+        workspace_mode,
         industry,
+        location,
         preferred_tone,
         target_channels,
         goals,
@@ -900,6 +907,8 @@ async function loadBrandSignals(businessId: string): Promise<ExtractedBrandSigna
 async function upsertBrandProfile(input: {
   businessId: string;
   existingProfile: BrandProfile | null;
+  workspaceMode?: WorkspaceMode;
+  location?: string;
   linkedinUrl?: string;
   instagramUrl?: string;
   facebookUrl?: string;
@@ -915,7 +924,9 @@ async function upsertBrandProfile(input: {
     `
       insert into brand_profiles (
         business_id,
+        workspace_mode,
         industry,
+        location,
         preferred_tone,
         target_channels,
         goals,
@@ -933,22 +944,26 @@ async function upsertBrandProfile(input: {
         $1,
         $2,
         $3,
-        $4::jsonb,
-        $5::jsonb,
-        $6,
-        $7,
+        $4,
+        $5,
+        $6::jsonb,
+        $7::jsonb,
         $8,
         $9,
         $10,
         $11,
         $12,
-        $13::jsonb,
-        $14::jsonb,
-        $15::jsonb
+        $13,
+        $14,
+        $15::jsonb,
+        $16::jsonb,
+        $17::jsonb
       )
       on conflict (business_id)
       do update set
+        workspace_mode = excluded.workspace_mode,
         industry = excluded.industry,
+        location = excluded.location,
         preferred_tone = excluded.preferred_tone,
         target_channels = excluded.target_channels,
         goals = excluded.goals,
@@ -966,7 +981,9 @@ async function upsertBrandProfile(input: {
       returning
         id,
         business_id,
+        workspace_mode,
         industry,
+        location,
         preferred_tone,
         target_channels,
         goals,
@@ -985,7 +1002,9 @@ async function upsertBrandProfile(input: {
     `,
     [
       input.businessId,
+      input.workspaceMode ?? input.existingProfile?.workspaceMode ?? "founder",
       input.existingProfile?.industry ?? null,
+      input.location ?? input.existingProfile?.location ?? null,
       input.existingProfile?.preferredTone ?? null,
       JSON.stringify(input.existingProfile?.targetChannels ?? []),
       JSON.stringify(input.existingProfile?.goals ?? []),
@@ -998,7 +1017,11 @@ async function upsertBrandProfile(input: {
       input.visualStyle ?? input.existingProfile?.visualStyle ?? null,
       JSON.stringify(clampList(input.topics, input.existingProfile?.topics ?? [])),
       JSON.stringify(clampList(input.patterns, input.existingProfile?.patterns ?? [])),
-      JSON.stringify(dedupeCompetitorReferences(input.selectedCompetitors ?? input.existingProfile?.selectedCompetitors)),
+      JSON.stringify(
+        dedupeCompetitorReferences(
+          input.selectedCompetitors ?? input.existingProfile?.selectedCompetitors,
+        ),
+      ),
     ],
   );
 
@@ -1038,6 +1061,7 @@ async function ensureBrandProfileFromSignals(businessId: string): Promise<{
   const brandProfile = await upsertBrandProfile({
     businessId,
     existingProfile,
+    workspaceMode: existingProfile?.workspaceMode,
     tone: aiProfile?.tone ?? heuristicProfile.tone,
     writingStyle: aiProfile?.writingStyle ?? heuristicProfile.writingStyle,
     visualStyle: aiProfile?.visualStyle ?? heuristicProfile.visualStyle,
@@ -1125,6 +1149,14 @@ export async function updateBrandProfile(
   const updatedProfile = await upsertBrandProfile({
     businessId: input.businessId,
     existingProfile: baseResult.brandProfile,
+    workspaceMode:
+      input.workspaceMode !== undefined
+        ? input.workspaceMode
+        : baseResult.brandProfile?.workspaceMode,
+    location:
+      input.location !== undefined
+        ? normalizeOptionalString(input.location)
+        : baseResult.brandProfile?.location,
     linkedinUrl:
       input.linkedinUrl !== undefined
         ? normalizeOptionalPublicUrl(input.linkedinUrl)

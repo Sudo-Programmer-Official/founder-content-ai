@@ -1,4 +1,5 @@
 import type { ContentPovProfile, ContentQualityScore } from "./analytics.ts";
+import type { CreatorGenerationIntent } from "./generation-intent.ts";
 import type { RepurposeStrategy } from "./repurpose.ts";
 
 export interface IdeaGenerationRequest {
@@ -20,6 +21,7 @@ export interface StructuredContentGenerationRequest {
   rawInputText: string;
   tone?: string;
   strategy?: RepurposeStrategy;
+  generationIntent?: CreatorGenerationIntent;
   businessId?: string;
 }
 
@@ -44,6 +46,7 @@ export interface LinkedInPostGenerationRequest {
   topic: string;
   tone?: string;
   strategy?: RepurposeStrategy;
+  generationIntent?: CreatorGenerationIntent;
   length: string;
   selectedHook?: string;
   businessId?: string;

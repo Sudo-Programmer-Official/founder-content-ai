@@ -352,12 +352,14 @@ export async function repurposeContent(
           rawInputText: sourceText,
           tone,
           strategy,
+          generationIntent: input.generationIntent,
           businessId,
         })
       : await generateCapturedContentWithAI({
           rawInputText: sourceText,
           tone,
           strategy,
+          generationIntent: input.generationIntent,
           businessId,
         });
 
@@ -365,6 +367,7 @@ export async function repurposeContent(
     topic: structuredContent.idea.title,
     tone,
     strategy,
+    generationIntent: input.generationIntent,
     length: "medium",
     selectedHook: structuredContent.hooks[0],
     businessId,
@@ -382,6 +385,7 @@ export async function repurposeContent(
     inputType,
     intent,
     strategy,
+    generationIntent: input.generationIntent,
     sourceText,
     idea: structuredContent.idea,
     hooks: structuredContent.hooks.slice(0, 5),

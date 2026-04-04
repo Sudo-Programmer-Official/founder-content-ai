@@ -1,6 +1,8 @@
 import type { ContentAsset, ContentPovProfile, ContentQualityScore } from "./analytics.ts";
+import type { BusinessContentOutput, WorkspaceMode } from "./business-generation.ts";
 import type { ContentNarrative } from "./content-narrative.ts";
 import type { IdeaOption, LinkedInPostVariation } from "./founder-content.ts";
+import type { CreatorGenerationIntent, GenerationIntent } from "./generation-intent.ts";
 import type { CarouselNarrativeType, CarouselSlideContent } from "./visual-generation.ts";
 
 export type RepurposeInputType = "text" | "voice" | "url";
@@ -65,6 +67,7 @@ export interface RepurposeContentRequest {
   inputType: RepurposeInputType;
   intent?: RepurposeIntent;
   strategy?: RepurposeStrategy;
+  generationIntent?: CreatorGenerationIntent;
   assetId?: string;
   selectedSuggestion?: RepurposeSuggestionSelection;
   text?: string;
@@ -79,6 +82,8 @@ export interface RepurposeContentResponse {
   inputType: RepurposeInputType;
   intent: RepurposeIntent;
   strategy: RepurposeStrategy;
+  generationIntent?: GenerationIntent;
+  workspaceMode?: WorkspaceMode;
   sourceText: string;
   idea: IdeaOption;
   hooks: string[];
@@ -90,5 +95,6 @@ export interface RepurposeContentResponse {
   carouselDraft: CarouselDraft;
   quickSignals: RepurposeQuickSignals;
   captionFooterCredit: string;
+  businessOutput?: BusinessContentOutput;
   asset?: ContentAsset;
 }

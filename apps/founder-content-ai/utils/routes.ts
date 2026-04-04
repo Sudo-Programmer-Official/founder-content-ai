@@ -3,6 +3,7 @@ export const appRoutes = {
   appAssets: "/app/assets",
   appBilling: "/app/billing",
   appEmail: "/app/email",
+  appEmailNew: "/app/email/new",
   appGenerate: "/app/create",
   appGrowth: "/app/growth",
   appHistory: "/app/history",

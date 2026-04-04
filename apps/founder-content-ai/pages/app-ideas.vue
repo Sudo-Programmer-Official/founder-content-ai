@@ -801,7 +801,7 @@ function openEmailForAsset(assetId: string): void {
   const asset = flatPipelineAssets.value.find((entry) => entry.id === assetId);
 
   void router.push({
-    path: appRoutes.appEmail,
+    path: appRoutes.appEmailNew,
     query: {
       draftId: assetId,
       prefill: asset?.textContent ?? "",

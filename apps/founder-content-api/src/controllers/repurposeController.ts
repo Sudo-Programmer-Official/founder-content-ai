@@ -25,6 +25,7 @@ export async function repurposeContentController(
       {
         inputType: request.body?.inputType ?? "text",
         intent: request.body?.intent,
+        generationIntent: request.body?.generationIntent,
         assetId: request.body?.assetId,
         selectedSuggestion: request.body?.selectedSuggestion,
         text: request.body?.text,

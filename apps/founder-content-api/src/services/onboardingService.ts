@@ -2,10 +2,12 @@ import type { QueryResultRow } from "pg";
 import type {
   BrandCompetitorReference,
   BrandProfile,
+  WorkspaceMode,
   BrandTone,
   BusinessMembership,
   CompleteOnboardingRequest,
   CompleteOnboardingResponse,
+  OnboardingBusinessType,
   CreateOnboardingWorkspaceRequest,
   CreateOnboardingWorkspaceResponse,
   OnboardingChannel,
@@ -50,7 +52,9 @@ interface OnboardingProfileRow extends QueryResultRow {
 interface BrandProfileRow extends QueryResultRow {
   id: string;
   business_id: string;
+  workspace_mode: WorkspaceMode | null;
   industry: string | null;
+  location: string | null;
   preferred_tone: BrandTone | null;
   target_channels: unknown;
   goals: unknown;
@@ -155,7 +159,9 @@ function mapBrandProfile(row: BrandProfileRow): BrandProfile {
   return {
     id: row.id,
     businessId: row.business_id,
+    workspaceMode: row.workspace_mode ?? "founder",
     industry: row.industry ?? undefined,
+    location: row.location ?? undefined,
     preferredTone: row.preferred_tone ?? undefined,
     targetChannels: parseStringArray<OnboardingChannel>(row.target_channels),
     goals: parseStringArray<OnboardingGoal>(row.goals),
@@ -228,6 +234,49 @@ function defaultBrandPatterns(preferredTone: BrandTone | undefined): string[] {
   }
 
   return ["hook -> insight -> CTA", "framework -> takeaway -> CTA"];
+}
+
+function resolveIndustryFromBusinessType(
+  businessType: OnboardingBusinessType | undefined,
+  fallbackIndustry: string | undefined,
+): string | undefined {
+  if (businessType === "daycare") {
+    return "Daycare";
+  }
+
+  if (businessType === "salon") {
+    return "Salon";
+  }
+
+  if (businessType === "fitness") {
+    return "Fitness";
+  }
+
+  if (businessType === "other") {
+    return fallbackIndustry?.trim() || "Other";
+  }
+
+  return fallbackIndustry?.trim() || undefined;
+}
+
+function defaultChannelsForUseCase(useCase: OnboardingUseCase | undefined): OnboardingChannel[] {
+  if (useCase === "business_marketing") {
+    return ["instagram", "facebook", "email"];
+  }
+
+  if (useCase === "agency_clients") {
+    return ["linkedin", "instagram"];
+  }
+
+  return ["linkedin"];
+}
+
+function defaultGoalForUseCase(useCase: OnboardingUseCase | undefined): OnboardingGoal {
+  if (useCase === "business_marketing" || useCase === "agency_clients") {
+    return "get_clients";
+  }
+
+  return "build_audience";
 }
 
 function buildDefaultOnboardingProfile(userId: string): OnboardingProfile {
@@ -343,7 +392,9 @@ async function loadBrandProfile(businessId: string): Promise<BrandProfile | null
       select
         id,
         business_id,
+        workspace_mode,
         industry,
+        location,
         preferred_tone,
         target_channels,
         goals,
@@ -452,7 +503,9 @@ async function persistOnboardingProfile(profile: OnboardingProfile): Promise<Onb
 
 async function persistBrandProfile(input: {
   businessId: string;
+  workspaceMode?: WorkspaceMode;
   industry?: string;
+  location?: string;
   preferredTone?: BrandTone;
   targetChannels: OnboardingChannel[];
   goals: OnboardingGoal[];
@@ -464,7 +517,9 @@ async function persistBrandProfile(input: {
     `
       insert into brand_profiles (
         business_id,
+        workspace_mode,
         industry,
+        location,
         preferred_tone,
         target_channels,
         goals,
@@ -477,17 +532,21 @@ async function persistBrandProfile(input: {
         $1,
         $2,
         $3,
-        $4::jsonb,
-        $5::jsonb,
-        $6,
-        $7,
+        $4,
+        $5,
+        $6::jsonb,
+        $7::jsonb,
         $8,
-        $9::jsonb,
-        $10::jsonb
+        $9,
+        $10,
+        $11::jsonb,
+        $12::jsonb
       )
       on conflict (business_id)
       do update set
+        workspace_mode = excluded.workspace_mode,
         industry = excluded.industry,
+        location = excluded.location,
         preferred_tone = excluded.preferred_tone,
         target_channels = excluded.target_channels,
         goals = excluded.goals,
@@ -506,7 +565,9 @@ async function persistBrandProfile(input: {
       returning
         id,
         business_id,
+        workspace_mode,
         industry,
+        location,
         preferred_tone,
         target_channels,
         goals,
@@ -521,7 +582,9 @@ async function persistBrandProfile(input: {
     `,
     [
       input.businessId,
+      input.workspaceMode ?? "founder",
       input.industry?.trim() || null,
+      input.location?.trim() || null,
       input.preferredTone ?? null,
       JSON.stringify(uniqueValues(input.targetChannels)),
       JSON.stringify(uniqueValues(input.goals)),
@@ -651,9 +714,12 @@ export async function saveOnboardingPreferences(
   );
 
   if (onboarding.businessId) {
+    const existingBrandProfile = await loadBrandProfile(onboarding.businessId);
     await persistBrandProfile({
       businessId: onboarding.businessId,
-      industry: (await loadBrandProfile(onboarding.businessId))?.industry,
+      workspaceMode: onboarding.useCase === "business_marketing" ? "business" : "founder",
+      industry: existingBrandProfile?.industry,
+      location: existingBrandProfile?.location,
       preferredTone: onboarding.preferredTone,
       targetChannels: onboarding.targetChannels,
       goals: onboarding.goals,
@@ -676,12 +742,22 @@ export async function createOnboardingWorkspace(
   const session = await getAppSession(principal);
   const userId = session.user.id;
   const existing = await loadOnboardingProfile(userId);
+  const useCase = input.useCase ?? existing?.useCase;
+  const targetChannels =
+    existing?.targetChannels.length && existing.targetChannels.length > 0
+      ? existing.targetChannels
+      : defaultChannelsForUseCase(useCase);
+  const goals =
+    existing?.goals.length && existing.goals.length > 0
+      ? existing.goals
+      : [defaultGoalForUseCase(useCase)];
+  const industry = resolveIndustryFromBusinessType(input.businessType, input.industry);
   const createdBusiness = await createBusinessForUser(principal, {
     name,
     brandName: name,
     websiteUrl: input.websiteUrl?.trim(),
     timezone: input.timezone?.trim(),
-    niche: input.industry?.trim(),
+    niche: industry,
   });
 
   const onboarding = await persistOnboardingProfile(
@@ -690,13 +766,18 @@ export async function createOnboardingWorkspace(
       businessId: createdBusiness.business.id,
       status: existing?.status === "completed" ? "completed" : "in_progress",
       currentStep: existing?.status === "completed" ? "completed" : "generate",
+      useCase,
+      targetChannels,
+      goals,
       preferredTone: input.tone ?? existing?.preferredTone,
     }),
   );
 
   const brandProfile = await persistBrandProfile({
     businessId: createdBusiness.business.id,
-    industry: input.industry?.trim(),
+    workspaceMode: onboarding.useCase === "business_marketing" ? "business" : "founder",
+    industry,
+    location: input.location?.trim(),
     preferredTone: input.tone ?? onboarding.preferredTone,
     targetChannels: onboarding.targetChannels,
     goals: onboarding.goals,

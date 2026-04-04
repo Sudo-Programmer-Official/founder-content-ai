@@ -5,6 +5,7 @@ import VoiceRecorder from "../components/VoiceRecorder.vue";
 import type {
   BrandTone,
   ContentIngestionItem,
+  OnboardingBusinessType,
   OnboardingChannel,
   OnboardingGoal,
   OnboardingProfile,
@@ -42,19 +43,42 @@ const generationStatusMessages = [
 
 const useCaseOptions: Array<{ value: OnboardingUseCase; label: string; description: string }> = [
   {
-    value: "personal_brand",
-    label: "Personal Brand",
-    description: "Grow your reputation with founder-led content.",
+    value: "business_marketing",
+    label: "Grow my business",
+    description: "Generate customer-facing campaigns, offers, and local marketing.",
   },
   {
-    value: "business_marketing",
-    label: "Business Marketing",
-    description: "Keep the company visible without waiting on a content team.",
+    value: "personal_brand",
+    label: "Build my personal brand",
+    description: "Grow your reputation with creator-led content.",
   },
   {
     value: "agency_clients",
-    label: "Agency / Clients",
-    description: "Create repeatable content workflows for multiple brands.",
+    label: "Run content for clients",
+    description: "Create repeatable workflows for multiple brands.",
+  },
+];
+
+const businessTypeOptions: Array<{ value: OnboardingBusinessType; label: string; description: string }> = [
+  {
+    value: "daycare",
+    label: "Daycare",
+    description: "Fill open spots and drive local trust fast.",
+  },
+  {
+    value: "salon",
+    label: "Salon",
+    description: "Promote services, stylists, and appointment demand.",
+  },
+  {
+    value: "fitness",
+    label: "Fitness",
+    description: "Drive memberships, classes, and local awareness.",
+  },
+  {
+    value: "other",
+    label: "Other",
+    description: "Use business mode for another local or service business.",
   },
 ];
 
@@ -99,14 +123,16 @@ const copyFeedback = ref("");
 const hasGeneratedDuringFlow = ref(false);
 const hasCopiedDuringFlow = ref(false);
 
-const selectedUseCase = ref<OnboardingUseCase>("personal_brand");
-const selectedChannels = ref<OnboardingChannel[]>(["linkedin"]);
-const selectedGoal = ref<OnboardingGoal>("build_audience");
+const selectedUseCase = ref<OnboardingUseCase>("business_marketing");
+const selectedChannels = ref<OnboardingChannel[]>(["instagram", "facebook", "email"]);
+const selectedGoal = ref<OnboardingGoal>("get_clients");
 const preferredTone = ref<BrandTone>("professional");
 
 const workspaceName = ref("");
+const selectedBusinessType = ref<OnboardingBusinessType>("daycare");
 const workspaceIndustry = ref("SaaS");
 const websiteUrl = ref("");
+const workspaceLocation = ref("");
 const timezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
 
 const rawInput = ref("");
@@ -156,6 +182,26 @@ const currentStepNumber = computed(() => {
 
 const progressWidth = computed(() => `${(currentStepNumber.value / totalSteps) * 100}%`);
 const businessId = computed(() => onboarding.value?.businessId);
+const isBusinessUseCase = computed(() => selectedUseCase.value === "business_marketing");
+const intentDefaultNote = computed(() =>
+  isBusinessUseCase.value
+    ? "Business mode starts with customers, offers, and campaign outcomes. You can still refine channels and tone later."
+    : "Founder and client modes keep the same workspace foundation, but generation defaults change based on what you are trying to grow.",
+);
+const workspaceHeading = computed(() =>
+  isBusinessUseCase.value ? "Let’s help you get more customers." : "Let’s set up your workspace.",
+);
+const workspaceNameLabel = computed(() => {
+  if (selectedUseCase.value === "agency_clients") {
+    return "Agency name";
+  }
+
+  if (selectedUseCase.value === "personal_brand") {
+    return "Brand name";
+  }
+
+  return "Business name";
+});
 const activationChannelOptions = computed(() => {
   const channels = selectedChannels.value.length > 0 ? selectedChannels.value : defaultChannels();
   return uniqueChannels(channels);
@@ -181,8 +227,76 @@ function uniqueChannels(values: OnboardingChannel[]): OnboardingChannel[] {
   return [...new Set(values)];
 }
 
-function defaultChannels(): OnboardingChannel[] {
+function defaultChannels(useCase: OnboardingUseCase = selectedUseCase.value): OnboardingChannel[] {
+  if (useCase === "business_marketing") {
+    return ["instagram", "facebook", "email"];
+  }
+
+  if (useCase === "agency_clients") {
+    return ["linkedin", "instagram"];
+  }
+
   return ["linkedin"];
+}
+
+function inferBusinessTypeFromIndustry(value: string | undefined): OnboardingBusinessType {
+  const normalized = value?.trim().toLowerCase() ?? "";
+
+  if (normalized.includes("daycare") || normalized.includes("childcare") || normalized.includes("preschool")) {
+    return "daycare";
+  }
+
+  if (normalized.includes("salon") || normalized.includes("beauty")) {
+    return "salon";
+  }
+
+  if (normalized.includes("fitness") || normalized.includes("gym")) {
+    return "fitness";
+  }
+
+  return "other";
+}
+
+function resolveIndustryFromWorkspaceState(): string {
+  if (!isBusinessUseCase.value) {
+    return workspaceIndustry.value;
+  }
+
+  if (selectedBusinessType.value === "daycare") {
+    return "Daycare";
+  }
+
+  if (selectedBusinessType.value === "salon") {
+    return "Salon";
+  }
+
+  if (selectedBusinessType.value === "fitness") {
+    return "Fitness";
+  }
+
+  return "Other";
+}
+
+function selectUseCase(value: OnboardingUseCase): void {
+  selectedUseCase.value = value;
+
+  if (value === "business_marketing") {
+    selectedChannels.value = defaultChannels(value);
+    selectedGoal.value = "get_clients";
+    preferredTone.value = "professional";
+    return;
+  }
+
+  if (value === "agency_clients") {
+    selectedChannels.value = defaultChannels(value);
+    selectedGoal.value = "get_clients";
+    preferredTone.value = "bold";
+    return;
+  }
+
+  selectedChannels.value = defaultChannels(value);
+  selectedGoal.value = "build_audience";
+  preferredTone.value = "friendly";
 }
 
 function toActiveStep(step: OnboardingProfile["currentStep"]): ActiveOnboardingStep {
@@ -208,16 +322,19 @@ function stopGenerationSequence() {
 
 function applyStatus(status: OnboardingStatusResponse) {
   onboarding.value = status.onboarding;
-  selectedUseCase.value = status.onboarding.useCase ?? "personal_brand";
+  const resolvedUseCase = status.onboarding.useCase ?? "business_marketing";
+  selectedUseCase.value = resolvedUseCase;
   selectedChannels.value = uniqueChannels(
-    status.onboarding.targetChannels.length > 0 ? status.onboarding.targetChannels : defaultChannels(),
+    status.onboarding.targetChannels.length > 0 ? status.onboarding.targetChannels : defaultChannels(resolvedUseCase),
   );
-  selectedGoal.value = status.onboarding.goals[0] ?? "build_audience";
+  selectedGoal.value = status.onboarding.goals[0] ?? (resolvedUseCase === "business_marketing" ? "get_clients" : "build_audience");
   preferredTone.value =
     status.brandProfile?.preferredTone ?? status.onboarding.preferredTone ?? "professional";
   workspaceName.value = status.business?.name ?? workspaceName.value;
+  selectedBusinessType.value = inferBusinessTypeFromIndustry(status.brandProfile?.industry);
   workspaceIndustry.value = status.brandProfile?.industry ?? workspaceIndustry.value;
   websiteUrl.value = status.business?.websiteUrl ?? websiteUrl.value;
+  workspaceLocation.value = status.brandProfile?.location ?? workspaceLocation.value;
   blogSourceUrl.value = blogSourceUrl.value || status.business?.websiteUrl || "";
   timezone.value = status.business?.timezone ?? timezone.value;
 
@@ -348,15 +465,28 @@ async function saveIntent() {
 }
 
 async function createWorkspace() {
+  if (!workspaceName.value.trim()) {
+    errorMessage.value = `${workspaceNameLabel.value} is required.`;
+    return;
+  }
+
+  if (isBusinessUseCase.value && !workspaceLocation.value.trim()) {
+    errorMessage.value = "Location is required for business mode.";
+    return;
+  }
+
   isCreatingWorkspace.value = true;
   errorMessage.value = "";
 
   try {
     const response = await requestOnboardingWorkspace({
-      name: workspaceName.value,
-      industry: workspaceIndustry.value,
+      name: workspaceName.value.trim(),
+      useCase: selectedUseCase.value,
+      businessType: isBusinessUseCase.value ? selectedBusinessType.value : undefined,
+      industry: resolveIndustryFromWorkspaceState(),
       tone: preferredTone.value,
       websiteUrl: websiteUrl.value || undefined,
+      location: isBusinessUseCase.value ? workspaceLocation.value.trim() || undefined : undefined,
       timezone: timezone.value,
     });
 
@@ -636,27 +766,27 @@ onBeforeUnmount(() => {
       <section v-if="currentStep === 'intent'" class="onboarding-card onboarding-grid">
         <div class="intent-copy">
           <p class="panel-label">Welcome</p>
-          <h2>Create your first post in 30 seconds.</h2>
+          <h2>Tell us what you want to grow.</h2>
           <p>
-            The goal here is not setup for setup’s sake. It is to understand what you want to grow,
-            then move you into the first content win immediately.
+            This is the mode switch for the whole product. Pick the outcome first, and the workspace
+            will start with the right generation behavior instead of a generic content flow.
           </p>
           <div class="intent-note">
-            <strong>Fast defaults</strong>
-            <span>LinkedIn is preselected. Professional tone is the default. Everything else can change later.</span>
+            <strong>Mode-aware defaults</strong>
+            <span>{{ intentDefaultNote }}</span>
           </div>
         </div>
 
         <form class="onboarding-form" @submit.prevent="saveIntent">
           <fieldset>
-            <legend>What are you using this for?</legend>
+            <legend>What are you trying to do?</legend>
             <div class="choice-grid">
               <button
                 v-for="option in useCaseOptions"
                 :key="option.value"
                 :class="['choice-card', { selected: selectedUseCase === option.value }]"
                 type="button"
-                @click="selectedUseCase = option.value"
+                @click="selectUseCase(option.value)"
               >
                 <strong>{{ option.label }}</strong>
                 <span>{{ option.description }}</span>
@@ -723,17 +853,37 @@ onBeforeUnmount(() => {
         <div class="section-header">
           <div>
             <p class="panel-label">Workspace</p>
-            <h2>Let’s set up your workspace.</h2>
+            <h2>{{ workspaceHeading }}</h2>
           </div>
         </div>
 
         <form class="onboarding-form workspace-grid" @submit.prevent="createWorkspace">
           <label>
-            <span>Business name</span>
-            <input v-model="workspaceName" type="text" placeholder="Acme AI" />
+            <span>{{ workspaceNameLabel }}</span>
+            <input
+              v-model="workspaceName"
+              type="text"
+              :placeholder="isBusinessUseCase ? 'Daycare Spots' : 'Jenny Chopra'"
+            />
           </label>
 
-          <label>
+          <fieldset v-if="isBusinessUseCase" class="workspace-choice-field">
+            <legend>What kind of business is this?</legend>
+            <div class="choice-grid compact-grid">
+              <button
+                v-for="option in businessTypeOptions"
+                :key="option.value"
+                :class="['choice-card', { selected: selectedBusinessType === option.value }]"
+                type="button"
+                @click="selectedBusinessType = option.value"
+              >
+                <strong>{{ option.label }}</strong>
+                <span>{{ option.description }}</span>
+              </button>
+            </div>
+          </fieldset>
+
+          <label v-else>
             <span>Industry</span>
             <select v-model="workspaceIndustry">
               <option v-for="industry in industryOptions" :key="industry" :value="industry">
@@ -743,8 +893,13 @@ onBeforeUnmount(() => {
           </label>
 
           <label>
-            <span>Brand website</span>
+            <span>Website</span>
             <input v-model="websiteUrl" type="url" placeholder="https://example.com" />
+          </label>
+
+          <label v-if="isBusinessUseCase">
+            <span>Location</span>
+            <input v-model="workspaceLocation" type="text" placeholder="Dallas, TX" />
           </label>
 
           <label>
@@ -1236,6 +1391,10 @@ label span {
   gap: 12px;
 }
 
+.compact-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .choice-card,
 .chip-button,
 .ghost-button,
@@ -1316,6 +1475,10 @@ label span {
 
 .workspace-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.workspace-choice-field {
+  grid-column: 1 / -1;
 }
 
 label {
@@ -1503,6 +1666,10 @@ button:disabled {
   }
 
   .workspace-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .compact-grid {
     grid-template-columns: 1fr;
   }
 

@@ -193,6 +193,24 @@ const router = createRouter({
       },
     },
     {
+      path: "/app/email/new",
+      name: "app-email-new",
+      component: AppEmailPage,
+      meta: {
+        requiresAuth: true,
+        requiresWorkspace: true,
+      },
+    },
+    {
+      path: "/app/email/:campaignId",
+      name: "app-email-edit",
+      component: AppEmailPage,
+      meta: {
+        requiresAuth: true,
+        requiresWorkspace: true,
+      },
+    },
+    {
       path: "/founder-content-ideas",
       name: "founder-content-ideas",
       component: FounderContentIdeasPage,

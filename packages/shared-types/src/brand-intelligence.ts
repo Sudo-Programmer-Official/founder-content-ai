@@ -1,4 +1,5 @@
 import type { BrandCompetitorReference, BrandProfile } from "./onboarding.ts";
+import type { WorkspaceMode } from "./business-generation.ts";
 
 export interface BrandPromptContext {
   tone?: string;
@@ -69,6 +70,8 @@ export interface BrandProfileResponse {
 
 export interface UpdateBrandProfileRequest {
   businessId: string;
+  workspaceMode?: WorkspaceMode;
+  location?: string;
   linkedinUrl?: string;
   instagramUrl?: string;
   facebookUrl?: string;

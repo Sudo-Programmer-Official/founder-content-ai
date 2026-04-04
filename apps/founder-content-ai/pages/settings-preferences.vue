@@ -151,6 +151,7 @@ const brandProfile = ref<BrandProfile | null>(null);
 const brandSignalSummary = ref<BrandSignalSummary | null>(null);
 const suggestedCompetitors = ref<BrandCompetitorReference[]>([]);
 const selectedCompetitorsInput = ref<BrandCompetitorReference[]>([]);
+const workspaceModeInput = ref<"founder" | "business">("founder");
 const toneInput = ref("");
 const writingStyleInput = ref("");
 const visualStyleInput = ref("");
@@ -487,6 +488,7 @@ const hasBrandProfile = computed(() => {
 });
 const brandContextChips = computed(() =>
   [
+    workspaceModeInput.value === "business" ? "Mode: business growth" : "Mode: creator",
     toneInput.value ? `Tone: ${toneInput.value}` : "",
     writingStyleInput.value ? `Style: ${writingStyleInput.value}` : "",
     visualStyleInput.value ? `Visuals: ${visualStyleInput.value}` : "",
@@ -834,6 +836,7 @@ function truncateKnowledgePreview(value: string, maxLength = 180): string {
 }
 
 function hydrateBrandContextForm(profile: BrandProfile | null): void {
+  workspaceModeInput.value = profile?.workspaceMode ?? "founder";
   toneInput.value = profile?.tone ?? "";
   writingStyleInput.value = profile?.writingStyle ?? "";
   visualStyleInput.value = profile?.visualStyle ?? "";
@@ -874,6 +877,7 @@ function applyBrandThemePreset(key: BrandThemePresetKey): void {
 }
 
 function applyFounderVoiceStarter(): void {
+  workspaceModeInput.value = "founder";
   toneInput.value = FOUNDER_VOICE_STARTER.tone;
   writingStyleInput.value = FOUNDER_VOICE_STARTER.writingStyle;
   visualStyleInput.value = FOUNDER_VOICE_STARTER.visualStyle;
@@ -1083,6 +1087,7 @@ async function handleBrandSourcesSave(): Promise<void> {
   try {
     const response = await requestUpdateBrandProfile({
       businessId,
+      workspaceMode: workspaceModeInput.value,
       linkedinUrl: linkedinSourceUrl.value.trim(),
       instagramUrl: instagramSourceUrl.value.trim(),
       facebookUrl: facebookSourceUrl.value.trim(),
@@ -1175,6 +1180,7 @@ async function handleBrandContextSave(): Promise<void> {
     const [brandResponse, knowledgeResponse] = await Promise.all([
       requestUpdateBrandProfile({
         businessId,
+        workspaceMode: workspaceModeInput.value,
         tone: toneInput.value.trim(),
         writingStyle: writingStyleInput.value.trim(),
         visualStyle: visualStyleInput.value.trim(),
@@ -2272,6 +2278,17 @@ watch(
                 :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
                 placeholder="Early-stage founders, indie builders, and developers trying to grow through content but struggling with consistency."
               />
+            </label>
+
+            <label class="dashboard-field">
+              <span>Workspace mode</span>
+              <select
+                v-model="workspaceModeInput"
+                :disabled="isLoadingBrandContext || isSavingBrandContext || !activeBusinessId"
+              >
+                <option value="founder">Creator mode</option>
+                <option value="business">Business growth mode</option>
+              </select>
             </label>
 
             <label class="dashboard-field">

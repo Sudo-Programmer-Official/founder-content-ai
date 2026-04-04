@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
+  BusinessContentOutput,
   CarouselDraft,
   CarouselDraftSlide,
   ContentNarrative,
@@ -549,7 +550,15 @@ function isUploadableGeneratedMimeType(value: string | undefined): boolean {
   return value === "image/png" || value === "image/jpeg" || value === "image/gif";
 }
 
+function isBusinessDraft(): boolean {
+  return draft.value?.result.workspaceMode === "business" || Boolean(draft.value?.result.businessOutput);
+}
+
 function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): string {
+  if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
+    return "Generate post visual";
+  }
+
   if (suggestion.visualTemplateType === "carousel") {
     return "Generate carousel";
   }
@@ -558,6 +567,10 @@ function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): str
 }
 
 function getMediaSuggestionDescription(suggestion: MediaRecommendationSuggestion): string {
+  if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
+    return "Create a single promotional visual that matches the generated CTA and platform captions.";
+  }
+
   if (suggestion.visualTemplateType === "carousel") {
     return "Turn this post into a 3-5 slide narrative deck, then render matching slides automatically.";
   }
@@ -566,6 +579,10 @@ function getMediaSuggestionDescription(suggestion: MediaRecommendationSuggestion
 }
 
 function getMediaSuggestionReason(suggestion: MediaRecommendationSuggestion): string {
+  if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
+    return "Business mode stays visual-first and CTA-first, so single-post creative beats slide storytelling.";
+  }
+
   if (suggestion.visualTemplateType === "carousel") {
     return "This keeps the workflow content → narrative → visuals instead of making you manually collect disconnected images.";
   }
@@ -589,6 +606,8 @@ const postScore = computed(() =>
 );
 
 const quickSignals = computed(() => draft.value?.result.quickSignals);
+const isBusinessMode = computed(() => isBusinessDraft());
+const businessOutput = computed<BusinessContentOutput | undefined>(() => draft.value?.result.businessOutput);
 const postContent = computed(() => draft.value?.result.post ?? "");
 const postParagraphs = computed(() => splitPostParagraphs(postContent.value));
 const previewLeadLines = computed(() => extractPreviewLead(postParagraphs.value));
@@ -607,7 +626,7 @@ const visualNarrative = computed(() =>
     : null,
 );
 const carouselDraft = computed(() =>
-  draft.value
+  draft.value && !isBusinessMode.value
     ? mapCarouselDraftFromNarrative(
         visualNarrative.value
           ?? normalizeContentNarrative(undefined, {
@@ -1059,15 +1078,24 @@ const recommendedContentType = computed(() => (postAssets.value.length > 0 ? "im
 const visibleMediaRecommendations = computed(() =>
   mediaRecommendations.value.filter((suggestion) => suggestion.actionType !== "skip"),
 );
+const eligibleMediaRecommendations = computed(() =>
+  visibleMediaRecommendations.value.filter(
+    (suggestion) => !(isBusinessMode.value && suggestion.visualTemplateType === "carousel"),
+  ),
+);
 const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>(() => [
   {
     id: "fallback-carousel",
     actionType: "generate_visual",
-    title: "Generate carousel",
-    description: "Turn the post into a 3-5 slide narrative deck with matching visuals.",
-    reason: "Best default when the post has enough tension or structure to earn a multi-slide story.",
+    title: isBusinessMode.value ? "Generate post visual" : "Generate carousel",
+    description: isBusinessMode.value
+      ? "Create a clean promotional visual matched to the campaign headline and CTA."
+      : "Turn the post into a 3-5 slide narrative deck with matching visuals.",
+    reason: isBusinessMode.value
+      ? "Business mode favors single-post creative over slide storytelling."
+      : "Best default when the post has enough tension or structure to earn a multi-slide story.",
     suggestedMediaType: "framework_card",
-    visualTemplateType: "carousel",
+    visualTemplateType: isBusinessMode.value ? "insight" : "carousel",
     recommendedAssetIds: [],
   },
   {
@@ -1092,18 +1120,22 @@ const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>((
   },
 ]);
 const displayedMediaRecommendations = computed(() =>
-  (visibleMediaRecommendations.value.length > 0
-    ? visibleMediaRecommendations.value
+  (eligibleMediaRecommendations.value.length > 0
+    ? eligibleMediaRecommendations.value
     : fallbackMediaRecommendations.value)
     .slice()
     .sort((left, right) => {
-      const leftPriority = left.visualTemplateType === "carousel" ? 0 : 1;
-      const rightPriority = right.visualTemplateType === "carousel" ? 0 : 1;
+      const leftPriority = isBusinessMode.value
+        ? (left.visualTemplateType === "quote" ? 1 : 0)
+        : left.visualTemplateType === "carousel" ? 0 : 1;
+      const rightPriority = isBusinessMode.value
+        ? (right.visualTemplateType === "quote" ? 1 : 0)
+        : right.visualTemplateType === "carousel" ? 0 : 1;
       return leftPriority - rightPriority;
     }),
 );
 const isUsingFallbackMediaRecommendations = computed(
-  () => !isLoadingMediaRecommendations.value && visibleMediaRecommendations.value.length === 0,
+  () => !isLoadingMediaRecommendations.value && eligibleMediaRecommendations.value.length === 0,
 );
 const selectedAudienceTimeLabel = computed(() => {
   if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
@@ -1514,6 +1546,7 @@ function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null 
       || body.strategy === "tactical"
         ? body.strategy
         : "continue",
+    workspaceMode: body.workspaceMode,
     sourceText: typeof body.sourceText === "string" ? body.sourceText : post,
     idea: {
       title:
@@ -1539,6 +1572,10 @@ function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null 
           },
     captionFooterCredit:
       typeof body.captionFooterCredit === "string" ? body.captionFooterCredit : "",
+    businessOutput:
+      body.businessOutput && typeof body.businessOutput === "object"
+        ? body.businessOutput
+        : undefined,
     asset,
   };
 
@@ -2609,7 +2646,7 @@ async function goToEmail(): Promise<void> {
   }
 
   await router.push({
-    path: appRoutes.appEmail,
+    path: appRoutes.appEmailNew,
     query: {
       draftId: draft.value.id,
       prefill: postContent.value,
@@ -3161,10 +3198,13 @@ onBeforeUnmount(() => {
     <template v-if="draft">
       <section class="result-hero">
         <p class="result-eyebrow">/app/result</p>
-        <h1>Your post is ready.</h1>
+        <h1>{{ isBusinessMode ? "Your campaign pack is ready." : "Your post is ready." }}</h1>
         <p class="result-description">
-          This is the activation moment: improve the draft, send it into outreach, or turn it into
-          an email without rewriting from scratch.
+          {{
+            isBusinessMode
+              ? "Review the visual direction, platform captions, CTA, and email copy without rebuilding the campaign by hand."
+              : "This is the activation moment: improve the draft, send it into outreach, or turn it into an email without rewriting from scratch."
+          }}
         </p>
         <p v-if="hasPersistedAsset" class="result-persistence-note">
           Saved as a draft in this workspace. Improve it, send it, or publish it without creating a
@@ -3176,8 +3216,8 @@ onBeforeUnmount(() => {
         <article class="result-post-card">
           <div class="result-card-header">
             <div>
-              <p class="panel-meta">Generated post</p>
-              <h2>{{ draft.result.idea.title }}</h2>
+              <p class="panel-meta">{{ isBusinessMode ? "Generated campaign" : "Generated post" }}</p>
+              <h2>{{ businessOutput?.visual.headline || draft.result.idea.title }}</h2>
             </div>
             <div class="score-badge" :data-tone="attentionSignal.tone">
               Attention {{ attentionSignal.label }} · {{ postScore }}/100
@@ -3192,6 +3232,54 @@ onBeforeUnmount(() => {
             <span>{{ povSummary }}</span>
             <span v-if="qualitySummary">POV quality {{ qualitySummary.overall }}/100</span>
           </p>
+
+          <section v-if="isBusinessMode && businessOutput" class="result-signal-grid">
+            <article class="result-signal-card">
+              <p class="panel-meta">Visual brief</p>
+              <strong>{{ businessOutput.visual.headline }}</strong>
+              <span>{{ businessOutput.visual.subheadline || "Headline-first creative ready for generation." }}</span>
+            </article>
+            <article class="result-signal-card">
+              <p class="panel-meta">CTA</p>
+              <strong>{{ businessOutput.cta.label }}</strong>
+              <span>{{ businessOutput.cta.url }}</span>
+            </article>
+            <article class="result-signal-card">
+              <p class="panel-meta">Channels</p>
+              <strong>
+                {{
+                  [
+                    businessOutput.captions.instagram ? "Instagram" : "",
+                    businessOutput.captions.facebook ? "Facebook" : "",
+                    businessOutput.email ? "Email" : "",
+                  ].filter(Boolean).join(" + ")
+                }}
+              </strong>
+              <span>Campaign copy is already adapted per destination.</span>
+            </article>
+          </section>
+
+          <section v-if="isBusinessMode && businessOutput" class="execution-status-grid">
+            <article class="execution-status-block">
+              <p class="panel-meta">Instagram caption</p>
+              <p class="execution-status-description">
+                {{ businessOutput.captions.instagram || "Instagram was not selected for this pack." }}
+              </p>
+            </article>
+
+            <article class="execution-status-block">
+              <p class="panel-meta">Facebook caption</p>
+              <p class="execution-status-description">
+                {{ businessOutput.captions.facebook || "Facebook was not selected for this pack." }}
+              </p>
+            </article>
+
+            <article v-if="businessOutput.email" class="execution-status-block">
+              <p class="panel-meta">Email subject</p>
+              <strong>{{ businessOutput.email.subject }}</strong>
+              <p class="execution-status-description">{{ businessOutput.email.body }}</p>
+            </article>
+          </section>
 
           <section class="result-signal-grid">
             <article class="result-signal-card" :data-tone="attentionSignal.tone">
@@ -3282,7 +3370,13 @@ onBeforeUnmount(() => {
               <div class="linkedin-feed-avatar">{{ (selectedConnectedAccountLabel || selectedPublishingPlatformLabel).charAt(0).toUpperCase() }}</div>
               <div class="linkedin-feed-identity">
                 <strong>{{ selectedConnectedAccountLabel || (selectedPublishingPlatform === "instagram" ? "Your Instagram business account" : selectedPublishingPlatform === "facebook" ? "Your Facebook Page" : "Your LinkedIn profile") }}</strong>
-                <p>{{ selectedConnectedAccount ? `${selectedPublishingPlatformLabel} post preview` : "Workspace preview before publishing" }}</p>
+                <p>
+                  {{
+                    selectedConnectedAccount
+                      ? `${selectedPublishingPlatformLabel} ${isBusinessMode ? "campaign" : "post"} preview`
+                      : "Workspace preview before publishing"
+                  }}
+                </p>
               </div>
             </div>
 
@@ -3697,10 +3791,24 @@ onBeforeUnmount(() => {
               <div class="media-recommendation-header">
                 <div>
                   <p class="panel-meta">Recommended next move</p>
-                  <strong>{{ isUsingFallbackMediaRecommendations ? "Generate media for this post" : "Choose the safest visual path for this post" }}</strong>
+                  <strong>
+                    {{
+                      isBusinessMode
+                        ? "Generate the best post visual for this campaign"
+                        : isUsingFallbackMediaRecommendations
+                          ? "Generate media for this post"
+                          : "Choose the safest visual path for this post"
+                    }}
+                  </strong>
                 </div>
                 <span class="workspace-chip">
-                  {{ isUsingFallbackMediaRecommendations ? "Manual generation" : recommendedContentType === "image" ? "Assets already attached" : "Text-first draft" }}
+                  {{
+                    isBusinessMode
+                      ? recommendedContentType === "image" ? "Visual attached" : "Visual-first draft"
+                      : isUsingFallbackMediaRecommendations
+                        ? "Manual generation"
+                        : recommendedContentType === "image" ? "Assets already attached" : "Text-first draft"
+                  }}
                 </span>
               </div>
 
@@ -3782,7 +3890,11 @@ onBeforeUnmount(() => {
             </div>
 
             <p v-else class="result-feedback subtle">
-              No media attached yet. This post will publish as text until you add supported media.
+              {{
+                isBusinessMode
+                  ? "No visual attached yet. Generate or upload one before publishing to Instagram or Facebook."
+                  : "No media attached yet. This post will publish as text until you add supported media."
+              }}
             </p>
           </section>
 

@@ -48,7 +48,6 @@ import {
   requestEmailLists,
 } from "../services/email-service";
 import { requestVisualGeneration } from "../services/generation-service";
-import { requestMediaRecommendations } from "../services/media-intelligence-service";
 import {
   requestCreatePostAsset,
   requestMediaUploadUrl,
@@ -166,6 +165,58 @@ function buildEmailBodyFromSource(sourceText: string, tone: "direct" | "story" |
   return `${opener}\n\n${bodyCore}\n\nIf this is useful, hit reply and tell me what stands out.`;
 }
 
+function resolveToneFromCampaignIntent(intent: CampaignComposerIntent): CampaignToneMode {
+  if (intent === "story_email") {
+    return "story";
+  }
+
+  if (intent === "weekly_newsletter") {
+    return "educational";
+  }
+
+  return "direct";
+}
+
+function buildFreshCampaignTemplate(intent: CampaignComposerIntent): {
+  name: string;
+  subject: string;
+  bodyText: string;
+} {
+  if (intent === "promotion") {
+    return {
+      name: "Offer Campaign",
+      subject: "A quick offer for you",
+      bodyText:
+        "Hi {{first_name}},\n\nI wanted to send you one clear offer:\n\n- What it is\n- Why it matters now\n- What to do next\n\nIf it fits, use the link below or reply and I will point you in the right direction.",
+    };
+  }
+
+  if (intent === "story_email") {
+    return {
+      name: "Story Email",
+      subject: "One story worth sharing",
+      bodyText:
+        "Hi {{first_name}},\n\nA short story from this week:\n\nWhat happened:\n\nWhat it changed:\n\nThe takeaway:\n\nIf this resonates, hit reply and tell me what you are seeing too.",
+    };
+  }
+
+  if (intent === "weekly_newsletter") {
+    return {
+      name: "Weekly Newsletter",
+      subject: "Your weekly update",
+      bodyText:
+        "Hi {{first_name}},\n\nHere is the quick weekly update:\n\n1. What happened\n2. What matters\n3. What to watch next\n\nReply if you want me to go deeper on any part of this.",
+    };
+  }
+
+  return {
+    name: "Quick Update",
+    subject: "Quick update",
+    bodyText:
+      "Hi {{first_name}},\n\nOne quick update for you:\n\nWhat changed:\n\nWhy it matters:\n\nWhat to do next:\n\nReply if you want the full details.",
+  };
+}
+
 function normalizeDomainInput(value: string | undefined | null): string {
   const normalized = (value ?? "").trim().toLowerCase();
 
@@ -220,6 +271,16 @@ const {
   refreshProductAccess,
   isFeatureEnabled,
 } = useProductAccessContext();
+const routeCampaignId = computed(() =>
+  typeof route.params.campaignId === "string" ? route.params.campaignId.trim() : "",
+);
+const duplicateCampaignId = computed(() =>
+  typeof route.query.duplicateCampaignId === "string" ? route.query.duplicateCampaignId.trim() : "",
+);
+const isEmailDashboardRoute = computed(() => route.name === "app-email");
+const isEmailNewRoute = computed(() => route.name === "app-email-new");
+const isEmailEditRoute = computed(() => route.name === "app-email-edit");
+const isEmailComposerRoute = computed(() => isEmailNewRoute.value || isEmailEditRoute.value);
 
 const businesses = ref<BusinessMembership[]>([]);
 const selectedBusinessId = ref("");
@@ -251,16 +312,42 @@ const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
 let campaignProgressPollHandle: number | null = null;
 let importJobPollHandle: number | null = null;
 
-type EmailTabKey = "overview" | "campaigns" | "contacts" | "settings";
+type EmailTabKey = "campaigns" | "contacts" | "settings";
 type CampaignSourceMode = "current" | "draft-library" | "fresh";
 type CampaignToneMode = "direct" | "story" | "educational";
 type CampaignEditorMode = "edit" | "preview";
+type CampaignComposerIntent = "quick_update" | "promotion" | "story_email" | "weekly_newsletter";
 
 const EMAIL_TABS: Array<{ key: EmailTabKey; label: string }> = [
-  { key: "overview", label: "Overview" },
   { key: "campaigns", label: "Campaigns" },
   { key: "contacts", label: "Contacts" },
   { key: "settings", label: "Settings" },
+];
+const CAMPAIGN_INTENT_OPTIONS: Array<{
+  value: CampaignComposerIntent;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "quick_update",
+    label: "Quick update",
+    description: "Send one clear update without extra production around it.",
+  },
+  {
+    value: "promotion",
+    label: "Offer / promotion",
+    description: "Drive a specific action around one offer, deadline, or CTA.",
+  },
+  {
+    value: "story_email",
+    label: "Story email",
+    description: "Lead with a story, then pull the reader toward one takeaway.",
+  },
+  {
+    value: "weekly_newsletter",
+    label: "Weekly newsletter",
+    description: "Package the week into a tighter recurring email format.",
+  },
 ];
 const CONTACT_IMPORT_FIELDS: Array<{
   field: EmailContactImportField;
@@ -306,7 +393,13 @@ const activationDraftLibrary = ref<ActivationDraftRecord[]>([]);
 const campaignSourceMode = ref<CampaignSourceMode>("fresh");
 const campaignTone = ref<CampaignToneMode>("direct");
 const campaignEditorMode = ref<CampaignEditorMode>("edit");
+const campaignAdvancedOpen = ref(false);
+const campaignIntent = ref<CampaignComposerIntent>("quick_update");
+const campaignSearch = ref("");
+const campaignStatusFilter = ref<EmailCampaign["status"] | "all">("all");
+const campaignSort = ref<"updated_desc" | "name_asc" | "last_send_desc" | "status">("updated_desc");
 const selectedLibraryDraftId = ref("");
+const campaignRouteSyncKey = ref("");
 
 const campaignForm = ref({
   listId: "",
@@ -378,7 +471,12 @@ const domainStatusSummary = computed(() => {
 
   return "Verification in progress";
 });
+const campaignComposerOpen = computed(() => isEmailComposerRoute.value);
 const activeEmailTab = computed<EmailTabKey>(() => {
+  if (isEmailComposerRoute.value) {
+    return "campaigns";
+  }
+
   const requestedTab = typeof route.query.tab === "string" ? route.query.tab : "";
 
   if (EMAIL_TABS.some((tab) => tab.key === requestedTab)) {
@@ -393,7 +491,7 @@ const activeEmailTab = computed<EmailTabKey>(() => {
     return "settings";
   }
 
-  return "overview";
+  return "campaigns";
 });
 const overviewStats = computed(() => {
   const totals = campaigns.value.reduce(
@@ -441,20 +539,70 @@ const selectedCampaignAudienceSummary = computed(() => {
   return `${selectedCampaignList.value.name} · ${count.toLocaleString()} contact${count === 1 ? "" : "s"} in this audience before suppressions.`;
 });
 const isEditingCampaign = computed(() => Boolean(editingCampaignId.value));
+const campaignComposerTitle = computed(() =>
+  isEditingCampaign.value ? "Edit email" : "New email",
+);
+const campaignComposerIntentSelection = computed(
+  () =>
+    CAMPAIGN_INTENT_OPTIONS.find((option) => option.value === campaignIntent.value)
+    ?? CAMPAIGN_INTENT_OPTIONS[0],
+);
 const campaignComposerPrimaryLabel = computed(() =>
+  isCreatingCampaign.value ? "Sending..." : "Send now",
+);
+const campaignComposerSecondaryLabel = computed(() =>
   isEditingCampaign.value
     ? isCreatingCampaign.value
       ? "Saving..."
-      : "Save changes"
+      : "Save draft"
     : isCreatingCampaign.value
-      ? "Creating..."
-      : "Create campaign",
+      ? "Saving..."
+      : "Save draft",
 );
 const campaignSendHistory = computed(() =>
   campaigns.value
     .filter((campaign) => campaign.status !== "draft")
     .slice(0, 5),
 );
+const filteredCampaigns = computed(() => {
+  const searchValue = campaignSearch.value.trim().toLowerCase();
+
+  const nextCampaigns = campaigns.value.filter((campaign) => {
+    if (campaignStatusFilter.value !== "all" && campaign.status !== campaignStatusFilter.value) {
+      return false;
+    }
+
+    if (!searchValue) {
+      return true;
+    }
+
+    return (
+      campaign.name.toLowerCase().includes(searchValue) ||
+      campaign.subject.toLowerCase().includes(searchValue) ||
+      resolveCampaignListName(campaign).toLowerCase().includes(searchValue)
+    );
+  });
+
+  return [...nextCampaigns].sort((left, right) => {
+    if (campaignSort.value === "name_asc") {
+      return left.name.localeCompare(right.name);
+    }
+
+    if (campaignSort.value === "status") {
+      return left.status.localeCompare(right.status);
+    }
+
+    if (campaignSort.value === "last_send_desc") {
+      const leftTimestamp = left.sendCompletedAt || left.updatedAt || left.createdAt;
+      const rightTimestamp = right.sendCompletedAt || right.updatedAt || right.createdAt;
+      return new Date(rightTimestamp).getTime() - new Date(leftTimestamp).getTime();
+    }
+
+    const leftTimestamp = left.updatedAt || left.createdAt;
+    const rightTimestamp = right.updatedAt || right.createdAt;
+    return new Date(rightTimestamp).getTime() - new Date(leftTimestamp).getTime();
+  });
+});
 const contactImportColumns = computed(() => contactImportPreview.value?.columns ?? []);
 const canPreviewContacts = computed(() => contactImport.value.csvText.trim().length > 0);
 const canImportContacts = computed(
@@ -895,10 +1043,124 @@ function useLibraryDraft(draftId: string): void {
 function startFreshCampaign(): void {
   editingCampaignId.value = "";
   campaignSourceMode.value = "fresh";
-  campaignForm.value.subject = "";
-  campaignForm.value.bodyText = "";
+  campaignTone.value = resolveToneFromCampaignIntent(campaignIntent.value);
+  const template = buildFreshCampaignTemplate(campaignIntent.value);
+  campaignForm.value.name = template.name;
+  campaignForm.value.subject = template.subject;
+  campaignForm.value.bodyText = template.bodyText;
+  campaignForm.value.replyToEmail = domainSettings.value?.replyToEmail || "";
+  campaignForm.value.includeSignature = true;
   resetSelectedMedia();
   campaignEditorMode.value = "edit";
+}
+
+function loadCampaignIntoComposer(
+  campaign: EmailCampaign,
+  options: { duplicate?: boolean } = {},
+): void {
+  editingCampaignId.value = options.duplicate ? "" : campaign.id;
+  campaignSourceMode.value = "fresh";
+  campaignEditorMode.value = "edit";
+  campaignAdvancedOpen.value = false;
+  errorMessage.value = "";
+  campaignForm.value.listId = campaign.listId || emailLists.value[0]?.id || campaignForm.value.listId;
+  campaignForm.value.name = options.duplicate ? buildDuplicateCampaignName(campaign.name) : campaign.name;
+  campaignForm.value.subject = campaign.subject;
+  campaignForm.value.bodyText = campaign.bodyText || htmlToPreviewText(campaign.bodyHtml);
+  campaignForm.value.replyToEmail = campaign.replyToEmail || domainSettings.value?.replyToEmail || "";
+  campaignForm.value.includeSignature = true;
+  resetSelectedMedia();
+}
+
+function buildCampaignRouteSyncKey(): string {
+  const draftId = typeof route.query.draftId === "string" ? route.query.draftId : "";
+  const duplicateId = duplicateCampaignId.value;
+  const prefill = typeof route.query.prefill === "string" ? route.query.prefill.trim() : "";
+
+  if (isEmailEditRoute.value) {
+    return `edit:${routeCampaignId.value}`;
+  }
+
+  if (isEmailNewRoute.value) {
+    return `new:${draftId}:${duplicateId}:${prefill}`;
+  }
+
+  return `dashboard:${activeEmailTab.value}`;
+}
+
+function syncCampaignComposerToRoute(options: { force?: boolean } = {}): void {
+  const nextRouteKey = buildCampaignRouteSyncKey();
+
+  if (!options.force && campaignRouteSyncKey.value === nextRouteKey) {
+    return;
+  }
+
+  if (isEmailNewRoute.value) {
+    campaignAdvancedOpen.value = false;
+    errorMessage.value = "";
+
+    if (duplicateCampaignId.value) {
+      const duplicatedCampaign = campaigns.value.find((entry) => entry.id === duplicateCampaignId.value);
+
+      if (!duplicatedCampaign) {
+        if (!isLoading.value) {
+          errorMessage.value = "That campaign is not available to duplicate anymore.";
+          campaignRouteSyncKey.value = "";
+          void router.replace({ path: appRoutes.appEmail });
+        }
+        return;
+      }
+
+      loadCampaignIntoComposer(duplicatedCampaign, { duplicate: true });
+      feedbackMessage.value = "Campaign copied into the editor. Review the audience and body, then save or send.";
+      campaignRouteSyncKey.value = nextRouteKey;
+      return;
+    }
+
+    startFreshCampaign();
+
+    if (activationSeed.value) {
+      campaignSourceMode.value = "current";
+      applyActivationSeed();
+    }
+
+    campaignRouteSyncKey.value = nextRouteKey;
+    return;
+  }
+
+  if (isEmailEditRoute.value) {
+    const campaign = campaigns.value.find((entry) => entry.id === routeCampaignId.value);
+
+    if (!campaign) {
+      if (!isLoading.value) {
+        errorMessage.value = "That campaign no longer exists.";
+        campaignRouteSyncKey.value = "";
+        void router.replace({ path: appRoutes.appEmail });
+      }
+      return;
+    }
+
+    loadCampaignIntoComposer(campaign);
+    feedbackMessage.value = campaign.bodyHtml.includes("<img")
+      ? "Campaign loaded into the editor. Review visuals before saving because media attachments are not reconstructed yet."
+      : "Campaign loaded into the editor. Review the audience and body, then save changes.";
+    campaignRouteSyncKey.value = nextRouteKey;
+    return;
+  }
+
+  campaignAdvancedOpen.value = false;
+  campaignRouteSyncKey.value = nextRouteKey;
+}
+
+function goToEmailDashboard(tab: EmailTabKey = "campaigns"): void {
+  const nextQuery = tab === "campaigns" ? {} : { tab };
+
+  if (isEmailDashboardRoute.value) {
+    void router.replace({ path: appRoutes.appEmail, query: nextQuery });
+    return;
+  }
+
+  void router.push({ path: appRoutes.appEmail, query: nextQuery });
 }
 
 function setCampaignTone(nextTone: CampaignToneMode): void {
@@ -912,6 +1174,42 @@ function setCampaignTone(nextTone: CampaignToneMode): void {
   if (campaignSourceMode.value === "current" && activationSeed.value) {
     applySourceToCampaign(activationSeed.value, activationDraft.value?.result.idea.title);
   }
+}
+
+function setCampaignIntent(nextIntent: CampaignComposerIntent): void {
+  campaignIntent.value = nextIntent;
+  campaignTone.value = resolveToneFromCampaignIntent(nextIntent);
+
+  if (campaignSourceMode.value === "draft-library" && selectedLibraryDraft.value) {
+    applySourceToCampaign(selectedLibraryDraft.value.result.post, selectedLibraryDraft.value.result.idea.title);
+    return;
+  }
+
+  if (campaignSourceMode.value === "current" && activationSeed.value) {
+    applySourceToCampaign(activationSeed.value, activationDraft.value?.result.idea.title);
+    return;
+  }
+
+  const template = buildFreshCampaignTemplate(nextIntent);
+  campaignForm.value.name = template.name;
+  campaignForm.value.subject = template.subject;
+  campaignForm.value.bodyText = template.bodyText;
+}
+
+function openNewCampaign(nextIntent: CampaignComposerIntent = campaignIntent.value): void {
+  setCampaignIntent(nextIntent);
+  campaignAdvancedOpen.value = false;
+  feedbackMessage.value = "";
+  errorMessage.value = "";
+  void router.push({ path: appRoutes.appEmailNew });
+}
+
+function closeCampaignComposer(): void {
+  campaignAdvancedOpen.value = false;
+  editingCampaignId.value = "";
+  errorMessage.value = "";
+  startFreshCampaign();
+  goToEmailDashboard("campaigns");
 }
 
 function insertLinkPlaceholder(): void {
@@ -1027,30 +1325,8 @@ function buildEmailVisualFeedback(
 }
 
 async function loadEmailMediaRecommendations(): Promise<void> {
-  if (!selectedBusinessId.value || !campaignForm.value.bodyText.trim()) {
-    mediaRecommendations.value = [];
-    return;
-  }
-
-  isLoadingMediaRecommendations.value = true;
-
-  try {
-    const response = await requestMediaRecommendations({
-      businessId: selectedBusinessId.value,
-      contentText: `${campaignForm.value.subject}\n\n${campaignForm.value.bodyText}`.trim(),
-      contentType: "email",
-      goal: "conversion",
-      sourceAssetIds: emailMediaAssets.value.map((asset) => asset.id),
-    });
-
-    mediaRecommendations.value = response.suggestions;
-  } catch (error) {
-    mediaRecommendations.value = [];
-    errorMessage.value =
-      error instanceof Error ? error.message : "Unable to load media recommendations.";
-  } finally {
-    isLoadingMediaRecommendations.value = false;
-  }
+  mediaRecommendations.value = [];
+  isLoadingMediaRecommendations.value = false;
 }
 
 async function handleEmailMediaSelection(event: Event): Promise<void> {
@@ -1554,12 +1830,19 @@ function applyRecommendedDomainSetup(): void {
 }
 
 function setEmailTab(tab: EmailTabKey): void {
-  const nextQuery = {
-    ...route.query,
-    tab: tab === "overview" ? undefined : tab,
-  };
+  if (isEmailDashboardRoute.value) {
+    const nextQuery: Record<string, string | string[] | null | undefined> = {
+      ...route.query,
+      tab: tab === "campaigns" ? undefined : tab,
+    };
 
-  void router.replace({ query: nextQuery });
+    delete nextQuery.draftId;
+    delete nextQuery.prefill;
+    void router.replace({ path: appRoutes.appEmail, query: nextQuery });
+    return;
+  }
+
+  goToEmailDashboard(tab);
 }
 
 function resetContactImportPreview(): void {
@@ -1714,13 +1997,9 @@ async function initializePage(): Promise<void> {
   try {
     loadActivationDraftLibrary();
 
-    if (activationSeed.value) {
-      campaignSourceMode.value = "current";
-    }
-
     await loadBusinesses();
     await loadEmailState({ syncDomainForm: true });
-    applyActivationSeed();
+    syncCampaignComposerToRoute({ force: true });
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to load email.";
   } finally {
@@ -1788,9 +2067,24 @@ async function importContacts(): Promise<void> {
   }
 }
 
-async function createCampaign(): Promise<void> {
+async function createCampaign(sendNow = false): Promise<void> {
   if (!selectedBusinessId.value || !campaignForm.value.listId) {
     errorMessage.value = "Import contacts first so a list exists for this campaign.";
+    return;
+  }
+
+  if (!campaignForm.value.subject.trim()) {
+    errorMessage.value = "Subject line is required.";
+    return;
+  }
+
+  if (!campaignForm.value.bodyText.trim()) {
+    errorMessage.value = "Email body is required.";
+    return;
+  }
+
+  if (sendNow && !hasConfiguredDomain.value) {
+    errorMessage.value = "Finish sender setup before sending.";
     return;
   }
 
@@ -1800,10 +2094,13 @@ async function createCampaign(): Promise<void> {
   try {
     const payload = {
       listId: campaignForm.value.listId,
-      name: campaignForm.value.name,
+      name:
+        campaignForm.value.name.trim()
+        || campaignForm.value.subject.trim()
+        || campaignComposerIntentSelection.value.label,
       subject: campaignForm.value.subject,
       bodyText: campaignForm.value.bodyText,
-      replyToEmail: campaignForm.value.replyToEmail || undefined,
+      replyToEmail: domainSettings.value?.replyToEmail || campaignForm.value.replyToEmail || undefined,
       sourceAssetId: effectiveSourcePostId.value || undefined,
       sourceIdeaId: effectiveSourceIdeaId.value || undefined,
       sourceTitle: effectiveSourceTitle.value || undefined,
@@ -1812,11 +2109,23 @@ async function createCampaign(): Promise<void> {
     const response = editingCampaignId.value
       ? await requestEmailCampaignUpdate(selectedBusinessId.value, editingCampaignId.value, payload)
       : await requestEmailCampaignCreate(selectedBusinessId.value, payload);
-    feedbackMessage.value = editingCampaignId.value
-      ? `Campaign updated: ${response.campaign.name}.`
-      : `Campaign created: ${response.campaign.name}.`;
-    editingCampaignId.value = "";
-    await loadEmailState();
+    if (sendNow) {
+      const sendResponse = await requestEmailCampaignSend(selectedBusinessId.value, response.campaign.id);
+      latestStatsCampaignId.value = response.campaign.id;
+      latestStats.value = sendResponse.stats;
+      feedbackMessage.value = `Campaign queued: ${response.campaign.name}. Processing ${sendResponse.stats.recipientCount} recipients in the background.`;
+      await Promise.all([
+        loadEmailState(),
+        refreshProductAccess(selectedBusinessId.value),
+      ]);
+    } else {
+      feedbackMessage.value = editingCampaignId.value
+        ? `Draft updated: ${response.campaign.name}.`
+        : `Draft saved: ${response.campaign.name}.`;
+      await loadEmailState();
+    }
+
+    closeCampaignComposer();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to save email campaign.";
   } finally {
@@ -1825,19 +2134,13 @@ async function createCampaign(): Promise<void> {
 }
 
 function duplicateCampaign(campaign: EmailCampaign): void {
-  editingCampaignId.value = "";
-  campaignSourceMode.value = "fresh";
-  campaignEditorMode.value = "edit";
-  errorMessage.value = "";
-  campaignForm.value.listId = campaign.listId || emailLists.value[0]?.id || campaignForm.value.listId;
-  campaignForm.value.name = buildDuplicateCampaignName(campaign.name);
-  campaignForm.value.subject = campaign.subject;
-  campaignForm.value.bodyText = campaign.bodyText || htmlToPreviewText(campaign.bodyHtml);
-  campaignForm.value.replyToEmail = campaign.replyToEmail || domainSettings.value?.replyToEmail || "";
-  campaignForm.value.includeSignature = true;
-  resetSelectedMedia();
-  setEmailTab("campaigns");
-  feedbackMessage.value = "Campaign copied into the editor. Review audience, media, and signature before creating the new draft.";
+  campaignRouteSyncKey.value = "";
+  void router.push({
+    path: appRoutes.appEmailNew,
+    query: {
+      duplicateCampaignId: campaign.id,
+    },
+  });
 
   if (typeof window !== "undefined") {
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1879,21 +2182,11 @@ function resolveCampaignAudienceSize(campaign: EmailCampaign): number {
 }
 
 function editCampaign(campaign: EmailCampaign): void {
-  editingCampaignId.value = campaign.id;
-  campaignSourceMode.value = "fresh";
-  campaignEditorMode.value = "edit";
-  errorMessage.value = "";
-  campaignForm.value.listId = campaign.listId || emailLists.value[0]?.id || campaignForm.value.listId;
-  campaignForm.value.name = campaign.name;
-  campaignForm.value.subject = campaign.subject;
-  campaignForm.value.bodyText = campaign.bodyText || htmlToPreviewText(campaign.bodyHtml);
-  campaignForm.value.replyToEmail = campaign.replyToEmail || domainSettings.value?.replyToEmail || "";
-  campaignForm.value.includeSignature = true;
-  resetSelectedMedia();
-  setEmailTab("campaigns");
-  feedbackMessage.value = campaign.bodyHtml.includes("<img")
-    ? "Campaign loaded into the editor. Review visuals before saving because media attachments are not reconstructed yet."
-    : "Campaign loaded into the editor. Review the audience and body, then save changes.";
+  campaignRouteSyncKey.value = "";
+  void router.push({
+    name: "app-email-edit",
+    params: { campaignId: campaign.id },
+  });
 
   if (typeof window !== "undefined") {
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -2018,23 +2311,20 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
   contactPlanFilter.value = "all";
   contactTagFilter.value = "all";
   resetContactImportPreview();
+  campaignRouteSyncKey.value = "";
 
   void (async () => {
     await loadBusinesses();
     await loadEmailState({ syncDomainForm: true });
+    syncCampaignComposerToRoute({ force: true });
   })();
 });
 
 watch(
-  () => [route.query.draftId, selectedBusinessId.value],
+  () => [route.name, route.params.campaignId, route.query.draftId, route.query.duplicateCampaignId, route.query.prefill, selectedBusinessId.value],
   () => {
     loadActivationDraftLibrary();
-
-    if (activationSeed.value) {
-      campaignSourceMode.value = "current";
-    }
-
-    applyActivationSeed();
+    syncCampaignComposerToRoute({ force: true });
     void loadDraftMedia();
   },
 );
@@ -2138,8 +2428,8 @@ onBeforeUnmount(() => {
               </span>
               <div>
                 <p class="panel-meta">Email campaigns</p>
-                <h1>Manage lists, campaigns, and delivery</h1>
-                <p class="panel-note">Operate email from one workspace without leaving the product flow.</p>
+                <h1>Send something without the clutter</h1>
+                <p class="panel-note">Campaigns, contacts, and sender settings stay separate so writing stays focused.</p>
               </div>
               <div class="email-hero-chip-row">
                 <span class="workspace-chip">{{ emailLimitText || "Email workspace ready" }}</span>
@@ -2148,24 +2438,24 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <aside class="email-hero-aside">
-              <p class="panel-meta">Sender setup</p>
-              <strong>{{ hasConfiguredDomain ? senderIdentitySummary : "Configure your branded sender" }}</strong>
-              <p class="panel-note">
-                {{
-                  hasConfiguredDomain
-                    ? `${domainStatusSummary}. Deliverability stays visible for this workspace.`
-                    : "Finish the sender setup once, then reuse the same identity across every campaign."
-                }}
-              </p>
+            <div class="email-header-actions">
               <button
+                v-if="hasConfiguredDomain"
+                type="button"
+                class="primary-action"
+                @click="openNewCampaign()"
+              >
+                New Email
+              </button>
+              <button
+                v-else
                 type="button"
                 class="secondary-action hero-inline-action"
-                @click="setEmailTab(hasConfiguredDomain ? 'campaigns' : 'settings')"
+                @click="setEmailTab('settings')"
               >
-                {{ hasConfiguredDomain ? "Open campaigns" : "Finish setup" }}
+                Finish sender setup
               </button>
-            </aside>
+            </div>
           </div>
 
           <div class="email-tab-row" role="tablist" aria-label="Email sections">
@@ -2183,7 +2473,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-          <section v-if="activeEmailTab === 'overview'" class="email-overview-stack">
+          <section v-if="false" class="email-overview-stack">
           <section class="email-overview-grid">
             <article
               v-for="card in overviewStats"
@@ -2318,120 +2608,153 @@ onBeforeUnmount(() => {
           <div class="panel-header">
             <div>
               <p class="panel-meta">Campaigns</p>
-              <h2>Write once, then send a clean email</h2>
-              <p class="panel-note">Text first. Media supports the message instead of becoming the message.</p>
+              <h2>{{ campaignComposerOpen ? campaignComposerTitle : "Campaign dashboard" }}</h2>
+              <p class="panel-note">
+                {{
+                  campaignComposerOpen
+                    ? "Subject, body, audience. Advanced options stay hidden until you need them."
+                    : "Search, filter, and act on campaigns from one dense list."
+                }}
+              </p>
+            </div>
+            <div class="workspace-actions">
+              <button
+                v-if="campaignComposerOpen"
+                type="button"
+                class="secondary-action"
+                :disabled="isCreatingCampaign"
+                @click="closeCampaignComposer"
+              >
+                Back to campaigns
+              </button>
+              <button
+                v-else
+                type="button"
+                class="primary-action"
+                :disabled="!hasConfiguredDomain"
+                @click="openNewCampaign()"
+              >
+                New Email
+              </button>
+              <button
+                v-if="!campaignComposerOpen"
+                type="button"
+                class="secondary-action"
+                @click="setEmailTab('settings')"
+              >
+                Sender settings
+              </button>
             </div>
           </div>
 
-          <section class="campaign-flow-panel">
-            <div class="panel-header">
-              <div>
-                <p class="panel-meta">Step 1 · Source</p>
-                <h3>Start from something that already exists</h3>
-                <p class="panel-note">Use a seeded draft, pull from your draft library, or start fresh. No blank-builder dead end.</p>
-              </div>
-            </div>
-
-            <div class="campaign-source-mode-row">
-              <button
-                v-if="currentSourceSummary"
-                type="button"
-                class="workspace-secondary-button compact"
-                :class="{ active: campaignSourceMode === 'current' }"
-                @click="useCurrentSource"
-              >
-                Current source
-              </button>
-              <button
-                type="button"
-                class="workspace-secondary-button compact"
-                :class="{ active: campaignSourceMode === 'draft-library' }"
-                @click="campaignSourceMode = 'draft-library'"
-              >
-                Draft library
-              </button>
-              <button
-                type="button"
-                class="workspace-secondary-button compact"
-                :class="{ active: campaignSourceMode === 'fresh' }"
-                @click="startFreshCampaign"
-              >
-                Start fresh
-              </button>
-            </div>
-
-            <article v-if="campaignSourceMode === 'current' && currentSourceSummary" class="campaign-source-card active">
-              <div class="campaign-source-copy">
-                <span class="workspace-chip">{{ currentSourceSummary.typeLabel }}</span>
-                <strong>{{ currentSourceSummary.title }}</strong>
-                <p>{{ currentSourceSummary.preview }}</p>
-              </div>
-              <button type="button" class="secondary-action" @click="useCurrentSource">
-                Use source
-              </button>
-            </article>
-
-            <div v-else-if="campaignSourceMode === 'draft-library'" class="campaign-source-grid">
-              <article
-                v-for="draft in libraryDraftCards"
-                :key="draft.id"
-                class="campaign-source-card"
-                :class="{ active: selectedLibraryDraftId === draft.id }"
-              >
-                <div class="campaign-source-copy">
-                  <span class="workspace-chip">{{ draft.modeLabel }}</span>
-                  <strong>{{ draft.title }}</strong>
-                  <p>{{ draft.preview }}</p>
-                  <small>{{ draft.createdAtLabel }}</small>
+          <template v-if="campaignComposerOpen">
+            <section class="email-composer-intent-panel">
+              <div class="panel-header compact">
+                <div>
+                  <p class="panel-meta">What do you want to send?</p>
+                  <strong>{{ campaignComposerIntentSelection.label }}</strong>
+                  <p class="panel-note">{{ campaignComposerIntentSelection.description }}</p>
                 </div>
-                <button type="button" class="secondary-action" @click="useLibraryDraft(draft.id)">
-                  Use draft
-                </button>
-              </article>
-              <p v-if="libraryDraftCards.length === 0" class="panel-note">
-                No saved drafts yet. Generate one from the dashboard or result screen first.
-              </p>
-            </div>
-
-            <p v-else class="panel-note">
-              Starting fresh keeps the editor empty. Use this when the campaign should not inherit a post or draft.
-            </p>
-          </section>
-
-          <div class="campaign-flow-toolbar">
-            <div class="campaign-flow-group">
-              <span class="panel-meta">Step 2 · Transform</span>
+              </div>
               <div class="campaign-source-mode-row">
                 <button
+                  v-for="option in CAMPAIGN_INTENT_OPTIONS"
+                  :key="option.value"
                   type="button"
                   class="workspace-secondary-button compact"
-                  :class="{ active: campaignTone === 'direct' }"
-                  @click="setCampaignTone('direct')"
+                  :class="{ active: campaignIntent === option.value }"
+                  @click="setCampaignIntent(option.value)"
                 >
-                  Direct
-                </button>
-                <button
-                  type="button"
-                  class="workspace-secondary-button compact"
-                  :class="{ active: campaignTone === 'story' }"
-                  @click="setCampaignTone('story')"
-                >
-                  Story
-                </button>
-                <button
-                  type="button"
-                  class="workspace-secondary-button compact"
-                  :class="{ active: campaignTone === 'educational' }"
-                  @click="setCampaignTone('educational')"
-                >
-                  Educational
+                  {{ option.label }}
                 </button>
               </div>
+            </section>
+
+            <div class="email-composer-grid">
+              <div class="email-composer-main">
+                <select v-model="campaignForm.listId" class="workspace-select full-width">
+                  <option value="" disabled>Select audience</option>
+                  <option v-for="list in emailLists" :key="list.id" :value="list.id">
+                    {{ list.name }}
+                  </option>
+                </select>
+
+                <div class="campaign-audience-card">
+                  <div class="campaign-audience-header">
+                    <div>
+                      <strong>{{ selectedCampaignList?.name || "Choose a list to target" }}</strong>
+                      <p class="panel-note">{{ selectedCampaignAudienceSummary }}</p>
+                    </div>
+                    <span v-if="selectedCampaignList" class="workspace-chip">
+                      {{ selectedCampaignAudienceCount.toLocaleString() }} contacts
+                    </span>
+                  </div>
+                </div>
+
+                <input v-model="campaignForm.subject" class="workspace-input" placeholder="Subject line" />
+
+                <textarea
+                  v-model="campaignForm.bodyText"
+                  class="workspace-textarea"
+                  placeholder="Write the email body here."
+                />
+
+                <div class="workspace-actions">
+                  <button
+                    type="button"
+                    class="primary-action"
+                    :disabled="isCreatingCampaign || !hasConfiguredDomain"
+                    @click="void createCampaign(true)"
+                  >
+                    {{ campaignComposerPrimaryLabel }}
+                  </button>
+                  <button
+                    type="button"
+                    class="secondary-action"
+                    :disabled="isCreatingCampaign"
+                    @click="void createCampaign(false)"
+                  >
+                    {{ campaignComposerSecondaryLabel }}
+                  </button>
+                </div>
+              </div>
+
+              <aside class="email-composer-sidebar">
+                <article class="workspace-card email-composer-side-card">
+                  <p class="panel-meta">Sender</p>
+                  <strong>{{ senderIdentitySummary }}</strong>
+                  <p class="panel-note">
+                    {{ hasConfiguredDomain ? domainStatusSummary : "Finish sender setup before sending." }}
+                  </p>
+                </article>
+
+                <article class="workspace-card email-composer-side-card">
+                  <p class="panel-meta">Advanced</p>
+                  <p class="panel-note">Preview, links, and optional media stay hidden until you need them.</p>
+                  <button
+                    type="button"
+                    class="secondary-action"
+                    @click="campaignAdvancedOpen = !campaignAdvancedOpen"
+                  >
+                    {{ campaignAdvancedOpen ? "Hide advanced" : "Show advanced" }}
+                  </button>
+                </article>
+              </aside>
             </div>
 
-            <div class="campaign-flow-group">
-              <span class="panel-meta">Step 3 · Edit or preview</span>
-              <div class="campaign-source-mode-row">
+            <section v-if="campaignAdvancedOpen" class="email-media-panel">
+              <div class="panel-header">
+                <div>
+                  <p class="panel-meta">Advanced</p>
+                  <h3>Preview, links, and optional media</h3>
+                  <p class="panel-note">Keep this light. Use visuals only when they help the message.</p>
+                </div>
+              </div>
+
+              <div class="email-editor-toolbar">
+                <button type="button" class="workspace-secondary-button compact" @click="insertLinkPlaceholder">
+                  Insert link
+                </button>
                 <button
                   type="button"
                   class="workspace-secondary-button compact"
@@ -2449,337 +2772,234 @@ onBeforeUnmount(() => {
                   Preview
                 </button>
               </div>
-            </div>
-          </div>
 
-          <p class="panel-meta">Step 4 · Audience</p>
-          <select v-model="campaignForm.listId" class="workspace-select full-width">
-            <option value="" disabled>Select list</option>
-            <option v-for="list in emailLists" :key="list.id" :value="list.id">
-              {{ list.name }}
-            </option>
-          </select>
-          <div class="campaign-audience-card">
-            <div class="campaign-audience-header">
-              <div>
-                <strong>{{ selectedCampaignList?.name || "Choose a list to target" }}</strong>
-                <p class="panel-note">{{ selectedCampaignAudienceSummary }}</p>
-              </div>
-              <span v-if="selectedCampaignList" class="workspace-chip">
-                {{ selectedCampaignAudienceCount.toLocaleString() }} in list
-              </span>
-            </div>
-            <p class="panel-note campaign-audience-note">
-              Suppressed, bounced, and unsubscribed contacts stay excluded when the send job resolves recipients.
-            </p>
-          </div>
-          <input v-model="campaignForm.name" class="workspace-input" placeholder="Campaign name" />
-          <input v-model="campaignForm.subject" class="workspace-input" placeholder="Subject line" />
-          <input
-            v-model="campaignForm.replyToEmail"
-            class="workspace-input"
-            placeholder="Reply-to email (optional)"
-          />
-          <div class="email-editor-toolbar">
-            <button type="button" class="workspace-secondary-button compact" @click="insertLinkPlaceholder">
-              Insert link
-            </button>
-            <button
-              type="button"
-              class="workspace-secondary-button compact"
-              :class="{ active: campaignForm.includeSignature }"
-              @click="toggleSignature"
-            >
-              {{ campaignForm.includeSignature ? "Signature on" : "Signature off" }}
-            </button>
-          </div>
-
-          <textarea
-            v-if="campaignEditorMode === 'edit'"
-            v-model="campaignForm.bodyText"
-            class="workspace-textarea"
-            placeholder="Write the email body here. Links stay clickable and the signature is appended automatically."
-          />
-
-          <section v-else class="email-preview-shell">
-            <div class="email-preview-header">
-              <div>
-                <p class="panel-meta">Preview</p>
-                <h3>{{ campaignForm.subject || "Add a subject line" }}</h3>
-              </div>
-              <span class="workspace-chip">{{ campaignTone }}</span>
-            </div>
-            <div class="email-preview-frame" v-html="previewEmailHtml"></div>
-          </section>
-
-          <section v-if="campaignEditorMode === 'edit'" class="email-media-panel">
-            <div class="panel-header">
-              <div>
-                <p class="panel-meta">Media</p>
-                <h3>Optional images and signature</h3>
-                <p class="panel-note">Use one banner or a few inline images. Keep the email easy to read on mobile.</p>
-              </div>
-            </div>
-
-            <div v-if="visibleMediaRecommendations.length > 0 || isLoadingMediaRecommendations" class="media-recommendation-panel">
-              <div class="panel-header compact">
-                <div>
-                  <p class="panel-meta">Recommended next move</p>
-                  <strong>Choose the fastest safe visual path for this email</strong>
-                </div>
-                <span class="workspace-chip">{{ campaignForm.headerImageUrl || campaignForm.inlineImageUrls.length > 0 ? "Media attached" : "Text-first" }}</span>
-              </div>
-
-              <p v-if="isLoadingMediaRecommendations" class="panel-note">Loading media recommendations...</p>
-
-              <div v-else class="media-recommendation-grid">
-                <article
-                  v-for="suggestion in visibleMediaRecommendations"
-                  :key="suggestion.id"
-                  class="media-recommendation-card"
-                >
+              <section v-if="campaignEditorMode === 'preview'" class="email-preview-shell">
+                <div class="email-preview-header">
                   <div>
-                    <p class="panel-meta">{{ suggestion.actionType.replace(/_/g, " ") }}</p>
-                    <strong>{{ suggestion.title }}</strong>
-                    <p>{{ suggestion.description }}</p>
-                    <small>{{ suggestion.reason }}</small>
+                    <p class="panel-meta">Preview</p>
+                    <h3>{{ campaignForm.subject || "Add a subject line" }}</h3>
                   </div>
-                  <button
-                    type="button"
-                    class="workspace-secondary-button compact"
-                    :disabled="isGeneratingMediaRecommendationId === suggestion.id || isUploadingDraftMedia"
-                    @click="void applyEmailMediaRecommendation(suggestion)"
-                  >
-                    {{
-                      suggestion.actionType === "generate_visual"
-                        ? isGeneratingMediaRecommendationId === suggestion.id
-                          ? "Generating..."
-                          : "Generate visual"
-                        : suggestion.actionType === "use_existing_asset"
-                          ? "Use existing"
-                          : "Skip media"
-                    }}
+                  <span class="workspace-chip">{{ campaignComposerIntentSelection.label }}</span>
+                </div>
+                <div class="email-preview-frame" v-html="previewEmailHtml"></div>
+              </section>
+
+              <div class="email-media-input-row">
+                <input
+                  v-model="campaignForm.mediaUrlInput"
+                  class="workspace-input toolbar-input"
+                  placeholder="Paste an image URL"
+                />
+                <button type="button" class="secondary-action" @click="addManualMediaUrl('header')">
+                  Use as header
+                </button>
+                <button type="button" class="secondary-action" @click="addManualMediaUrl('inline')">
+                  Add inline
+                </button>
+                <button type="button" class="secondary-action" @click="isWorkspaceAssetPickerOpen = true">
+                  Use workspace asset
+                </button>
+                <label class="workspace-secondary-button compact media-upload-trigger" :class="{ disabled: !activationSourcePostId || isUploadingDraftMedia }">
+                  <input
+                    class="media-upload-input"
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif"
+                    multiple
+                    :disabled="!activationSourcePostId || isUploadingDraftMedia"
+                    @change="handleEmailMediaSelection"
+                  />
+                  {{ isUploadingDraftMedia ? "Uploading..." : "Upload image" }}
+                </label>
+              </div>
+
+              <div v-if="availableDraftImages.length > 0" class="draft-media-picker">
+                <p class="panel-meta">From the source post</p>
+                <div class="draft-media-grid">
+                  <article v-for="image in availableDraftImages" :key="image.id" class="draft-media-card">
+                    <img :src="image.url" :alt="image.label" class="draft-media-preview" />
+                    <div class="draft-media-actions">
+                      <button type="button" class="workspace-secondary-button compact" @click="useHeaderImage(image.url)">
+                        Banner
+                      </button>
+                      <button
+                        type="button"
+                        class="workspace-secondary-button compact"
+                        :class="{ active: campaignForm.inlineImageUrls.includes(image.url) }"
+                        @click="toggleInlineImage(image.url)"
+                      >
+                        {{ campaignForm.inlineImageUrls.includes(image.url) ? "Inline added" : "Add inline" }}
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              </div>
+
+              <p v-else-if="isLoadingDraftMedia" class="panel-note">Loading draft media...</p>
+              <p v-else class="panel-note">No draft media loaded. This email can stay text-first.</p>
+
+              <div v-if="campaignForm.headerImageUrl" class="selected-media-stack">
+                <p class="panel-meta">Header image</p>
+                <article class="selected-media-card">
+                  <img :src="campaignForm.headerImageUrl" alt="Header image" class="selected-media-preview" />
+                  <button type="button" class="workspace-secondary-button compact" @click="campaignForm.headerImageUrl = ''">
+                    Remove
                   </button>
                 </article>
               </div>
-            </div>
 
-            <div class="email-media-input-row">
-              <input
-                v-model="campaignForm.mediaUrlInput"
-                class="workspace-input toolbar-input"
-                placeholder="Paste an image URL"
+              <div v-if="selectedInlineImagePreviews.length > 0" class="selected-media-stack">
+                <p class="panel-meta">Inline images</p>
+                <div class="draft-media-grid">
+                  <article v-for="image in selectedInlineImagePreviews" :key="image.id" class="selected-media-card">
+                    <img :src="image.url" alt="Inline email image" class="selected-media-preview" />
+                    <div class="selected-media-actions">
+                      <button
+                        type="button"
+                        class="workspace-secondary-button compact"
+                        @click="moveInlineImage(image.url, 'up')"
+                      >
+                        Move up
+                      </button>
+                      <button
+                        type="button"
+                        class="workspace-secondary-button compact"
+                        @click="moveInlineImage(image.url, 'down')"
+                      >
+                        Move down
+                      </button>
+                      <button type="button" class="workspace-secondary-button compact" @click="toggleInlineImage(image.url)">
+                        Remove
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              </div>
+
+              <WorkspaceAssetPickerModal
+                :open="isWorkspaceAssetPickerOpen"
+                :business-id="selectedBusinessId"
+                asset-type="image"
+                multiple
+                title="Use workspace assets in this email"
+                @close="isWorkspaceAssetPickerOpen = false"
+                @select="void attachWorkspaceAssetsToEmail($event)"
               />
-              <button type="button" class="secondary-action" @click="addManualMediaUrl('header')">
-                Use as header
-              </button>
-              <button type="button" class="secondary-action" @click="addManualMediaUrl('inline')">
-                Add inline
-              </button>
-              <button type="button" class="secondary-action" @click="isWorkspaceAssetPickerOpen = true">
-                Use workspace asset
-              </button>
-              <label class="workspace-secondary-button compact media-upload-trigger" :class="{ disabled: !activationSourcePostId || isUploadingDraftMedia }">
-                <input
-                  class="media-upload-input"
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif"
-                  multiple
-                  :disabled="!activationSourcePostId || isUploadingDraftMedia"
-                  @change="handleEmailMediaSelection"
-                />
-                {{ isUploadingDraftMedia ? "Uploading..." : "Upload image" }}
-              </label>
+            </section>
+          </template>
+
+          <template v-else>
+            <div class="campaign-dashboard-toolbar">
+              <input
+                v-model="campaignSearch"
+                class="workspace-input toolbar-input"
+                placeholder="Search campaigns"
+              />
+              <select v-model="campaignStatusFilter" class="workspace-select toolbar-select">
+                <option value="all">All statuses</option>
+                <option value="draft">Draft</option>
+                <option value="queued">Queued</option>
+                <option value="sending">Sending</option>
+                <option value="sent">Sent</option>
+                <option value="failed">Failed</option>
+              </select>
+              <select v-model="campaignSort" class="workspace-select toolbar-select">
+                <option value="updated_desc">Newest activity</option>
+                <option value="last_send_desc">Last sent</option>
+                <option value="name_asc">Name</option>
+                <option value="status">Status</option>
+              </select>
             </div>
 
-            <div v-if="availableDraftImages.length > 0" class="draft-media-picker">
-              <p class="panel-meta">From the source post</p>
-              <div class="draft-media-grid">
-                <article v-for="image in availableDraftImages" :key="image.id" class="draft-media-card">
-                  <img :src="image.url" :alt="image.label" class="draft-media-preview" />
-                  <div class="draft-media-actions">
-                    <button type="button" class="workspace-secondary-button compact" @click="useHeaderImage(image.url)">
-                      Banner
-                    </button>
-                    <button
-                      type="button"
-                      class="workspace-secondary-button compact"
-                      :class="{ active: campaignForm.inlineImageUrls.includes(image.url) }"
-                      @click="toggleInlineImage(image.url)"
-                    >
-                      {{ campaignForm.inlineImageUrls.includes(image.url) ? "Inline added" : "Add inline" }}
-                    </button>
-                  </div>
-                </article>
+            <div v-if="filteredCampaigns.length > 0" class="campaign-table-shell">
+              <table class="campaign-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Audience</th>
+                    <th>Sent</th>
+                    <th>Delivered</th>
+                    <th>Failed</th>
+                    <th>Last activity</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="campaign in filteredCampaigns" :key="campaign.id">
+                    <td>
+                      <div class="campaign-table-name">
+                        <strong>{{ campaign.name }}</strong>
+                        <span>{{ campaign.subject }}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="workspace-chip campaign-status-chip" :class="getCampaignStatusChipClass(campaign)">
+                        {{ formatCampaignStatusChipLabel(campaign) }}
+                      </span>
+                    </td>
+                    <td>{{ resolveCampaignAudienceSize(campaign).toLocaleString() }}</td>
+                    <td>{{ campaign.sentCount.toLocaleString() }}</td>
+                    <td>{{ campaign.deliveredCount.toLocaleString() }}</td>
+                    <td>{{ campaign.failedCount.toLocaleString() }}</td>
+                    <td>{{ formatCampaignLastSendSummary(campaign) || formatCampaignLifecycleLabel(campaign) }}</td>
+                    <td>
+                      <div class="campaign-table-actions">
+                        <button
+                          type="button"
+                          class="secondary-action"
+                          :disabled="!canEditCampaign(campaign)"
+                          @click="editCampaign(campaign)"
+                        >
+                          Edit
+                        </button>
+                        <button type="button" class="secondary-action" @click="duplicateCampaign(campaign)">
+                          Duplicate
+                        </button>
+                        <button
+                          type="button"
+                          class="secondary-action"
+                          :disabled="!canDeleteCampaign(campaign) || deletingCampaignId === campaign.id"
+                          @click="void deleteCampaign(campaign)"
+                        >
+                          {{ deletingCampaignId === campaign.id ? "Deleting..." : "Delete" }}
+                        </button>
+                        <button
+                          type="button"
+                          class="secondary-action"
+                          :disabled="isSending || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
+                          @click="sendCampaign(campaign)"
+                        >
+                          {{ getCampaignActionLabel(campaign) }}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-else class="empty-note overview-empty-state">
+              <span class="overview-empty-badge">No campaigns yet</span>
+              <div class="overview-empty-copy">
+                <h3>Start with one clean email</h3>
+                <p>Create the draft, pick the audience, and send without configuring every detail each time.</p>
               </div>
-            </div>
-
-            <p v-else-if="isLoadingDraftMedia" class="panel-note">Loading draft media...</p>
-            <p v-else class="panel-note">No source media found. You can still paste image URLs if this email needs visual support.</p>
-
-            <div v-if="campaignForm.headerImageUrl" class="selected-media-stack">
-              <p class="panel-meta">Header image</p>
-              <article class="selected-media-card">
-                <img :src="campaignForm.headerImageUrl" alt="Header image" class="selected-media-preview" />
-                <button type="button" class="workspace-secondary-button compact" @click="campaignForm.headerImageUrl = ''">
-                  Remove
+              <div class="overview-empty-actions">
+                <button type="button" class="primary-action overview-empty-button" @click="openNewCampaign()">
+                  New Email
                 </button>
-              </article>
-            </div>
-
-            <div v-if="selectedInlineImagePreviews.length > 0" class="selected-media-stack">
-              <p class="panel-meta">Inline images</p>
-              <div class="draft-media-grid">
-                <article v-for="image in selectedInlineImagePreviews" :key="image.id" class="selected-media-card">
-                  <img :src="image.url" alt="Inline email image" class="selected-media-preview" />
-                  <div class="selected-media-actions">
-                    <button
-                      type="button"
-                      class="workspace-secondary-button compact"
-                      @click="moveInlineImage(image.url, 'up')"
-                    >
-                      Move up
-                    </button>
-                    <button
-                      type="button"
-                      class="workspace-secondary-button compact"
-                      @click="moveInlineImage(image.url, 'down')"
-                    >
-                      Move down
-                    </button>
-                    <button type="button" class="workspace-secondary-button compact" @click="toggleInlineImage(image.url)">
-                      Remove
-                    </button>
-                  </div>
-                </article>
-              </div>
-            </div>
-
-            <div class="signature-preview-card">
-              <p class="panel-meta">Signature</p>
-              <strong>{{ campaignForm.includeSignature ? "Will be included" : "Not included" }}</strong>
-              <pre>{{ effectiveSignatureText || "Set a sender signature in Email settings." }}</pre>
-            </div>
-
-            <WorkspaceAssetPickerModal
-              :open="isWorkspaceAssetPickerOpen"
-              :business-id="selectedBusinessId"
-              asset-type="image"
-              multiple
-              title="Use workspace assets in this email"
-              @close="isWorkspaceAssetPickerOpen = false"
-              @select="void attachWorkspaceAssetsToEmail($event)"
-            />
-          </section>
-
-          <p class="panel-meta">Step 5 · {{ isEditingCampaign ? "Save draft" : "Create draft" }}</p>
-          <div class="workspace-actions">
-            <button type="button" class="primary-action" :disabled="isCreatingCampaign" @click="createCampaign">
-              {{ campaignComposerPrimaryLabel }}
-            </button>
-            <button
-              v-if="isEditingCampaign"
-              type="button"
-              class="secondary-action"
-              :disabled="isCreatingCampaign"
-              @click="startFreshCampaign"
-            >
-              Cancel edit
-            </button>
-            <router-link class="secondary-action" :to="appRoutes.appGenerate">
-              Generate another post
-            </router-link>
-          </div>
-
-          <div class="campaign-list">
-            <article v-for="campaign in campaigns" :key="campaign.id" class="campaign-card">
-              <div>
-                <div class="campaign-card-heading">
-                  <strong>{{ campaign.name }}</strong>
-                  <span class="workspace-chip campaign-status-chip" :class="getCampaignStatusChipClass(campaign)">
-                    {{ formatCampaignStatusChipLabel(campaign) }}
-                  </span>
-                </div>
-                <p>{{ campaign.subject }}</p>
-                <p v-if="campaign.sourceTitle" class="campaign-source-note">From {{ campaign.sourceTitle }}</p>
-                <p class="campaign-metrics">
-                  {{ formatCampaignLifecycleLabel(campaign) }} · {{ resolveCampaignAudienceSize(campaign) }} audience ·
-                  {{ formatCampaignProgress(campaign) }} · {{ campaign.deliveredCount }} delivered · {{ campaign.failedCount }} failed
-                </p>
-                <p v-if="formatCampaignLastSendSummary(campaign)" class="campaign-last-send">
-                  {{ formatCampaignLastSendSummary(campaign) }}
-                </p>
-                <p v-else class="campaign-send-summary">
-                  {{ formatCampaignReadySummary(campaign) }}
-                </p>
-                <div v-if="campaign.recipientCount > 0" class="campaign-progress">
-                  <span class="campaign-progress-fill" :style="{ width: `${getCampaignProgressPercent(campaign)}%` }"></span>
-                </div>
-                <p v-if="campaign.recipientCount > 0" class="campaign-progress-copy">
-                  {{ getCampaignProgressPercent(campaign) }}% complete
-                </p>
-              </div>
-              <div class="campaign-card-actions">
-                <button
-                  type="button"
-                  class="secondary-action"
-                  :disabled="!canEditCampaign(campaign)"
-                  @click="editCampaign(campaign)"
-                >
-                  Edit
-                </button>
-                <button type="button" class="secondary-action" @click="duplicateCampaign(campaign)">
-                  Duplicate
-                </button>
-                <button
-                  type="button"
-                  class="secondary-action"
-                  :disabled="!canDeleteCampaign(campaign) || deletingCampaignId === campaign.id"
-                  @click="void deleteCampaign(campaign)"
-                >
-                  {{ deletingCampaignId === campaign.id ? "Deleting..." : "Delete" }}
-                </button>
-                <button
-                  type="button"
-                  class="secondary-action"
-                  :disabled="isSending || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
-                  @click="sendCampaign(campaign)"
-                >
-                  {{ getCampaignActionLabel(campaign) }}
+                <button type="button" class="secondary-action overview-empty-button" @click="setEmailTab('contacts')">
+                  Import contacts
                 </button>
               </div>
-            </article>
-          </div>
-
-          <div v-if="latestStats" class="stats-strip">
-            <span>Sent: {{ latestStats.sentCount }}</span>
-            <span>Delivered: {{ latestStats.deliveredCount }}</span>
-            <span>Failed: {{ latestStats.failedCount }}</span>
-            <span>Unsubscribed: {{ latestStats.unsubscribedCount }}</span>
-          </div>
-
-          <section v-if="campaignSendHistory.length > 0" class="campaign-history-panel">
-            <div class="panel-header">
-              <div>
-                <p class="panel-meta">Send history</p>
-                <h3>Recent sends and retries</h3>
-              </div>
             </div>
-            <div class="campaign-history-list">
-              <article v-for="campaign in campaignSendHistory" :key="`history-${campaign.id}`" class="campaign-history-card">
-                <div>
-                  <strong>{{ campaign.name }}</strong>
-                  <p>{{ formatCampaignLifecycleLabel(campaign) }}</p>
-                </div>
-                <div class="campaign-history-metrics">
-                  <span class="workspace-chip">{{ resolveCampaignAudienceSize(campaign) }} audience</span>
-                  <span class="workspace-chip">{{ campaign.sentCount }} sent</span>
-                  <span class="workspace-chip">{{ campaign.deliveredCount }} delivered</span>
-                  <span class="workspace-chip" :class="{ warning: campaign.failedCount > 0 }">{{ campaign.failedCount }} failed</span>
-                </div>
-              </article>
+
+            <div v-if="latestStats" class="stats-strip">
+              <span>Sent: {{ latestStats.sentCount }}</span>
+              <span>Delivered: {{ latestStats.deliveredCount }}</span>
+              <span>Failed: {{ latestStats.failedCount }}</span>
+              <span>Unsubscribed: {{ latestStats.unsubscribedCount }}</span>
             </div>
-          </section>
+          </template>
         </section>
 
         <section v-else-if="activeEmailTab === 'contacts'" class="workspace-card">
@@ -3272,9 +3492,9 @@ onBeforeUnmount(() => {
 .email-tabs-header {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 20px;
-  align-items: stretch;
+  align-items: start;
 }
 
 .email-tabs-intro {
@@ -3299,6 +3519,13 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.email-header-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 .email-hero-aside {
@@ -3352,6 +3579,95 @@ onBeforeUnmount(() => {
   border-color: transparent;
   box-shadow: var(--fc-accent-shadow);
   color: var(--fc-accent-contrast);
+}
+
+.email-composer-intent-panel {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 85%, transparent);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--fc-surface) 95%, white 5%);
+}
+
+.email-composer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 0.8fr);
+  gap: 18px;
+}
+
+.email-composer-main,
+.email-composer-sidebar {
+  display: grid;
+  gap: 16px;
+}
+
+.email-composer-side-card {
+  display: grid;
+  gap: 10px;
+}
+
+.campaign-dashboard-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.campaign-table-shell {
+  overflow-x: auto;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.campaign-table {
+  width: 100%;
+  min-width: 920px;
+  border-collapse: collapse;
+}
+
+.campaign-table th,
+.campaign-table td {
+  padding: 16px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fc-border) 86%, transparent);
+  text-align: left;
+  vertical-align: top;
+}
+
+.campaign-table th {
+  color: var(--fc-text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--fc-surface-subtle) 94%, white 6%);
+}
+
+.campaign-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.campaign-table-name {
+  display: grid;
+  gap: 6px;
+}
+
+.campaign-table-name strong {
+  font-size: 0.98rem;
+}
+
+.campaign-table-name span {
+  color: var(--fc-text-muted);
+  line-height: 1.5;
+}
+
+.campaign-table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .campaign-flow-panel {
@@ -4465,6 +4781,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 920px) {
   .email-tabs-header,
+  .email-composer-grid,
   .email-overview-grid,
   .overview-quick-actions,
   .overview-dashboard-grid,
@@ -4480,6 +4797,10 @@ onBeforeUnmount(() => {
 
   .sender-setup-assist-card {
     flex-direction: column;
+  }
+
+  .email-header-actions {
+    justify-content: flex-start;
   }
 
   .contact-preview-row,
@@ -4503,6 +4824,12 @@ onBeforeUnmount(() => {
 
   .overview-empty-actions,
   .overview-empty-button {
+    width: 100%;
+  }
+
+  .email-header-actions,
+  .campaign-dashboard-toolbar,
+  .campaign-table-actions {
     width: 100%;
   }
 

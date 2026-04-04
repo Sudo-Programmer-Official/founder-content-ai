@@ -1,7 +1,9 @@
 import type { Business, BusinessMembership } from "./auth-business.ts";
+import type { WorkspaceMode } from "./business-generation.ts";
 import type { CompetitorSourceType } from "./competitive-intelligence.ts";
 
 export type OnboardingUseCase = "personal_brand" | "business_marketing" | "agency_clients";
+export type OnboardingBusinessType = "daycare" | "salon" | "fitness" | "other";
 export type OnboardingChannel = "linkedin" | "instagram" | "facebook" | "email";
 export type OnboardingGoal =
   | "get_clients"
@@ -43,7 +45,9 @@ export interface OnboardingProfile {
 export interface BrandProfile {
   id: string;
   businessId: string;
+  workspaceMode?: WorkspaceMode;
   industry?: string;
+  location?: string;
   preferredTone?: BrandTone;
   targetChannels: OnboardingChannel[];
   goals: OnboardingGoal[];
@@ -98,7 +102,10 @@ export interface SaveOnboardingPreferencesResponse {
 
 export interface CreateOnboardingWorkspaceRequest {
   name: string;
+  useCase?: OnboardingUseCase;
+  businessType?: OnboardingBusinessType;
   websiteUrl?: string;
+  location?: string;
   timezone?: string;
   industry?: string;
   tone?: BrandTone;

@@ -1,4 +1,6 @@
 import type {
+  BusinessGenerationRequest,
+  BusinessGenerationResponse,
   CaptureContentRequest,
   CaptureContentResponse,
   GenerateVisualRequest,
@@ -29,6 +31,7 @@ const API_ENDPOINTS = {
   repurpose: "/repurpose",
   visual: "/generate-visual",
   remix: "/remix",
+  businessGenerate: "/business/generate",
 } as const;
 
 export async function requestIdeaGeneration(
@@ -90,4 +93,13 @@ export async function requestRemixContent(
   input: RemixContentRequest,
 ): Promise<RemixContentResponse> {
   return apiPost<RemixContentRequest, RemixContentResponse>(API_ENDPOINTS.remix, input);
+}
+
+export async function requestBusinessGeneration(
+  input: BusinessGenerationRequest,
+): Promise<BusinessGenerationResponse> {
+  return apiPost<BusinessGenerationRequest, BusinessGenerationResponse>(
+    API_ENDPOINTS.businessGenerate,
+    input,
+  );
 }
