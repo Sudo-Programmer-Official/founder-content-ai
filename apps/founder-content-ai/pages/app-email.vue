@@ -2403,7 +2403,6 @@ onBeforeUnmount(() => {
 <template>
   <main class="workspace-shell">
     <p v-if="errorMessage" class="workspace-feedback error">{{ errorMessage }}</p>
-    <p v-else-if="feedbackMessage" class="workspace-feedback">{{ feedbackMessage }}</p>
 
     <EmailSkeleton v-if="isLoading" />
 

@@ -3,6 +3,10 @@ import type {
   BusinessGenerationRequest,
   BusinessGenerationResponse,
 } from "../../../../packages/shared-types/index.ts";
+import {
+  isBusinessGoalCompatibleWithIntent,
+  resolveBusinessGenerationGoal,
+} from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
 import { enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import { generateBusinessContent } from "../services/businessGenerationService.ts";
@@ -42,13 +46,17 @@ export async function generateBusinessContentController(
   response: Response<BusinessGenerationResponse | ApiError>,
 ): Promise<void> {
   const businessId = request.body?.businessId?.trim();
+  const generationIntent = isValidGenerationIntent(request.body?.generationIntent)
+    ? request.body.generationIntent
+    : undefined;
+  const requestedGoal = request.body?.goal;
 
   if (!businessId) {
     sendApiError(response, 400, "bad_request", "businessId is required.");
     return;
   }
 
-  if (!isValidGoal(request.body?.goal)) {
+  if (!generationIntent && !isValidGoal(requestedGoal)) {
     sendApiError(response, 400, "bad_request", "goal must be one of: leads, bookings, traffic, awareness.");
     return;
   }
@@ -65,6 +73,21 @@ export async function generateBusinessContentController(
     return;
   }
 
+  const normalizedGoal = resolveBusinessGenerationGoal(
+    generationIntent,
+    isValidGoal(requestedGoal) ? requestedGoal : "awareness",
+  );
+
+  if (generationIntent && isValidGoal(requestedGoal) && !isBusinessGoalCompatibleWithIntent(generationIntent, requestedGoal)) {
+    sendApiError(
+      response,
+      400,
+      "bad_request",
+      "goal does not match the selected generation intent.",
+    );
+    return;
+  }
+
   try {
     await enforceWorkspaceWriteAccess({
       principal: request.auth,
@@ -76,10 +99,8 @@ export async function generateBusinessContentController(
     response.json(
       await generateBusinessContent({
         businessId,
-        goal: request.body.goal,
-        generationIntent: isValidGenerationIntent(request.body?.generationIntent)
-          ? request.body.generationIntent
-          : undefined,
+        goal: normalizedGoal,
+        generationIntent,
         businessType: request.body.businessType,
         location: request.body.location?.trim(),
         offer: request.body.offer?.trim(),

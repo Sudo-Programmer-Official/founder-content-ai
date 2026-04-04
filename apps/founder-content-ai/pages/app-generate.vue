@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
   BusinessGenerationChannel,
-  BusinessGenerationGoal,
   BusinessGenerationIntent,
   BusinessGenerationResponse,
   BusinessGenerationTone,
@@ -24,6 +23,7 @@ import {
   DEFAULT_REPURPOSE_STRATEGY,
   DEFAULT_GENERATION_TONE,
   resolveGenerationToneMode,
+  resolveBusinessGenerationGoal,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import VoiceRecorder from "../components/VoiceRecorder.vue";
@@ -270,22 +270,6 @@ function buildBusinessIntentOptions(
       disabled: true,
     },
   ];
-}
-
-function resolveBusinessGoal(intent: BusinessGenerationIntent): BusinessGenerationGoal {
-  if (intent === "get_leads") {
-    return "leads";
-  }
-
-  if (intent === "get_bookings") {
-    return "bookings";
-  }
-
-  if (intent === "weekly_plan") {
-    return "traffic";
-  }
-
-  return "awareness";
 }
 
 const input = ref("");
@@ -970,48 +954,67 @@ function buildBusinessDraftResult(
   response: BusinessGenerationResponse,
   sourceText: string,
 ): RepurposeContentResponse {
+  const campaignOutput = response.kind === "business_campaign" ? response.content : undefined;
   const fallbackCaption =
-    response.output.captions.instagram
-    ?? response.output.captions.facebook
-    ?? response.output.email?.body
-    ?? [response.output.visual.headline, response.output.visual.subheadline].filter(Boolean).join("\n\n");
+    campaignOutput?.captions.instagram
+    ?? campaignOutput?.captions.facebook
+    ?? campaignOutput?.email?.body
+    ?? (response.kind === "weekly_plan"
+      ? response.days.map((day) => `Day ${day.dayNumber}: ${day.headline}\n${day.summary}`).join("\n\n")
+      : [campaignOutput?.visual.headline, campaignOutput?.visual.subheadline].filter(Boolean).join("\n\n"));
   const channelList = businessChannels.value.map((channel) => channel.charAt(0).toUpperCase() + channel.slice(1));
+  const draftTitle =
+    response.kind === "business_campaign"
+      ? response.content.visual.headline
+      : response.days[0]?.headline || "Weekly campaign plan";
+  const draftAngle =
+    response.kind === "business_campaign"
+      ? response.content.visual.subheadline ?? `${channelList.join(" + ")} campaign ready`
+      : "7-day business content plan ready";
 
   return {
     inputType: "text",
     intent: "capture",
     strategy: "continue",
+    generationOutput: response,
     workspaceMode: "business",
     generationIntent: businessGenerationIntent.value,
     sourceText,
     idea: {
-      title: response.output.visual.headline,
-      angle:
-        response.output.visual.subheadline
-        ?? `${channelList.join(" + ")} campaign ready`,
+      title: draftTitle,
+      angle: draftAngle,
     },
-    hooks: [response.output.visual.headline],
+    hooks: [draftTitle],
     post: fallbackCaption,
     variations: [],
     visualNarrative: {
       format: "carousel",
       type: "framework",
-      title: response.output.visual.headline,
-      subtitle: response.output.visual.subheadline ?? response.output.cta.label,
+      title: draftTitle,
+      subtitle:
+        response.kind === "business_campaign"
+          ? response.content.visual.subheadline ?? response.content.cta.label
+          : "7-day plan",
       slides: [],
     },
     carouselDraft: {
-      title: response.output.visual.headline,
-      subtitle: response.output.visual.subheadline ?? response.output.cta.label,
+      title: draftTitle,
+      subtitle:
+        response.kind === "business_campaign"
+          ? response.content.visual.subheadline ?? response.content.cta.label
+          : "7-day plan",
       narrativeType: "framework",
       slides: [],
     },
     quickSignals: {
-      readyLabel: "Ready to launch",
-      formatLabel: `${channelList.join(" + ")} post pack with CTA${businessChannels.value.includes("email") ? " and email" : ""}.`,
+      readyLabel: response.kind === "weekly_plan" ? "Plan ready" : "Ready to launch",
+      formatLabel:
+        response.kind === "weekly_plan"
+          ? "7-day business content plan ready for review."
+          : `${channelList.join(" + ")} post pack with CTA${businessChannels.value.includes("email") ? " and email" : ""}.`,
     },
     captionFooterCredit: "",
-    businessOutput: response.output,
+    businessOutput: campaignOutput,
   };
 }
 
@@ -1037,7 +1040,7 @@ async function generateBusinessCampaign(): Promise<void> {
   try {
     const response = await requestBusinessGeneration({
       businessId: bootstrap.value.activeBusinessId,
-      goal: resolveBusinessGoal(businessGenerationIntent.value),
+      goal: resolveBusinessGenerationGoal(businessGenerationIntent.value),
       generationIntent: businessGenerationIntent.value,
       businessType: inferBusinessTypeFromBrandProfile(brandProfile.value),
       location: businessLocation.value.trim() || undefined,

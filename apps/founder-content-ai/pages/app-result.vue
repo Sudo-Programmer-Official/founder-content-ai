@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router";
 import type {
   BusinessContentOutput,
+  BusinessWeeklyPlanGenerationOutput,
   CarouselDraft,
   CarouselDraftSlide,
   ContentNarrative,
@@ -551,7 +552,7 @@ function isUploadableGeneratedMimeType(value: string | undefined): boolean {
 }
 
 function isBusinessDraft(): boolean {
-  return draft.value?.result.workspaceMode === "business" || Boolean(draft.value?.result.businessOutput);
+  return draft.value?.result.workspaceMode === "business";
 }
 
 function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): string {
@@ -607,7 +608,25 @@ const postScore = computed(() =>
 
 const quickSignals = computed(() => draft.value?.result.quickSignals);
 const isBusinessMode = computed(() => isBusinessDraft());
-const businessOutput = computed<BusinessContentOutput | undefined>(() => draft.value?.result.businessOutput);
+const generationOutput = computed(() => draft.value?.result.generationOutput);
+const businessWeeklyPlan = computed<BusinessWeeklyPlanGenerationOutput | null>(() => {
+  if (draft.value?.result.workspaceMode !== "business") {
+    return null;
+  }
+
+  return generationOutput.value?.kind === "weekly_plan"
+    ? generationOutput.value as BusinessWeeklyPlanGenerationOutput
+    : null;
+});
+const businessOutput = computed<BusinessContentOutput | undefined>(() => {
+  const currentOutput = generationOutput.value;
+
+  if (currentOutput?.kind === "business_campaign") {
+    return currentOutput.content;
+  }
+
+  return draft.value?.result.businessOutput;
+});
 const postContent = computed(() => draft.value?.result.post ?? "");
 const postParagraphs = computed(() => splitPostParagraphs(postContent.value));
 const previewLeadLines = computed(() => extractPreviewLead(postParagraphs.value));
@@ -1495,6 +1514,56 @@ const aiPreviewActions = computed(() =>
   ),
 );
 
+function inferBusinessChannelsFromOutput(output: BusinessContentOutput): Array<"instagram" | "facebook" | "email"> {
+  return [
+    ...(output.captions.instagram ? ["instagram" as const] : []),
+    ...(output.captions.facebook ? ["facebook" as const] : []),
+    ...(output.email ? ["email" as const] : []),
+  ];
+}
+
+function buildFallbackGenerationOutput(
+  body: Partial<RepurposeContentResponse>,
+  post: string,
+  visualNarrative: ContentNarrative,
+  quickSignals: RepurposeContentResponse["quickSignals"],
+): RepurposeContentResponse["generationOutput"] {
+  if (body.workspaceMode === "business" && body.businessOutput) {
+    return {
+      kind: "business_campaign",
+      intent:
+        body.generationIntent === "get_leads"
+        || body.generationIntent === "get_bookings"
+        || body.generationIntent === "promote_offer"
+          ? body.generationIntent
+          : "promote_offer",
+      goal:
+        body.generationIntent === "get_leads"
+          ? "leads"
+          : body.generationIntent === "get_bookings"
+            ? "bookings"
+            : "awareness",
+      channels: inferBusinessChannelsFromOutput(body.businessOutput),
+      content: body.businessOutput,
+    };
+  }
+
+  return {
+    kind: "creator_post",
+    intent:
+      body.generationIntent === "grow_audience" || body.generationIntent === "promote_offer"
+        ? body.generationIntent
+        : "post_idea",
+    primaryChannel: "linkedin",
+    post,
+    hooks: Array.isArray(body.hooks) ? body.hooks.filter((hook): hook is string => typeof hook === "string") : [],
+    variations: Array.isArray(body.variations) ? body.variations : [],
+    visualNarrative,
+    carouselDraft: mapCarouselDraftFromNarrative(visualNarrative),
+    quickSignals,
+  };
+}
+
 function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null {
   if (!asset.contentBody || typeof asset.contentBody !== "object") {
     return null;
@@ -1536,6 +1605,19 @@ function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null 
               ? body.idea.angle
               : "Refine and publish this workspace draft.",
         });
+  const quickSignals =
+    body.quickSignals && typeof body.quickSignals === "object"
+      ? body.quickSignals
+      : {
+          readyLabel: "Saved as draft",
+          formatLabel: "This post is persisted and ready for the next action.",
+        };
+  const fallbackGenerationOutput = buildFallbackGenerationOutput(
+    body,
+    post,
+    normalizedNarrative,
+    quickSignals,
+  );
   const normalizedResult: RepurposeContentResponse = {
     inputType: body.inputType ?? "text",
     intent: body.intent ?? (asset.sourceKind === "remix" ? "reference" : "capture"),
@@ -1546,6 +1628,10 @@ function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null 
       || body.strategy === "tactical"
         ? body.strategy
         : "continue",
+    generationOutput:
+      body.generationOutput && typeof body.generationOutput === "object"
+        ? body.generationOutput
+        : fallbackGenerationOutput,
     workspaceMode: body.workspaceMode,
     sourceText: typeof body.sourceText === "string" ? body.sourceText : post,
     idea: {
@@ -1563,13 +1649,7 @@ function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null 
     visualNarrative: normalizedNarrative,
     variations: Array.isArray(body.variations) ? body.variations : [],
     carouselDraft: mapCarouselDraftFromNarrative(normalizedNarrative),
-    quickSignals:
-      body.quickSignals && typeof body.quickSignals === "object"
-        ? body.quickSignals
-        : {
-            readyLabel: "Saved as draft",
-            formatLabel: "This post is persisted and ready for the next action.",
-          },
+    quickSignals,
     captionFooterCredit:
       typeof body.captionFooterCredit === "string" ? body.captionFooterCredit : "",
     businessOutput:
@@ -3198,10 +3278,20 @@ onBeforeUnmount(() => {
     <template v-if="draft">
       <section class="result-hero">
         <p class="result-eyebrow">/app/result</p>
-        <h1>{{ isBusinessMode ? "Your campaign pack is ready." : "Your post is ready." }}</h1>
+        <h1>
+          {{
+            businessWeeklyPlan
+              ? "Your weekly campaign plan is ready."
+              : isBusinessMode
+                ? "Your campaign pack is ready."
+                : "Your post is ready."
+          }}
+        </h1>
         <p class="result-description">
           {{
-            isBusinessMode
+            businessWeeklyPlan
+              ? "Review the 7-day plan, tighten the headlines, and turn the best items into channel-ready campaigns."
+              : isBusinessMode
               ? "Review the visual direction, platform captions, CTA, and email copy without rebuilding the campaign by hand."
               : "This is the activation moment: improve the draft, send it into outreach, or turn it into an email without rewriting from scratch."
           }}
@@ -3216,8 +3306,16 @@ onBeforeUnmount(() => {
         <article class="result-post-card">
           <div class="result-card-header">
             <div>
-              <p class="panel-meta">{{ isBusinessMode ? "Generated campaign" : "Generated post" }}</p>
-              <h2>{{ businessOutput?.visual.headline || draft.result.idea.title }}</h2>
+              <p class="panel-meta">
+                {{
+                  businessWeeklyPlan
+                    ? "Generated weekly plan"
+                    : isBusinessMode
+                      ? "Generated campaign"
+                      : "Generated post"
+                }}
+              </p>
+              <h2>{{ businessOutput?.visual.headline || businessWeeklyPlan?.days[0]?.headline || draft.result.idea.title }}</h2>
             </div>
             <div class="score-badge" :data-tone="attentionSignal.tone">
               Attention {{ attentionSignal.label }} · {{ postScore }}/100
@@ -3232,6 +3330,19 @@ onBeforeUnmount(() => {
             <span>{{ povSummary }}</span>
             <span v-if="qualitySummary">POV quality {{ qualitySummary.overall }}/100</span>
           </p>
+
+          <section v-if="businessWeeklyPlan" class="execution-status-grid">
+            <article
+              v-for="day in businessWeeklyPlan.days"
+              :key="`weekly-plan-${day.dayNumber}`"
+              class="execution-status-block"
+            >
+              <p class="panel-meta">Day {{ day.dayNumber }} · {{ day.theme }}</p>
+              <strong>{{ day.headline }}</strong>
+              <p class="execution-status-description">{{ day.summary }}</p>
+              <p v-if="day.cta" class="panel-note">CTA: {{ day.cta }}</p>
+            </article>
+          </section>
 
           <section v-if="isBusinessMode && businessOutput" class="result-signal-grid">
             <article class="result-signal-card">

@@ -2,6 +2,8 @@ import type {
   CarouselDraft,
   ContentNarrative,
   ContentAsset,
+  CreatorGenerationIntent,
+  CreatorWeeklyPlanGenerationOutput,
   RepurposeContentRequest,
   RepurposeContentResponse,
   RepurposeIntent,
@@ -183,6 +185,95 @@ function resolveQuickSignals(
       inputType === "url"
         ? `High-performing format: ${sourceCount > 1 ? "multi-source feed remix" : "reference remix"} + ${carouselDraft.slides.length}-slide carousel`
         : `High-performing format: insight post + ${carouselDraft.slides.length}-slide carousel`,
+  };
+}
+
+function resolveCreatorGenerationIntent(
+  intent: CreatorGenerationIntent | undefined,
+): CreatorGenerationIntent {
+  return intent ?? "post_idea";
+}
+
+function buildCreatorWeeklyPlanOutput(input: {
+  ideaTitle: string;
+  sourceText: string;
+}): CreatorWeeklyPlanGenerationOutput {
+  const focus = truncateText(input.ideaTitle || normalizeWhitespace(input.sourceText) || "Weekly focus", 72);
+  const themes: CreatorWeeklyPlanGenerationOutput["days"][number]["theme"][] = [
+    "opinion",
+    "story",
+    "tactical",
+    "proof",
+    "offer",
+    "tactical",
+    "recap",
+  ];
+
+  return {
+    kind: "weekly_plan",
+    intent: "weekly_plan",
+    primaryChannel: "linkedin",
+    days: themes.map((theme, index) => ({
+      dayNumber: index + 1,
+      theme,
+      headline:
+        theme === "story"
+          ? `The story behind ${focus.toLowerCase()}`
+          : theme === "tactical"
+            ? `How to make ${focus.toLowerCase()} practical`
+            : theme === "proof"
+              ? `Proof that ${focus.toLowerCase()} works`
+              : theme === "offer"
+                ? `What ${focus.toLowerCase()} should lead people toward`
+                : theme === "recap"
+                  ? `What this week taught me about ${focus.toLowerCase()}`
+                  : `${focus} is probably misunderstood`,
+      summary:
+        theme === "story"
+          ? "Tell a short story that makes the point concrete, then land one clear lesson."
+          : theme === "tactical"
+            ? "Turn the idea into a practical framework, checklist, or repeatable move."
+            : theme === "proof"
+              ? "Use proof, results, or observations to make the point harder to dismiss."
+              : theme === "offer"
+                ? "Bridge the audience from the insight to the offer without sounding like a pitch deck."
+                : theme === "recap"
+                  ? "Wrap the week with a summary of what changed, what mattered, and what comes next."
+                  : "Lead with a sharper point of view and make the audience pick a side.",
+    })),
+  };
+}
+
+function buildCreatorGenerationOutput(input: {
+  generationIntent: CreatorGenerationIntent | undefined;
+  post: string;
+  hooks: string[];
+  variations: RepurposeContentResponse["variations"];
+  visualNarrative: ContentNarrative;
+  carouselDraft: CarouselDraft;
+  quickSignals: RepurposeContentResponse["quickSignals"];
+  ideaTitle: string;
+  sourceText: string;
+}): RepurposeContentResponse["generationOutput"] {
+  const normalizedIntent = resolveCreatorGenerationIntent(input.generationIntent);
+
+  if (normalizedIntent === "weekly_plan") {
+    return buildCreatorWeeklyPlanOutput({
+      ideaTitle: input.ideaTitle,
+      sourceText: input.sourceText,
+    });
+  }
+
+  return {
+    kind: "creator_post",
+    intent: normalizedIntent,
+    primaryChannel: "linkedin",
+    post: input.post,
+    hooks: input.hooks,
+    variations: input.variations,
+    visualNarrative: input.visualNarrative,
+    carouselDraft: input.carouselDraft,
+    quickSignals: input.quickSignals,
   };
 }
 
@@ -381,11 +472,23 @@ export async function repurposeContent(
   });
   const carouselDraft = buildCarouselDraft(visualNarrative);
   const quickSignals = resolveQuickSignals(inputType, carouselDraft, sourceCount);
+  const generationOutput = buildCreatorGenerationOutput({
+    generationIntent: input.generationIntent,
+    post: structuredContent.post,
+    hooks: structuredContent.hooks.slice(0, 5),
+    variations: variations.variations,
+    visualNarrative,
+    carouselDraft,
+    quickSignals,
+    ideaTitle: structuredContent.idea.title,
+    sourceText,
+  });
   const responseBase: Omit<RepurposeContentResponse, "asset"> = {
     inputType,
     intent,
     strategy,
     generationIntent: input.generationIntent,
+    generationOutput,
     sourceText,
     idea: structuredContent.idea,
     hooks: structuredContent.hooks.slice(0, 5),

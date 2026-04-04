@@ -1,5 +1,9 @@
 import type { ContentAsset, ContentPovProfile, ContentQualityScore } from "./analytics.ts";
-import type { BusinessContentOutput, WorkspaceMode } from "./business-generation.ts";
+import type {
+  BusinessContentOutput,
+  BusinessGenerationOutput,
+  WorkspaceMode,
+} from "./business-generation.ts";
 import type { ContentNarrative } from "./content-narrative.ts";
 import type { IdeaOption, LinkedInPostVariation } from "./founder-content.ts";
 import type { CreatorGenerationIntent, GenerationIntent } from "./generation-intent.ts";
@@ -63,6 +67,40 @@ export interface RepurposeSuggestionSelection {
   origin?: RepurposeSuggestionSelectionOrigin;
 }
 
+export type CreatorGenerationOutputKind = "creator_post" | "weekly_plan";
+
+export interface CreatorWeeklyPlanDay {
+  dayNumber: number;
+  theme: "opinion" | "story" | "tactical" | "proof" | "offer" | "recap";
+  headline: string;
+  summary: string;
+}
+
+export interface CreatorPostGenerationOutput {
+  kind: "creator_post";
+  intent: Exclude<CreatorGenerationIntent, "weekly_plan">;
+  primaryChannel: "linkedin";
+  post: string;
+  hooks: string[];
+  variations: LinkedInPostVariation[];
+  visualNarrative: ContentNarrative;
+  carouselDraft: CarouselDraft;
+  quickSignals: RepurposeQuickSignals;
+}
+
+export interface CreatorWeeklyPlanGenerationOutput {
+  kind: "weekly_plan";
+  intent: "weekly_plan";
+  primaryChannel: "linkedin";
+  days: CreatorWeeklyPlanDay[];
+}
+
+export type CreatorGenerationOutput =
+  | CreatorPostGenerationOutput
+  | CreatorWeeklyPlanGenerationOutput;
+
+export type GenerationOutput = CreatorGenerationOutput | BusinessGenerationOutput;
+
 export interface RepurposeContentRequest {
   inputType: RepurposeInputType;
   intent?: RepurposeIntent;
@@ -83,6 +121,7 @@ export interface RepurposeContentResponse {
   intent: RepurposeIntent;
   strategy: RepurposeStrategy;
   generationIntent?: GenerationIntent;
+  generationOutput: GenerationOutput;
   workspaceMode?: WorkspaceMode;
   sourceText: string;
   idea: IdeaOption;
