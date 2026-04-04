@@ -1080,13 +1080,21 @@ export async function generateMotionPostAsset(
 
   const readyAssets = await loadReadyPostAssets(businessId, postId);
   const readyImageAssets = readyAssets.filter((asset) => asset.type === "image");
-  const readyVideoAssets = readyAssets.filter((asset) => asset.type === "video");
+  const existingDerivedVideos = readyAssets.filter((asset) =>
+    asset.type === "video"
+    && asset.metadata.source === "motion_template"
+    && asset.metadata.posterAssetId === sourceAssetId,
+  );
+  const unrelatedReadyVideos = readyAssets.filter((asset) =>
+    asset.type === "video"
+    && !existingDerivedVideos.some((candidate) => candidate.id === asset.id),
+  );
 
-  if (readyVideoAssets.length > 0) {
+  if (unrelatedReadyVideos.length > 0) {
     throw new HttpError(
       400,
       "motion_already_attached",
-      "This draft already has video attached. Remove the current video before generating another motion teaser.",
+      "This draft already has another video attached. Remove it before generating a motion teaser from the current image.",
     );
   }
 
@@ -1099,6 +1107,13 @@ export async function generateMotionPostAsset(
   }
 
   const sourceAsset = mapPostAsset(sourceAssetRow, false);
+  const removedAssetIds: string[] = [];
+
+  for (const asset of existingDerivedVideos) {
+    await deletePostAsset(principal, businessId, asset.id);
+    removedAssetIds.push(asset.id);
+  }
+
   const renderedVideo = await renderMotionVideoFromImage({
     sourceBytes: await downloadPostAssetBytes(sourceAsset),
     template: motionTemplate,
@@ -1144,7 +1159,7 @@ export async function generateMotionPostAsset(
 
   return {
     asset: createResponse.asset,
-    removedAssetIds: [],
+    removedAssetIds,
   };
 }
 

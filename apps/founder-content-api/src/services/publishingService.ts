@@ -99,6 +99,11 @@ export interface PublishMediaValidationSummary {
   slideCount: number;
 }
 
+export interface PublishAssetPreferences {
+  primaryAssetId?: string;
+  posterAssetId?: string;
+}
+
 function countPostAssetsByType(assets: PostAsset[]): { imageCount: number; videoCount: number } {
   let imageCount = 0;
   let videoCount = 0;
@@ -127,8 +132,34 @@ function isMotionTemplateVideoAsset(asset: PostAsset): asset is Extract<PostAsse
 export function resolvePublishAssetsForChannel(
   channel: "linkedin" | "facebook" | "instagram",
   assets?: PostAsset[],
+  preferences?: PublishAssetPreferences,
 ): PostAsset[] {
   const readyAssets = (assets ?? []).filter((asset) => asset.status === "ready");
+  const preferredPrimaryAsset =
+    typeof preferences?.primaryAssetId === "string" && preferences.primaryAssetId.trim() !== ""
+      ? readyAssets.find((asset) => asset.id === preferences.primaryAssetId?.trim())
+      : undefined;
+  const preferredPosterAsset =
+    typeof preferences?.posterAssetId === "string" && preferences.posterAssetId.trim() !== ""
+      ? readyAssets.find((asset) => asset.id === preferences.posterAssetId?.trim())
+      : undefined;
+
+  if (channel === "linkedin") {
+    if (preferredPosterAsset?.type === "image") {
+      return [preferredPosterAsset];
+    }
+
+    if (preferredPrimaryAsset?.type === "image") {
+      return [preferredPrimaryAsset];
+    }
+  }
+
+  if (channel === "instagram" || channel === "facebook") {
+    if (preferredPrimaryAsset) {
+      return [preferredPrimaryAsset];
+    }
+  }
+
   const motionVideos = readyAssets.filter((asset) => {
     if (!isMotionTemplateVideoAsset(asset)) {
       return false;
@@ -172,8 +203,9 @@ export function validatePublishMediaForChannel(input: {
   channel: "linkedin" | "facebook" | "instagram";
   assets?: PostAsset[];
   slides?: ScheduledPostSlide[];
+  preferences?: PublishAssetPreferences;
 }): PublishMediaValidationSummary {
-  const assets = resolvePublishAssetsForChannel(input.channel, input.assets);
+  const assets = resolvePublishAssetsForChannel(input.channel, input.assets, input.preferences);
   const slides = input.slides ?? [];
   const { imageCount, videoCount } = countPostAssetsByType(assets);
   const slideCount = slides.length;

@@ -164,6 +164,10 @@ interface DirectPublishReuseRow extends QueryResultRow {
   created_at: Date | string;
 }
 
+interface ContentAssetBodyOnlyRow extends QueryResultRow {
+  content_body: unknown;
+}
+
 interface PublishAttemptRow extends QueryResultRow {
   id: string;
   business_id: string;
@@ -1492,6 +1496,65 @@ function summarizePublishMedia(assets: PostAsset[], slides: ScheduledPostSlide[]
   };
 }
 
+function normalizePublishAssetPreferences(value: unknown): {
+  primaryAssetId?: string;
+  posterAssetId?: string;
+} | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const mediaPreferences =
+    candidate.mediaPreferences && typeof candidate.mediaPreferences === "object" && !Array.isArray(candidate.mediaPreferences)
+      ? candidate.mediaPreferences as Record<string, unknown>
+      : null;
+
+  if (!mediaPreferences) {
+    return undefined;
+  }
+
+  const primaryAssetId =
+    typeof mediaPreferences.primaryAssetId === "string" && mediaPreferences.primaryAssetId.trim() !== ""
+      ? mediaPreferences.primaryAssetId.trim()
+      : undefined;
+  const posterAssetId =
+    typeof mediaPreferences.posterAssetId === "string" && mediaPreferences.posterAssetId.trim() !== ""
+      ? mediaPreferences.posterAssetId.trim()
+      : undefined;
+
+  return primaryAssetId || posterAssetId
+    ? {
+        primaryAssetId,
+        posterAssetId,
+      }
+    : undefined;
+}
+
+async function loadPublishAssetPreferences(
+  businessId: string,
+  assetGroupId: string | null | undefined,
+): Promise<{ primaryAssetId?: string; posterAssetId?: string } | undefined> {
+  const normalizedAssetGroupId = assetGroupId?.trim();
+
+  if (!normalizedAssetGroupId || !isUuidLike(normalizedAssetGroupId)) {
+    return undefined;
+  }
+
+  const result = await queryDb<ContentAssetBodyOnlyRow>(
+    `
+      select content_body
+      from content_assets
+      where id = $1
+        and business_id = $2
+      limit 1
+    `,
+    [normalizedAssetGroupId, businessId],
+  );
+
+  return normalizePublishAssetPreferences(result.rows[0]?.content_body);
+}
+
 async function loadValidatedReadyAssetsForPlatform(
   businessId: string,
   platform: "linkedin" | "facebook" | "instagram",
@@ -1499,11 +1562,13 @@ async function loadValidatedReadyAssetsForPlatform(
   slides: ScheduledPostSlide[] = [],
 ): Promise<PostAsset[]> {
   const readyAssets = await loadReadyAssetsForPostGroup(businessId, assetGroupId);
-  const resolvedAssets = resolvePublishAssetsForChannel(platform, readyAssets);
+  const preferences = await loadPublishAssetPreferences(businessId, assetGroupId);
+  const resolvedAssets = resolvePublishAssetsForChannel(platform, readyAssets, preferences);
   validatePublishMediaForChannel({
     channel: platform,
     assets: resolvedAssets,
     slides,
+    preferences,
   });
   return resolvedAssets;
 }

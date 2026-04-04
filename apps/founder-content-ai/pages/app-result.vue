@@ -113,6 +113,11 @@ interface PlatformPublishAttemptResult {
   externalPostUrl?: string;
 }
 
+interface DraftMediaPreferences {
+  primaryAssetId?: string;
+  posterAssetId?: string;
+}
+
 const draft = ref<ActivationDraftRecord | null>(null);
 const selectedCreatorVariantId = ref("");
 const feedbackMessage = ref("");
@@ -142,6 +147,8 @@ const mediaFeedback = ref("");
 const postAssets = ref<PostAsset[]>([]);
 const isWorkspaceAssetPickerOpen = ref(false);
 const selectedMotionTemplateId = ref<MotionTemplateId>("subtle_zoom");
+const draftMediaPrimaryAssetId = ref("");
+const draftMediaPosterAssetId = ref("");
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
 const isLoadingMediaRecommendations = ref(false);
 const isGeneratingRecommendationId = ref("");
@@ -1250,20 +1257,44 @@ const readyImageAssets = computed(() =>
   postAssets.value.filter((asset) => asset.type === "image" && asset.status === "ready"),
 );
 const motionLiteSourceAsset = computed(() => readyImageAssets.value[0] ?? null);
+const motionLiteDerivedVideoAsset = computed(() => {
+  const sourceAssetId = motionLiteSourceAsset.value?.id;
+
+  if (!sourceAssetId) {
+    return null;
+  }
+
+  return postAssets.value.find((asset) =>
+    asset.type === "video"
+    && asset.status === "ready"
+    && asset.metadata.source === "motion_template"
+    && asset.metadata.posterAssetId === sourceAssetId,
+  ) ?? null;
+});
 const motionLiteAspectRatio = computed(() =>
   motionLiteSourceAsset.value?.metadata.aspectRatio === "9:16" ? "portrait" : "square",
 );
 const motionLiteUnavailableReason = computed(() => {
-  if (readyVideoCount.value > 0) {
-    return "This draft already has video attached. Remove it before generating another motion teaser.";
-  }
-
   if (readyImageCount.value === 0) {
     return "Generate or attach one image first, then animate it into a short promo teaser.";
   }
 
   if (readyImageCount.value > 1) {
     return "Motion-lite currently works on one image at a time. Narrow this draft to a single image first.";
+  }
+
+  const sourceAssetId = motionLiteSourceAsset.value?.id;
+  const unrelatedReadyVideos = postAssets.value.filter((asset) =>
+    asset.type === "video"
+    && asset.status === "ready"
+    && (
+      asset.metadata.source !== "motion_template"
+      || asset.metadata.posterAssetId !== sourceAssetId
+    ),
+  );
+
+  if (unrelatedReadyVideos.length > 0) {
+    return "This draft already has another video attached. Remove it before generating a motion teaser from the current image.";
   }
 
   return "";
@@ -1293,6 +1324,29 @@ function resolveEffectivePostAssetsForPlatform(
   assets: PostAsset[] = postAssets.value,
 ): PostAsset[] {
   const readyAssets = assets.filter((asset) => asset.status === "ready");
+  const preferredPrimaryAsset =
+    draftMediaPrimaryAssetId.value.trim() !== ""
+      ? readyAssets.find((asset) => asset.id === draftMediaPrimaryAssetId.value.trim())
+      : undefined;
+  const preferredPosterAsset =
+    draftMediaPosterAssetId.value.trim() !== ""
+      ? readyAssets.find((asset) => asset.id === draftMediaPosterAssetId.value.trim())
+      : undefined;
+
+  if (platform === "linkedin") {
+    if (preferredPosterAsset?.type === "image") {
+      return [preferredPosterAsset];
+    }
+
+    if (preferredPrimaryAsset?.type === "image") {
+      return [preferredPrimaryAsset];
+    }
+  }
+
+  if ((platform === "instagram" || platform === "facebook") && preferredPrimaryAsset) {
+    return [preferredPrimaryAsset];
+  }
+
   const motionVideos = readyAssets.filter((asset) => {
     if (!isMotionDerivedVideoAsset(asset)) {
       return false;
@@ -1338,6 +1392,18 @@ function summarizeEffectivePostAssetsForPlatform(platform: PublishableSocialPlat
 }
 
 function getMediaAssetRoleLabel(asset: PostAsset): string {
+  if (draftMediaPrimaryAssetId.value === asset.id && draftMediaPosterAssetId.value === asset.id) {
+    return "Using still image";
+  }
+
+  if (draftMediaPrimaryAssetId.value === asset.id) {
+    return asset.type === "video" ? "Primary for Instagram/Facebook" : "Primary asset";
+  }
+
+  if (draftMediaPosterAssetId.value === asset.id) {
+    return "Fallback for LinkedIn";
+  }
+
   if (isMotionDerivedVideoAsset(asset)) {
     return "Primary for Instagram/Facebook";
   }
@@ -2298,6 +2364,38 @@ function inferBusinessChannelsFromOutput(output: BusinessContentOutput): Array<"
   ];
 }
 
+function normalizeDraftMediaPreferences(value: unknown): DraftMediaPreferences | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const mediaPreferences =
+    candidate.mediaPreferences && typeof candidate.mediaPreferences === "object" && !Array.isArray(candidate.mediaPreferences)
+      ? candidate.mediaPreferences as Record<string, unknown>
+      : null;
+
+  if (!mediaPreferences) {
+    return undefined;
+  }
+
+  const primaryAssetId =
+    typeof mediaPreferences.primaryAssetId === "string" && mediaPreferences.primaryAssetId.trim() !== ""
+      ? mediaPreferences.primaryAssetId.trim()
+      : undefined;
+  const posterAssetId =
+    typeof mediaPreferences.posterAssetId === "string" && mediaPreferences.posterAssetId.trim() !== ""
+      ? mediaPreferences.posterAssetId.trim()
+      : undefined;
+
+  return primaryAssetId || posterAssetId
+    ? {
+        primaryAssetId,
+        posterAssetId,
+      }
+    : undefined;
+}
+
 function buildFallbackGenerationOutput(
   body: Partial<RepurposeContentResponse>,
   post: string,
@@ -2610,6 +2708,24 @@ function buildSyncedGenerationOutput(): RepurposeContentResponse["generationOutp
   };
 }
 
+function buildDraftMediaPreferences(): DraftMediaPreferences | undefined {
+  const primaryAssetId = draftMediaPrimaryAssetId.value.trim() || undefined;
+  const posterAssetId = draftMediaPosterAssetId.value.trim() || undefined;
+
+  return primaryAssetId || posterAssetId
+    ? {
+        primaryAssetId,
+        posterAssetId,
+      }
+    : undefined;
+}
+
+function syncDraftMediaPreferencesFromDraft(): void {
+  const preferences = normalizeDraftMediaPreferences(draft.value?.result.asset?.contentBody);
+  draftMediaPrimaryAssetId.value = preferences?.primaryAssetId ?? "";
+  draftMediaPosterAssetId.value = preferences?.posterAssetId ?? "";
+}
+
 function buildDraftContentBody(): Record<string, unknown> {
   if (!draft.value) {
     return { content: postContent.value };
@@ -2629,6 +2745,7 @@ function buildDraftContentBody(): Record<string, unknown> {
     generationOutput: buildSyncedGenerationOutput(),
     visualNarrative: nextVisualNarrative,
     carouselDraft: mapCarouselDraftFromNarrative(nextVisualNarrative),
+    ...(buildDraftMediaPreferences() ? { mediaPreferences: buildDraftMediaPreferences() } : {}),
   };
 }
 
@@ -2651,6 +2768,7 @@ function buildDraftContentBodyWithVisualNarrative(nextVisualNarrative: ContentNa
     generationOutput: buildSyncedGenerationOutput(),
     visualNarrative: persistableNarrative,
     carouselDraft: mapCarouselDraftFromNarrative(persistableNarrative),
+    ...(buildDraftMediaPreferences() ? { mediaPreferences: buildDraftMediaPreferences() } : {}),
   };
 }
 
@@ -2756,6 +2874,35 @@ async function updateDraftVisualNarrative(nextVisualNarrative: ContentNarrative)
       asset: nextAsset,
     },
   });
+}
+
+async function persistDraftMediaPreferences(
+  input: DraftMediaPreferences,
+  options?: { successMessage?: string; silent?: boolean },
+): Promise<void> {
+  draftMediaPrimaryAssetId.value = input.primaryAssetId ?? "";
+  draftMediaPosterAssetId.value = input.posterAssetId ?? "";
+
+  if (!draft.value || !activeBusinessId.value || !draft.value.result.asset?.id) {
+    return;
+  }
+
+  const response = await requestUpdatePipelineItem({
+    businessId: activeBusinessId.value,
+    assetId: draft.value.result.asset.id,
+    textContent: postContent.value,
+    contentBody: buildDraftContentBody(),
+  });
+
+  const nextDraft = buildPersistedDraftRecord(response.asset);
+
+  if (nextDraft) {
+    draft.value = nextDraft;
+  }
+
+  if (!options?.silent && options?.successMessage) {
+    feedbackMessage.value = options.successMessage;
+  }
 }
 
 async function ensurePersistedDraft(): Promise<string | null> {
@@ -3064,17 +3211,74 @@ async function generateMotionLiteFromCurrentVisual(): Promise<void> {
     });
 
     await loadPostAssets();
+    await persistDraftMediaPreferences(
+      {
+        primaryAssetId: response.asset.id,
+        posterAssetId: motionLiteSourceAsset.value.id,
+      },
+      {
+        silent: true,
+      },
+    );
     mediaFeedback.value =
       `Created a short ${getMotionTemplateLabel(selectedMotionTemplateId.value).toLowerCase()} teaser and kept the original image attached as a fallback.`;
 
-    if (response.removedAssetIds.length === 0) {
-      mediaFeedback.value = `Created a short ${getMotionTemplateLabel(selectedMotionTemplateId.value).toLowerCase()} teaser. Instagram and Facebook will prefer the video, while LinkedIn keeps the poster image.`;
+    if (response.removedAssetIds.length > 0) {
+      mediaFeedback.value =
+        `Re-generated the ${getMotionTemplateLabel(selectedMotionTemplateId.value).toLowerCase()} teaser. Instagram and Facebook will use the refreshed video, while LinkedIn keeps the poster image.`;
+    } else {
+      mediaFeedback.value =
+        `Created a short ${getMotionTemplateLabel(selectedMotionTemplateId.value).toLowerCase()} teaser. Instagram and Facebook will prefer the video, while LinkedIn keeps the poster image.`;
     }
   } catch (error) {
     mediaFeedback.value =
       error instanceof Error ? error.message : "Unable to generate a motion teaser right now.";
   } finally {
     isGeneratingMotionLite.value = false;
+  }
+}
+
+async function preferStillImageForDraft(): Promise<void> {
+  if (!motionLiteSourceAsset.value) {
+    mediaFeedback.value = "Attach one image before switching this draft back to still-image mode.";
+    return;
+  }
+
+  try {
+    await persistDraftMediaPreferences(
+      {
+        primaryAssetId: motionLiteSourceAsset.value.id,
+        posterAssetId: motionLiteSourceAsset.value.id,
+      },
+      {
+        successMessage: "This draft will use the still image across platforms.",
+      },
+    );
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to switch this draft back to the still image.";
+  }
+}
+
+async function preferMotionVideoForDraft(): Promise<void> {
+  if (!motionLiteDerivedVideoAsset.value || !motionLiteSourceAsset.value) {
+    mediaFeedback.value = "Generate a motion teaser first, then make it primary.";
+    return;
+  }
+
+  try {
+    await persistDraftMediaPreferences(
+      {
+        primaryAssetId: motionLiteDerivedVideoAsset.value.id,
+        posterAssetId: motionLiteSourceAsset.value.id,
+      },
+      {
+        successMessage: "This draft will use the motion teaser for Instagram and Facebook, with the image kept for LinkedIn.",
+      },
+    );
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to switch this draft back to the motion teaser.";
   }
 }
 
@@ -4079,6 +4283,14 @@ watch(
 );
 
 watch(
+  () => draft.value?.result.asset?.contentBody,
+  () => {
+    syncDraftMediaPreferencesFromDraft();
+  },
+  { immediate: true },
+);
+
+watch(
   () => [draft.value?.id, draft.value?.result.post, creatorContentType.value, creatorVariants.value.map((variant) => variant.id).join("|")],
   () => {
     if (isBusinessMode.value || creatorVariants.value.length === 0) {
@@ -4938,7 +5150,10 @@ onBeforeUnmount(() => {
                 <p class="panel-meta">Motion-lite</p>
                 <strong>Animate the current visual into a short promo teaser</strong>
                 <p class="ai-command-copy">
-                  Turns one attached image into a 7-second MP4 and replaces the still image on this draft so it stays publishable.
+                  Turns one attached image into a 7-second MP4 while keeping the original still image attached as fallback.
+                </p>
+                <p v-if="motionLiteDerivedVideoAsset" class="motion-lite-status">
+                  Animated version created. Instagram and Facebook use the video, and LinkedIn keeps the original image.
                 </p>
               </div>
               <div class="motion-lite-actions">
@@ -4956,7 +5171,25 @@ onBeforeUnmount(() => {
                   :disabled="!canGenerateMotionLite || isGeneratingMotionLite || isUploadingPostAssets"
                   @click="void generateMotionLiteFromCurrentVisual()"
                 >
-                  {{ isGeneratingMotionLite ? "Animating..." : "Animate this visual" }}
+                  {{ isGeneratingMotionLite ? "Animating..." : motionLiteDerivedVideoAsset ? "Re-generate" : "Animate this visual" }}
+                </button>
+                <button
+                  v-if="motionLiteDerivedVideoAsset"
+                  type="button"
+                  class="secondary-action"
+                  :disabled="isGeneratingMotionLite || isUploadingPostAssets"
+                  @click="void preferStillImageForDraft()"
+                >
+                  Use image instead
+                </button>
+                <button
+                  v-if="motionLiteDerivedVideoAsset"
+                  type="button"
+                  class="secondary-action"
+                  :disabled="isGeneratingMotionLite || isUploadingPostAssets"
+                  @click="void preferMotionVideoForDraft()"
+                >
+                  Use video instead
                 </button>
               </div>
             </div>
@@ -6269,6 +6502,12 @@ onBeforeUnmount(() => {
 
 .motion-lite-panel strong {
   display: block;
+}
+
+.motion-lite-status {
+  margin: 10px 0 0;
+  color: var(--fc-text-muted);
+  line-height: 1.5;
 }
 
 .motion-lite-actions {
