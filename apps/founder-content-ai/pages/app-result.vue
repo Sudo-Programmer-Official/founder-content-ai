@@ -1236,7 +1236,19 @@ const creatorSceneDescription = computed(() => {
     .filter((value) => value && value.trim() !== "")
     .join(". ");
 });
+const motionLiteUsesEmbeddedCopy = computed(
+  () => motionLiteSourceAsset.value?.source === "generated",
+);
 const motionLiteOverlay = computed(() => {
+  if (motionLiteUsesEmbeddedCopy.value) {
+    return {
+      headline: undefined,
+      subheadline: undefined,
+      cta: undefined,
+      brandText: undefined,
+    };
+  }
+
   const businessHeadline =
     businessOutput.value?.visual.headline
     || draft.value?.result.idea.title
@@ -1280,6 +1292,11 @@ const motionLiteOverlay = computed(() => {
     brandText,
   };
 });
+const motionLiteBehaviorCopy = computed(() =>
+  motionLiteUsesEmbeddedCopy.value
+    ? "This still already carries the core message, so motion-lite will animate the current design without adding a second text stack."
+    : "Turns one attached image into a short reel-style teaser with timed headline, support text, and CTA while keeping the original still image attached as fallback.",
+);
 const hooks = computed(() => draft.value?.result.hooks ?? []);
 const povSummary = computed(() => draft.value?.result.pov?.summary ?? "");
 const qualitySummary = computed(() => draft.value?.result.quality);
@@ -2104,9 +2121,42 @@ const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>((
     recommendedAssetIds: [],
   },
 ]);
+function buildMediaRecommendationMergeKey(suggestion: MediaRecommendationSuggestion): string {
+  return [
+    suggestion.actionType,
+    suggestion.suggestedMediaType ?? "",
+    suggestion.visualTemplateType ?? "",
+  ].join(":");
+}
+
+function mergeUniqueMediaRecommendations(
+  primary: MediaRecommendationSuggestion[],
+  secondary: MediaRecommendationSuggestion[],
+): MediaRecommendationSuggestion[] {
+  const merged: MediaRecommendationSuggestion[] = [];
+  const seen = new Set<string>();
+
+  for (const suggestion of [...primary, ...secondary]) {
+    const key = buildMediaRecommendationMergeKey(suggestion);
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    merged.push(suggestion);
+  }
+
+  return merged;
+}
+
 const ensuredMediaRecommendations = computed<MediaRecommendationSuggestion[]>(() => {
   const baseSuggestions = eligibleMediaRecommendations.value;
   const hasGenerateVisual = baseSuggestions.some((suggestion) => suggestion.actionType === "generate_visual");
+
+  if (isBusinessMode.value) {
+    return mergeUniqueMediaRecommendations(baseSuggestions, fallbackMediaRecommendations.value);
+  }
 
   if (hasGenerateVisual) {
     return baseSuggestions;
@@ -5550,7 +5600,7 @@ onBeforeUnmount(() => {
                 <p class="panel-meta">Motion-lite</p>
                 <strong>Animate the current visual into a short promo teaser</strong>
                 <p class="ai-command-copy">
-                  Turns one attached image into a short reel-style teaser with timed headline, support text, and CTA while keeping the original still image attached as fallback.
+                  {{ motionLiteBehaviorCopy }}
                 </p>
                 <p v-if="motionLiteDerivedVideoAsset" class="motion-lite-status">
                   Animated version created. Instagram and Facebook use the video, and LinkedIn keeps the original image.
@@ -7146,18 +7196,26 @@ onBeforeUnmount(() => {
 
 .media-recommendation-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 280px);
   gap: 12px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 8px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
 }
 
 .media-recommendation-card {
   display: grid;
   gap: 12px;
   align-content: space-between;
+  min-height: 100%;
   padding: 14px;
   border-radius: 18px;
   border: 1px solid color-mix(in srgb, var(--fc-border) 90%, transparent);
   background: rgba(255, 255, 255, 0.88);
+  scroll-snap-align: start;
 }
 
 .media-recommendation-card[data-recommended="true"] {
