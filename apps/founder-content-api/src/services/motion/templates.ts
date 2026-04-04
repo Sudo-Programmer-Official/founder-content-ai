@@ -25,11 +25,24 @@ export interface MotionTextStyleConfig {
   animation: MotionTextAnimationConfig;
 }
 
+export interface MotionFocusOverlayConfig {
+  enabled: boolean;
+  introStart: number;
+  introDuration: number;
+  sidePadding: number;
+  topPadding: number;
+  bottomPadding: number;
+  maxWidthRatio: number;
+  minHeight: number;
+  opacity: number;
+}
+
 export interface MotionTemplateConfig {
   centered: boolean;
   brandTop: number;
   brandAnimation: MotionTextAnimationConfig;
   headlineTopRatio: number;
+  focusOverlay?: MotionFocusOverlayConfig;
   audio: MotionTemplateAudioConfig;
   headline: MotionTextStyleConfig;
   subheadline: MotionTextStyleConfig;
@@ -76,6 +89,17 @@ export function getMotionTemplateConfig(
       brandTop: isPortrait ? 48 : 34,
       brandAnimation: { introStart: 0.08, introDuration: 0.24, slideOffsetY: 0 },
       headlineTopRatio: 0.5,
+      focusOverlay: {
+        enabled: true,
+        introStart: 0.16,
+        introDuration: 0.24,
+        sidePadding: isPortrait ? 32 : 38,
+        topPadding: 28,
+        bottomPadding: 34,
+        maxWidthRatio: isPortrait ? 0.86 : 0.8,
+        minHeight: isPortrait ? 240 : 220,
+        opacity: 0.78,
+      },
       audio: createAudioConfig("high_energy_promo", {
         volume: 0.28,
         fadeIn: 0.12,
@@ -117,6 +141,17 @@ export function getMotionTemplateConfig(
       brandTop: isPortrait ? 54 : 34,
       brandAnimation: { introStart: 0.14, introDuration: 0.28, slideOffsetY: 0 },
       headlineTopRatio: 0.57,
+      focusOverlay: {
+        enabled: true,
+        introStart: 0.34,
+        introDuration: 0.3,
+        sidePadding: isPortrait ? 30 : 34,
+        topPadding: 24,
+        bottomPadding: 28,
+        maxWidthRatio: isPortrait ? 0.82 : 0.74,
+        minHeight: isPortrait ? 210 : 190,
+        opacity: 0.62,
+      },
       audio: createAudioConfig("luxury_minimal"),
       headline: {
         maxLength: 120,
@@ -228,6 +263,17 @@ export function getMotionTemplateConfig(
       brandTop: isPortrait ? 54 : 34,
       brandAnimation: { introStart: 0.1, introDuration: 0.3, slideOffsetY: 0 },
       headlineTopRatio: 0.54,
+      focusOverlay: {
+        enabled: true,
+        introStart: 0.22,
+        introDuration: 0.26,
+        sidePadding: isPortrait ? 32 : 36,
+        topPadding: 28,
+        bottomPadding: 32,
+        maxWidthRatio: isPortrait ? 0.84 : 0.78,
+        minHeight: isPortrait ? 228 : 210,
+        opacity: 0.74,
+      },
       audio: createAudioConfig("high_energy_promo", {
         fadeIn: 0.12,
         fadeOut: 0.3,
@@ -268,6 +314,17 @@ export function getMotionTemplateConfig(
       brandTop: isPortrait ? 54 : 34,
       brandAnimation: { introStart: 0.1, introDuration: 0.3, slideOffsetY: 0 },
       headlineTopRatio: 0.58,
+      focusOverlay: {
+        enabled: true,
+        introStart: 0.22,
+        introDuration: 0.28,
+        sidePadding: isPortrait ? 34 : 40,
+        topPadding: 30,
+        bottomPadding: 36,
+        maxWidthRatio: isPortrait ? 0.86 : 0.8,
+        minHeight: isPortrait ? 236 : 216,
+        opacity: 0.76,
+      },
       audio: createAudioConfig("clean_modern", {
         volume: 0.24,
         fadeIn: 0.24,

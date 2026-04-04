@@ -4,7 +4,11 @@ import type {
   MotionTemplateAspectRatio,
   MotionTemplateMetadata,
 } from "../../../../../packages/shared-types/index.ts";
-import type { MotionTemplateConfig, MotionTextStyleConfig } from "./templates.ts";
+import type {
+  MotionFocusOverlayConfig,
+  MotionTemplateConfig,
+  MotionTextStyleConfig,
+} from "./templates.ts";
 import { formatMotionSeconds } from "./cameraMotion.ts";
 import { resolveMotionBrandTheme } from "./brandTheme.ts";
 
@@ -271,6 +275,56 @@ async function buildCtaLayer(
   };
 }
 
+async function buildFocusOverlayLayer(input: {
+  width: number;
+  height: number;
+  contentWidth: number;
+  contentHeight: number;
+  config: MotionFocusOverlayConfig;
+  brandKit?: BrandKit;
+}): Promise<MotionLayerAsset | null> {
+  const { width, height, contentWidth, contentHeight, config, brandKit } = input;
+
+  if (!config.enabled || contentWidth <= 0 || contentHeight <= 0) {
+    return null;
+  }
+
+  const theme = resolveMotionBrandTheme(brandKit);
+  const overlayWidth = Math.min(
+    Math.max(contentWidth + (config.sidePadding * 2), 320),
+    Math.round(width * config.maxWidthRatio),
+  );
+  const overlayHeight = Math.min(
+    Math.max(contentHeight + config.topPadding + config.bottomPadding, config.minHeight),
+    Math.max(height - 72, config.minHeight),
+  );
+  const borderColor = theme.accentStyle === "underline" ? theme.accentColor : theme.gradientStart;
+  const topGlowOpacity = Math.min(config.opacity + 0.08, 0.92);
+  const svg = `
+    <svg width="${overlayWidth}" height="${overlayHeight}" viewBox="0 0 ${overlayWidth} ${overlayHeight}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="focusPanelGradient" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="${theme.surfaceColor}" stop-opacity="${topGlowOpacity}" />
+          <stop offset="100%" stop-color="${theme.subtleSurfaceColor}" stop-opacity="${config.opacity}" />
+        </linearGradient>
+        <linearGradient id="focusPanelGlow" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="${theme.accentColor}" stop-opacity="0.24" />
+          <stop offset="100%" stop-color="${theme.accentColor}" stop-opacity="0" />
+        </linearGradient>
+      </defs>
+      <rect x="0" y="0" width="${overlayWidth}" height="${overlayHeight}" rx="36" fill="url(#focusPanelGradient)" />
+      <rect x="1.5" y="1.5" width="${overlayWidth - 3}" height="${overlayHeight - 3}" rx="34.5" fill="none" stroke="${borderColor}" stroke-opacity="0.24" stroke-width="3" />
+      <rect x="0" y="0" width="${overlayWidth}" height="${Math.round(overlayHeight * 0.34)}" rx="36" fill="url(#focusPanelGlow)" />
+    </svg>
+  `;
+
+  return {
+    bytes: await renderSvgOverlayToPng(svg),
+    width: overlayWidth,
+    height: overlayHeight,
+  };
+}
+
 export async function buildMotionOverlayPlans(input: {
   width: number;
   height: number;
@@ -300,12 +354,35 @@ export async function buildMotionOverlayPlans(input: {
     (headlineLayer?.height ?? 0)
     + (subheadlineLayer ? subheadlineLayer.height + 16 : 0)
     + (ctaLayer ? ctaLayer.height + 20 : 0);
+  const contentWidth = Math.max(
+    headlineLayer?.width ?? 0,
+    subheadlineLayer?.width ?? 0,
+    ctaLayer?.width ?? 0,
+  );
   const desiredHeadlineTop = Math.round(height * config.headlineTopRatio);
   const headlineTop = Math.min(desiredHeadlineTop, Math.max(84, height - totalTextHeight - 56));
   const centeredX = "(W-w)/2";
   const leftX = "48";
   const rightX = `(W-w-48)`;
   const layers: MotionOverlayLayerPlan[] = [];
+  const focusOverlayLayer = await buildFocusOverlayLayer({
+    width,
+    height,
+    contentWidth,
+    contentHeight: totalTextHeight,
+    config: config.focusOverlay ?? {
+      enabled: false,
+      introStart: 0,
+      introDuration: 0,
+      sidePadding: 0,
+      topPadding: 0,
+      bottomPadding: 0,
+      maxWidthRatio: 1,
+      minHeight: 0,
+      opacity: 0,
+    },
+    brandKit,
+  });
 
   if (brandLayer) {
     layers.push({
@@ -322,6 +399,20 @@ export async function buildMotionOverlayPlans(input: {
           : `${config.brandTop}`,
       introStart: config.brandAnimation.introStart,
       introDuration: config.brandAnimation.introDuration,
+    });
+  }
+
+  if (focusOverlayLayer) {
+    const focusTop = Math.max(
+      headlineTop - (config.focusOverlay?.topPadding ?? 0),
+      Math.max(config.brandTop + (brandLayer?.height ?? 0) + 18, 56),
+    );
+    layers.push({
+      ...focusOverlayLayer,
+      xExpression: config.centered ? centeredX : leftX,
+      yExpression: `${Math.min(focusTop, height - focusOverlayLayer.height - 40)}`,
+      introStart: config.focusOverlay?.introStart ?? 0.18,
+      introDuration: config.focusOverlay?.introDuration ?? 0.24,
     });
   }
 
