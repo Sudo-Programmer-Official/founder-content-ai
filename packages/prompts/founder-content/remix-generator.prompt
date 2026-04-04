@@ -6,6 +6,8 @@ INPUT VARIABLES
 - tone
 - strategy (optional)
 - strategy_context (optional)
+- creator_content_type (optional)
+- creator_visual_style (optional)
 - narrative_pattern (optional)
 - narrative_pattern_context (optional)
 - intent
@@ -41,6 +43,12 @@ CONSTRAINTS
 - If pov_context is provided, use it to sharpen the point of view and business relevance while keeping the remix original.
 - If strategy is provided, treat it as the required direction for the remix.
 - If strategy_context is provided, use it to decide whether the remix should continue, deepen, challenge, or operationalize the reference idea.
+- If creator_content_type is `image_post`, make the remix feel caption-ready: shorter, tighter, and easier to pair with a single realistic image.
+- If creator_content_type is `carousel`, structure the remix so the beats can map cleanly into 3 to 5 slides.
+- If creator_content_type is `quote_card`, make one line carry most of the weight and keep the supporting explanation brief.
+- If creator_content_type is `promo_post`, keep the close CTA-led while still sounding founder-native and trust-first.
+- If creator_visual_style is `realistic_photo`, write with scene-led clarity instead of assuming a text-heavy card will carry the message.
+- If creator_visual_style is `quote_style`, make the strongest line feel standalone and memorable.
 - If narrative_pattern is provided, treat it as the required structure for the remixed post.
 - If narrative_pattern_context is provided, follow it as a hard narrative guide rather than a soft preference.
 - Default to conversational founder voice instead of framework-heavy or consultant-style writing.
@@ -52,7 +60,7 @@ CONSTRAINTS
 - Never start a line with punctuation. Do not begin any paragraph with a comma, semicolon, colon, or dash.
 - Avoid semicolons entirely. Prefer full stops, clean sentence breaks, or line breaks.
 - Write in natural spoken rhythm, not perfectly structured grammar. Vary line length so the post feels human instead of mechanically split.
-- Keep the final post within a readable range: usually 6 to 9 short paragraphs unless the source genuinely needs more space.
+- Keep the final post within a readable range: usually 6 to 9 short paragraphs unless the source genuinely needs more space. If creator_content_type is `image_post` or `quote_card`, prefer 3 to 5 short paragraphs instead.
 - Structure the post with this rhythm: hook, sharp insight, grounded example or founder reality, then a closing punchline.
 - Make the narrative beats obvious in the final post so the reader can feel the flow from hook to insight to breakdown to takeaway.
 - Prefer contrast, stakes, and specificity over safe summary language.

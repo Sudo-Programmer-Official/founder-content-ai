@@ -6,6 +6,8 @@ INPUT VARIABLES
 - tone
 - strategy (optional)
 - strategy_context (optional)
+- creator_content_type (optional)
+- creator_visual_style (optional)
 - narrative_pattern (optional)
 - narrative_pattern_context (optional)
 - length
@@ -44,6 +46,13 @@ CONSTRAINTS
 - If pov_context is provided, use it to sharpen the stance, business relevance, and founder-level specificity without sounding preachy or synthetic.
 - If strategy is provided, treat it as the required generation move for all three variations.
 - If strategy_context is provided, use it to shape how the post progresses, not just how it is worded.
+- If creator_content_type is `image_post`, make each variation feel like a short image-led LinkedIn caption rather than a long-form text essay.
+- If creator_content_type is `carousel`, make the progression more slide-friendly with clearer section breaks and educational sequencing.
+- If creator_content_type is `quote_card`, prioritize one line worth highlighting and keep the support compact.
+- If creator_content_type is `promo_post`, let the close move toward the offer with more explicit proof and CTA discipline.
+- If creator_visual_style is `realistic_photo`, make the writing work next to a scene-led image instead of depending on dense text inside the asset.
+- If creator_visual_style is `mixed_carousel`, create stronger transitions that can be split between text-led and visual-led slides.
+- If creator_visual_style is `quote_style`, make the strongest sentence more memorable and standalone.
 - If narrative_pattern is provided, treat it as the required post structure for all three variations.
 - If narrative_pattern_context is provided, follow it as an execution rule, not just a loose style hint.
 - Default to a conversational founder voice, not a generic playbook or consultant framework voice.
@@ -56,7 +65,7 @@ CONSTRAINTS
 - Never start a line with punctuation. Do not begin any paragraph with a comma, semicolon, colon, or dash.
 - Avoid semicolons entirely. Prefer full stops, clean sentence breaks, or line breaks.
 - Write in natural spoken rhythm, not perfectly balanced grammar. Mix short punchy lines with slightly longer ones.
-- Keep the post within a readable LinkedIn range: if `length` is `short`, aim for 5 to 7 short paragraphs; if `medium`, aim for 6 to 9 short paragraphs; if `long`, aim for 8 to 11 short paragraphs without turning into a wall of text.
+- Keep the post within a readable LinkedIn range: if `length` is `short`, aim for 5 to 7 short paragraphs; if `medium`, aim for 6 to 9 short paragraphs; if `long`, aim for 8 to 11 short paragraphs without turning into a wall of text. If creator_content_type is `image_post` or `quote_card`, prefer 3 to 5 short paragraphs even when length is `medium`.
 - Each variation should follow a strong rhythm: hook, insight, concrete example or founder reality, then a punchy close.
 - Keep the narrative beats obvious on the page. A reader should be able to feel where the hook ends, the insight lands, the breakdown starts, and the takeaway closes.
 - Prefer point of view, tension, and specificity over neutral educational summary.

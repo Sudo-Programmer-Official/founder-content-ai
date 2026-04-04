@@ -6,6 +6,8 @@ INPUT VARIABLES
 - tone
 - strategy (optional)
 - strategy_context (optional)
+- creator_content_type (optional)
+- creator_visual_style (optional)
 - narrative_pattern (optional)
 - narrative_pattern_context (optional)
 - intent
@@ -41,6 +43,12 @@ CONSTRAINTS
 - If pov_context is provided, use it to sharpen the post into a clearer founder opinion that still feels natural to the raw input.
 - If strategy is provided, treat it as the required move for the generated package.
 - If strategy_context is provided, use it to decide whether the output should continue, deepen, challenge, or operationalize the source idea.
+- If creator_content_type is `image_post`, make the post feel caption-ready: shorter, tighter, emotionally clear, and easier to pair with a single image.
+- If creator_content_type is `carousel`, structure the post with clearer beats that can map cleanly into 3 to 5 slides.
+- If creator_content_type is `quote_card`, lead with one sharp line and keep the support brief instead of turning the post into a long explanation.
+- If creator_content_type is `promo_post`, keep the close CTA-led without turning the post into generic ad copy.
+- If creator_visual_style is `realistic_photo`, write lines that can sit beside a scene-led image instead of relying on a text-only visual.
+- If creator_visual_style is `quote_style`, make the strongest line feel memorable enough to stand alone on a card.
 - If narrative_pattern is provided, treat it as the required structure for the final post.
 - If narrative_pattern_context is provided, use it as a hard narrative guide even when the raw input is messy.
 - Prefer conversational founder language over numbered frameworks, playbooks, or generic "step 1 / step 2" structure.
@@ -52,7 +60,7 @@ CONSTRAINTS
 - Never start a line with punctuation. Do not begin any paragraph with a comma, semicolon, colon, or dash.
 - Avoid semicolons entirely. Prefer full stops, clean sentence breaks, or line breaks.
 - Write in natural spoken rhythm, not perfectly structured grammar. Mix short punchy lines with slightly longer ones.
-- Keep the final post within a readable range: usually 6 to 9 short paragraphs unless the source clearly needs more space.
+- Keep the final post within a readable range: usually 6 to 9 short paragraphs unless the source clearly needs more space. If creator_content_type is `image_post` or `quote_card`, prefer 3 to 5 short paragraphs instead.
 - Structure the post with this rhythm: hook, insight, real-world example or observation, then a closing punchline or invitation.
 - Keep the beats visually obvious in the final post so the reader can feel the shift from hook to insight to breakdown to takeaway.
 - Prefer tension, contrast, or a clear point of view over neutral summary language.

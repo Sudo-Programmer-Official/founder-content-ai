@@ -10,7 +10,12 @@ import type {
   ContentNarrativeSlide,
   ContentAiEditPreview,
   ContentAsset,
+  CreatorContentType,
+  CreatorPostGenerationOutput,
+  CreatorTextVariant,
+  CreatorVisualStyle,
   GenerateVisualResponse,
+  MediaRecommendationGoal,
   MediaRecommendationSuggestion,
   PostAsset,
   PublishAttempt,
@@ -107,6 +112,7 @@ interface PlatformPublishAttemptResult {
 }
 
 const draft = ref<ActivationDraftRecord | null>(null);
+const selectedCreatorVariantId = ref("");
 const feedbackMessage = ref("");
 const publishAttemptResults = ref<PlatformPublishAttemptResult[]>([]);
 const currentPublishAttemptId = ref("");
@@ -555,9 +561,232 @@ function isBusinessDraft(): boolean {
   return draft.value?.result.workspaceMode === "business";
 }
 
+function resolveDefaultCreatorVisualStyle(contentType: CreatorContentType): CreatorVisualStyle {
+  if (contentType === "image_post" || contentType === "promo_post") {
+    return "realistic_photo";
+  }
+
+  if (contentType === "carousel") {
+    return "mixed_carousel";
+  }
+
+  if (contentType === "quote_card") {
+    return "quote_style";
+  }
+
+  return "minimal_text_card";
+}
+
+function splitCreatorParagraphs(value: string): string[] {
+  return value
+    .split(/\n{2,}|\n+/)
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
+}
+
+function joinCreatorParagraphs(parts: string[]): string {
+  return parts
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .join("\n\n");
+}
+
+function truncateCreatorParagraph(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3).trimEnd()}...` : value;
+}
+
+function resolveLegacyVariationContent(
+  variations: RepurposeContentResponse["variations"],
+  angle: "story" | "lesson" | "build-in-public",
+  fallback: string,
+): string {
+  const match = variations.find((variation) => variation.angle === angle)?.content?.trim();
+  return match || fallback;
+}
+
+function buildShortCaptionVariantContent(
+  sourceText: string,
+  fallbackHook: string,
+  contentType: CreatorContentType,
+): string {
+  const parts = splitCreatorParagraphs(sourceText).slice(0, contentType === "promo_post" ? 2 : 3);
+  const normalized = parts.map((part, index) =>
+    truncateCreatorParagraph(part.replace(/\s+/g, " ").trim(), index === 0 ? 110 : 140),
+  );
+
+  if (normalized.length > 0) {
+    return joinCreatorParagraphs(normalized);
+  }
+
+  return truncateCreatorParagraph(fallbackHook || sourceText, 160);
+}
+
+function buildPromoVariantContent(input: {
+  baseText: string;
+  ideaTitle: string;
+  ideaAngle: string;
+  hooks: string[];
+  intent?: RepurposeContentResponse["generationIntent"];
+  contentType: CreatorContentType;
+}): string {
+  const parts = splitCreatorParagraphs(input.baseText);
+  const opener = truncateCreatorParagraph(
+    (input.hooks[0] || parts[0] || input.ideaTitle || "Make the next move obvious.")
+      .replace(/\s+/g, " ")
+      .trim(),
+    110,
+  );
+  const support = truncateCreatorParagraph(
+    (parts[1] || input.ideaAngle || parts[0] || input.ideaTitle).replace(/\s+/g, " ").trim(),
+    150,
+  );
+  const close = truncateCreatorParagraph(
+    (
+      input.intent === "promote_offer" || input.contentType === "promo_post"
+        ? `If this direction matters, make the offer obvious and give people a clear next step toward ${input.ideaTitle || "it"}.`
+        : "Use the attention this idea earns to point people toward the next clear action."
+    ).replace(/\s+/g, " ").trim(),
+    150,
+  );
+
+  return joinCreatorParagraphs([opener, support, close]);
+}
+
+function orderCreatorVariants(
+  variants: CreatorTextVariant[],
+  contentType: CreatorContentType,
+): CreatorTextVariant[] {
+  const priorityByKind: Record<CreatorTextVariant["kind"], number> =
+    contentType === "image_post"
+      ? {
+          short_caption: 0,
+          insight_post: 1,
+          story_version: 2,
+          authority_version: 3,
+          promo_copy: 4,
+        }
+      : contentType === "promo_post"
+        ? {
+            promo_copy: 0,
+            authority_version: 1,
+            short_caption: 2,
+            insight_post: 3,
+            story_version: 4,
+          }
+        : {
+            insight_post: 0,
+            story_version: 1,
+            authority_version: 2,
+            short_caption: 3,
+            promo_copy: 4,
+          };
+
+  return [...variants].sort((left, right) => priorityByKind[left.kind] - priorityByKind[right.kind]);
+}
+
+function buildCreatorVariantsFromLegacy(input: {
+  post: string;
+  hooks: string[];
+  variations: RepurposeContentResponse["variations"];
+  intent?: RepurposeContentResponse["generationIntent"];
+  contentType: CreatorContentType;
+  ideaTitle: string;
+  ideaAngle: string;
+}): CreatorTextVariant[] {
+  const insightPost = resolveLegacyVariationContent(input.variations, "lesson", input.post);
+  const storyVersion = resolveLegacyVariationContent(input.variations, "story", input.post);
+  const authorityVersion = resolveLegacyVariationContent(input.variations, "build-in-public", input.post);
+  const shortCaption = buildShortCaptionVariantContent(
+    input.contentType === "image_post" ? storyVersion : insightPost,
+    input.hooks[0] || input.ideaTitle,
+    input.contentType,
+  );
+  const promoCopy = buildPromoVariantContent({
+    baseText: input.contentType === "promo_post" ? authorityVersion : insightPost,
+    ideaTitle: input.ideaTitle,
+    ideaAngle: input.ideaAngle,
+    hooks: input.hooks,
+    intent: input.intent,
+    contentType: input.contentType,
+  });
+
+  return orderCreatorVariants(
+    [
+      {
+        id: "insight-post",
+        kind: "insight_post",
+        label: "Insight post",
+        description: "Clear authority-building version with one strong lesson and clean pacing.",
+        content: insightPost,
+        recommendedChannels: ["linkedin", "facebook"],
+        length: "medium",
+        ctaStyle: "soft",
+      },
+      {
+        id: "story-version",
+        kind: "story_version",
+        label: "Story version",
+        description: "Narrative-led version that feels more personal and trust-building.",
+        content: storyVersion,
+        recommendedChannels: ["linkedin", "email"],
+        length: "medium",
+        ctaStyle: "soft",
+      },
+      {
+        id: "authority-version",
+        kind: "authority_version",
+        label: "Authority version",
+        description: "Sharper point-of-view version that sounds more decisive and expert-led.",
+        content: authorityVersion,
+        recommendedChannels: ["linkedin", "facebook"],
+        length: "medium",
+        ctaStyle: "soft",
+      },
+      {
+        id: "short-caption",
+        kind: "short_caption",
+        label: "Short caption",
+        description: "Compact version for quicker posting, image-led content, or lighter-distribution days.",
+        content: shortCaption,
+        recommendedChannels: ["linkedin", "instagram", "facebook"],
+        length: "short",
+        ctaStyle: "soft",
+      },
+      {
+        id: "promo-copy",
+        kind: "promo_copy",
+        label: "Promo copy",
+        description: "Offer-aware version that moves readers toward the next step without sounding like an ad.",
+        content: promoCopy,
+        recommendedChannels: ["linkedin", "facebook", "email"],
+        length: "short",
+        ctaStyle: "direct",
+      },
+    ],
+    input.contentType,
+  );
+}
+
+function buildCreatorPhotoSuggestion(): MediaRecommendationSuggestion {
+  return {
+    id: "creator-photo-overlay",
+    actionType: "generate_visual",
+    title: "Generate image post",
+    description: "Create a realistic social image with light overlay copy so this draft can ship as a faster image-led format.",
+    reason: "Image-led posts are faster to publish and feel less rigid than forcing every creator draft into a carousel.",
+    suggestedMediaType: "photo_overlay",
+    visualTemplateType: "insight",
+    recommendedAssetIds: [],
+  };
+}
+
 function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): string {
   if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
     return "Generate brand image";
+  }
+
+  if (!isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
+    return creatorContentType.value === "promo_post" ? "Generate promo image" : "Generate image post";
   }
 
   if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
@@ -580,6 +809,12 @@ function getMediaSuggestionDescription(suggestion: MediaRecommendationSuggestion
     return "Create a single promotional visual that matches the generated CTA and platform captions.";
   }
 
+  if (!isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
+    return creatorContentType.value === "promo_post"
+      ? "Create a realistic promotional image that supports the CTA without turning the post into a text-heavy card."
+      : "Create a realistic social image matched to the post angle so you can publish a short image-led update.";
+  }
+
   if (suggestion.visualTemplateType === "carousel") {
     return "Turn this post into a 3-5 slide narrative deck, then render matching slides automatically.";
   }
@@ -596,6 +831,12 @@ function getMediaSuggestionReason(suggestion: MediaRecommendationSuggestion): st
     return "Business mode stays visual-first and CTA-first, so single-post creative beats slide storytelling.";
   }
 
+  if (!isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
+    return creatorContentType.value === "promo_post"
+      ? "Promotion posts usually land better with a human, realistic image than with a generic text card."
+      : "This gives creator mode a faster, more natural image path instead of defaulting straight into carousel production.";
+  }
+
   if (suggestion.visualTemplateType === "carousel") {
     return "This keeps the workflow content → narrative → visuals instead of making you manually collect disconnected images.";
   }
@@ -608,11 +849,11 @@ const postScore = computed(() =>
     ? calculateContentScore({
         id: draft.value.id,
         contentType: "post",
-        contentBody: draft.value.result.post,
+        contentBody: postContent.value,
         status: "draft",
         pipelineStage: "review",
         sourceKind: draft.value.mode === "improve" ? "remix" : "capture",
-        textContent: draft.value.result.post,
+        textContent: postContent.value,
         createdAt: draft.value.createdAt,
       } satisfies ContentAsset).score
     : 0,
@@ -639,7 +880,136 @@ const businessOutput = computed<BusinessContentOutput | undefined>(() => {
 
   return draft.value?.result.businessOutput;
 });
-const postContent = computed(() => draft.value?.result.post ?? "");
+const creatorOutput = computed<CreatorPostGenerationOutput | null>(() =>
+  generationOutput.value?.kind === "creator_post" ? generationOutput.value : null,
+);
+const creatorContentType = computed<CreatorContentType>(() => {
+  const value = creatorOutput.value?.contentType;
+
+  return value === "image_post"
+    || value === "carousel"
+    || value === "quote_card"
+    || value === "promo_post"
+    || value === "text_post"
+    ? value
+    : "text_post";
+});
+const creatorVisualStyle = computed<CreatorVisualStyle>(() => {
+  const value = creatorOutput.value?.visualStyle;
+
+  return value === "realistic_photo"
+    || value === "mixed_carousel"
+    || value === "quote_style"
+    || value === "minimal_text_card"
+    ? value
+    : resolveDefaultCreatorVisualStyle(creatorContentType.value);
+});
+const creatorVariants = computed<CreatorTextVariant[]>(() => {
+  if (isBusinessMode.value || !draft.value) {
+    return [];
+  }
+
+  const explicitVariants = creatorOutput.value?.variants?.filter(
+    (variant): variant is CreatorTextVariant =>
+      Boolean(variant && typeof variant === "object" && typeof variant.content === "string" && variant.content.trim() !== ""),
+  ) ?? [];
+
+  if (explicitVariants.length > 0) {
+    return orderCreatorVariants(explicitVariants, creatorContentType.value);
+  }
+
+  return buildCreatorVariantsFromLegacy({
+    post: draft.value.result.post,
+    hooks: draft.value.result.hooks ?? [],
+    variations: draft.value.result.variations ?? [],
+    intent: draft.value.result.generationIntent,
+    contentType: creatorContentType.value,
+    ideaTitle: draft.value.result.idea.title,
+    ideaAngle: draft.value.result.idea.angle,
+  });
+});
+const activeCreatorVariant = computed<CreatorTextVariant | null>(() => {
+  if (creatorVariants.value.length === 0) {
+    return null;
+  }
+
+  return creatorVariants.value.find((variant) => variant.id === selectedCreatorVariantId.value)
+    ?? creatorVariants.value[0]
+    ?? null;
+});
+
+function resolvePreferredCreatorVariantId(
+  variants: CreatorTextVariant[],
+  contentType: CreatorContentType,
+  currentPost: string,
+): string {
+  const matchingVariant = variants.find((variant) => variant.content.trim() === currentPost.trim());
+
+  if (matchingVariant) {
+    return matchingVariant.id;
+  }
+
+  const preferredKind =
+    contentType === "image_post"
+      ? "short_caption"
+      : contentType === "promo_post"
+        ? "promo_copy"
+        : "insight_post";
+
+  return variants.find((variant) => variant.kind === preferredKind)?.id ?? variants[0]?.id ?? "";
+}
+
+const creatorMediaGoal = computed<MediaRecommendationGoal>(() => {
+  if (isBusinessMode.value) {
+    return "conversion";
+  }
+
+  if (creatorContentType.value === "promo_post") {
+    return "conversion";
+  }
+
+  if (
+    creatorContentType.value === "image_post"
+    || creatorVisualStyle.value === "realistic_photo"
+    || creatorContentType.value === "quote_card"
+  ) {
+    return "engagement";
+  }
+
+  return "authority";
+});
+const creatorWantsImageFirst = computed(
+  () =>
+    !isBusinessMode.value
+    && (
+      creatorContentType.value === "image_post"
+      || creatorContentType.value === "promo_post"
+      || creatorVisualStyle.value === "realistic_photo"
+    ),
+);
+const creatorWantsCarouselFirst = computed(
+  () =>
+    !isBusinessMode.value
+    && (
+      creatorContentType.value === "carousel"
+      || creatorVisualStyle.value === "mixed_carousel"
+    ),
+);
+const creatorWantsQuoteFirst = computed(
+  () =>
+    !isBusinessMode.value
+    && (
+      creatorContentType.value === "quote_card"
+      || creatorVisualStyle.value === "quote_style"
+    ),
+);
+const postContent = computed(() => {
+  if (isBusinessMode.value) {
+    return draft.value?.result.post ?? "";
+  }
+
+  return activeCreatorVariant.value?.content ?? draft.value?.result.post ?? "";
+});
 const postParagraphs = computed(() => splitPostParagraphs(postContent.value));
 const previewLeadLines = computed(() => extractPreviewLead(postParagraphs.value));
 const previewBodyParagraphs = computed(() =>
@@ -670,6 +1040,31 @@ const carouselDraft = computed(() =>
 const carouselNarrativeLabel = computed(() =>
   formatCarouselNarrativeLabel(visualNarrative.value?.type ?? carouselDraft.value?.narrativeType),
 );
+const shouldShowCarouselBlueprint = computed(
+  () =>
+    !isBusinessMode.value
+    && creatorWantsCarouselFirst.value
+    && Boolean(carouselDraft.value && carouselDraft.value.slides.length > 0),
+);
+const creatorSceneDescription = computed(() => {
+  const headline = draft.value?.result.idea.title || previewLeadLines.value[0] || "Founder insight";
+  const angle = draft.value?.result.idea.angle || previewBodyParagraphs.value[0] || "";
+  const supportingBeat = previewBodyParagraphs.value[1] || previewBodyParagraphs.value[0] || "";
+  const sceneBase =
+    creatorContentType.value === "promo_post"
+      ? "founder brand promo image, professional but human, product-in-context or operator-in-workspace, realistic photography"
+      : "founder working scene, realistic lifestyle photography, modern workspace, authentic business atmosphere";
+  const styleBase =
+    creatorVisualStyle.value === "realistic_photo"
+      ? "natural light, documentary feel, generous negative space for headline overlay"
+      : creatorVisualStyle.value === "quote_style"
+        ? "clean composition with strong focal subject and restrained overlay text area"
+        : "balanced composition, mobile-first crop, clear text-safe area";
+
+  return [sceneBase, styleBase, headline, angle, supportingBeat]
+    .filter((value) => value && value.trim() !== "")
+    .join(". ");
+});
 const hooks = computed(() => draft.value?.result.hooks ?? []);
 const povSummary = computed(() => draft.value?.result.pov?.summary ?? "");
 const qualitySummary = computed(() => draft.value?.result.quality);
@@ -1105,12 +1500,27 @@ const actionPriorityLabel = computed(() => {
 
   return canScheduleDraft.value ? "Schedule next" : selectedConnectedAccount.value ? "Publish now" : "Connect channel";
 });
-const recommendedContentType = computed(() => (postAssets.value.length > 0 ? "image" : "text"));
+const recommendedContentType = computed(() => (
+  postAssets.value.length > 0 || creatorWantsImageFirst.value ? "image" : "text"
+));
 const visibleMediaRecommendations = computed(() =>
   mediaRecommendations.value.filter((suggestion) => suggestion.actionType !== "skip"),
 );
+const augmentedMediaRecommendations = computed(() => {
+  const baseSuggestions = visibleMediaRecommendations.value;
+
+  if (
+    isBusinessMode.value
+    || baseSuggestions.length === 0
+    || baseSuggestions.some((suggestion) => suggestion.suggestedMediaType === "photo_overlay")
+  ) {
+    return baseSuggestions;
+  }
+
+  return [buildCreatorPhotoSuggestion(), ...baseSuggestions];
+});
 const eligibleMediaRecommendations = computed(() =>
-  visibleMediaRecommendations.value.filter(
+  augmentedMediaRecommendations.value.filter(
     (suggestion) => !(isBusinessMode.value && suggestion.visualTemplateType === "carousel"),
   ),
 );
@@ -1128,7 +1538,9 @@ const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>((
           recommendedAssetIds: [],
         },
       ]
-    : []),
+    : [
+        buildCreatorPhotoSuggestion(),
+      ]),
   {
     id: "fallback-carousel",
     actionType: "generate_visual",
@@ -1170,22 +1582,80 @@ const displayedMediaRecommendations = computed(() =>
     : fallbackMediaRecommendations.value)
     .slice()
     .sort((left, right) => {
-      const leftPriority = isBusinessMode.value
-        ? left.suggestedMediaType === "photo_overlay"
+      const resolvePriority = (suggestion: MediaRecommendationSuggestion): number => {
+        if (isBusinessMode.value) {
+          return suggestion.suggestedMediaType === "photo_overlay"
+            ? 0
+            : suggestion.visualTemplateType === "quote" ? 2 : 1;
+        }
+
+        if (creatorWantsImageFirst.value || creatorContentType.value === "promo_post") {
+          return suggestion.suggestedMediaType === "photo_overlay"
+            ? 0
+            : suggestion.suggestedMediaType === "stat_card"
+              ? 1
+              : suggestion.visualTemplateType === "quote"
+                ? 2
+                : suggestion.visualTemplateType === "carousel"
+                  ? 3
+                  : 2;
+        }
+
+        if (creatorWantsCarouselFirst.value) {
+          return suggestion.visualTemplateType === "carousel"
+            ? 0
+            : suggestion.suggestedMediaType === "photo_overlay"
+              ? 1
+              : suggestion.visualTemplateType === "quote"
+                ? 2
+                : 3;
+        }
+
+        if (creatorWantsQuoteFirst.value) {
+          return suggestion.visualTemplateType === "quote"
+            ? 0
+            : suggestion.suggestedMediaType === "stat_card"
+              ? 1
+              : suggestion.suggestedMediaType === "photo_overlay"
+                ? 2
+                : suggestion.visualTemplateType === "carousel"
+                  ? 3
+                  : 2;
+        }
+
+        return suggestion.visualTemplateType === "quote"
           ? 0
-          : left.visualTemplateType === "quote" ? 2 : 1
-        : left.visualTemplateType === "carousel" ? 0 : 1;
-      const rightPriority = isBusinessMode.value
-        ? right.suggestedMediaType === "photo_overlay"
-          ? 0
-          : right.visualTemplateType === "quote" ? 2 : 1
-        : right.visualTemplateType === "carousel" ? 0 : 1;
+          : suggestion.suggestedMediaType === "stat_card"
+            ? 1
+            : suggestion.suggestedMediaType === "photo_overlay"
+              ? 2
+              : suggestion.visualTemplateType === "carousel"
+                ? 3
+                : 2;
+      };
+      const leftPriority = resolvePriority(left);
+      const rightPriority = resolvePriority(right);
       return leftPriority - rightPriority;
     }),
 );
 const isUsingFallbackMediaRecommendations = computed(
   () => !isLoadingMediaRecommendations.value && eligibleMediaRecommendations.value.length === 0,
 );
+const mediaRecommendationStatusLabel = computed(() => {
+  if (isBusinessMode.value) {
+    return recommendedContentType.value === "image" ? "Visual attached" : "Visual-first draft";
+  }
+
+  if (postAssets.value.length > 0) {
+    return "Assets already attached";
+  }
+
+  if (creatorWantsImageFirst.value) {
+    return "Image-first draft";
+  }
+
+  return isUsingFallbackMediaRecommendations.value ? "Manual generation" : "Text-first draft";
+});
 const selectedAudienceTimeLabel = computed(() => {
   if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
     return "";
@@ -1585,8 +2055,25 @@ function buildFallbackGenerationOutput(
         ? body.generationIntent
         : "post_idea",
     primaryChannel: "linkedin",
+    contentType: "text_post",
+    visualStyle: "minimal_text_card",
     post,
     hooks: Array.isArray(body.hooks) ? body.hooks.filter((hook): hook is string => typeof hook === "string") : [],
+    variants: buildCreatorVariantsFromLegacy({
+      post,
+      hooks: Array.isArray(body.hooks) ? body.hooks.filter((hook): hook is string => typeof hook === "string") : [],
+      variations: Array.isArray(body.variations) ? body.variations : [],
+      intent: body.generationIntent,
+      contentType: "text_post",
+      ideaTitle:
+        typeof body.idea?.title === "string" && body.idea.title.trim() !== ""
+          ? body.idea.title
+          : "Saved draft",
+      ideaAngle:
+        typeof body.idea?.angle === "string" && body.idea.angle.trim() !== ""
+          ? body.idea.angle
+          : "Refine and publish this workspace draft.",
+    }),
     variations: Array.isArray(body.variations) ? body.variations : [],
     visualNarrative,
     carouselDraft: mapCarouselDraftFromNarrative(visualNarrative),
@@ -1648,6 +2135,39 @@ function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null 
     normalizedNarrative,
     quickSignals,
   );
+  const normalizedGenerationOutput =
+    body.generationOutput && typeof body.generationOutput === "object"
+      ? body.generationOutput.kind === "creator_post"
+        ? {
+            ...body.generationOutput,
+            variants:
+              Array.isArray(body.generationOutput.variants) && body.generationOutput.variants.length > 0
+                ? body.generationOutput.variants
+                : buildCreatorVariantsFromLegacy({
+                    post,
+                    hooks: Array.isArray(body.hooks) ? body.hooks.filter((hook): hook is string => typeof hook === "string") : [],
+                    variations: Array.isArray(body.variations) ? body.variations : [],
+                    intent: body.generationIntent,
+                    contentType:
+                      body.generationOutput.contentType === "image_post"
+                      || body.generationOutput.contentType === "carousel"
+                      || body.generationOutput.contentType === "quote_card"
+                      || body.generationOutput.contentType === "promo_post"
+                      || body.generationOutput.contentType === "text_post"
+                        ? body.generationOutput.contentType
+                        : "text_post",
+                    ideaTitle:
+                      typeof body.idea?.title === "string" && body.idea.title.trim() !== ""
+                        ? body.idea.title
+                        : asset.title || "Saved draft",
+                    ideaAngle:
+                      typeof body.idea?.angle === "string" && body.idea.angle.trim() !== ""
+                        ? body.idea.angle
+                        : "Refine and publish this workspace draft.",
+                  }),
+          }
+        : body.generationOutput
+      : fallbackGenerationOutput;
   const normalizedResult: RepurposeContentResponse = {
     inputType: body.inputType ?? "text",
     intent: body.intent ?? (asset.sourceKind === "remix" ? "reference" : "capture"),
@@ -1658,10 +2178,7 @@ function buildDraftFromAsset(asset: ContentAsset): ActivationDraftRecord | null 
       || body.strategy === "tactical"
         ? body.strategy
         : "continue",
-    generationOutput:
-      body.generationOutput && typeof body.generationOutput === "object"
-        ? body.generationOutput
-        : fallbackGenerationOutput,
+    generationOutput: normalizedGenerationOutput,
     workspaceMode: body.workspaceMode,
     sourceText: typeof body.sourceText === "string" ? body.sourceText : post,
     idea: {
@@ -1790,6 +2307,33 @@ function clearAiEditPreview(): void {
   aiEditFeedback.value = "";
 }
 
+function buildSyncedGenerationOutput(): RepurposeContentResponse["generationOutput"] | undefined {
+  if (!draft.value?.result.generationOutput) {
+    return undefined;
+  }
+
+  if (draft.value.result.generationOutput.kind !== "creator_post") {
+    return draft.value.result.generationOutput;
+  }
+
+  return {
+    ...draft.value.result.generationOutput,
+    post: postContent.value,
+    variants: (
+      Array.isArray(draft.value.result.generationOutput.variants)
+        ? draft.value.result.generationOutput.variants
+        : creatorVariants.value
+    ).map((variant) =>
+      variant.id === selectedCreatorVariantId.value
+        ? {
+            ...variant,
+            content: postContent.value,
+          }
+        : variant,
+    ),
+  };
+}
+
 function buildDraftContentBody(): Record<string, unknown> {
   if (!draft.value) {
     return { content: postContent.value };
@@ -1806,6 +2350,7 @@ function buildDraftContentBody(): Record<string, unknown> {
   return {
     ...resultWithoutAsset,
     post: postContent.value,
+    generationOutput: buildSyncedGenerationOutput(),
     visualNarrative: nextVisualNarrative,
     carouselDraft: mapCarouselDraftFromNarrative(nextVisualNarrative),
   };
@@ -1827,6 +2372,7 @@ function buildDraftContentBodyWithVisualNarrative(nextVisualNarrative: ContentNa
   return {
     ...resultWithoutAsset,
     post: postContent.value,
+    generationOutput: buildSyncedGenerationOutput(),
     visualNarrative: persistableNarrative,
     carouselDraft: mapCarouselDraftFromNarrative(persistableNarrative),
   };
@@ -1843,6 +2389,7 @@ function buildPersistedDraftRecord(nextAsset: ContentAsset): ActivationDraftReco
     result: {
       ...draft.value.result,
       post: postContent.value,
+      generationOutput: buildSyncedGenerationOutput() ?? draft.value.result.generationOutput,
       asset: nextAsset,
     },
   };
@@ -1871,11 +2418,32 @@ async function updateDraftPostContent(nextText: string, successMessage: string):
     nextAsset = response.asset;
   }
 
+  const nextGenerationOutput =
+    draft.value.result.generationOutput?.kind === "creator_post"
+      ? {
+          ...draft.value.result.generationOutput,
+          post: trimmedText,
+          variants: (
+            Array.isArray(draft.value.result.generationOutput.variants)
+              ? draft.value.result.generationOutput.variants
+              : creatorVariants.value
+          ).map((variant) =>
+            variant.id === selectedCreatorVariantId.value
+              ? {
+                  ...variant,
+                  content: trimmedText,
+                }
+              : variant,
+          ),
+        }
+      : draft.value.result.generationOutput;
+
   const nextDraft = replaceActivationDraft({
     ...draft.value,
     result: {
       ...draft.value.result,
       post: trimmedText,
+      generationOutput: nextGenerationOutput,
       asset: nextAsset,
     },
   });
@@ -2145,7 +2713,7 @@ async function loadMediaRecommendations(): Promise<void> {
       businessId: activeBusinessId.value,
       contentText: postContent.value,
       contentType: "post",
-      goal: isBusinessMode.value ? "conversion" : "authority",
+      goal: creatorMediaGoal.value,
       sourceAssetIds: postAssets.value.map((asset) => asset.id),
     });
 
@@ -2340,11 +2908,17 @@ async function generateRecommendedMedia(
             : buildVisualBulletPoints(),
         sceneDescription:
           suggestion.suggestedMediaType === "photo_overlay"
-            ? businessOutput.value?.visual.imagePrompt
+            ? (isBusinessMode.value ? businessOutput.value?.visual.imagePrompt : creatorSceneDescription.value)
             : undefined,
         closingText:
           suggestion.suggestedMediaType === "photo_overlay"
-            ? businessOutput.value?.cta.label
+            ? (
+                isBusinessMode.value
+                  ? businessOutput.value?.cta.label
+                  : creatorContentType.value === "promo_post"
+                    ? draft.value?.result.idea.angle || previewBodyParagraphs.value[0]
+                    : undefined
+              )
             : undefined,
       },
       narrative:
@@ -3157,6 +3731,27 @@ watch(
 );
 
 watch(
+  () => [draft.value?.id, draft.value?.result.post, creatorContentType.value, creatorVariants.value.map((variant) => variant.id).join("|")],
+  () => {
+    if (isBusinessMode.value || creatorVariants.value.length === 0) {
+      selectedCreatorVariantId.value = "";
+      return;
+    }
+
+    if (selectedCreatorVariantId.value && creatorVariants.value.some((variant) => variant.id === selectedCreatorVariantId.value)) {
+      return;
+    }
+
+    selectedCreatorVariantId.value = resolvePreferredCreatorVariantId(
+      creatorVariants.value,
+      creatorContentType.value,
+      draft.value?.result.post ?? "",
+    );
+  },
+  { immediate: true },
+);
+
+watch(
   () => activeBusinessId.value,
   () => {
     void loadWorkspaceChannels();
@@ -3452,6 +4047,51 @@ onBeforeUnmount(() => {
             <article class="execution-status-block">
               <p class="panel-meta">Image prompt</p>
               <p class="execution-status-description">{{ businessOutput.visual.imagePrompt }}</p>
+            </article>
+          </section>
+
+          <section v-if="!isBusinessMode && creatorVariants.length > 0" class="variant-switcher-panel">
+            <div class="variant-switcher-header">
+              <div>
+                <p class="panel-meta">Text variants</p>
+                <strong>Switch the output before you publish</strong>
+                <p class="execution-status-description">
+                  The same idea is now packaged as multiple usable formats instead of one fixed LinkedIn post.
+                </p>
+              </div>
+              <span v-if="activeCreatorVariant" class="workspace-chip">
+                {{ activeCreatorVariant.length === "short" ? "Short form" : "Full post" }}
+              </span>
+            </div>
+
+            <div class="variant-switcher-row">
+              <button
+                v-for="variant in creatorVariants"
+                :key="variant.id"
+                type="button"
+                class="variant-switcher-chip"
+                :class="{ active: activeCreatorVariant?.id === variant.id }"
+                @click="selectedCreatorVariantId = variant.id"
+              >
+                {{ variant.label }}
+              </button>
+            </div>
+
+            <article v-if="activeCreatorVariant" class="variant-detail-card">
+              <div class="variant-detail-topline">
+                <strong>{{ activeCreatorVariant.label }}</strong>
+                <span>{{ activeCreatorVariant.ctaStyle === "direct" ? "Direct CTA" : "Soft CTA" }}</span>
+              </div>
+              <p class="execution-status-description">{{ activeCreatorVariant.description }}</p>
+              <div class="variant-channel-row">
+                <span
+                  v-for="channel in activeCreatorVariant.recommendedChannels"
+                  :key="`${activeCreatorVariant.id}-${channel}`"
+                  class="saved-source-chip"
+                >
+                  {{ channel }}
+                </span>
+              </div>
             </article>
           </section>
 
@@ -3924,7 +4564,7 @@ onBeforeUnmount(() => {
             </div>
 
             <section
-              v-if="carouselDraft && carouselDraft.slides.length > 0"
+              v-if="shouldShowCarouselBlueprint && carouselDraft && carouselDraft.slides.length > 0"
               class="carousel-blueprint-panel"
             >
               <div class="carousel-blueprint-header">
@@ -3976,13 +4616,7 @@ onBeforeUnmount(() => {
                   </strong>
                 </div>
                 <span class="workspace-chip">
-                  {{
-                    isBusinessMode
-                      ? recommendedContentType === "image" ? "Visual attached" : "Visual-first draft"
-                      : isUsingFallbackMediaRecommendations
-                        ? "Manual generation"
-                        : recommendedContentType === "image" ? "Assets already attached" : "Text-first draft"
-                  }}
+                  {{ mediaRecommendationStatusLabel }}
                 </span>
               </div>
 
@@ -4491,6 +5125,77 @@ onBeforeUnmount(() => {
   gap: 12px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-top: 18px;
+}
+
+.variant-switcher-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 16%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 12%, white 88%);
+}
+
+.variant-switcher-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.variant-switcher-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.variant-switcher-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--fc-text-muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.variant-switcher-chip.active {
+  border-color: transparent;
+  background: var(--fc-accent);
+  color: var(--fc-accent-contrast);
+}
+
+.variant-detail-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.variant-detail-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.variant-detail-topline span {
+  color: var(--fc-text-muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.variant-channel-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .result-signal-card {

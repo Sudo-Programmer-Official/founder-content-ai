@@ -2,7 +2,10 @@ import type {
   CarouselDraft,
   ContentNarrative,
   ContentAsset,
+  CreatorContentType,
   CreatorGenerationIntent,
+  CreatorTextVariant,
+  CreatorVisualStyle,
   CreatorWeeklyPlanGenerationOutput,
   RepurposeContentRequest,
   RepurposeContentResponse,
@@ -194,6 +197,219 @@ function resolveCreatorGenerationIntent(
   return intent ?? "post_idea";
 }
 
+function resolveCreatorContentType(
+  contentType: CreatorContentType | undefined,
+): CreatorContentType {
+  return contentType ?? "text_post";
+}
+
+function resolveCreatorVisualStyle(
+  visualStyle: CreatorVisualStyle | undefined,
+  contentType: CreatorContentType,
+): CreatorVisualStyle {
+  if (visualStyle) {
+    return visualStyle;
+  }
+
+  if (contentType === "image_post" || contentType === "promo_post") {
+    return "realistic_photo";
+  }
+
+  if (contentType === "carousel") {
+    return "mixed_carousel";
+  }
+
+  if (contentType === "quote_card") {
+    return "quote_style";
+  }
+
+  return "minimal_text_card";
+}
+
+function splitCreatorParagraphs(value: string): string[] {
+  return value
+    .split(/\n{2,}|\n+/)
+    .map((part) => part.trim())
+    .filter((part) => part !== "");
+}
+
+function joinCreatorParagraphs(parts: string[]): string {
+  return parts
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .join("\n\n");
+}
+
+function resolveCreatorVariantSource(
+  variations: RepurposeContentResponse["variations"],
+  angle: "story" | "lesson" | "build-in-public",
+  fallback: string,
+): string {
+  return variations.find((variation) => variation.angle === angle)?.content?.trim() || fallback;
+}
+
+function buildShortCaptionContent(input: {
+  sourceText: string;
+  fallbackHook?: string;
+  contentType: CreatorContentType;
+}): string {
+  const parts = splitCreatorParagraphs(input.sourceText);
+  const selectedParts = parts.slice(0, input.contentType === "promo_post" ? 2 : 3);
+  const normalized = selectedParts.map((part, index) =>
+    truncateText(normalizeWhitespace(part), index === 0 ? 110 : 140),
+  );
+
+  if (normalized.length > 0) {
+    return joinCreatorParagraphs(normalized);
+  }
+
+  return truncateText(normalizeWhitespace(input.fallbackHook || input.sourceText), 160);
+}
+
+function buildPromoCopyContent(input: {
+  baseText: string;
+  ideaTitle: string;
+  ideaAngle: string;
+  hooks: string[];
+  intent: CreatorGenerationIntent;
+  contentType: CreatorContentType;
+}): string {
+  const parts = splitCreatorParagraphs(input.baseText);
+  const opener = truncateText(
+    normalizeWhitespace(input.hooks[0] || parts[0] || input.ideaTitle || "Make the next move obvious."),
+    110,
+  );
+  const support = truncateText(
+    normalizeWhitespace(parts[1] || input.ideaAngle || parts[0] || input.ideaTitle),
+    150,
+  );
+  const close = truncateText(
+    normalizeWhitespace(
+      input.intent === "promote_offer" || input.contentType === "promo_post"
+        ? `If this direction matters, make the offer obvious and give people a clear next step toward ${input.ideaTitle || "it"}.`
+        : `Use the attention this idea earns to point people toward the next clear action.`,
+    ),
+    150,
+  );
+
+  return joinCreatorParagraphs([opener, support, close]);
+}
+
+function orderCreatorVariants(
+  variants: CreatorTextVariant[],
+  contentType: CreatorContentType,
+): CreatorTextVariant[] {
+  const priorityByKind: Record<CreatorTextVariant["kind"], number> =
+    contentType === "image_post"
+      ? {
+          short_caption: 0,
+          insight_post: 1,
+          story_version: 2,
+          authority_version: 3,
+          promo_copy: 4,
+        }
+      : contentType === "promo_post"
+        ? {
+            promo_copy: 0,
+            authority_version: 1,
+            short_caption: 2,
+            insight_post: 3,
+            story_version: 4,
+          }
+        : {
+            insight_post: 0,
+            story_version: 1,
+            authority_version: 2,
+            short_caption: 3,
+            promo_copy: 4,
+          };
+
+  return [...variants].sort((left, right) => priorityByKind[left.kind] - priorityByKind[right.kind]);
+}
+
+function buildCreatorTextVariants(input: {
+  variations: RepurposeContentResponse["variations"];
+  basePost: string;
+  hooks: string[];
+  intent: CreatorGenerationIntent;
+  contentType: CreatorContentType;
+  ideaTitle: string;
+  ideaAngle: string;
+}): CreatorTextVariant[] {
+  const insightPost = resolveCreatorVariantSource(input.variations, "lesson", input.basePost);
+  const storyVersion = resolveCreatorVariantSource(input.variations, "story", input.basePost);
+  const authorityVersion = resolveCreatorVariantSource(input.variations, "build-in-public", input.basePost);
+  const shortCaption = buildShortCaptionContent({
+    sourceText: input.contentType === "image_post" ? storyVersion : insightPost,
+    fallbackHook: input.hooks[0],
+    contentType: input.contentType,
+  });
+  const promoCopy = buildPromoCopyContent({
+    baseText: input.contentType === "promo_post" ? authorityVersion : insightPost,
+    ideaTitle: input.ideaTitle,
+    ideaAngle: input.ideaAngle,
+    hooks: input.hooks,
+    intent: input.intent,
+    contentType: input.contentType,
+  });
+
+  return orderCreatorVariants(
+    [
+      {
+        id: "insight-post",
+        kind: "insight_post",
+        label: "Insight post",
+        description: "Clear authority-building version with one strong lesson and clean pacing.",
+        content: insightPost,
+        recommendedChannels: ["linkedin", "facebook"],
+        length: "medium",
+        ctaStyle: "soft",
+      },
+      {
+        id: "story-version",
+        kind: "story_version",
+        label: "Story version",
+        description: "Narrative-led version that feels more personal and trust-building.",
+        content: storyVersion,
+        recommendedChannels: ["linkedin", "email"],
+        length: "medium",
+        ctaStyle: "soft",
+      },
+      {
+        id: "authority-version",
+        kind: "authority_version",
+        label: "Authority version",
+        description: "Sharper point-of-view version that sounds more decisive and expert-led.",
+        content: authorityVersion,
+        recommendedChannels: ["linkedin", "facebook"],
+        length: "medium",
+        ctaStyle: "soft",
+      },
+      {
+        id: "short-caption",
+        kind: "short_caption",
+        label: "Short caption",
+        description: "Compact version for faster posting, image-led content, or lighter-distribution days.",
+        content: shortCaption,
+        recommendedChannels: ["linkedin", "instagram", "facebook"],
+        length: "short",
+        ctaStyle: "soft",
+      },
+      {
+        id: "promo-copy",
+        kind: "promo_copy",
+        label: "Promo copy",
+        description: "Offer-aware version that moves readers toward the next step without sounding like an ad.",
+        content: promoCopy,
+        recommendedChannels: ["linkedin", "facebook", "email"],
+        length: "short",
+        ctaStyle: "direct",
+      },
+    ],
+    input.contentType,
+  );
+}
+
 function buildCreatorWeeklyPlanOutput(input: {
   ideaTitle: string;
   sourceText: string;
@@ -246,6 +462,8 @@ function buildCreatorWeeklyPlanOutput(input: {
 
 function buildCreatorGenerationOutput(input: {
   generationIntent: CreatorGenerationIntent | undefined;
+  creatorContentType: CreatorContentType | undefined;
+  creatorVisualStyle: CreatorVisualStyle | undefined;
   post: string;
   hooks: string[];
   variations: RepurposeContentResponse["variations"];
@@ -253,9 +471,12 @@ function buildCreatorGenerationOutput(input: {
   carouselDraft: CarouselDraft;
   quickSignals: RepurposeContentResponse["quickSignals"];
   ideaTitle: string;
+  ideaAngle: string;
   sourceText: string;
 }): RepurposeContentResponse["generationOutput"] {
   const normalizedIntent = resolveCreatorGenerationIntent(input.generationIntent);
+  const contentType = resolveCreatorContentType(input.creatorContentType);
+  const visualStyle = resolveCreatorVisualStyle(input.creatorVisualStyle, contentType);
 
   if (normalizedIntent === "weekly_plan") {
     return buildCreatorWeeklyPlanOutput({
@@ -264,12 +485,25 @@ function buildCreatorGenerationOutput(input: {
     });
   }
 
+  const variants = buildCreatorTextVariants({
+    variations: input.variations,
+    basePost: input.post,
+    hooks: input.hooks,
+    intent: normalizedIntent,
+    contentType,
+    ideaTitle: input.ideaTitle,
+    ideaAngle: input.ideaAngle,
+  });
+
   return {
     kind: "creator_post",
     intent: normalizedIntent,
     primaryChannel: "linkedin",
+    contentType,
+    visualStyle,
     post: input.post,
     hooks: input.hooks,
+    variants,
     variations: input.variations,
     visualNarrative: input.visualNarrative,
     carouselDraft: input.carouselDraft,
@@ -444,6 +678,8 @@ export async function repurposeContent(
           tone,
           strategy,
           generationIntent: input.generationIntent,
+          creatorContentType: input.creatorContentType,
+          creatorVisualStyle: input.creatorVisualStyle,
           businessId,
         })
       : await generateCapturedContentWithAI({
@@ -451,6 +687,8 @@ export async function repurposeContent(
           tone,
           strategy,
           generationIntent: input.generationIntent,
+          creatorContentType: input.creatorContentType,
+          creatorVisualStyle: input.creatorVisualStyle,
           businessId,
         });
 
@@ -459,6 +697,8 @@ export async function repurposeContent(
     tone,
     strategy,
     generationIntent: input.generationIntent,
+    creatorContentType: input.creatorContentType,
+    creatorVisualStyle: input.creatorVisualStyle,
     length: "medium",
     selectedHook: structuredContent.hooks[0],
     businessId,
@@ -474,6 +714,8 @@ export async function repurposeContent(
   const quickSignals = resolveQuickSignals(inputType, carouselDraft, sourceCount);
   const generationOutput = buildCreatorGenerationOutput({
     generationIntent: input.generationIntent,
+    creatorContentType: input.creatorContentType,
+    creatorVisualStyle: input.creatorVisualStyle,
     post: structuredContent.post,
     hooks: structuredContent.hooks.slice(0, 5),
     variations: variations.variations,
@@ -481,6 +723,7 @@ export async function repurposeContent(
     carouselDraft,
     quickSignals,
     ideaTitle: structuredContent.idea.title,
+    ideaAngle: structuredContent.idea.angle,
     sourceText,
   });
   const responseBase: Omit<RepurposeContentResponse, "asset"> = {

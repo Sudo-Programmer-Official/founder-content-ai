@@ -9,7 +9,9 @@ import type {
   BrandProfile,
   ContentGenerationSuggestion,
   ContentIngestionItem,
+  CreatorContentType,
   CreatorGenerationIntent,
+  CreatorVisualStyle,
   GenerationToneMode,
   GenerationIntent,
   RepurposeContentResponse,
@@ -79,6 +81,65 @@ const businessChannelOptions = [
   { label: "Facebook", value: "facebook" },
   { label: "Email", value: "email" },
 ] as const;
+
+const creatorContentTypeOptions: Array<{
+  value: CreatorContentType;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "text_post",
+    label: "Insight post",
+    description: "Classic LinkedIn text post with stronger structure and a clear point of view.",
+  },
+  {
+    value: "image_post",
+    label: "Quick image post",
+    description: "Short caption plus realistic image for a faster, higher-engagement post.",
+  },
+  {
+    value: "carousel",
+    label: "Carousel",
+    description: "Narrative-first post built to break cleanly into multiple slides.",
+  },
+  {
+    value: "quote_card",
+    label: "Quote card",
+    description: "One sharp idea with short supporting copy and a branded visual path.",
+  },
+  {
+    value: "promo_post",
+    label: "Promotion",
+    description: "Trust-led post that moves toward a product, service, or CTA.",
+  },
+];
+
+const creatorVisualStyleOptions: Array<{
+  value: CreatorVisualStyle;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "realistic_photo",
+    label: "Realistic photo",
+    description: "Scene-led image treatment with lighter overlay copy.",
+  },
+  {
+    value: "minimal_text_card",
+    label: "Minimal card",
+    description: "Clean text-forward visual with restrained design treatment.",
+  },
+  {
+    value: "mixed_carousel",
+    label: "Mixed carousel",
+    description: "Blend text-led slides with more visual breathing room.",
+  },
+  {
+    value: "quote_style",
+    label: "Quote style",
+    description: "Oversized key line with compact support and brand framing.",
+  },
+];
 
 const route = useRoute();
 const router = useRouter();
@@ -304,6 +365,8 @@ const hydratedSourceBusinessId = ref("");
 const seededRepurposeSource = ref<RepurposeSeedPayload["source"] | "">("");
 const pendingAutoGenerate = ref(false);
 const creatorGenerationIntent = ref<CreatorGenerationIntent>("post_idea");
+const creatorContentType = ref<CreatorContentType>("text_post");
+const creatorVisualStyle = ref<CreatorVisualStyle>("minimal_text_card");
 const businessGenerationIntent = ref<BusinessGenerationIntent>("get_leads");
 const businessTone = ref<BusinessGenerationTone>("friendly");
 const businessLocation = ref("");
@@ -349,6 +412,22 @@ const submitLabel = computed(() => {
     return "Generate post pack";
   }
 
+  if (creatorContentType.value === "image_post") {
+    return "Generate image post";
+  }
+
+  if (creatorContentType.value === "carousel") {
+    return "Generate carousel";
+  }
+
+  if (creatorContentType.value === "quote_card") {
+    return "Generate quote card";
+  }
+
+  if (creatorContentType.value === "promo_post") {
+    return "Generate promotion";
+  }
+
   return isStrategyFlow.value
     ? resolveRepurposeStrategySubmitLabel(generationStrategy.value)
     : "Generate post";
@@ -368,6 +447,16 @@ const activeIntentOptions = computed(() =>
 );
 const activeIntentSelection = computed(() =>
   isBusinessWorkspace.value ? businessIntentSelection.value : creatorIntentSelection.value,
+);
+const creatorContentTypeSelection = computed(
+  () =>
+    creatorContentTypeOptions.find((option) => option.value === creatorContentType.value)
+    ?? creatorContentTypeOptions[0],
+);
+const creatorVisualStyleSelection = computed(
+  () =>
+    creatorVisualStyleOptions.find((option) => option.value === creatorVisualStyle.value)
+    ?? creatorVisualStyleOptions[0],
 );
 const inputPanelMeta = computed(() => (isBusinessWorkspace.value ? "Brief" : "Input"));
 const intentPanelTitle = computed(() =>
@@ -891,6 +980,8 @@ async function generatePost(selectedSuggestion?: RepurposeSuggestionSelection): 
       text: usingFeedSources ? feedPreviewText.value.trim() : input.value.trim() || undefined,
       tone: tone.value,
       generationIntent: creatorGenerationIntent.value,
+      creatorContentType: creatorContentType.value,
+      creatorVisualStyle: creatorVisualStyle.value,
       businessId: bootstrap.value?.activeBusinessId ?? undefined,
     });
     const draft = saveActivationDraft({
@@ -1096,6 +1187,27 @@ function selectGenerationIntent(intent: GenerationIntent): void {
   }
 
   creatorGenerationIntent.value = intent as CreatorGenerationIntent;
+}
+
+function resolveDefaultCreatorVisualStyle(contentType: CreatorContentType): CreatorVisualStyle {
+  if (contentType === "image_post" || contentType === "promo_post") {
+    return "realistic_photo";
+  }
+
+  if (contentType === "carousel") {
+    return "mixed_carousel";
+  }
+
+  if (contentType === "quote_card") {
+    return "quote_style";
+  }
+
+  return "minimal_text_card";
+}
+
+function selectCreatorContentType(contentType: CreatorContentType): void {
+  creatorContentType.value = contentType;
+  creatorVisualStyle.value = resolveDefaultCreatorVisualStyle(contentType);
 }
 
 async function runSuggestedGeneration(suggestion: ContentGenerationSuggestion): Promise<void> {
@@ -1503,6 +1615,50 @@ onBeforeUnmount(() => {
             :class="{ active: activeGenerationIntent === option.value }"
             :disabled="option.disabled"
             @click="selectGenerationIntent(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="!improvementSourceId && !isBusinessWorkspace" class="strategy-panel">
+        <div class="strategy-panel-copy">
+          <p class="panel-meta">Format</p>
+          <h3>Choose what you want to create</h3>
+          <p class="activation-helper">
+            {{ creatorContentTypeSelection.description }}
+          </p>
+        </div>
+        <div class="strategy-selector">
+          <button
+            v-for="option in creatorContentTypeOptions"
+            :key="option.value"
+            type="button"
+            class="tone-chip"
+            :class="{ active: creatorContentType === option.value }"
+            @click="selectCreatorContentType(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+      </div>
+
+      <div v-if="!improvementSourceId && !isBusinessWorkspace" class="strategy-panel">
+        <div class="strategy-panel-copy">
+          <p class="panel-meta">Visual style</p>
+          <h3>Choose how this should look</h3>
+          <p class="activation-helper">
+            {{ creatorVisualStyleSelection.description }}
+          </p>
+        </div>
+        <div class="strategy-selector">
+          <button
+            v-for="option in creatorVisualStyleOptions"
+            :key="option.value"
+            type="button"
+            class="tone-chip"
+            :class="{ active: creatorVisualStyle === option.value }"
+            @click="creatorVisualStyle = option.value"
           >
             {{ option.label }}
           </button>

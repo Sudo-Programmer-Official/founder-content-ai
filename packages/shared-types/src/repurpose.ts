@@ -5,7 +5,13 @@ import type {
   WorkspaceMode,
 } from "./business-generation.ts";
 import type { ContentNarrative } from "./content-narrative.ts";
-import type { IdeaOption, LinkedInPostVariation } from "./founder-content.ts";
+import type {
+  CreatorContentType,
+  CreatorTextVariant,
+  CreatorVisualStyle,
+  IdeaOption,
+  LinkedInPostVariation,
+} from "./founder-content.ts";
 import type { CreatorGenerationIntent, GenerationIntent } from "./generation-intent.ts";
 import type { CarouselNarrativeType, CarouselSlideContent } from "./visual-generation.ts";
 
@@ -80,8 +86,11 @@ export interface CreatorPostGenerationOutput {
   kind: "creator_post";
   intent: Exclude<CreatorGenerationIntent, "weekly_plan">;
   primaryChannel: "linkedin";
+  contentType: CreatorContentType;
+  visualStyle?: CreatorVisualStyle;
   post: string;
   hooks: string[];
+  variants: CreatorTextVariant[];
   variations: LinkedInPostVariation[];
   visualNarrative: ContentNarrative;
   carouselDraft: CarouselDraft;
@@ -106,6 +115,8 @@ export interface RepurposeContentRequest {
   intent?: RepurposeIntent;
   strategy?: RepurposeStrategy;
   generationIntent?: CreatorGenerationIntent;
+  creatorContentType?: CreatorContentType;
+  creatorVisualStyle?: CreatorVisualStyle;
   assetId?: string;
   selectedSuggestion?: RepurposeSuggestionSelection;
   text?: string;

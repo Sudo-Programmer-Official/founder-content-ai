@@ -2,6 +2,43 @@ import type { ContentPovProfile, ContentQualityScore } from "./analytics.ts";
 import type { CreatorGenerationIntent } from "./generation-intent.ts";
 import type { RepurposeStrategy } from "./repurpose.ts";
 
+export type CreatorContentType =
+  | "text_post"
+  | "image_post"
+  | "carousel"
+  | "quote_card"
+  | "promo_post";
+
+export type CreatorVisualStyle =
+  | "realistic_photo"
+  | "minimal_text_card"
+  | "mixed_carousel"
+  | "quote_style";
+
+export type CreatorTextVariantKind =
+  | "insight_post"
+  | "story_version"
+  | "authority_version"
+  | "short_caption"
+  | "promo_copy";
+
+export type CreatorDistributionChannel =
+  | "linkedin"
+  | "instagram"
+  | "facebook"
+  | "email";
+
+export interface CreatorTextVariant {
+  id: string;
+  kind: CreatorTextVariantKind;
+  label: string;
+  description: string;
+  content: string;
+  recommendedChannels: CreatorDistributionChannel[];
+  length: "short" | "medium";
+  ctaStyle: "soft" | "direct";
+}
+
 export interface IdeaGenerationRequest {
   industry: string;
   stage: string;
@@ -22,6 +59,8 @@ export interface StructuredContentGenerationRequest {
   tone?: string;
   strategy?: RepurposeStrategy;
   generationIntent?: CreatorGenerationIntent;
+  creatorContentType?: CreatorContentType;
+  creatorVisualStyle?: CreatorVisualStyle;
   businessId?: string;
 }
 
@@ -47,6 +86,8 @@ export interface LinkedInPostGenerationRequest {
   tone?: string;
   strategy?: RepurposeStrategy;
   generationIntent?: CreatorGenerationIntent;
+  creatorContentType?: CreatorContentType;
+  creatorVisualStyle?: CreatorVisualStyle;
   length: string;
   selectedHook?: string;
   businessId?: string;
