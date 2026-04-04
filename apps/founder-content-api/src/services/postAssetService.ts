@@ -84,20 +84,20 @@ const POST_ASSET_ASPECT_RATIOS = new Set<PostAssetAspectRatio>(["1:1", "9:16"]);
 const POST_ASSET_METADATA_SOURCES = new Set<PostAssetMetadataSource>(["upload", "motion_template"]);
 const MOTION_TEMPLATE_IDS = new Set<MotionTemplateId>(["subtle_zoom", "caption_pulse", "story_pan"]);
 const MOTION_TEMPLATE_ASPECT_RATIOS = new Set<MotionTemplateAspectRatio>(["square", "portrait"]);
-const MOTION_RENDER_FPS = 30;
-const DEFAULT_MOTION_DURATION_MS = 7000;
-const MIN_MOTION_DURATION_MS = 4000;
-const MAX_MOTION_DURATION_MS = 12000;
+const DEFAULT_MOTION_RENDER_FPS = 24;
+const DEFAULT_MOTION_DURATION_MS = 5000;
+const MIN_MOTION_DURATION_MS = 3000;
+const MAX_MOTION_DURATION_MS = 8000;
 
 const MOTION_DIMENSIONS: Record<MotionTemplateAspectRatio, { width: number; height: number; assetAspectRatio: PostAssetAspectRatio }> = {
   square: {
-    width: 1080,
-    height: 1080,
+    width: 720,
+    height: 720,
     assetAspectRatio: "1:1",
   },
   portrait: {
-    width: 1080,
-    height: 1920,
+    width: 720,
+    height: 1280,
     assetAspectRatio: "9:16",
   },
 };
@@ -387,6 +387,16 @@ function resolveMotionAspectRatio(template: MotionTemplateMetadata): MotionTempl
   return template.aspectRatio === "portrait" ? "portrait" : "square";
 }
 
+function resolveMotionRenderFps(): number {
+  const parsed = Number(process.env.MOTION_RENDER_FPS ?? DEFAULT_MOTION_RENDER_FPS);
+
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_MOTION_RENDER_FPS;
+  }
+
+  return Math.min(Math.max(Math.floor(parsed), 12), 30);
+}
+
 function resolveMotionFilter(input: {
   templateId: MotionTemplateId;
   width: number;
@@ -394,8 +404,9 @@ function resolveMotionFilter(input: {
   totalFrames: number;
   durationSeconds: number;
   aspectRatio: MotionTemplateAspectRatio;
+  renderFps: number;
 }): string {
-  const { templateId, width, height, totalFrames, durationSeconds, aspectRatio } = input;
+  const { templateId, width, height, totalFrames, durationSeconds, aspectRatio, renderFps } = input;
   const clampedFrames = Math.max(totalFrames - 1, 1);
   const fadeOutStart = Math.max(durationSeconds - 0.35, 0.1).toFixed(2);
   let animationFilter = "";
@@ -403,16 +414,16 @@ function resolveMotionFilter(input: {
   if (templateId === "caption_pulse") {
     animationFilter =
       `zoompan=z='1+0.018*sin(on/12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-      `d=1:s=${width}x${height}:fps=${MOTION_RENDER_FPS}`;
+      `d=1:s=${width}x${height}:fps=${renderFps}`;
   } else if (templateId === "story_pan") {
     animationFilter =
       aspectRatio === "portrait"
-        ? `zoompan=z='1.10':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${clampedFrames})':d=1:s=${width}x${height}:fps=${MOTION_RENDER_FPS}`
-        : `zoompan=z='1.10':x='(iw-iw/zoom)*(on/${clampedFrames})':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${MOTION_RENDER_FPS}`;
+        ? `zoompan=z='1.10':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${clampedFrames})':d=1:s=${width}x${height}:fps=${renderFps}`
+        : `zoompan=z='1.10':x='(iw-iw/zoom)*(on/${clampedFrames})':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${renderFps}`;
   } else {
     animationFilter =
       `zoompan=z='min(zoom+0.00045,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-      `d=1:s=${width}x${height}:fps=${MOTION_RENDER_FPS}`;
+      `d=1:s=${width}x${height}:fps=${renderFps}`;
   }
 
   return [
@@ -437,8 +448,9 @@ async function renderMotionVideoFromImage(input: {
   const aspectRatio = resolveMotionAspectRatio(input.template);
   const dimensions = MOTION_DIMENSIONS[aspectRatio];
   const durationMs = resolveMotionDurationMs(input.template);
+  const renderFps = resolveMotionRenderFps();
   const durationSeconds = Number((durationMs / 1000).toFixed(2));
-  const totalFrames = Math.max(Math.round((durationMs / 1000) * MOTION_RENDER_FPS), 1);
+  const totalFrames = Math.max(Math.round((durationMs / 1000) * renderFps), 1);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "motion-lite-"));
   const framePath = path.join(tempDir, "frame.png");
   const outputPath = path.join(tempDir, "motion-lite.mp4");
@@ -459,7 +471,7 @@ async function renderMotionVideoFromImage(input: {
         "-loop",
         "1",
         "-framerate",
-        String(MOTION_RENDER_FPS),
+        String(renderFps),
         "-i",
         framePath,
         "-t",
@@ -472,14 +484,19 @@ async function renderMotionVideoFromImage(input: {
           totalFrames,
           durationSeconds,
           aspectRatio,
+          renderFps,
         }),
         "-an",
         "-c:v",
         "libx264",
         "-pix_fmt",
         "yuv420p",
+        "-threads",
+        "1",
         "-preset",
         "veryfast",
+        "-crf",
+        "28",
         "-movflags",
         "+faststart",
         outputPath,
