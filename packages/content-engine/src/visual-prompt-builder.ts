@@ -256,7 +256,7 @@ function resolveLayoutBlock(
   };
 
   if (options?.generatedMediaType === "photo_overlay") {
-    return `photo-led social ad, realistic lifestyle photography, authentic environment, generous negative space for headline overlay, subtle brand integration, readable text zone, mobile-first crop, trustworthy and conversion-focused`;
+    return `realistic social photography background, authentic environment, clean negative space reserved for a later headline card, no typography baked into the photo, no interface chrome, no caption paragraphs, mobile-first crop, trustworthy and polished`;
   }
 
   switch (templateType) {
@@ -297,13 +297,15 @@ function resolveContentBlock(
 
   if (options?.generatedMediaType === "photo_overlay") {
     return [
-      sceneDescription ? `Scene: "${truncateAtWordBoundary(sceneDescription, 220)}"` : undefined,
-      `Headline overlay: "${headline}"`,
-      supportingText ? `Support line: "${supportingText}"` : undefined,
-      closingText ? `CTA overlay: "${closingText}"` : undefined,
-      eyebrowText ? `Eyebrow: "${eyebrowText}"` : undefined,
-      footerText ? `Brand footer: "${footerText}"` : undefined,
-      "Keep any visible text short and secondary to the photography.",
+      sceneDescription ? `Scene subject only, never rendered as text: "${truncateAtWordBoundary(sceneDescription, 180)}"` : undefined,
+      `Reserved headline copy for later overlay treatment: "${truncateAtWordBoundary(headline, 96)}"`,
+      supportingText ? `Optional micro support for later overlay treatment only: "${truncateAtWordBoundary(supportingText, 52)}"` : undefined,
+      closingText ? `Optional CTA chip for later overlay treatment only: "${truncateAtWordBoundary(closingText, 28)}"` : undefined,
+      eyebrowText ? `Optional eyebrow label for later overlay treatment only: "${eyebrowText}"` : undefined,
+      footerText ? `Mandatory later brand signature label: "${footerText}"` : undefined,
+      "Generate the background photo only.",
+      "Do not render any words, logos, labels, UI chrome, CTA buttons, watermark text, or paragraph copy into the photo itself.",
+      "Protect a clean lower-third safe area so post-production overlay text fits comfortably inside the frame.",
     ]
       .filter(Boolean)
       .join(" ");

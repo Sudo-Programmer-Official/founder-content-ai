@@ -4,13 +4,16 @@ import { useRoute, useRouter } from "vue-router";
 import type {
   BusinessGenerationChannel,
   BusinessGenerationIntent,
+  BusinessContentOutput,
   BusinessGenerationResponse,
   BusinessGenerationTone,
   BrandProfile,
+  ContentAiEditPreview,
   ContentGenerationSuggestion,
   ContentIngestionItem,
   CreatorContentType,
   CreatorGenerationIntent,
+  CreatorTextVariant,
   CreatorVisualStyle,
   GenerationToneMode,
   GenerationIntent,
@@ -38,11 +41,16 @@ import {
 import { requestBrandProfile } from "../services/brand-profile-service";
 import {
   getActivationDraft,
+  replaceActivationDraft,
   saveActivationDraft,
+  type ActivationDraftRecord,
 } from "../services/activation-flow-service";
 import {
+  requestCreatePipelineItem,
+  requestContentAiEditPreview,
   requestContentGenerationSuggestions,
   requestPipelineItem,
+  requestUpdatePipelineItem,
 } from "../services/control-dashboard-service";
 import { requestSocialAccounts } from "../services/publishing-service";
 import { consumeRepurposeSeed, type RepurposeSeedPayload } from "../utils/repurpose-loop";
@@ -333,6 +341,205 @@ function buildBusinessIntentOptions(
   ];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeComparableText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function syncCreatorVariantsForEditedPost(
+  variants: CreatorTextVariant[],
+  previousPost: string,
+  nextPost: string,
+): CreatorTextVariant[] {
+  if (variants.length === 0) {
+    return variants;
+  }
+
+  const normalizedPreviousPost = normalizeComparableText(previousPost);
+  const matchingIndex = variants.findIndex(
+    (variant) => normalizeComparableText(variant.content) === normalizedPreviousPost,
+  );
+  const targetIndex = matchingIndex >= 0 ? matchingIndex : 0;
+
+  return variants.map((variant, index) =>
+    index === targetIndex
+      ? {
+          ...variant,
+          content: nextPost,
+        }
+      : variant,
+  );
+}
+
+function syncBusinessOutputForEditedPost(
+  output: BusinessContentOutput,
+  previousPost: string,
+  nextPost: string,
+): BusinessContentOutput {
+  const normalizedPreviousPost = normalizeComparableText(previousPost);
+  const captions = {
+    ...output.captions,
+  };
+  const email = output.email
+    ? {
+        ...output.email,
+      }
+    : undefined;
+
+  if (normalizeComparableText(captions.instagram) === normalizedPreviousPost) {
+    captions.instagram = nextPost;
+  } else if (normalizeComparableText(captions.facebook) === normalizedPreviousPost) {
+    captions.facebook = nextPost;
+  } else if (email && normalizeComparableText(email.body) === normalizedPreviousPost) {
+    email.body = nextPost;
+  }
+
+  return {
+    ...output,
+    captions,
+    email,
+  };
+}
+
+function buildEditedRepurposeResult(
+  result: RepurposeContentResponse,
+  nextPost: string,
+): RepurposeContentResponse {
+  const nextGenerationOutput =
+    result.generationOutput.kind === "creator_post"
+      ? {
+          ...result.generationOutput,
+          post: nextPost,
+          variants: syncCreatorVariantsForEditedPost(
+            Array.isArray(result.generationOutput.variants) ? result.generationOutput.variants : [],
+            result.post,
+            nextPost,
+          ),
+        }
+      : result.generationOutput.kind === "business_campaign"
+        ? {
+            ...result.generationOutput,
+            content: syncBusinessOutputForEditedPost(result.generationOutput.content, result.post, nextPost),
+          }
+        : result.generationOutput;
+
+  return {
+    ...result,
+    post: nextPost,
+    generationOutput: nextGenerationOutput,
+    businessOutput:
+      result.businessOutput
+        ? syncBusinessOutputForEditedPost(result.businessOutput, result.post, nextPost)
+        : result.businessOutput,
+  };
+}
+
+function syncCreatorGenerationOutputRecord(
+  generationOutput: Record<string, unknown>,
+  previousPost: string,
+  nextPost: string,
+): Record<string, unknown> {
+  if (generationOutput.kind !== "creator_post") {
+    return generationOutput;
+  }
+
+  const variants = Array.isArray(generationOutput.variants)
+    ? generationOutput.variants.map((variant) =>
+        isRecord(variant) ? { ...variant } : variant,
+      )
+    : [];
+  const normalizedPreviousPost = normalizeComparableText(previousPost);
+  const matchingIndex = variants.findIndex(
+    (variant) => isRecord(variant) && normalizeComparableText(variant.content) === normalizedPreviousPost,
+  );
+  const targetIndex = matchingIndex >= 0 ? matchingIndex : 0;
+
+  if (variants[targetIndex] && isRecord(variants[targetIndex])) {
+    variants[targetIndex] = {
+      ...variants[targetIndex],
+      content: nextPost,
+    };
+  }
+
+  return {
+    ...generationOutput,
+    post: nextPost,
+    variants,
+  };
+}
+
+function syncBusinessOutputRecord(
+  businessOutput: Record<string, unknown>,
+  previousPost: string,
+  nextPost: string,
+): Record<string, unknown> {
+  const nextBusinessOutput = {
+    ...businessOutput,
+  };
+  const captions = isRecord(nextBusinessOutput.captions)
+    ? {
+        ...nextBusinessOutput.captions,
+      }
+    : null;
+  const email = isRecord(nextBusinessOutput.email)
+    ? {
+        ...nextBusinessOutput.email,
+      }
+    : null;
+  const normalizedPreviousPost = normalizeComparableText(previousPost);
+
+  if (captions) {
+    if (normalizeComparableText(captions.instagram) === normalizedPreviousPost) {
+      captions.instagram = nextPost;
+    } else if (normalizeComparableText(captions.facebook) === normalizedPreviousPost) {
+      captions.facebook = nextPost;
+    }
+    nextBusinessOutput.captions = captions;
+  }
+
+  if (email && normalizeComparableText(email.body) === normalizedPreviousPost) {
+    email.body = nextPost;
+    nextBusinessOutput.email = email;
+  }
+
+  return nextBusinessOutput;
+}
+
+function buildEditedContentBody(
+  contentBody: Record<string, unknown> | null,
+  previousPost: string,
+  nextPost: string,
+): Record<string, unknown> {
+  const nextContentBody: Record<string, unknown> = {
+    ...(contentBody ?? {}),
+    post: nextPost,
+  };
+
+  if (isRecord(nextContentBody.generationOutput)) {
+    nextContentBody.generationOutput = nextContentBody.generationOutput.kind === "business_campaign"
+      ? {
+          ...nextContentBody.generationOutput,
+          content: isRecord(nextContentBody.generationOutput.content)
+            ? syncBusinessOutputRecord(nextContentBody.generationOutput.content, previousPost, nextPost)
+            : nextContentBody.generationOutput.content,
+        }
+      : syncCreatorGenerationOutputRecord(nextContentBody.generationOutput, previousPost, nextPost);
+  }
+
+  if (isRecord(nextContentBody.businessOutput)) {
+    nextContentBody.businessOutput = syncBusinessOutputRecord(
+      nextContentBody.businessOutput,
+      previousPost,
+      nextPost,
+    );
+  }
+
+  return nextContentBody;
+}
+
 const input = ref("");
 const tone = ref<GenerationToneMode>(DEFAULT_GENERATION_TONE);
 const generationStrategy = ref<RepurposeStrategy>(DEFAULT_REPURPOSE_STRATEGY);
@@ -341,6 +548,15 @@ const isLoading = ref(false);
 const errorMessage = ref("");
 const helperMessage = ref("Add a starting direction, offer, or rough note. Voice works too.");
 const improvementSourceId = ref("");
+const isSavingEdit = ref(false);
+const editorFeedback = ref("");
+const editorAiInstruction = ref("");
+const editorAiPreview = ref<ContentAiEditPreview | null>(null);
+const isPreviewingEditorAi = ref(false);
+const editingStoredDraft = ref<ActivationDraftRecord | null>(null);
+const editingPersistedAssetId = ref("");
+const editingPersistedContentBody = ref<Record<string, unknown> | null>(null);
+const originalEditPost = ref("");
 const sourceMode = ref<GenerationSourceMode>("fresh");
 const linkedinSourceUrl = ref("");
 const instagramSourceUrl = ref("");
@@ -373,22 +589,23 @@ const businessLocation = ref("");
 const businessOffer = ref("");
 const businessChannels = ref<BusinessGenerationChannel[]>(["instagram", "facebook", "email"]);
 
+const isEditMode = computed(() => improvementSourceId.value !== "");
 const pageTitle = computed(() =>
-  isBusinessWorkspace.value
-    ? "What do you want to do today?"
-    : improvementSourceId.value
-      ? "Improve the post you already have"
+  isEditMode.value
+      ? "Edit the draft you already have"
+    : isBusinessWorkspace.value
+      ? "What do you want to do today?"
       : "What do you want to do today?",
 );
 const pageDescription = computed(() =>
-  isBusinessWorkspace.value
-    ? "Choose the customer outcome first, then generate a visual-first campaign pack with captions, CTA, and optional email."
-    : improvementSourceId.value
-      ? "We will use your previous draft as input and tighten the hook, structure, and clarity."
+  isEditMode.value
+      ? "Editor mode keeps the current draft intact. Save manual changes, ask AI for a specific improvement, or regenerate only when you want a new version."
+    : isBusinessWorkspace.value
+      ? "Choose the customer outcome first, then generate a visual-first campaign pack with captions, CTA, and optional email."
       : "Choose the post intent first, then write from scratch or repurpose existing content without leaving the workflow.",
 );
 const isStrategyFlow = computed(
-  () => !improvementSourceId.value && sourceMode.value === "fresh" && seededRepurposeSource.value !== "",
+  () => !isEditMode.value && sourceMode.value === "fresh" && seededRepurposeSource.value !== "",
 );
 const showSuggestionPanel = computed(
   () =>
@@ -405,7 +622,11 @@ const recommendedGenerationSuggestion = computed(
 );
 const submitLabel = computed(() => {
   if (isLoading.value) {
-    return "Generating...";
+    return isEditMode.value ? "Regenerating..." : "Generating...";
+  }
+
+  if (isEditMode.value) {
+    return "Regenerate";
   }
 
   if (isBusinessWorkspace.value) {
@@ -432,6 +653,7 @@ const submitLabel = computed(() => {
     ? resolveRepurposeStrategySubmitLabel(generationStrategy.value)
     : "Generate post";
 });
+const saveEditLabel = computed(() => (isSavingEdit.value ? "Saving..." : "Save changes"));
 const creatorIntentSelection = computed(
   () => creatorIntentOptions.find((option) => option.value === creatorGenerationIntent.value) ?? creatorIntentOptions[0],
 );
@@ -458,7 +680,13 @@ const creatorVisualStyleSelection = computed(
     creatorVisualStyleOptions.find((option) => option.value === creatorVisualStyle.value)
     ?? creatorVisualStyleOptions[0],
 );
-const inputPanelMeta = computed(() => (isBusinessWorkspace.value ? "Brief" : "Input"));
+const inputPanelMeta = computed(() => {
+  if (isEditMode.value) {
+    return "Editor";
+  }
+
+  return isBusinessWorkspace.value ? "Brief" : "Input";
+});
 const intentPanelTitle = computed(() =>
   isBusinessWorkspace.value
     ? businessWorkspaceType.value === "daycare"
@@ -468,14 +696,18 @@ const intentPanelTitle = computed(() =>
 );
 const intentHelperCopy = computed(() => activeIntentSelection.value.description);
 const sourceInputLabel = computed(() =>
-  isBusinessWorkspace.value
+  isEditMode.value
+    ? "Edit the current draft"
+    : isBusinessWorkspace.value
     ? activeIntentSelection.value.inputLabel
     : isStrategyFlow.value
       ? activeStrategyOption.value.label
       : activeIntentSelection.value.inputLabel,
 );
 const sourceInputPlaceholder = computed(() =>
-  isBusinessWorkspace.value
+  isEditMode.value
+    ? "Edit the current draft directly. AI will only change it when you explicitly preview or regenerate."
+    : isBusinessWorkspace.value
     ? activeIntentSelection.value.freshPlaceholder
     : isStrategyFlow.value
       ? "Review the seeded post, tighten the framing if needed, then generate the next move."
@@ -638,7 +870,11 @@ const workspaceDefaultSources = computed(() =>
 );
 
 const hasWorkspaceSourceDefaults = computed(() => workspaceDefaultSources.value.length > 0);
-const isBusinessWorkspace = computed(() => brandProfile.value?.workspaceMode === "business");
+const isBusinessWorkspace = computed(() =>
+  brandProfile.value?.workspaceMode === "business"
+  || editingStoredDraft.value?.result.workspaceMode === "business"
+  || (isRecord(editingPersistedContentBody.value) && editingPersistedContentBody.value.workspaceMode === "business"),
+);
 const businessWorkspaceType = computed(() => inferBusinessTypeFromBrandProfile(brandProfile.value));
 
 function resolveSourceModeFromRoute(): GenerationSourceMode {
@@ -655,6 +891,81 @@ function resolveActivePostIdFromRoute(): string {
   }
 
   return "";
+}
+
+function hydrateGenerationContextFromResult(result: RepurposeContentResponse | null | undefined): void {
+  const generationOutput = result?.generationOutput;
+
+  if (!generationOutput) {
+    return;
+  }
+
+  if (generationOutput.kind === "creator_post") {
+    creatorGenerationIntent.value = generationOutput.intent;
+    creatorContentType.value = generationOutput.contentType;
+    creatorVisualStyle.value = generationOutput.visualStyle ?? resolveDefaultCreatorVisualStyle(generationOutput.contentType);
+    return;
+  }
+
+  if (generationOutput.kind === "business_campaign" || generationOutput.kind === "weekly_plan") {
+    businessGenerationIntent.value = generationOutput.intent;
+  }
+}
+
+function hydrateGenerationContextFromBody(contentBody: Record<string, unknown> | null): void {
+  if (!contentBody || !isRecord(contentBody.generationOutput)) {
+    return;
+  }
+
+  const generationOutput = contentBody.generationOutput;
+
+  if (generationOutput.kind === "creator_post") {
+    if (
+      generationOutput.intent === "post_idea"
+      || generationOutput.intent === "grow_audience"
+      || generationOutput.intent === "promote_offer"
+    ) {
+      creatorGenerationIntent.value = generationOutput.intent;
+    }
+
+    if (
+      generationOutput.contentType === "text_post"
+      || generationOutput.contentType === "image_post"
+      || generationOutput.contentType === "carousel"
+      || generationOutput.contentType === "quote_card"
+      || generationOutput.contentType === "promo_post"
+    ) {
+      creatorContentType.value = generationOutput.contentType;
+    }
+
+    if (
+      generationOutput.visualStyle === "realistic_photo"
+      || generationOutput.visualStyle === "minimal_text_card"
+      || generationOutput.visualStyle === "mixed_carousel"
+      || generationOutput.visualStyle === "quote_style"
+    ) {
+      creatorVisualStyle.value = generationOutput.visualStyle;
+    }
+
+    return;
+  }
+
+  if (
+    generationOutput.intent === "get_leads"
+    || generationOutput.intent === "get_bookings"
+    || generationOutput.intent === "promote_offer"
+    || generationOutput.intent === "weekly_plan"
+  ) {
+    businessGenerationIntent.value = generationOutput.intent;
+  }
+}
+
+function extractEditablePostFromAssetContent(assetText: string | undefined, contentBody: unknown): string {
+  if (isRecord(contentBody) && typeof contentBody.post === "string" && contentBody.post.trim() !== "") {
+    return contentBody.post.trim();
+  }
+
+  return assetText?.trim() ?? "";
 }
 
 async function loadSavedSources(): Promise<void> {
@@ -752,6 +1063,13 @@ async function loadGenerationSuggestions(): Promise<void> {
 
 async function hydrateImprovementState(): Promise<void> {
   const improveId = resolveActivePostIdFromRoute();
+  editorFeedback.value = "";
+  editorAiInstruction.value = "";
+  editorAiPreview.value = null;
+  editingStoredDraft.value = null;
+  editingPersistedAssetId.value = "";
+  editingPersistedContentBody.value = null;
+  originalEditPost.value = "";
 
   if (!improveId) {
     const repurposeSeed = consumeRepurposeSeed();
@@ -785,7 +1103,7 @@ async function hydrateImprovementState(): Promise<void> {
     generationStrategy.value = DEFAULT_REPURPOSE_STRATEGY;
     sourceMode.value = resolveSourceModeFromRoute();
     input.value = typeof route.query.prefill === "string" ? route.query.prefill : "";
-    if (!route.query.prefill && helperMessage.value.includes("improving")) {
+    if (!route.query.prefill && (helperMessage.value.includes("improving") || helperMessage.value.includes("editing"))) {
       helperMessage.value = "Add a starting direction, offer, or rough note. Voice works too.";
     }
     return;
@@ -800,8 +1118,13 @@ async function hydrateImprovementState(): Promise<void> {
   if (bootstrap.value?.activeBusinessId) {
     try {
       const response = await requestPipelineItem(bootstrap.value.activeBusinessId, improveId);
-      input.value = response.asset.textContent ?? "";
-      helperMessage.value = "You are editing a saved post. Regenerating will update this same draft.";
+      improvementSourceId.value = response.asset.id;
+      editingPersistedAssetId.value = response.asset.id;
+      editingPersistedContentBody.value = isRecord(response.asset.contentBody) ? response.asset.contentBody : null;
+      input.value = extractEditablePostFromAssetContent(response.asset.textContent, response.asset.contentBody);
+      originalEditPost.value = input.value;
+      hydrateGenerationContextFromBody(editingPersistedContentBody.value);
+      helperMessage.value = "Editor mode is live. Save your changes, preview one AI improvement, or regenerate only if you want a new version.";
       return;
     } catch {
       // Fall through to session draft recovery.
@@ -815,8 +1138,15 @@ async function hydrateImprovementState(): Promise<void> {
     return;
   }
 
+  editingStoredDraft.value = storedDraft;
+  editingPersistedAssetId.value = storedDraft.result.asset?.id ?? "";
+  editingPersistedContentBody.value = isRecord(storedDraft.result.asset?.contentBody)
+    ? storedDraft.result.asset.contentBody
+    : null;
   input.value = storedDraft.result.post;
-  helperMessage.value = "You are improving a saved draft. Regenerating will update this same post.";
+  originalEditPost.value = storedDraft.result.post;
+  hydrateGenerationContextFromResult(storedDraft.result);
+  helperMessage.value = "Editor mode is live. Save manual changes first, ask AI for one targeted improvement, or regenerate when you want a fresh version.";
 }
 
 function setSourceMode(nextMode: GenerationSourceMode): void {
@@ -936,6 +1266,169 @@ async function previewFeedSources(): Promise<void> {
       error instanceof Error ? error.message : "Unable to preview content sources right now.";
   } finally {
     isPreviewingFeed.value = false;
+  }
+}
+
+async function previewEditorAiEdit(): Promise<void> {
+  if (!isEditMode.value) {
+    return;
+  }
+
+  if (!input.value.trim()) {
+    editorFeedback.value = "Add or keep some draft content before asking AI to improve it.";
+    return;
+  }
+
+  if (!bootstrap.value?.activeBusinessId) {
+    editorFeedback.value = "Select a workspace before requesting AI edits.";
+    return;
+  }
+
+  const instruction = editorAiInstruction.value.trim();
+
+  if (!instruction) {
+    editorFeedback.value = "Tell AI what to improve first.";
+    return;
+  }
+
+  isPreviewingEditorAi.value = true;
+  editorFeedback.value = "";
+  editorAiPreview.value = null;
+
+  try {
+    const response = await requestContentAiEditPreview({
+      businessId: bootstrap.value.activeBusinessId,
+      assetId: editingPersistedAssetId.value || undefined,
+      textContent: input.value.trim(),
+      instruction,
+    });
+
+    editorAiPreview.value = response.preview;
+  } catch (error) {
+    editorFeedback.value =
+      error instanceof Error ? error.message : "Unable to preview AI changes right now.";
+  } finally {
+    isPreviewingEditorAi.value = false;
+  }
+}
+
+function applyEditorAiSuggestion(): void {
+  const suggestedText = editorAiPreview.value?.suggestedText.trim();
+
+  if (!suggestedText) {
+    editorFeedback.value = "The AI preview did not return usable content.";
+    return;
+  }
+
+  input.value = suggestedText;
+  editorAiPreview.value = null;
+  editorFeedback.value = "AI suggestion applied in the editor. Save when the draft looks right.";
+}
+
+async function saveEditedDraft(): Promise<void> {
+  if (!isEditMode.value) {
+    return;
+  }
+
+  const trimmedInput = input.value.trim();
+
+  if (!trimmedInput) {
+    errorMessage.value = "Add or keep some draft content before saving.";
+    return;
+  }
+
+  isSavingEdit.value = true;
+  errorMessage.value = "";
+  editorFeedback.value = "";
+
+  try {
+    if (editingStoredDraft.value) {
+      const nextResult = buildEditedRepurposeResult(editingStoredDraft.value.result, trimmedInput);
+      let nextAsset = nextResult.asset;
+
+      if (bootstrap.value?.activeBusinessId && nextAsset?.id) {
+        const response = await requestUpdatePipelineItem({
+          businessId: bootstrap.value.activeBusinessId,
+          assetId: nextAsset.id,
+          title: nextResult.idea.title,
+          textContent: trimmedInput,
+          contentBody: buildEditedContentBody(
+            isRecord(nextAsset.contentBody) ? nextAsset.contentBody : null,
+            editingStoredDraft.value.result.post,
+            trimmedInput,
+          ),
+        });
+
+        nextAsset = response.asset;
+      } else if (bootstrap.value?.activeBusinessId) {
+        const response = await requestCreatePipelineItem({
+          businessId: bootstrap.value.activeBusinessId,
+          title: nextResult.idea.title,
+          textContent: trimmedInput,
+          contentBody: buildEditedContentBody(
+            nextResult.asset && isRecord(nextResult.asset.contentBody) ? nextResult.asset.contentBody : null,
+            editingStoredDraft.value.result.post,
+            trimmedInput,
+          ),
+          sourceKind: editingStoredDraft.value.mode === "improve" ? "remix" : "capture",
+        });
+
+        nextAsset = response.asset;
+      }
+
+      const nextDraftRecord = nextAsset?.id && nextAsset.id !== editingStoredDraft.value.id
+        ? saveActivationDraft({
+            input: trimmedInput,
+            mode: editingStoredDraft.value.mode,
+            result: {
+              ...nextResult,
+              asset: nextAsset,
+            },
+          })
+        : replaceActivationDraft({
+            ...editingStoredDraft.value,
+            input: trimmedInput,
+            result: {
+              ...nextResult,
+              asset: nextAsset,
+            },
+          });
+
+      await router.push({
+        path: appRoutes.appResult,
+        query: {
+          id: nextDraftRecord.id,
+        },
+      });
+      return;
+    }
+
+    if (!bootstrap.value?.activeBusinessId || !editingPersistedAssetId.value) {
+      errorMessage.value = "We could not resolve this draft for saving. Reopen it from planner, history, or result.";
+      return;
+    }
+
+    const response = await requestUpdatePipelineItem({
+      businessId: bootstrap.value.activeBusinessId,
+      assetId: editingPersistedAssetId.value,
+      textContent: trimmedInput,
+      contentBody: buildEditedContentBody(
+        editingPersistedContentBody.value,
+        originalEditPost.value,
+        trimmedInput,
+      ),
+    });
+
+    await router.push({
+      path: appRoutes.appResult,
+      query: {
+        id: response.asset.id,
+      },
+    });
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to save this draft right now.";
+  } finally {
+    isSavingEdit.value = false;
   }
 }
 
@@ -1246,11 +1739,17 @@ function handleKeydown(event: KeyboardEvent): void {
     return;
   }
 
-  if (isLoading.value) {
+  if (isLoading.value || isSavingEdit.value) {
     return;
   }
 
   event.preventDefault();
+
+  if (isEditMode.value) {
+    void saveEditedDraft();
+    return;
+  }
+
   void generatePost();
 }
 
@@ -1278,6 +1777,10 @@ watch([sourceMode, linkedinSourceUrl, instagramSourceUrl, facebookSourceUrl, blo
 watch(
   () => input.value,
   () => {
+    if (isEditMode.value && editorAiPreview.value) {
+      editorAiPreview.value = null;
+    }
+
     if (sourceMode.value === "feed" && !improvementSourceId.value && ingestedSourceItems.value.length > 0) {
       feedPreviewText.value = buildCombinedFeedPreviewText(input.value, ingestedSourceItems.value);
     }
@@ -1346,9 +1849,17 @@ onBeforeUnmount(() => {
       <div class="activation-chip-row">
         <span class="activation-chip">Value in one step</span>
         <span class="activation-chip">
-          {{ isBusinessWorkspace ? "Visual + captions + CTA" : "Hooks + post + next actions" }}
+          {{
+            isEditMode
+              ? "Manual edit + AI assist"
+              : isBusinessWorkspace
+                ? "Visual + captions + CTA"
+                : "Hooks + post + next actions"
+          }}
         </span>
-        <span class="activation-chip">Cmd/Ctrl + Enter to generate</span>
+        <span class="activation-chip">
+          {{ isEditMode ? "Cmd/Ctrl + Enter to save" : "Cmd/Ctrl + Enter to generate" }}
+        </span>
       </div>
       <div
         class="channel-context-panel"
@@ -1579,6 +2090,21 @@ onBeforeUnmount(() => {
     </section>
 
     <section class="activation-panel">
+      <div v-if="isEditMode" class="editor-mode-panel">
+        <div class="strategy-panel-copy">
+          <p class="panel-meta">Editor mode</p>
+          <h3>Edit first. Use AI only when you ask.</h3>
+          <p class="activation-helper">
+            Manual edits stay in control. Save changes returns you to the draft, AI preview suggests a revision without overwriting, and regenerate is a deliberate reset.
+          </p>
+        </div>
+        <div class="saved-source-list">
+          <span class="saved-source-chip">Same draft</span>
+          <span class="saved-source-chip">No silent regeneration</span>
+          <span class="saved-source-chip">AI assist is preview-first</span>
+        </div>
+      </div>
+
       <div v-if="!improvementSourceId && !isBusinessWorkspace" class="source-mode-row create-mode-row">
         <button
           type="button"
@@ -1670,7 +2196,7 @@ onBeforeUnmount(() => {
           <p class="panel-meta">{{ inputPanelMeta }}</p>
           <h2>{{ sourceInputLabel }}</h2>
         </div>
-        <div class="tone-selector">
+        <div v-if="!isEditMode" class="tone-selector">
           <template v-if="isBusinessWorkspace">
             <button
               v-for="option in businessToneOptions"
@@ -1698,7 +2224,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="isBusinessWorkspace" class="strategy-panel">
+      <div v-if="!isEditMode && isBusinessWorkspace" class="strategy-panel">
         <div class="strategy-panel-copy">
           <p class="panel-meta">Campaign setup</p>
           <h3>Give the engine the local context</h3>
@@ -1805,6 +2331,76 @@ onBeforeUnmount(() => {
         class="activation-textarea"
         :placeholder="sourceInputPlaceholder"
       />
+
+      <div v-if="isEditMode" class="editor-ai-panel">
+        <div class="strategy-panel-copy">
+          <p class="panel-meta">AI assist</p>
+          <h3>Preview an improvement before applying it</h3>
+          <p class="activation-helper">
+            Describe one specific change. AI suggests a revision, then you decide whether to apply it or keep editing manually.
+          </p>
+        </div>
+
+        <input
+          v-model="editorAiInstruction"
+          type="text"
+          class="editor-ai-input"
+          placeholder="Example: tighten the hook, shorten this, sound more authoritative"
+        />
+
+        <div class="activation-actions editor-inline-actions">
+          <button
+            type="button"
+            class="secondary-action"
+            :disabled="isPreviewingEditorAi || isSavingEdit || isLoading"
+            @click="void previewEditorAiEdit()"
+          >
+            {{ isPreviewingEditorAi ? "Previewing..." : "Improve with AI" }}
+          </button>
+          <button
+            type="button"
+            class="secondary-action"
+            :disabled="isLoading || isSavingEdit"
+            @click="void generatePost()"
+          >
+            {{ submitLabel }}
+          </button>
+        </div>
+
+        <div v-if="editorAiPreview" class="preview-card">
+          <div class="preview-section">
+            <p class="panel-meta">AI suggestion</p>
+            <strong>{{ editorAiPreview.summary }}</strong>
+            <p class="activation-helper">{{ editorAiPreview.scopeHint }}</p>
+          </div>
+
+          <label class="preview-section">
+            <span>Suggested revision</span>
+            <textarea
+              :value="editorAiPreview.suggestedText"
+              class="activation-textarea preview-textarea"
+              readonly
+            />
+          </label>
+
+          <div class="activation-actions editor-inline-actions">
+            <button
+              type="button"
+              class="primary-action"
+              @click="applyEditorAiSuggestion"
+            >
+              Apply suggestion
+            </button>
+            <button
+              type="button"
+              class="secondary-action"
+              @click="editorAiPreview = null"
+            >
+              Keep current draft
+            </button>
+          </div>
+        </div>
+      </div>
 
       <div
         v-if="!improvementSourceId && !isBusinessWorkspace && sourceMode === 'feed'"
@@ -1920,7 +2516,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-else class="activation-helper-row">
+      <div v-else-if="!isEditMode" class="activation-helper-row">
         <p class="activation-helper">{{ helperMessage }}</p>
         <VoiceRecorder
           title="Speak the idea instead"
@@ -1942,6 +2538,9 @@ onBeforeUnmount(() => {
       </div>
 
       <p v-if="errorMessage" class="activation-feedback error">{{ errorMessage }}</p>
+      <p v-else-if="editorFeedback" class="activation-feedback">
+        {{ editorFeedback }}
+      </p>
       <p v-else-if="!isBusinessWorkspace && sourceMode === 'feed' && !improvementSourceId" class="activation-feedback">
         {{
           isFeedPreviewReady
@@ -1954,6 +2553,16 @@ onBeforeUnmount(() => {
 
       <div class="activation-actions">
         <button
+          v-if="isEditMode"
+          type="button"
+          class="primary-action"
+          :disabled="isSavingEdit || isLoading || !input.trim()"
+          @click="void saveEditedDraft()"
+        >
+          {{ saveEditLabel }}
+        </button>
+        <button
+          v-else
           type="button"
           class="primary-action"
           :disabled="isLoading || (!isBusinessWorkspace && !improvementSourceId && sourceMode === 'feed' && (!isFeedPreviewReady || isPreviewingFeed))"
@@ -1961,6 +2570,13 @@ onBeforeUnmount(() => {
         >
           {{ submitLabel }}
         </button>
+        <router-link
+          v-if="isEditMode"
+          class="secondary-action"
+          :to="{ path: appRoutes.appResult, query: { id: editingStoredDraft?.id || editingPersistedAssetId || improvementSourceId } }"
+        >
+          Back to draft
+        </router-link>
         <router-link class="secondary-action" :to="appRoutes.dashboard">
           Go to dashboard later
         </router-link>
@@ -2306,6 +2922,17 @@ onBeforeUnmount(() => {
   resize: vertical;
 }
 
+.editor-ai-input {
+  width: 100%;
+  min-height: 52px;
+  padding: 0 16px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: var(--fc-surface);
+  color: var(--fc-text);
+  font: inherit;
+}
+
 .source-mode-row {
   margin-top: 18px;
 }
@@ -2343,6 +2970,17 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in srgb, var(--fc-accent) 16%, var(--fc-border));
   border-radius: 20px;
   background: color-mix(in srgb, var(--fc-accent) 6%, var(--fc-surface));
+}
+
+.editor-mode-panel,
+.editor-ai-panel {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--fc-surface-subtle) 84%, var(--fc-surface));
 }
 
 .strategy-panel-copy {
@@ -2493,6 +3131,10 @@ onBeforeUnmount(() => {
 .activation-actions {
   align-items: center;
   margin-top: 24px;
+}
+
+.editor-inline-actions {
+  margin-top: 0;
 }
 
 .primary-action,

@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import sharp from "sharp";
 import { generateImage } from "../../../../packages/ai-core/src/index.ts";
 import { generateNarrative, buildVisualPrompt } from "../../../../packages/content-engine/src/index.ts";
 import type {
@@ -1539,10 +1540,234 @@ function buildInsightFallbackSvg(
 function buildPromptWithBranding(
   basePrompt: string,
   brandingPolicy: ReturnType<typeof resolveBrandingPolicy>,
+  generatedMediaType?: GenerateVisualRequest["generatedMediaType"],
 ): string {
+  if (generatedMediaType === "photo_overlay") {
+    return basePrompt;
+  }
+
   return brandingPolicy.watermarkApplied
     ? `${basePrompt}\n\nBRANDING:\nInclude a subtle watermark that reads "${brandingPolicy.watermarkText}". Keep it aligned to the composition edge, restrained, and never centered at the bottom.`
     : basePrompt;
+}
+
+function decodeImageDataUrl(dataUrl: string): {
+  mimeType: string;
+  bytes: Buffer;
+} {
+  const match = dataUrl.match(/^data:(.+?);base64,(.+)$/);
+
+  if (!match) {
+    throw new Error("Generated image response did not include a valid data URL.");
+  }
+
+  return {
+    mimeType: match[1],
+    bytes: Buffer.from(match[2], "base64"),
+  };
+}
+
+function encodeImageDataUrl(bytes: Buffer, mimeType: string): string {
+  return `data:${mimeType};base64,${bytes.toString("base64")}`;
+}
+
+function resolvePhotoOverlayHeadlineProfile(headline: string): {
+  fontSize: number;
+  lineHeight: number;
+  maxLineLength: number;
+  maxLines: number;
+  paddingX: number;
+  paddingY: number;
+} {
+  const length = collapseWhitespace(headline).length;
+
+  if (length <= 38) {
+    return {
+      fontSize: 74,
+      lineHeight: 82,
+      maxLineLength: 16,
+      maxLines: 3,
+      paddingX: 44,
+      paddingY: 40,
+    };
+  }
+
+  if (length <= 60) {
+    return {
+      fontSize: 66,
+      lineHeight: 74,
+      maxLineLength: 20,
+      maxLines: 4,
+      paddingX: 44,
+      paddingY: 40,
+    };
+  }
+
+  if (length <= 84) {
+    return {
+      fontSize: 58,
+      lineHeight: 66,
+      maxLineLength: 22,
+      maxLines: 5,
+      paddingX: 42,
+      paddingY: 38,
+    };
+  }
+
+  return {
+    fontSize: 52,
+    lineHeight: 60,
+    maxLineLength: 24,
+    maxLines: 5,
+    paddingX: 40,
+    paddingY: 36,
+  };
+}
+
+function resolvePhotoOverlaySurfaceColors(
+  brandKit: GenerateVisualResponse["brandKit"],
+): {
+  surfaceColor: string;
+  surfaceTextColor: string;
+  brandPillColor: string;
+  brandPillTextColor: string;
+  borderColor: string;
+} {
+  const whiteContrastOnSecondary = calculateContrastRatio(brandKit.secondaryColor, "#FFFFFF");
+  const whiteContrastOnPrimary = calculateContrastRatio(brandKit.primaryColor, "#FFFFFF");
+  const surfaceColor =
+    whiteContrastOnSecondary >= 4.5
+      ? brandKit.secondaryColor
+      : whiteContrastOnPrimary >= 4.5
+        ? brandKit.primaryColor
+        : "#1F2937";
+  const surfaceTextColor = calculateContrastRatio(surfaceColor, "#FFFFFF") >= 4.5 ? "#FFFFFF" : "#111827";
+  const brandPillColor = "#0F172ACC";
+  const brandPillTextColor = "#FFFFFF";
+
+  return {
+    surfaceColor,
+    surfaceTextColor,
+    brandPillColor,
+    brandPillTextColor,
+    borderColor: surfaceTextColor === "#FFFFFF" ? "#FFFFFF33" : "#11182726",
+  };
+}
+
+function buildPhotoOverlayCompositeSvg(input: {
+  content: VisualPromptContent;
+  brandKit: GenerateVisualResponse["brandKit"];
+  businessContext: BusinessVisualContext | null;
+  brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
+}): string {
+  const headline = collapseWhitespace(input.content.headline) || "Founder insight";
+  const ctaText = sanitizePhrase(input.content.closingText, 28) || "";
+  const eyebrowText = sanitizePhrase(input.content.eyebrowText, 28) || "";
+  const brandLabel =
+    sanitizePhrase(
+      input.content.footerText
+      || input.businessContext?.brandName
+      || input.businessContext?.domainLabel
+      || input.brandingPolicy.watermarkText,
+      24,
+    ) || "Founder Content";
+  const brandMarkLabel = buildBrandMarkLabel(input.businessContext, input.brandingPolicy);
+  const profile = resolvePhotoOverlayHeadlineProfile(headline);
+  const headlineLines = wrapSvgText(headline, profile.maxLineLength, profile.maxLines);
+  const boxX = 82;
+  const boxWidth = 860;
+  const boxHeight =
+    (profile.paddingY * 2)
+    + (headlineLines.length * profile.lineHeight)
+    + (ctaText ? 82 : 0);
+  const boxY = 1024 - boxHeight - 124;
+  const headlineStartY = boxY + profile.paddingY + profile.fontSize;
+  const { surfaceColor, surfaceTextColor, brandPillColor, brandPillTextColor, borderColor } =
+    resolvePhotoOverlaySurfaceColors(input.brandKit);
+  const brandLabelUpper = escapeSvg(brandLabel.toUpperCase());
+  const brandPillWidth = Math.max(240, estimateTextWidth(brandLabelUpper, 18, 0.52) + 116);
+  const ctaWidth = ctaText ? Math.max(176, estimateTextWidth(ctaText, 24, 0.5) + 58) : 0;
+
+  return `
+    <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="photoOverlayShade" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#030712" stop-opacity="0.26" />
+          <stop offset="36%" stop-color="#030712" stop-opacity="0.05" />
+          <stop offset="100%" stop-color="#030712" stop-opacity="0.76" />
+        </linearGradient>
+        <filter id="photoOverlayShadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="18" stdDeviation="26" flood-color="#020617" flood-opacity="0.28" />
+        </filter>
+      </defs>
+      <rect width="1024" height="1024" fill="url(#photoOverlayShade)" />
+      <g filter="url(#photoOverlayShadow)">
+        <rect x="72" y="72" width="${brandPillWidth}" height="58" rx="22" fill="${brandPillColor}" />
+        <rect x="88" y="87" width="30" height="30" rx="11" fill="${surfaceColor}" />
+        <text x="103" y="109" text-anchor="middle" font-size="16" font-weight="760" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${brandPillTextColor}">${escapeSvg(brandMarkLabel)}</text>
+        <text x="136" y="109" font-size="18" font-weight="650" letter-spacing="1.4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${brandPillTextColor}">${brandLabelUpper}</text>
+      </g>
+      ${eyebrowText && eyebrowText.toLowerCase() !== brandLabel.toLowerCase()
+        ? `<text x="${boxX + 8}" y="${boxY - 22}" font-size="20" letter-spacing="3.4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="#FFFFFF" opacity="0.9">${escapeSvg(eyebrowText.toUpperCase())}</text>`
+        : ""}
+      <g filter="url(#photoOverlayShadow)">
+        <rect x="${boxX}" y="${boxY}" width="${boxWidth}" height="${boxHeight}" rx="34" fill="${surfaceColor}" opacity="0.96" stroke="${borderColor}" stroke-width="2" />
+        ${headlineLines
+          .map(
+            (line, index) =>
+              `<text x="${boxX + profile.paddingX}" y="${headlineStartY + index * profile.lineHeight}" font-size="${profile.fontSize}" font-weight="760" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${surfaceTextColor}">${escapeSvg(line)}</text>`,
+          )
+          .join("")}
+        ${ctaText
+          ? `
+            <rect x="${boxX + profile.paddingX}" y="${boxY + boxHeight - 64}" width="${ctaWidth}" height="42" rx="18" fill="${surfaceTextColor === "#FFFFFF" ? "#FFFFFF29" : "#11182712"}" />
+            <text x="${boxX + profile.paddingX + 22}" y="${boxY + boxHeight - 36}" font-size="24" font-weight="620" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${surfaceTextColor}">${escapeSvg(ctaText)}</text>
+          `
+          : ""}
+      </g>
+    </svg>
+  `.trim();
+}
+
+async function applyPhotoOverlayTreatment(input: {
+  imageDataUrl: string;
+  content: VisualPromptContent;
+  brandKit: GenerateVisualResponse["brandKit"];
+  businessContext: BusinessVisualContext | null;
+  brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
+}): Promise<{
+  imageDataUrl: string;
+  mimeType: string;
+}> {
+  const { bytes } = decodeImageDataUrl(input.imageDataUrl);
+  const resizedBackground = await sharp(bytes)
+    .resize(1024, 1024, {
+      fit: "cover",
+      position: "centre",
+    })
+    .png()
+    .toBuffer();
+  const overlaySvg = buildPhotoOverlayCompositeSvg({
+    content: input.content,
+    brandKit: input.brandKit,
+    businessContext: input.businessContext,
+    brandingPolicy: input.brandingPolicy,
+  });
+  const composed = await sharp(resizedBackground)
+    .composite([
+      {
+        input: Buffer.from(overlaySvg),
+        top: 0,
+        left: 0,
+      },
+    ])
+    .png()
+    .toBuffer();
+
+  return {
+    imageDataUrl: encodeImageDataUrl(composed, "image/png"),
+    mimeType: "image/png",
+  };
 }
 
 async function generateSingleVisualAsset(input: {
@@ -1565,7 +1790,11 @@ async function generateSingleVisualAsset(input: {
       brandKit: input.brandKit,
       renderContext: input.renderContext,
   });
-  const prompt = buildPromptWithBranding(basePrompt, input.brandingPolicy);
+  const prompt = buildPromptWithBranding(
+    basePrompt,
+    input.brandingPolicy,
+    input.renderContext?.generatedMediaType,
+  );
   const brandConsistency = evaluateBrandConsistency({
     templateType: input.templateType,
     brandKit: input.brandKit,
@@ -1579,13 +1808,32 @@ async function generateSingleVisualAsset(input: {
       prompt,
       size: "1024x1024",
     });
+    let imageDataUrl = image.imageDataUrl;
+    let mimeType = image.mimeType;
+
+    if (input.renderContext?.generatedMediaType === "photo_overlay") {
+      try {
+        const treatedImage = await applyPhotoOverlayTreatment({
+          imageDataUrl,
+          content: input.content,
+          brandKit: input.brandKit,
+          businessContext: input.businessContext,
+          brandingPolicy: input.brandingPolicy,
+        });
+
+        imageDataUrl = treatedImage.imageDataUrl;
+        mimeType = treatedImage.mimeType;
+      } catch (overlayError) {
+        logWarn("Unable to apply photo overlay treatment.", toErrorContext(overlayError));
+      }
+    }
 
     return {
       templateType: input.templateType,
       prompt,
       provider: "openai",
-      imageDataUrl: image.imageDataUrl,
-      mimeType: image.mimeType,
+      imageDataUrl,
+      mimeType,
       brandKit: input.brandKit,
       brandConsistency,
       watermarkApplied: input.brandingPolicy.watermarkApplied,

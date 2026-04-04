@@ -1046,10 +1046,48 @@ const shouldShowCarouselBlueprint = computed(
     && creatorWantsCarouselFirst.value
     && Boolean(carouselDraft.value && carouselDraft.value.slides.length > 0),
 );
+function collapseSceneCue(value: string | undefined, maxWords = 6): string {
+  const normalized = (value ?? "")
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  return normalized
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, maxWords)
+    .join(" ");
+}
+
+function truncateOverlayLine(value: string | undefined, maxLength = 40): string | undefined {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  const truncated = normalized.slice(0, maxLength).trim();
+  const lastSpaceIndex = truncated.lastIndexOf(" ");
+  return (lastSpaceIndex >= Math.floor(maxLength * 0.55) ? truncated.slice(0, lastSpaceIndex) : truncated).trim();
+}
+
 const creatorSceneDescription = computed(() => {
-  const headline = draft.value?.result.idea.title || previewLeadLines.value[0] || "Founder insight";
-  const angle = draft.value?.result.idea.angle || previewBodyParagraphs.value[0] || "";
-  const supportingBeat = previewBodyParagraphs.value[1] || previewBodyParagraphs.value[0] || "";
+  const headlineCue = collapseSceneCue(
+    draft.value?.result.idea.title || previewLeadLines.value[0] || "Founder insight",
+    5,
+  );
+  const angleCue = collapseSceneCue(
+    draft.value?.result.idea.angle || previewBodyParagraphs.value[0] || "",
+    5,
+  );
   const sceneBase =
     creatorContentType.value === "promo_post"
       ? "founder brand promo image, professional but human, product-in-context or operator-in-workspace, realistic photography"
@@ -1061,7 +1099,13 @@ const creatorSceneDescription = computed(() => {
         ? "clean composition with strong focal subject and restrained overlay text area"
         : "balanced composition, mobile-first crop, clear text-safe area";
 
-  return [sceneBase, styleBase, headline, angle, supportingBeat]
+  return [
+    sceneBase,
+    styleBase,
+    headlineCue ? `subject matter only: ${headlineCue}` : "",
+    angleCue ? `mood cue only: ${angleCue}` : "",
+    "scene guidance only, never render these cues as on-image text",
+  ]
     .filter((value) => value && value.trim() !== "")
     .join(". ");
 });
@@ -2887,6 +2931,11 @@ async function generateRecommendedMedia(
         subtitle: draft.value?.result.idea.angle || "Turn this idea into a stronger narrative.",
       });
     const coverSlide = currentVisualNarrative.slides[0];
+    const isPhotoOverlay = suggestion.suggestedMediaType === "photo_overlay";
+    const creatorOverlayFooterText =
+      !isBusinessMode.value && selectedConnectedAccountLabel.value.trim() !== ""
+        ? selectedConnectedAccountLabel.value.trim()
+        : undefined;
     const generatedVisual = await requestVisualGeneration({
       businessId: activeBusinessId.value,
       templateType: suggestion.visualTemplateType,
@@ -2897,29 +2946,38 @@ async function generateRecommendedMedia(
           draft.value?.result.idea.title ||
           "Founder insight",
         supportingText:
-          coverSlide?.supportingText ||
-          businessOutput.value?.visual.subheadline ||
-          previewLeadLines.value[1] ||
-          previewBodyParagraphs.value[0]?.replace(/\s+/g, " ").trim().slice(0, 140) ||
-          undefined,
+          isPhotoOverlay
+            ? (
+                isBusinessMode.value
+                  ? truncateOverlayLine(businessOutput.value?.visual.subheadline, 52)
+                  : undefined
+              )
+            : (
+                coverSlide?.supportingText ||
+                businessOutput.value?.visual.subheadline ||
+                previewLeadLines.value[1] ||
+                previewBodyParagraphs.value[0]?.replace(/\s+/g, " ").trim().slice(0, 140) ||
+                undefined
+              ),
         bulletPoints:
           suggestion.visualTemplateType === "carousel"
             ? coverSlide?.bulletPoints || buildVisualBulletPoints()
             : buildVisualBulletPoints(),
         sceneDescription:
-          suggestion.suggestedMediaType === "photo_overlay"
+          isPhotoOverlay
             ? (isBusinessMode.value ? businessOutput.value?.visual.imagePrompt : creatorSceneDescription.value)
             : undefined,
         closingText:
-          suggestion.suggestedMediaType === "photo_overlay"
+          isPhotoOverlay
             ? (
                 isBusinessMode.value
-                  ? businessOutput.value?.cta.label
+                  ? truncateOverlayLine(businessOutput.value?.cta.label, 28)
                   : creatorContentType.value === "promo_post"
-                    ? draft.value?.result.idea.angle || previewBodyParagraphs.value[0]
+                    ? truncateOverlayLine(draft.value?.result.idea.angle || previewBodyParagraphs.value[0], 30)
                     : undefined
               )
             : undefined,
+        footerText: isPhotoOverlay ? creatorOverlayFooterText : undefined,
       },
       narrative:
         suggestion.visualTemplateType === "carousel"
