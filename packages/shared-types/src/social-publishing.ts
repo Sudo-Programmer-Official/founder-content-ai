@@ -67,8 +67,63 @@ export interface PublicationEvent {
   createdAt: string;
 }
 
-export type MotionTemplateId = "subtle_zoom" | "caption_pulse" | "story_pan";
+export type MotionTemplateId =
+  | "subtle_zoom"
+  | "caption_pulse"
+  | "story_pan"
+  | "founder_story"
+  | "offer_burst"
+  | "testimonial_highlight"
+  | "local_awareness";
 export type MotionTemplateAspectRatio = "square" | "portrait";
+export type MotionAudioTrack = "calm" | "upbeat" | "ambient";
+export type MotionAudioPreset =
+  | "clean_modern"
+  | "high_energy_promo"
+  | "local_trust"
+  | "luxury_minimal"
+  | "calm_wellness";
+export type MotionVoiceProvider = "elevenlabs";
+
+export interface MotionTemplateOverlay {
+  headline?: string;
+  subheadline?: string;
+  cta?: string;
+  brandText?: string;
+}
+
+export interface MotionTemplateMusic {
+  enabled?: boolean;
+  preset?: MotionAudioPreset;
+  track?: MotionAudioTrack;
+  volume?: number;
+  fadeIn?: number;
+  fadeOut?: number;
+  ducking?: boolean;
+}
+
+export interface MotionTemplateVoice {
+  enabled: boolean;
+  script?: string | null;
+  provider?: MotionVoiceProvider;
+  voiceId?: string | null;
+  storageKey?: string | null;
+  assetUrl?: string | null;
+  volume?: number;
+}
+
+export interface MotionTemplateAudio {
+  enabled: boolean;
+  music?: MotionTemplateMusic;
+  voice?: MotionTemplateVoice;
+  preset?: MotionAudioPreset;
+  track?: MotionAudioTrack;
+  volume?: number;
+  fadeIn?: number;
+  fadeOut?: number;
+  ducking?: boolean;
+  voiceTrack?: string | null;
+}
 
 export interface MotionTemplateMetadata {
   id: MotionTemplateId;
@@ -77,6 +132,8 @@ export interface MotionTemplateMetadata {
   loop?: boolean;
   sourceAssetIds?: string[];
   sourceSlideCount?: number;
+  overlay?: MotionTemplateOverlay;
+  audio?: MotionTemplateAudio;
 }
 
 export interface BasePostAssetMetadata {

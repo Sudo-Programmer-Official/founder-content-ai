@@ -6,6 +6,7 @@ import path from "node:path";
 import sharp from "sharp";
 import type { QueryResultRow } from "pg";
 import type {
+  BrandKit,
   CreateMediaUploadUrlRequest,
   CreateMediaUploadUrlResponse,
   GenerateMotionPostAssetRequest,
@@ -16,9 +17,16 @@ import type {
   DownloadPostAssetResponse,
   GetPostAssetResponse,
   ImagePostAssetMetadata,
+  MotionAudioPreset,
+  MotionAudioTrack,
+  MotionVoiceProvider,
   MotionTemplateMetadata,
   MotionTemplateAspectRatio,
   MotionTemplateId,
+  MotionTemplateAudio,
+  MotionTemplateMusic,
+  MotionTemplateVoice,
+  MotionTemplateOverlay,
   ListPostAssetsResponse,
   PostAssetAspectRatio,
   PostAsset,
@@ -30,6 +38,7 @@ import type {
   VideoPostAssetMetadata,
 } from "../../../../packages/shared-types/index.ts";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { requireBusinessMembership } from "./authBusinessService.ts";
 import { queryDb } from "./db/client.ts";
@@ -43,6 +52,14 @@ import {
   releaseWorkspacePostAssetUsage,
   syncWorkspaceAssetFromPostAsset,
 } from "./workspaceAssetService.ts";
+import { buildMotionFilter } from "./motion/buildMotionFilter.ts";
+import { getBrandKitForBusiness } from "./brandIntelligence/brandKitService.ts";
+import { getMotionTemplateConfig } from "./motion/templates.ts";
+import {
+  getMotionAudioPresetConfig,
+  resolveMotionAudioPresetForTemplate,
+  resolveMotionAudioPresetFromTrack,
+} from "./motion/audioPresets.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -82,12 +99,32 @@ const DEFAULT_S3_PREVIEW_TTL_SECONDS = 3600;
 const MAX_POST_ASSET_COUNT = 10;
 const POST_ASSET_ASPECT_RATIOS = new Set<PostAssetAspectRatio>(["1:1", "9:16"]);
 const POST_ASSET_METADATA_SOURCES = new Set<PostAssetMetadataSource>(["upload", "motion_template"]);
-const MOTION_TEMPLATE_IDS = new Set<MotionTemplateId>(["subtle_zoom", "caption_pulse", "story_pan"]);
+const MOTION_TEMPLATE_IDS = new Set<MotionTemplateId>([
+  "subtle_zoom",
+  "caption_pulse",
+  "story_pan",
+  "founder_story",
+  "offer_burst",
+  "testimonial_highlight",
+  "local_awareness",
+]);
 const MOTION_TEMPLATE_ASPECT_RATIOS = new Set<MotionTemplateAspectRatio>(["square", "portrait"]);
-const DEFAULT_MOTION_RENDER_FPS = 24;
+const MOTION_AUDIO_TRACKS = new Set<MotionAudioTrack>(["calm", "upbeat", "ambient"]);
+const MOTION_AUDIO_PRESETS = new Set<MotionAudioPreset>([
+  "clean_modern",
+  "high_energy_promo",
+  "local_trust",
+  "luxury_minimal",
+  "calm_wellness",
+]);
 const DEFAULT_MOTION_DURATION_MS = 5000;
 const MIN_MOTION_DURATION_MS = 3000;
 const MAX_MOTION_DURATION_MS = 8000;
+const DEFAULT_MOTION_AUDIO_VOLUME = 0.3;
+const DEFAULT_MOTION_AUDIO_FADE_IN_SECONDS = 0.18;
+const DEFAULT_MOTION_AUDIO_FADE_OUT_SECONDS = 0.35;
+const MOTION_AUDIO_ASSET_DIR = fileURLToPath(new URL("../../assets/audio/", import.meta.url));
+const DEFAULT_MOTION_VOICE_PROVIDER: MotionVoiceProvider = "elevenlabs";
 
 const MOTION_DIMENSIONS: Record<MotionTemplateAspectRatio, { width: number; height: number; assetAspectRatio: PostAssetAspectRatio }> = {
   square: {
@@ -171,6 +208,26 @@ function normalizeRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateAtWordBoundary(value: string | undefined, maxLength: number): string | undefined {
+  const normalized = collapseWhitespace(value ?? "");
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  const truncated = normalized.slice(0, maxLength).trim();
+  const lastSpaceIndex = truncated.lastIndexOf(" ");
+  return (lastSpaceIndex >= Math.floor(maxLength * 0.55) ? truncated.slice(0, lastSpaceIndex) : truncated).trim();
+}
+
 function parseOptionalString(value: unknown, fieldName: string): string | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -196,6 +253,20 @@ function parseOptionalPositiveInteger(value: unknown, fieldName: string): number
   }
 
   return Math.floor(parsed);
+}
+
+function parseOptionalNonNegativeNumber(value: unknown, fieldName: string): number | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new HttpError(400, "invalid_post_asset_metadata", `${fieldName} must be zero or a positive number.`);
+  }
+
+  return Number(parsed);
 }
 
 function parseOptionalBoolean(value: unknown, fieldName: string): boolean | undefined {
@@ -246,6 +317,272 @@ function parseOptionalMetadataSource(value: unknown, fieldName: string): PostAss
   return normalized as PostAssetMetadataSource;
 }
 
+function parseMotionTemplateOverlay(value: unknown): MotionTemplateOverlay | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "invalid_post_asset_metadata", "motionTemplate.overlay must be an object.");
+  }
+
+  const record = normalizeRecord(value);
+  const allowedKeys = new Set(["headline", "subheadline", "cta", "brandText"]);
+
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      throw new HttpError(400, "invalid_post_asset_metadata", `Unsupported motionTemplate.overlay field "${key}".`);
+    }
+  }
+
+  const headline = truncateAtWordBoundary(parseOptionalString(record.headline, "motionTemplate.overlay.headline"), 90);
+  const subheadline = truncateAtWordBoundary(parseOptionalString(record.subheadline, "motionTemplate.overlay.subheadline"), 120);
+  const cta = truncateAtWordBoundary(parseOptionalString(record.cta, "motionTemplate.overlay.cta"), 32);
+  const brandText = truncateAtWordBoundary(parseOptionalString(record.brandText, "motionTemplate.overlay.brandText"), 32);
+
+  if (!headline && !subheadline && !cta && !brandText) {
+    return undefined;
+  }
+
+  return {
+    headline,
+    subheadline,
+    cta,
+    brandText,
+  };
+}
+
+function parseOptionalVolume(value: unknown, fieldName: string): number | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new HttpError(400, "invalid_post_asset_metadata", `${fieldName} must be a number between 0 and 1.`);
+  }
+
+  if (value < 0 || value > 1) {
+    throw new HttpError(400, "invalid_post_asset_metadata", `${fieldName} must be between 0 and 1.`);
+  }
+
+  return Number(value);
+}
+
+function parseMotionTemplateMusic(value: unknown): MotionTemplateMusic | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "invalid_post_asset_metadata", "motionTemplate.audio.music must be an object.");
+  }
+
+  const record = normalizeRecord(value);
+  const allowedKeys = new Set(["enabled", "preset", "track", "volume", "fadeIn", "fadeOut", "ducking"]);
+
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      throw new HttpError(400, "invalid_post_asset_metadata", `Unsupported motionTemplate.audio.music field "${key}".`);
+    }
+  }
+
+  const enabled = parseOptionalBoolean(record.enabled, "motionTemplate.audio.music.enabled");
+  const preset = parseOptionalString(record.preset, "motionTemplate.audio.music.preset");
+  const track = parseOptionalString(record.track, "motionTemplate.audio.music.track");
+
+  if (preset && !MOTION_AUDIO_PRESETS.has(preset as MotionAudioPreset)) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `motionTemplate.audio.music.preset must be one of ${Array.from(MOTION_AUDIO_PRESETS).join(", ")}.`,
+    );
+  }
+
+  if (track && !MOTION_AUDIO_TRACKS.has(track as MotionAudioTrack)) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `motionTemplate.audio.music.track must be one of ${Array.from(MOTION_AUDIO_TRACKS).join(", ")}.`,
+    );
+  }
+
+  const volume = parseOptionalVolume(record.volume, "motionTemplate.audio.music.volume");
+  const fadeIn = parseOptionalNonNegativeNumber(record.fadeIn, "motionTemplate.audio.music.fadeIn");
+  const fadeOut = parseOptionalNonNegativeNumber(record.fadeOut, "motionTemplate.audio.music.fadeOut");
+  const ducking = parseOptionalBoolean(record.ducking, "motionTemplate.audio.music.ducking");
+
+  if (
+    enabled === undefined
+    && !preset
+    && !track
+    && volume === undefined
+    && fadeIn === undefined
+    && fadeOut === undefined
+    && ducking === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    enabled,
+    preset: preset as MotionAudioPreset | undefined,
+    track: track as MotionAudioTrack | undefined,
+    volume,
+    fadeIn,
+    fadeOut,
+    ducking,
+  };
+}
+
+function parseMotionTemplateVoice(value: unknown): MotionTemplateVoice | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "invalid_post_asset_metadata", "motionTemplate.audio.voice must be an object.");
+  }
+
+  const record = normalizeRecord(value);
+  const allowedKeys = new Set(["enabled", "script", "provider", "voiceId", "storageKey", "assetUrl", "volume"]);
+
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      throw new HttpError(400, "invalid_post_asset_metadata", `Unsupported motionTemplate.audio.voice field "${key}".`);
+    }
+  }
+
+  const enabled = parseOptionalBoolean(record.enabled, "motionTemplate.audio.voice.enabled");
+  const provider = parseOptionalString(record.provider, "motionTemplate.audio.voice.provider");
+
+  if (provider && provider !== DEFAULT_MOTION_VOICE_PROVIDER) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `motionTemplate.audio.voice.provider must be ${DEFAULT_MOTION_VOICE_PROVIDER}.`,
+    );
+  }
+
+  const script = record.script === null ? null : parseOptionalString(record.script, "motionTemplate.audio.voice.script");
+  const voiceId = record.voiceId === null ? null : parseOptionalString(record.voiceId, "motionTemplate.audio.voice.voiceId");
+  const storageKey =
+    record.storageKey === null ? null : parseOptionalString(record.storageKey, "motionTemplate.audio.voice.storageKey");
+  const assetUrl =
+    record.assetUrl === null ? null : parseOptionalString(record.assetUrl, "motionTemplate.audio.voice.assetUrl");
+  const volume = parseOptionalVolume(record.volume, "motionTemplate.audio.voice.volume");
+
+  if (
+    enabled === undefined
+    && provider === undefined
+    && script === undefined
+    && voiceId === undefined
+    && storageKey === undefined
+    && assetUrl === undefined
+    && volume === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    enabled: enabled ?? false,
+    provider: (provider as MotionVoiceProvider | undefined) ?? DEFAULT_MOTION_VOICE_PROVIDER,
+    script,
+    voiceId,
+    storageKey,
+    assetUrl,
+    volume,
+  };
+}
+
+function parseMotionTemplateAudio(value: unknown): MotionTemplateAudio | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "invalid_post_asset_metadata", "motionTemplate.audio must be an object.");
+  }
+
+  const record = normalizeRecord(value);
+  const allowedKeys = new Set([
+    "enabled",
+    "music",
+    "voice",
+    "preset",
+    "track",
+    "volume",
+    "fadeIn",
+    "fadeOut",
+    "ducking",
+    "voiceTrack",
+  ]);
+
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      throw new HttpError(400, "invalid_post_asset_metadata", `Unsupported motionTemplate.audio field "${key}".`);
+    }
+  }
+
+  const enabled = parseOptionalBoolean(record.enabled, "motionTemplate.audio.enabled");
+  const music = parseMotionTemplateMusic(record.music);
+  const voice = parseMotionTemplateVoice(record.voice);
+  const preset = parseOptionalString(record.preset, "motionTemplate.audio.preset");
+  const track = parseOptionalString(record.track, "motionTemplate.audio.track");
+
+  if (preset && !MOTION_AUDIO_PRESETS.has(preset as MotionAudioPreset)) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `motionTemplate.audio.preset must be one of ${Array.from(MOTION_AUDIO_PRESETS).join(", ")}.`,
+    );
+  }
+
+  if (track && !MOTION_AUDIO_TRACKS.has(track as MotionAudioTrack)) {
+    throw new HttpError(
+      400,
+      "invalid_post_asset_metadata",
+      `motionTemplate.audio.track must be one of ${Array.from(MOTION_AUDIO_TRACKS).join(", ")}.`,
+    );
+  }
+
+  const volume = parseOptionalVolume(record.volume, "motionTemplate.audio.volume");
+  const fadeIn = parseOptionalNonNegativeNumber(record.fadeIn, "motionTemplate.audio.fadeIn");
+  const fadeOut = parseOptionalNonNegativeNumber(record.fadeOut, "motionTemplate.audio.fadeOut");
+  const ducking = parseOptionalBoolean(record.ducking, "motionTemplate.audio.ducking");
+  const voiceTrack =
+    record.voiceTrack === null
+      ? null
+      : parseOptionalString(record.voiceTrack, "motionTemplate.audio.voiceTrack");
+
+  if (
+    enabled === undefined
+    && !music
+    && !voice
+    && !preset
+    && !track
+    && volume === undefined
+    && fadeIn === undefined
+    && fadeOut === undefined
+    && ducking === undefined
+    && voiceTrack === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    enabled: enabled ?? true,
+    music,
+    voice,
+    preset: preset as MotionAudioPreset | undefined,
+    track: track as MotionAudioTrack | undefined,
+    volume,
+    fadeIn,
+    fadeOut,
+    ducking,
+    voiceTrack,
+  };
+}
+
 function parseMotionTemplateMetadata(value: unknown): MotionTemplateMetadata | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -263,6 +600,8 @@ function parseMotionTemplateMetadata(value: unknown): MotionTemplateMetadata | u
     "loop",
     "sourceAssetIds",
     "sourceSlideCount",
+    "overlay",
+    "audio",
   ]);
 
   for (const key of Object.keys(record)) {
@@ -311,7 +650,128 @@ function parseMotionTemplateMetadata(value: unknown): MotionTemplateMetadata | u
     loop: parseOptionalBoolean(record.loop, "motionTemplate.loop"),
     sourceAssetIds,
     sourceSlideCount: parseOptionalPositiveInteger(record.sourceSlideCount, "motionTemplate.sourceSlideCount"),
+    overlay: parseMotionTemplateOverlay(record.overlay),
+    audio: parseMotionTemplateAudio(record.audio),
   };
+}
+
+interface ResolvedMotionAudioConfig {
+  enabled: boolean;
+  preset: MotionAudioPreset;
+  track: MotionAudioTrack;
+  volume: number;
+  fadeIn: number;
+  fadeOut: number;
+  ducking: boolean;
+  assetPath?: string;
+}
+
+async function resolveBundledMotionAudioPath(preset: MotionAudioPreset, track: MotionAudioTrack): Promise<string | undefined> {
+  const presetFilePath = path.join(MOTION_AUDIO_ASSET_DIR, getMotionAudioPresetConfig(preset).assetFileName);
+  const fallbackTrackPath = path.join(MOTION_AUDIO_ASSET_DIR, `${track}.mp3`);
+
+  for (const candidatePath of [presetFilePath, fallbackTrackPath]) {
+    try {
+      await fs.access(candidatePath);
+      return candidatePath;
+    } catch {
+      // try next
+    }
+  }
+
+  return undefined;
+}
+
+async function resolveMotionAudioConfig(
+  template: MotionTemplateMetadata,
+  aspectRatio: MotionTemplateAspectRatio,
+): Promise<ResolvedMotionAudioConfig> {
+  const templateAudio = getMotionTemplateConfig(template.id, aspectRatio).audio;
+  const requestedMusic = template.audio?.music;
+  const requestedPreset =
+    requestedMusic?.preset && MOTION_AUDIO_PRESETS.has(requestedMusic.preset)
+      ? requestedMusic.preset
+      : template.audio?.preset && MOTION_AUDIO_PRESETS.has(template.audio.preset)
+        ? template.audio.preset
+        : requestedMusic?.track && MOTION_AUDIO_TRACKS.has(requestedMusic.track)
+          ? resolveMotionAudioPresetFromTrack(requestedMusic.track)
+          : template.audio?.track && MOTION_AUDIO_TRACKS.has(template.audio.track)
+            ? resolveMotionAudioPresetFromTrack(template.audio.track)
+            : undefined;
+  const preset = requestedPreset ?? templateAudio.preset ?? resolveMotionAudioPresetForTemplate(template.id);
+  const presetConfig = getMotionAudioPresetConfig(preset);
+  const requestedTrack =
+    requestedMusic?.track && MOTION_AUDIO_TRACKS.has(requestedMusic.track)
+      ? requestedMusic.track
+      : template.audio?.track && MOTION_AUDIO_TRACKS.has(template.audio.track)
+        ? template.audio.track
+      : undefined;
+  const track = requestedTrack ?? presetConfig.track;
+  const audioEnabled = template.audio?.enabled ?? true;
+  const musicEnabled = requestedMusic?.enabled ?? true;
+
+  if (audioEnabled === false || musicEnabled === false || templateAudio.enabled === false) {
+    return {
+      enabled: false,
+      preset,
+      track,
+      volume: requestedMusic?.volume ?? template.audio?.volume ?? templateAudio.volume ?? presetConfig.volume ?? DEFAULT_MOTION_AUDIO_VOLUME,
+      fadeIn: requestedMusic?.fadeIn ?? template.audio?.fadeIn ?? templateAudio.fadeIn ?? presetConfig.fadeIn ?? DEFAULT_MOTION_AUDIO_FADE_IN_SECONDS,
+      fadeOut: requestedMusic?.fadeOut ?? template.audio?.fadeOut ?? templateAudio.fadeOut ?? presetConfig.fadeOut ?? DEFAULT_MOTION_AUDIO_FADE_OUT_SECONDS,
+      ducking: requestedMusic?.ducking ?? template.audio?.ducking ?? templateAudio.ducking ?? presetConfig.ducking,
+    };
+  }
+
+  return {
+    enabled: true,
+    preset,
+    track,
+    volume:
+      typeof requestedMusic?.volume === "number"
+        ? Math.min(Math.max(requestedMusic.volume, 0), 1)
+        : typeof template.audio?.volume === "number"
+          ? Math.min(Math.max(template.audio.volume, 0), 1)
+          : templateAudio.volume ?? presetConfig.volume ?? DEFAULT_MOTION_AUDIO_VOLUME,
+    fadeIn:
+      typeof requestedMusic?.fadeIn === "number"
+        ? Math.max(requestedMusic.fadeIn, 0)
+        : typeof template.audio?.fadeIn === "number"
+          ? Math.max(template.audio.fadeIn, 0)
+          : templateAudio.fadeIn ?? presetConfig.fadeIn ?? DEFAULT_MOTION_AUDIO_FADE_IN_SECONDS,
+    fadeOut:
+      typeof requestedMusic?.fadeOut === "number"
+        ? Math.max(requestedMusic.fadeOut, 0)
+        : typeof template.audio?.fadeOut === "number"
+          ? Math.max(template.audio.fadeOut, 0)
+          : templateAudio.fadeOut ?? presetConfig.fadeOut ?? DEFAULT_MOTION_AUDIO_FADE_OUT_SECONDS,
+    ducking: requestedMusic?.ducking ?? template.audio?.ducking ?? templateAudio.ducking ?? presetConfig.ducking,
+    assetPath: await resolveBundledMotionAudioPath(preset, track),
+  };
+}
+
+function buildGeneratedAudioInput(track: MotionAudioTrack): string {
+  if (track === "upbeat") {
+    return "aevalsrc=0.09*sin(2*PI*220*t)*(0.58+0.42*sin(2*PI*2.6*t))+0.035*sin(2*PI*440*t):s=44100";
+  }
+
+  if (track === "ambient") {
+    return "aevalsrc=0.055*sin(2*PI*174*t)+0.03*sin(2*PI*261.63*t)+0.02*sin(2*PI*392*t):s=44100";
+  }
+
+  return "aevalsrc=0.075*sin(2*PI*196*t)+0.03*sin(2*PI*293.66*t):s=44100";
+}
+
+function buildMotionAudioFilter(input: {
+  volume: number;
+  durationSeconds: number;
+  fadeIn: number;
+  fadeOut: number;
+}): string {
+  const fadeIn = Math.max(Math.min(input.fadeIn, Math.max(input.durationSeconds - 0.1, 0)), 0);
+  const fadeOut = Math.max(Math.min(input.fadeOut, Math.max(input.durationSeconds - 0.1, 0)), 0);
+  const fadeOutStart = Math.max(input.durationSeconds - fadeOut, 0.1).toFixed(2);
+
+  return `volume=${input.volume.toFixed(2)},afade=t=in:st=0:d=${fadeIn.toFixed(2)},afade=t=out:st=${fadeOutStart}:d=${fadeOut.toFixed(2)}`;
 }
 
 function normalizePostAssetMetadata(type: "image", value: unknown): ImagePostAssetMetadata;
@@ -387,57 +847,10 @@ function resolveMotionAspectRatio(template: MotionTemplateMetadata): MotionTempl
   return template.aspectRatio === "portrait" ? "portrait" : "square";
 }
 
-function resolveMotionRenderFps(): number {
-  const parsed = Number(process.env.MOTION_RENDER_FPS ?? DEFAULT_MOTION_RENDER_FPS);
-
-  if (!Number.isFinite(parsed)) {
-    return DEFAULT_MOTION_RENDER_FPS;
-  }
-
-  return Math.min(Math.max(Math.floor(parsed), 12), 30);
-}
-
-function resolveMotionFilter(input: {
-  templateId: MotionTemplateId;
-  width: number;
-  height: number;
-  totalFrames: number;
-  durationSeconds: number;
-  aspectRatio: MotionTemplateAspectRatio;
-  renderFps: number;
-}): string {
-  const { templateId, width, height, totalFrames, durationSeconds, aspectRatio, renderFps } = input;
-  const clampedFrames = Math.max(totalFrames - 1, 1);
-  const fadeOutStart = Math.max(durationSeconds - 0.35, 0.1).toFixed(2);
-  let animationFilter = "";
-
-  if (templateId === "caption_pulse") {
-    animationFilter =
-      `zoompan=z='1+0.018*sin(on/12)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-      `d=1:s=${width}x${height}:fps=${renderFps}`;
-  } else if (templateId === "story_pan") {
-    animationFilter =
-      aspectRatio === "portrait"
-        ? `zoompan=z='1.10':x='iw/2-(iw/zoom/2)':y='(ih-ih/zoom)*(on/${clampedFrames})':d=1:s=${width}x${height}:fps=${renderFps}`
-        : `zoompan=z='1.10':x='(iw-iw/zoom)*(on/${clampedFrames})':y='ih/2-(ih/zoom/2)':d=1:s=${width}x${height}:fps=${renderFps}`;
-  } else {
-    animationFilter =
-      `zoompan=z='min(zoom+0.00045,1.08)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':` +
-      `d=1:s=${width}x${height}:fps=${renderFps}`;
-  }
-
-  return [
-    animationFilter,
-    "setsar=1",
-    "format=yuv420p",
-    "fade=t=in:st=0:d=0.25",
-    `fade=t=out:st=${fadeOutStart}:d=0.35`,
-  ].join(",");
-}
-
 async function renderMotionVideoFromImage(input: {
   sourceBytes: Buffer;
   template: MotionTemplateMetadata;
+  brandKit?: BrandKit;
 }): Promise<{
   bytes: Buffer;
   width: number;
@@ -448,9 +861,7 @@ async function renderMotionVideoFromImage(input: {
   const aspectRatio = resolveMotionAspectRatio(input.template);
   const dimensions = MOTION_DIMENSIONS[aspectRatio];
   const durationMs = resolveMotionDurationMs(input.template);
-  const renderFps = resolveMotionRenderFps();
-  const durationSeconds = Number((durationMs / 1000).toFixed(2));
-  const totalFrames = Math.max(Math.round((durationMs / 1000) * renderFps), 1);
+  const audio = await resolveMotionAudioConfig(input.template, aspectRatio);
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "motion-lite-"));
   const framePath = path.join(tempDir, "frame.png");
   const outputPath = path.join(tempDir, "motion-lite.mp4");
@@ -463,48 +874,95 @@ async function renderMotionVideoFromImage(input: {
       })
       .png()
       .toFile(framePath);
+    const motionPlan = await buildMotionFilter({
+      width: dimensions.width,
+      height: dimensions.height,
+      aspectRatio,
+      durationMs,
+      template: input.template,
+      brandKit: input.brandKit,
+    });
+    const commandArgs = [
+      "-y",
+      "-loop",
+      "1",
+      "-framerate",
+      String(motionPlan.renderFps),
+      "-i",
+      framePath,
+    ];
 
-    await execFileAsync(
-      process.env.FFMPEG_PATH?.trim() || "ffmpeg",
-      [
-        "-y",
-        "-loop",
-        "1",
-        "-framerate",
-        String(renderFps),
-        "-i",
-        framePath,
-        "-t",
-        durationSeconds.toFixed(2),
-        "-vf",
-        resolveMotionFilter({
-          templateId: input.template.id,
-          width: dimensions.width,
-          height: dimensions.height,
-          totalFrames,
-          durationSeconds,
-          aspectRatio,
-          renderFps,
-        }),
-        "-an",
-        "-c:v",
-        "libx264",
-        "-pix_fmt",
-        "yuv420p",
-        "-threads",
-        "1",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "28",
-        "-movflags",
-        "+faststart",
-        outputPath,
-      ],
-      {
-        maxBuffer: 8 * 1024 * 1024,
-      },
+    for (const [index, layer] of motionPlan.overlayLayers.entries()) {
+      const overlayPath = path.join(tempDir, `overlay-${index}.png`);
+      await fs.writeFile(overlayPath, layer.bytes);
+      commandArgs.push("-loop", "1", "-framerate", String(motionPlan.renderFps), "-i", overlayPath);
+    }
+
+    if (audio.enabled) {
+      if (audio.assetPath) {
+        commandArgs.push("-stream_loop", "-1", "-i", audio.assetPath);
+      } else {
+        commandArgs.push(
+          "-f",
+          "lavfi",
+          "-t",
+          motionPlan.durationSeconds.toFixed(2),
+          "-i",
+          buildGeneratedAudioInput(audio.track),
+        );
+      }
+    }
+
+    commandArgs.push(
+      "-t",
+      motionPlan.durationSeconds.toFixed(2),
+      "-filter_complex",
+      motionPlan.filterGraph,
+      "-map",
+      `[bg${motionPlan.overlayLayers.length}]`,
+      "-c:v",
+      "libx264",
+      "-pix_fmt",
+      "yuv420p",
+      "-threads",
+      "1",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "28",
+      "-movflags",
+      "+faststart",
     );
+
+    if (audio.enabled) {
+      const audioInputIndex = motionPlan.overlayLayers.length + 1;
+      commandArgs.push(
+        "-map",
+        `${audioInputIndex}:a`,
+        "-c:a",
+        "aac",
+        "-ar",
+        "44100",
+        "-ac",
+        "2",
+        "-filter:a",
+        buildMotionAudioFilter({
+          volume: audio.volume,
+          durationSeconds: motionPlan.durationSeconds,
+          fadeIn: audio.fadeIn,
+          fadeOut: audio.fadeOut,
+        }),
+        "-shortest",
+      );
+    } else {
+      commandArgs.push("-an");
+    }
+
+    commandArgs.push(outputPath);
+
+    await execFileAsync(process.env.FFMPEG_PATH?.trim() || "ffmpeg", commandArgs, {
+      maxBuffer: 8 * 1024 * 1024,
+    });
 
     return {
       bytes: await fs.readFile(outputPath),
@@ -1124,6 +1582,11 @@ export async function generateMotionPostAsset(
   }
 
   const sourceAsset = mapPostAsset(sourceAssetRow, false);
+  const motionAspectRatio = resolveMotionAspectRatio(motionTemplate);
+  const brandKit = await getBrandKitForBusiness({
+    principal,
+    businessId,
+  });
   const removedAssetIds: string[] = [];
 
   for (const asset of existingDerivedVideos) {
@@ -1134,7 +1597,9 @@ export async function generateMotionPostAsset(
   const renderedVideo = await renderMotionVideoFromImage({
     sourceBytes: await downloadPostAssetBytes(sourceAsset),
     template: motionTemplate,
+    brandKit,
   });
+  const resolvedAudio = await resolveMotionAudioConfig(motionTemplate, motionAspectRatio);
   const storageKey = buildStorageKey({
     businessId,
     postId,
@@ -1165,10 +1630,41 @@ export async function generateMotionPostAsset(
       height: renderedVideo.height,
       motionTemplate: {
         id: motionTemplate.id,
-        aspectRatio: resolveMotionAspectRatio(motionTemplate),
+        aspectRatio: motionAspectRatio,
         durationMs: renderedVideo.durationMs,
         loop: false,
         sourceSlideCount: 1,
+        overlay: motionTemplate.overlay,
+        audio: {
+          enabled: resolvedAudio.enabled,
+          music: {
+            enabled: resolvedAudio.enabled,
+            preset: resolvedAudio.preset,
+            track: resolvedAudio.track,
+            volume: resolvedAudio.volume,
+            fadeIn: resolvedAudio.fadeIn,
+            fadeOut: resolvedAudio.fadeOut,
+            ducking: motionTemplate.audio?.music?.ducking
+              ?? motionTemplate.audio?.ducking
+              ?? resolvedAudio.ducking,
+          },
+          voice: {
+            enabled: motionTemplate.audio?.voice?.enabled ?? false,
+            script: motionTemplate.audio?.voice?.script ?? null,
+            provider: motionTemplate.audio?.voice?.provider ?? DEFAULT_MOTION_VOICE_PROVIDER,
+            voiceId: motionTemplate.audio?.voice?.voiceId ?? null,
+            storageKey: motionTemplate.audio?.voice?.storageKey ?? null,
+            assetUrl: motionTemplate.audio?.voice?.assetUrl ?? null,
+            volume: motionTemplate.audio?.voice?.volume,
+          },
+          preset: resolvedAudio.preset,
+          track: resolvedAudio.track,
+          volume: resolvedAudio.volume,
+          fadeIn: resolvedAudio.fadeIn,
+          fadeOut: resolvedAudio.fadeOut,
+          ducking: motionTemplate.audio?.music?.ducking ?? motionTemplate.audio?.ducking ?? resolvedAudio.ducking,
+          voiceTrack: motionTemplate.audio?.voice?.storageKey ?? motionTemplate.audio?.voiceTrack ?? null,
+        },
       },
       posterAssetId: sourceAssetId,
     },

@@ -17,6 +17,8 @@ import type {
   GenerateVisualResponse,
   MediaRecommendationGoal,
   MediaRecommendationSuggestion,
+  MotionAudioPreset,
+  MotionAudioTrack,
   MotionTemplateId,
   PostAsset,
   PublishAttempt,
@@ -116,6 +118,10 @@ interface PlatformPublishAttemptResult {
 interface DraftMediaPreferences {
   primaryAssetId?: string;
   posterAssetId?: string;
+  motionTemplateId?: MotionTemplateId;
+  motionAudioEnabled?: boolean;
+  motionAudioPreset?: MotionAudioPreset;
+  motionAudioTrack?: MotionAudioTrack;
 }
 
 const draft = ref<ActivationDraftRecord | null>(null);
@@ -147,6 +153,72 @@ const mediaFeedback = ref("");
 const postAssets = ref<PostAsset[]>([]);
 const isWorkspaceAssetPickerOpen = ref(false);
 const selectedMotionTemplateId = ref<MotionTemplateId>("subtle_zoom");
+const selectedMotionAudioEnabled = ref(true);
+const selectedMotionAudioPreset = ref<MotionAudioPreset>("clean_modern");
+const MOTION_TEMPLATE_OPTIONS: Array<{ value: MotionTemplateId; label: string; description: string }> = [
+  {
+    value: "offer_burst",
+    label: "Offer Burst",
+    description: "Fast promo pacing with a punchier CTA for launches, offers, and signups.",
+  },
+  {
+    value: "local_awareness",
+    label: "Local Awareness",
+    description: "Location-led motion for neighborhood campaigns, inquiries, and service discovery.",
+  },
+  {
+    value: "testimonial_highlight",
+    label: "Testimonial Highlight",
+    description: "Softer trust-building motion for proof, reviews, and credibility moments.",
+  },
+  {
+    value: "story_pan",
+    label: "Product Promo",
+    description: "Stronger launch pacing with headline, support, and CTA.",
+  },
+  {
+    value: "founder_story",
+    label: "Founder Story",
+    description: "Slow, intentional motion for story-led founder posts and emotional updates.",
+  },
+  {
+    value: "caption_pulse",
+    label: "Problem Hook",
+    description: "Sharper hook-first motion for stopping the scroll.",
+  },
+  {
+    value: "subtle_zoom",
+    label: "Calm Story",
+    description: "Gentle movement for softer brand storytelling.",
+  },
+];
+const MOTION_AUDIO_OPTIONS: Array<{ value: MotionAudioPreset; label: string; description: string }> = [
+  {
+    value: "clean_modern",
+    label: "Modern",
+    description: "Clean, polished sound for product updates, founder content, and sharper SaaS motion.",
+  },
+  {
+    value: "high_energy_promo",
+    label: "Energetic",
+    description: "Punchier sound for launches, promos, and CTA-heavy motion.",
+  },
+  {
+    value: "local_trust",
+    label: "Local Trust",
+    description: "Warm, trustworthy sound for local awareness, service businesses, and neighborhood reach.",
+  },
+  {
+    value: "luxury_minimal",
+    label: "Premium",
+    description: "Minimal, softer sound for proof, testimonials, and premium-feeling brand motion.",
+  },
+  {
+    value: "calm_wellness",
+    label: "Calm",
+    description: "Slow, softer sound for story-led, wellness, and less aggressive brand motion.",
+  },
+];
 const draftMediaPrimaryAssetId = ref("");
 const draftMediaPosterAssetId = ref("");
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
@@ -1164,6 +1236,50 @@ const creatorSceneDescription = computed(() => {
     .filter((value) => value && value.trim() !== "")
     .join(". ");
 });
+const motionLiteOverlay = computed(() => {
+  const businessHeadline =
+    businessOutput.value?.visual.headline
+    || draft.value?.result.idea.title
+    || previewLeadLines.value[0]
+    || "New update";
+  const creatorHeadline =
+    previewLeadLines.value[0]
+    || draft.value?.result.idea.title
+    || "Founder insight";
+  const headline = truncateOverlayLine(
+    isBusinessMode.value ? businessHeadline : creatorHeadline,
+    88,
+  );
+  const businessSubheadline =
+    businessOutput.value?.visual.subheadline
+    || businessOutput.value?.visual.visualDirection
+    || previewBodyParagraphs.value[0]
+    || "";
+  const creatorSubheadline =
+    creatorContentType.value === "promo_post"
+      ? draft.value?.result.idea.angle || previewBodyParagraphs.value[0] || ""
+      : previewBodyParagraphs.value[0] || draft.value?.result.idea.angle || "";
+  const subheadline = truncateOverlayLine(
+    isBusinessMode.value ? businessSubheadline : creatorSubheadline,
+    120,
+  );
+  const cta = truncateOverlayLine(
+    isBusinessMode.value
+      ? businessOutput.value?.cta.label
+      : creatorContentType.value === "promo_post"
+        ? draft.value?.result.idea.angle || "Learn more"
+        : undefined,
+    28,
+  );
+  const brandText = truncateOverlayLine(selectedConnectedAccountLabel.value.trim(), 30);
+
+  return {
+    headline,
+    subheadline,
+    cta,
+    brandText,
+  };
+});
 const hooks = computed(() => draft.value?.result.hooks ?? []);
 const povSummary = computed(() => draft.value?.result.pov?.summary ?? "");
 const qualitySummary = computed(() => draft.value?.result.quality);
@@ -1271,6 +1387,115 @@ const motionLiteDerivedVideoAsset = computed(() => {
     && asset.metadata.posterAssetId === sourceAssetId,
   ) ?? null;
 });
+const motionLiteCurrentTemplateId = computed<MotionTemplateId | null>(() => {
+  const asset = motionLiteDerivedVideoAsset.value;
+
+  if (!asset || asset.type !== "video") {
+    return null;
+  }
+
+  const value = asset.metadata.motionTemplate?.id;
+
+  return value === "subtle_zoom"
+    || value === "caption_pulse"
+    || value === "story_pan"
+    || value === "founder_story"
+    || value === "offer_burst"
+    || value === "testimonial_highlight"
+    || value === "local_awareness"
+    ? value
+    : null;
+});
+const motionLitePreviewAsset = computed<PostAsset | null>(() =>
+  motionLiteDerivedVideoAsset.value ?? motionLiteSourceAsset.value ?? null,
+);
+const recommendedMotionTemplateId = computed<MotionTemplateId>(() => {
+  const sourceText = [
+    postContent.value,
+    businessOutput.value?.visual.headline,
+    businessOutput.value?.visual.subheadline,
+    draft.value?.result.idea.title,
+    draft.value?.result.idea.angle,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim() !== "")
+    .join(" ")
+    .toLowerCase();
+  const hasProofLanguage =
+    /\b(testimonial|review|trusted|trust|as seen|customer|parents say|proof|results?)\b/.test(sourceText)
+    || /\b\d+[%x]?\b/.test(sourceText);
+
+  if (hasProofLanguage) {
+    return "testimonial_highlight";
+  }
+
+  if (isBusinessMode.value) {
+    const currentBusinessOutput = generationOutput.value?.kind === "business_campaign" ? generationOutput.value : null;
+
+    if (currentBusinessOutput?.intent === "promote_offer") {
+      return "offer_burst";
+    }
+
+    if (currentBusinessOutput?.goal === "leads" || currentBusinessOutput?.goal === "bookings") {
+      return "local_awareness";
+    }
+
+    return "story_pan";
+  }
+
+  if (activeCreatorVariant.value?.kind === "story_version") {
+    return "founder_story";
+  }
+
+  if (creatorContentType.value === "promo_post") {
+    return "offer_burst";
+  }
+
+  if (creatorContentType.value === "image_post") {
+    return "story_pan";
+  }
+
+  return "founder_story";
+});
+const recommendedMotionTemplateReason = computed(() => {
+  if (recommendedMotionTemplateId.value === "offer_burst") {
+    return isBusinessMode.value
+      ? "Best for launches, promos, and CTA-heavy business posts."
+      : "Best for creator promos and announcement-led posts.";
+  }
+
+  if (recommendedMotionTemplateId.value === "local_awareness") {
+    return "Best for location-led campaigns, inquiries, and nearby discovery.";
+  }
+
+  if (recommendedMotionTemplateId.value === "testimonial_highlight") {
+    return "Best for proof, trust, and stat-backed messaging.";
+  }
+
+  if (recommendedMotionTemplateId.value === "founder_story") {
+    return "Best for storytelling, personal updates, and slower founder-led delivery.";
+  }
+
+  if (recommendedMotionTemplateId.value === "story_pan") {
+    return "Best for product storytelling and image-led updates.";
+  }
+
+  if (recommendedMotionTemplateId.value === "caption_pulse") {
+    return "Best for sharper problem hooks and stronger first-frame tension.";
+  }
+
+  return "Best for softer story-led motion when you want the visual to breathe.";
+});
+const motionLiteNeedsRefresh = computed(
+  () => Boolean(motionLiteDerivedVideoAsset.value && motionLiteCurrentTemplateId.value !== selectedMotionTemplateId.value),
+);
+const recommendedMotionAudioPreset = computed<MotionAudioPreset>(() =>
+  resolveRecommendedMotionAudioPreset(selectedMotionTemplateId.value),
+);
+const motionLiteAudioDescription = computed(() =>
+  MOTION_AUDIO_OPTIONS.find((option) => option.value === selectedMotionAudioPreset.value)?.description
+  ?? MOTION_AUDIO_OPTIONS[0]?.description
+  ?? "",
+);
 const motionLiteAspectRatio = computed(() =>
   motionLiteSourceAsset.value?.metadata.aspectRatio === "9:16" ? "portrait" : "square",
 );
@@ -1303,13 +1528,52 @@ const canGenerateMotionLite = computed(() => motionLiteUnavailableReason.value =
 
 function getMotionTemplateLabel(templateId: MotionTemplateId): string {
   switch (templateId) {
-    case "caption_pulse":
-      return "Caption pulse";
+    case "offer_burst":
+      return "Offer Burst";
+    case "local_awareness":
+      return "Local Awareness";
+    case "testimonial_highlight":
+      return "Testimonial Highlight";
     case "story_pan":
-      return "Story pan";
+      return "Product Promo";
+    case "founder_story":
+      return "Founder Story";
+    case "caption_pulse":
+      return "Problem Hook";
     default:
-      return "Subtle zoom";
+      return "Calm Story";
   }
+}
+
+function resolveNextMotionTemplateId(currentTemplateId: MotionTemplateId): MotionTemplateId {
+  const optionValues = MOTION_TEMPLATE_OPTIONS.map((option) => option.value);
+  const currentIndex = optionValues.indexOf(currentTemplateId);
+
+  if (currentIndex < 0) {
+    return recommendedMotionTemplateId.value;
+  }
+
+  return optionValues[(currentIndex + 1) % optionValues.length] ?? recommendedMotionTemplateId.value;
+}
+
+function resolveRecommendedMotionAudioPreset(templateId: MotionTemplateId): MotionAudioPreset {
+  if (templateId === "offer_burst" || templateId === "caption_pulse") {
+    return "high_energy_promo";
+  }
+
+  if (templateId === "local_awareness") {
+    return "local_trust";
+  }
+
+  if (templateId === "testimonial_highlight") {
+    return "luxury_minimal";
+  }
+
+  if (templateId === "story_pan" || templateId === "founder_story") {
+    return "clean_modern";
+  }
+
+  return "calm_wellness";
 }
 
 function isMotionDerivedVideoAsset(asset: PostAsset): asset is Extract<PostAsset, { type: "video" }> {
@@ -2364,6 +2628,18 @@ function inferBusinessChannelsFromOutput(output: BusinessContentOutput): Array<"
   ];
 }
 
+function resolveMotionAudioPresetFromLegacyTrack(track: MotionAudioTrack): MotionAudioPreset {
+  if (track === "upbeat") {
+    return "high_energy_promo";
+  }
+
+  if (track === "ambient") {
+    return "local_trust";
+  }
+
+  return "clean_modern";
+}
+
 function normalizeDraftMediaPreferences(value: unknown): DraftMediaPreferences | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return undefined;
@@ -2387,11 +2663,49 @@ function normalizeDraftMediaPreferences(value: unknown): DraftMediaPreferences |
     typeof mediaPreferences.posterAssetId === "string" && mediaPreferences.posterAssetId.trim() !== ""
       ? mediaPreferences.posterAssetId.trim()
       : undefined;
+  const motionTemplateId = mediaPreferences.motionTemplateId;
+  const normalizedMotionTemplateId =
+    motionTemplateId === "subtle_zoom"
+    || motionTemplateId === "caption_pulse"
+    || motionTemplateId === "story_pan"
+    || motionTemplateId === "founder_story"
+    || motionTemplateId === "offer_burst"
+    || motionTemplateId === "testimonial_highlight"
+    || motionTemplateId === "local_awareness"
+      ? motionTemplateId
+      : undefined;
+  const motionAudioEnabled =
+    typeof mediaPreferences.motionAudioEnabled === "boolean"
+      ? mediaPreferences.motionAudioEnabled
+      : undefined;
+  const motionAudioPreset =
+    mediaPreferences.motionAudioPreset === "clean_modern"
+    || mediaPreferences.motionAudioPreset === "high_energy_promo"
+    || mediaPreferences.motionAudioPreset === "local_trust"
+    || mediaPreferences.motionAudioPreset === "luxury_minimal"
+    || mediaPreferences.motionAudioPreset === "calm_wellness"
+      ? mediaPreferences.motionAudioPreset
+      : undefined;
+  const motionAudioTrack =
+    mediaPreferences.motionAudioTrack === "calm"
+    || mediaPreferences.motionAudioTrack === "upbeat"
+    || mediaPreferences.motionAudioTrack === "ambient"
+      ? mediaPreferences.motionAudioTrack
+      : undefined;
 
-  return primaryAssetId || posterAssetId
+  return primaryAssetId
+    || posterAssetId
+    || normalizedMotionTemplateId
+    || motionAudioEnabled !== undefined
+    || motionAudioPreset
+    || motionAudioTrack
     ? {
         primaryAssetId,
         posterAssetId,
+        motionTemplateId: normalizedMotionTemplateId,
+        motionAudioEnabled,
+        motionAudioPreset: motionAudioPreset ?? (motionAudioTrack ? resolveMotionAudioPresetFromLegacyTrack(motionAudioTrack) : undefined),
+        motionAudioTrack,
       }
     : undefined;
 }
@@ -2711,11 +3025,17 @@ function buildSyncedGenerationOutput(): RepurposeContentResponse["generationOutp
 function buildDraftMediaPreferences(): DraftMediaPreferences | undefined {
   const primaryAssetId = draftMediaPrimaryAssetId.value.trim() || undefined;
   const posterAssetId = draftMediaPosterAssetId.value.trim() || undefined;
+  const motionTemplateId = selectedMotionTemplateId.value;
+  const motionAudioEnabled = selectedMotionAudioEnabled.value;
+  const motionAudioPreset = selectedMotionAudioPreset.value;
 
-  return primaryAssetId || posterAssetId
+  return primaryAssetId || posterAssetId || motionTemplateId || motionAudioEnabled !== undefined || motionAudioPreset
     ? {
         primaryAssetId,
         posterAssetId,
+        motionTemplateId,
+        motionAudioEnabled,
+        motionAudioPreset,
       }
     : undefined;
 }
@@ -2724,6 +3044,9 @@ function syncDraftMediaPreferencesFromDraft(): void {
   const preferences = normalizeDraftMediaPreferences(draft.value?.result.asset?.contentBody);
   draftMediaPrimaryAssetId.value = preferences?.primaryAssetId ?? "";
   draftMediaPosterAssetId.value = preferences?.posterAssetId ?? "";
+  selectedMotionTemplateId.value = preferences?.motionTemplateId ?? recommendedMotionTemplateId.value;
+  selectedMotionAudioEnabled.value = preferences?.motionAudioEnabled ?? true;
+  selectedMotionAudioPreset.value = preferences?.motionAudioPreset ?? resolveRecommendedMotionAudioPreset(selectedMotionTemplateId.value);
 }
 
 function buildDraftContentBody(): Record<string, unknown> {
@@ -3205,8 +3528,26 @@ async function generateMotionLiteFromCurrentVisual(): Promise<void> {
       motionTemplate: {
         id: selectedMotionTemplateId.value,
         aspectRatio: motionLiteAspectRatio.value,
-        durationMs: 7000,
+        durationMs: 5000,
         loop: false,
+        overlay: {
+          headline: motionLiteOverlay.value.headline,
+          subheadline: motionLiteOverlay.value.subheadline,
+          cta: motionLiteOverlay.value.cta,
+          brandText: motionLiteOverlay.value.brandText,
+        },
+        audio: {
+          enabled: selectedMotionAudioEnabled.value,
+          music: {
+            preset: selectedMotionAudioPreset.value,
+          },
+          voice: {
+            enabled: false,
+            script: null,
+            provider: "elevenlabs",
+            voiceId: null,
+          },
+        },
       },
     });
 
@@ -3236,6 +3577,17 @@ async function generateMotionLiteFromCurrentVisual(): Promise<void> {
   } finally {
     isGeneratingMotionLite.value = false;
   }
+}
+
+async function tryAnotherMotionStyle(): Promise<void> {
+  if (isGeneratingMotionLite.value || isUploadingPostAssets.value) {
+    return;
+  }
+
+  const nextTemplateId = resolveNextMotionTemplateId(selectedMotionTemplateId.value);
+  selectedMotionTemplateId.value = nextTemplateId;
+  await nextTick();
+  await generateMotionLiteFromCurrentVisual();
 }
 
 async function preferStillImageForDraft(): Promise<void> {
@@ -4291,6 +4643,54 @@ watch(
 );
 
 watch(
+  () => [selectedMotionTemplateId.value, selectedMotionAudioEnabled.value, selectedMotionAudioPreset.value] as const,
+  ([nextTemplateId, nextAudioEnabled, nextAudioPreset], [previousTemplateId, previousAudioEnabled, previousAudioPreset]) => {
+    if (
+      !draft.value
+      || !activeBusinessId.value
+      || !draft.value.result.asset?.id
+      || (
+        nextTemplateId === previousTemplateId
+        && nextAudioEnabled === previousAudioEnabled
+        && nextAudioPreset === previousAudioPreset
+      )
+    ) {
+      return;
+    }
+
+    const persistedPreferences = normalizeDraftMediaPreferences(draft.value.result.asset.contentBody);
+    const previousRecommendedPreset = resolveRecommendedMotionAudioPreset(previousTemplateId);
+
+    if (
+      previousTemplateId !== nextTemplateId
+      && selectedMotionAudioPreset.value === previousRecommendedPreset
+    ) {
+      selectedMotionAudioPreset.value = resolveRecommendedMotionAudioPreset(nextTemplateId);
+      return;
+    }
+
+    if (
+      persistedPreferences?.motionTemplateId === nextTemplateId
+      && persistedPreferences?.motionAudioEnabled === nextAudioEnabled
+      && persistedPreferences?.motionAudioPreset === nextAudioPreset
+    ) {
+      return;
+    }
+
+    void persistDraftMediaPreferences(
+      {
+        primaryAssetId: draftMediaPrimaryAssetId.value || undefined,
+        posterAssetId: draftMediaPosterAssetId.value || undefined,
+        motionTemplateId: nextTemplateId,
+        motionAudioEnabled: nextAudioEnabled,
+        motionAudioPreset: nextAudioPreset,
+      },
+      { silent: true },
+    );
+  },
+);
+
+watch(
   () => [draft.value?.id, draft.value?.result.post, creatorContentType.value, creatorVariants.value.map((variant) => variant.id).join("|")],
   () => {
     if (isBusinessMode.value || creatorVariants.value.length === 0) {
@@ -5150,21 +5550,88 @@ onBeforeUnmount(() => {
                 <p class="panel-meta">Motion-lite</p>
                 <strong>Animate the current visual into a short promo teaser</strong>
                 <p class="ai-command-copy">
-                  Turns one attached image into a 7-second MP4 while keeping the original still image attached as fallback.
+                  Turns one attached image into a short reel-style teaser with timed headline, support text, and CTA while keeping the original still image attached as fallback.
                 </p>
                 <p v-if="motionLiteDerivedVideoAsset" class="motion-lite-status">
                   Animated version created. Instagram and Facebook use the video, and LinkedIn keeps the original image.
+                </p>
+                <p class="motion-lite-status">
+                  Recommended: {{ getMotionTemplateLabel(recommendedMotionTemplateId) }}. {{ recommendedMotionTemplateReason }}
+                </p>
+                <p v-if="motionLiteNeedsRefresh" class="motion-lite-status motion-lite-status-warning">
+                  Current teaser uses {{ getMotionTemplateLabel(motionLiteCurrentTemplateId || "subtle_zoom") }}. Re-generate to switch this draft to {{ getMotionTemplateLabel(selectedMotionTemplateId) }}.
                 </p>
               </div>
               <div class="motion-lite-actions">
                 <label class="media-style-select-wrap">
                   <span class="panel-meta media-style-select-label">Motion style</span>
                   <select v-model="selectedMotionTemplateId" class="media-style-select">
-                    <option value="subtle_zoom">Subtle zoom</option>
-                    <option value="caption_pulse">Caption pulse</option>
-                    <option value="story_pan">Story pan</option>
+                    <option
+                      v-for="option in MOTION_TEMPLATE_OPTIONS"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
                   </select>
+                  <small class="ai-command-copy media-style-select-help">
+                    {{ MOTION_TEMPLATE_OPTIONS.find((option) => option.value === selectedMotionTemplateId)?.description }}
+                  </small>
                 </label>
+                <div class="motion-audio-controls">
+                  <label class="motion-audio-toggle">
+                    <input v-model="selectedMotionAudioEnabled" type="checkbox" />
+                    <span>Audio on</span>
+                  </label>
+                  <label class="media-style-select-wrap" :class="{ muted: !selectedMotionAudioEnabled }">
+                    <span class="panel-meta media-style-select-label">Choose a vibe</span>
+                    <select
+                      v-model="selectedMotionAudioPreset"
+                      class="media-style-select"
+                      :disabled="!selectedMotionAudioEnabled"
+                    >
+                      <option
+                        v-for="option in MOTION_AUDIO_OPTIONS"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <small class="ai-command-copy media-style-select-help">
+                      {{
+                        selectedMotionAudioEnabled
+                          ? `${motionLiteAudioDescription} Recommended: ${MOTION_AUDIO_OPTIONS.find((option) => option.value === recommendedMotionAudioPreset)?.label}.`
+                          : "Render a silent teaser. Re-generate later if you want sound back."
+                      }}
+                    </small>
+                  </label>
+                </div>
+                <div v-if="motionLitePreviewAsset?.previewUrl" class="motion-lite-preview-card">
+                  <p class="panel-meta">Current preview</p>
+                  <video
+                    v-if="motionLitePreviewAsset.type === 'video'"
+                    :src="motionLitePreviewAsset.previewUrl"
+                    class="motion-lite-preview"
+                    controls
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <img
+                    v-else
+                    :src="motionLitePreviewAsset.previewUrl"
+                    alt="Motion-lite preview"
+                    class="motion-lite-preview"
+                  />
+                  <small class="ai-command-copy media-style-select-help">
+                    {{
+                      motionLitePreviewAsset.type === "video"
+                        ? "Current Meta-ready teaser preview."
+                        : "Current still image that motion-lite will animate."
+                    }}
+                  </small>
+                </div>
                 <button
                   type="button"
                   class="secondary-action media-generate-button"
@@ -5172,6 +5639,15 @@ onBeforeUnmount(() => {
                   @click="void generateMotionLiteFromCurrentVisual()"
                 >
                   {{ isGeneratingMotionLite ? "Animating..." : motionLiteDerivedVideoAsset ? "Re-generate" : "Animate this visual" }}
+                </button>
+                <button
+                  v-if="motionLiteDerivedVideoAsset"
+                  type="button"
+                  class="secondary-action"
+                  :disabled="!canGenerateMotionLite || isGeneratingMotionLite || isUploadingPostAssets"
+                  @click="void tryAnotherMotionStyle()"
+                >
+                  Try another style
                 </button>
                 <button
                   v-if="motionLiteDerivedVideoAsset"
@@ -6458,6 +6934,10 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
+.media-style-select-help {
+  max-width: 240px;
+}
+
 .media-style-select {
   min-width: 200px;
   min-height: 46px;
@@ -6510,11 +6990,53 @@ onBeforeUnmount(() => {
   line-height: 1.5;
 }
 
+.motion-lite-status-warning {
+  color: var(--fc-accent-dark);
+}
+
 .motion-lite-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
   gap: 12px;
+}
+
+.motion-audio-controls {
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.motion-audio-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--fc-text);
+}
+
+.motion-audio-toggle input {
+  accent-color: var(--fc-accent);
+}
+
+.media-style-select-wrap.muted {
+  opacity: 0.68;
+}
+
+.motion-lite-preview-card {
+  display: grid;
+  gap: 8px;
+  width: min(210px, 100%);
+}
+
+.motion-lite-preview {
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 14%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 12%, white 88%);
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.12);
 }
 
 .carousel-blueprint-panel {
