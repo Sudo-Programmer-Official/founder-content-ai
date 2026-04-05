@@ -4,6 +4,7 @@ import type {
   CreateEmailDomainRequest,
   CreateEmailDomainResponse,
   DeleteEmailCampaignResponse,
+  DeleteEmailContactResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
   EmailContactImportJobListResponse,
@@ -19,6 +20,8 @@ import type {
   QueueEmailContactsImportRequest,
   QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
+  UpdateEmailContactRequest,
+  UpdateEmailContactResponse,
   UpdateEmailCampaignRequest,
   UpdateEmailCampaignResponse,
   VerifyEmailDomainResponse,
@@ -115,6 +118,30 @@ export async function requestEmailContacts(
   const query = params.toString();
   return apiGet<EmailContactListResponse>(
     `/businesses/${encodedBusinessId}/email/contacts${query ? `?${query}` : ""}`,
+  );
+}
+
+export async function requestEmailContactUpdate(
+  businessId: string,
+  contactId: string,
+  payload: UpdateEmailContactRequest,
+): Promise<UpdateEmailContactResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedContactId = encodeURIComponent(contactId);
+  return apiPatch<UpdateEmailContactRequest, UpdateEmailContactResponse>(
+    `/businesses/${encodedBusinessId}/email/contacts/${encodedContactId}`,
+    payload,
+  );
+}
+
+export async function requestEmailContactDelete(
+  businessId: string,
+  contactId: string,
+): Promise<DeleteEmailContactResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedContactId = encodeURIComponent(contactId);
+  return apiDelete<DeleteEmailContactResponse>(
+    `/businesses/${encodedBusinessId}/email/contacts/${encodedContactId}`,
   );
 }
 

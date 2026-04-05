@@ -9,6 +9,8 @@ import type {
   BrandKit,
   CreateMediaUploadUrlRequest,
   CreateMediaUploadUrlResponse,
+  CreatePromoVisualPostAssetRequest,
+  CreatePromoVisualPostAssetResponse,
   GenerateMotionPostAssetRequest,
   GenerateMotionPostAssetResponse,
   CreatePostAssetRequest,
@@ -35,6 +37,7 @@ import type {
   PostAssetSource,
   PostAssetStatus,
   PostAssetType,
+  PromoVisualLayoutId,
   VideoPostAssetMetadata,
 } from "../../../../packages/shared-types/index.ts";
 import { promisify } from "node:util";
@@ -60,6 +63,7 @@ import {
   resolveMotionAudioPresetForTemplate,
   resolveMotionAudioPresetFromTrack,
 } from "./motion/audioPresets.ts";
+import { composePromoVisual } from "./promoVisualComposer.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -92,13 +96,19 @@ interface ContentPostRow extends QueryResultRow {
   content_type: string;
 }
 
+interface BusinessPromoContextRow extends QueryResultRow {
+  name: string | null;
+  brand_name: string | null;
+  website_url: string | null;
+}
+
 const ALLOWED_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif"]);
 const ALLOWED_VIDEO_TYPES = new Set(["video/mp4"]);
 const DEFAULT_S3_UPLOAD_TTL_SECONDS = 900;
 const DEFAULT_S3_PREVIEW_TTL_SECONDS = 3600;
 const MAX_POST_ASSET_COUNT = 10;
 const POST_ASSET_ASPECT_RATIOS = new Set<PostAssetAspectRatio>(["1:1", "9:16"]);
-const POST_ASSET_METADATA_SOURCES = new Set<PostAssetMetadataSource>(["upload", "motion_template"]);
+const POST_ASSET_METADATA_SOURCES = new Set<PostAssetMetadataSource>(["upload", "motion_template", "promo_composer"]);
 const MOTION_TEMPLATE_IDS = new Set<MotionTemplateId>([
   "subtle_zoom",
   "caption_pulse",
@@ -189,6 +199,48 @@ function resolveMaxImageBytes(): number {
 function resolveMaxVideoBytes(): number {
   const value = Number(process.env.S3_MAX_VIDEO_BYTES ?? 52428800);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 52428800;
+}
+
+function extractDomainLabel(websiteUrl: string | null | undefined): string | undefined {
+  const normalized = collapseWhitespace(websiteUrl ?? "");
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  try {
+    const url = /^https?:\/\//i.test(normalized) ? new URL(normalized) : new URL(`https://${normalized}`);
+    return url.hostname.replace(/^www\./i, "");
+  } catch {
+    return undefined;
+  }
+}
+
+async function loadBusinessPromoLabel(businessId: string): Promise<string> {
+  const result = await queryDb<BusinessPromoContextRow>(
+    `
+      select
+        name,
+        brand_name,
+        website_url
+      from businesses
+      where id = $1
+      limit 1
+    `,
+    [businessId],
+  );
+  const row = result.rows[0];
+
+  if (!row) {
+    return "Workspace";
+  }
+
+  return collapseWhitespace(
+    extractDomainLabel(row.website_url)
+    || row.brand_name
+    || row.name
+    || "Workspace",
+  ) || "Workspace";
 }
 
 function toIsoString(value: Date | string): string {
@@ -315,6 +367,24 @@ function parseOptionalMetadataSource(value: unknown, fieldName: string): PostAss
   }
 
   return normalized as PostAssetMetadataSource;
+}
+
+function parsePromoVisualLayoutId(value: unknown): PromoVisualLayoutId {
+  const normalized = parseOptionalString(value, "layout");
+
+  if (
+    normalized !== "logo_headline"
+    && normalized !== "screenshot_headline"
+    && normalized !== "headline_only"
+  ) {
+    throw new HttpError(
+      400,
+      "bad_request",
+      "layout must be one of logo_headline, screenshot_headline, or headline_only.",
+    );
+  }
+
+  return normalized;
 }
 
 function parseMotionTemplateOverlay(value: unknown): MotionTemplateOverlay | undefined {
@@ -813,17 +883,22 @@ function normalizePostAssetMetadata(type: PostAssetType, value: unknown): PostAs
 
     const source = parseOptionalMetadataSource(record.source, "metadata.source");
 
-    if (source && source !== "upload") {
+    if (source && source !== "upload" && source !== "promo_composer") {
       throw new HttpError(
         400,
         "invalid_post_asset_metadata",
-        "Image asset metadata.source must be upload.",
+        "Image asset metadata.source must be upload or promo_composer.",
       );
     }
 
     return {
       aspectRatio,
-      source: source === "upload" ? "upload" : undefined,
+      source:
+        source === "upload"
+          ? "upload"
+          : source === "promo_composer"
+            ? "promo_composer"
+            : undefined,
     };
   }
 
@@ -1522,6 +1597,109 @@ export async function createPostAsset(
   return { asset };
 }
 
+export async function createPromoVisualPostAsset(
+  principal: AuthenticatedPrincipal,
+  input: CreatePromoVisualPostAssetRequest,
+): Promise<CreatePromoVisualPostAssetResponse> {
+  const businessId = input.businessId.trim();
+  const postId = input.postId.trim();
+  const layout = parsePromoVisualLayoutId(input.layout);
+  const headline = truncateAtWordBoundary(input.headline, 120);
+  const subheadline = truncateAtWordBoundary(input.subheadline, 180);
+  const cta = truncateAtWordBoundary(input.cta, 28);
+  const sourceAssetId = input.sourceAssetId?.trim() || undefined;
+  const aspectRatio = input.aspectRatio === "9:16" ? "9:16" : "1:1";
+
+  if (!headline) {
+    throw new HttpError(400, "bad_request", "headline is required.");
+  }
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "control_dashboard",
+  });
+  await requireBusinessMembership(principal, businessId);
+  await ensureContentPostOwnership(businessId, postId);
+
+  let screenshotBytes: Buffer | undefined;
+  let usedSourceAssetId: string | undefined;
+
+  if (sourceAssetId) {
+    const sourceAssetRow = await loadPostAssetRow(sourceAssetId, businessId);
+
+    if (
+      !sourceAssetRow
+      || sourceAssetRow.post_id !== postId
+      || sourceAssetRow.type !== "image"
+      || sourceAssetRow.status !== "ready"
+    ) {
+      throw new HttpError(
+        404,
+        "post_asset_not_found",
+        "Select one ready image on this draft before using the screenshot layout.",
+      );
+    }
+
+    screenshotBytes = await downloadPostAssetBytes(mapPostAsset(sourceAssetRow, false));
+    usedSourceAssetId = sourceAssetId;
+  }
+
+  const [brandKit, brandLabel] = await Promise.all([
+    getBrandKitForBusiness({
+      principal,
+      businessId,
+    }),
+    loadBusinessPromoLabel(businessId),
+  ]);
+
+  const renderedPromoVisual = await composePromoVisual({
+    brandKit,
+    brandLabel,
+    headline,
+    subheadline,
+    cta,
+    layout,
+    aspectRatio,
+    screenshotBytes,
+  });
+  const storageKey = buildStorageKey({
+    businessId,
+    postId,
+    mimeType: "image/png",
+    fileName: `promo-${renderedPromoVisual.resolvedLayout}.png`,
+  });
+
+  await uploadPostAssetBytesToStorage({
+    storageKey,
+    bytes: renderedPromoVisual.bytes,
+    mimeType: "image/png",
+  });
+
+  const createResponse = await createPostAsset(principal, {
+    businessId,
+    postId,
+    storageKey,
+    storageUrl: buildStorageUrl(storageKey),
+    mimeType: "image/png",
+    sizeBytes: renderedPromoVisual.bytes.byteLength,
+    type: "image",
+    source: "generated",
+    metadata: {
+      aspectRatio: renderedPromoVisual.aspectRatio,
+      source: "promo_composer",
+    },
+  });
+
+  return {
+    asset: createResponse.asset,
+    resolvedLayout: renderedPromoVisual.resolvedLayout,
+    usedLogo: renderedPromoVisual.usedLogo,
+    usedSourceAssetId:
+      renderedPromoVisual.usedSourceImage && usedSourceAssetId ? usedSourceAssetId : undefined,
+  };
+}
+
 export async function generateMotionPostAsset(
   principal: AuthenticatedPrincipal,
   input: GenerateMotionPostAssetRequest,
@@ -1554,7 +1732,6 @@ export async function generateMotionPostAsset(
   }
 
   const readyAssets = await loadReadyPostAssets(businessId, postId);
-  const readyImageAssets = readyAssets.filter((asset) => asset.type === "image");
   const existingDerivedVideos = readyAssets.filter((asset) =>
     asset.type === "video"
     && asset.metadata.source === "motion_template"
@@ -1570,14 +1747,6 @@ export async function generateMotionPostAsset(
       400,
       "motion_already_attached",
       "This draft already has another video attached. Remove it before generating a motion teaser from the current image.",
-    );
-  }
-
-  if (readyImageAssets.length !== 1 || readyImageAssets[0]?.id !== sourceAssetId) {
-    throw new HttpError(
-      400,
-      "motion_requires_single_image",
-      "Motion-lite currently works on exactly one ready image. Narrow the draft to a single image first.",
     );
   }
 

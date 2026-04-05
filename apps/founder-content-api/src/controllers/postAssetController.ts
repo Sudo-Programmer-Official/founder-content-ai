@@ -2,6 +2,8 @@ import type {
   ApiError,
   CreateMediaUploadUrlRequest,
   CreateMediaUploadUrlResponse,
+  CreatePromoVisualPostAssetRequest,
+  CreatePromoVisualPostAssetResponse,
   GenerateMotionPostAssetRequest,
   GenerateMotionPostAssetResponse,
   CreatePostAssetRequest,
@@ -18,6 +20,7 @@ import type { Request, Response } from "express";
 import {
   createMediaUploadUrl,
   createPostAsset,
+  createPromoVisualPostAsset,
   deletePostAsset,
   generateMotionPostAsset,
   getPostAsset,
@@ -160,6 +163,52 @@ export async function generateMotionPostAssetController(
       code: "post_asset_motion_failed",
       message: "Unable to generate a motion teaser right now.",
       logMessage: "Failed to generate motion teaser for post asset.",
+    });
+  }
+}
+
+export async function createPromoVisualPostAssetController(
+  request: Request<unknown, CreatePromoVisualPostAssetResponse | ApiError, Partial<CreatePromoVisualPostAssetRequest>>,
+  response: Response<CreatePromoVisualPostAssetResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const postId = request.body?.postId?.trim();
+  const headline = request.body?.headline?.trim();
+
+  if (!businessId || !postId || !headline || !request.body?.layout) {
+    sendApiError(
+      response,
+      400,
+      "bad_request",
+      "businessId, postId, layout, and headline are required.",
+    );
+    return;
+  }
+
+  try {
+    response.status(201).json(
+      await createPromoVisualPostAsset(request.auth, {
+        businessId,
+        postId,
+        layout: request.body.layout,
+        headline,
+        subheadline: request.body?.subheadline?.trim(),
+        cta: request.body?.cta?.trim(),
+        sourceAssetId: request.body?.sourceAssetId?.trim(),
+        aspectRatio: request.body?.aspectRatio,
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "post_asset_promo_visual_failed",
+      message: "Unable to create a promo visual right now.",
+      logMessage: "Failed to create promo visual post asset.",
     });
   }
 }

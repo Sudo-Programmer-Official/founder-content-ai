@@ -1,6 +1,7 @@
 import express, { Router } from "express";
 import {
   deleteEmailCampaignController,
+  deleteEmailContactController,
   getEmailCampaignStats,
   getEmailCampaigns,
   getEmailClickTracking,
@@ -12,6 +13,7 @@ import {
   getEmailOpenTracking,
   getEmailUnsubscribe,
   patchEmailCampaign,
+  patchEmailContactController,
   postEmailCampaign,
   postEmailCampaignSend,
   postEmailContactsImport,
@@ -32,6 +34,8 @@ emailRoute.post("/api/businesses/:businessId/email/import-jobs", requireAuth(), 
 emailRoute.get("/api/businesses/:businessId/email/import-jobs", requireAuth(), getEmailContactImportJobsController);
 emailRoute.get("/api/businesses/:businessId/email/import-jobs/:jobId", requireAuth(), getEmailContactImportJobController);
 emailRoute.get("/api/businesses/:businessId/email/contacts", requireAuth(), getEmailContacts);
+emailRoute.patch("/api/businesses/:businessId/email/contacts/:contactId", requireAuth(), patchEmailContactController);
+emailRoute.delete("/api/businesses/:businessId/email/contacts/:contactId", requireAuth(), deleteEmailContactController);
 emailRoute.get("/api/businesses/:businessId/email/lists", requireAuth(), getEmailLists);
 emailRoute.get("/api/businesses/:businessId/email/settings", requireAuth(), getEmailDomainSettingsController);
 emailRoute.post("/api/businesses/:businessId/email/campaigns", requireAuth(), postEmailCampaign);

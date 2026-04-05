@@ -102,6 +102,7 @@ interface EmailListRow extends QueryResultRow {
   created_at: Date | string;
   updated_at: Date | string;
   contact_count?: string | number;
+  member_list_ids_json?: unknown;
 }
 
 interface EmailContactRow extends QueryResultRow {
@@ -566,6 +567,10 @@ function normalizeContactAttributes(attributes: EmailContactAttributes | undefin
   return normalized;
 }
 
+function normalizeEmailListNameKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 function buildContactAttributeFilterVariants(key: string, value: string): string[] {
   if (key === "state") {
     const normalizedState = normalizeStateAttributeValue(value);
@@ -892,6 +897,7 @@ function mapEmailList(row: EmailListRow): EmailList {
     name: row.name,
     createdByUserId: row.created_by_user_id ?? undefined,
     contactCount: toNumber(row.contact_count),
+    memberListIds: parseJsonArray<string>(row.member_list_ids_json),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: toIsoString(row.updated_at),
   };
@@ -2326,6 +2332,84 @@ async function loadEmailListOrThrow(
   return row;
 }
 
+async function loadEmailListScopeById(
+  businessId: string,
+  listId: string,
+  client?: PoolClient,
+): Promise<{
+  canonicalList: EmailListRow;
+  memberListIds: string[];
+  normalizedNameKey: string;
+}> {
+  const selectedList = await loadEmailListOrThrow(businessId, listId, client);
+  const normalizedNameKey = normalizeEmailListNameKey(selectedList.name);
+  const familyResult = await executeQuery<EmailListRow>(
+    `
+      with family_lists as (
+        select
+          l.id,
+          l.business_id,
+          l.name,
+          l.created_by_user_id,
+          l.created_at,
+          l.updated_at
+        from email_lists l
+        where l.business_id = $1::uuid
+          and lower(trim(l.name)) = $2
+      ),
+      ranked_lists as (
+        select
+          fl.*,
+          row_number() over (
+            order by fl.created_at desc, fl.id desc
+          ) as family_rank
+        from family_lists fl
+      ),
+      family_counts as (
+        select
+          count(distinct m.contact_id)::int as contact_count
+        from family_lists fl
+        left join email_list_members m on m.list_id = fl.id
+      ),
+      family_members as (
+        select
+          json_agg(fl.id order by fl.created_at desc, fl.id desc) as member_list_ids_json
+        from family_lists fl
+      )
+      select
+        rl.id,
+        rl.business_id,
+        rl.name,
+        rl.created_by_user_id,
+        rl.created_at,
+        rl.updated_at,
+        coalesce(fc.contact_count, 0)::int as contact_count,
+        coalesce(fm.member_list_ids_json, '[]'::json) as member_list_ids_json
+      from ranked_lists rl
+      cross join family_counts fc
+      cross join family_members fm
+      where rl.family_rank = 1
+      limit 1
+    `,
+    [businessId, normalizedNameKey],
+    client,
+  );
+
+  const canonicalList = familyResult.rows[0];
+
+  if (!canonicalList) {
+    throw new HttpError(404, "email_list_not_found", "Email list not found.");
+  }
+
+  const memberListIds = parseJsonArray<string>(canonicalList.member_list_ids_json);
+
+  return {
+    canonicalList,
+    memberListIds: memberListIds.length > 0 ? memberListIds : [selectedList.id],
+    normalizedNameKey,
+  };
+}
+
 async function ensureEmailListByName(
   businessId: string,
   listName: string,
@@ -2514,32 +2598,40 @@ async function loadCampaignContacts(
     EmailContactRow & { campaign_id: string | null }
   >(
     `
-      select
-        c.id,
-        c.business_id,
-        c.email,
-        c.first_name,
-        c.last_name,
-        c.tags_json,
-        c.status,
-        c.unsubscribe_token,
-        c.unsubscribed_at,
-        c.last_bounce_at,
-        c.last_complaint_at,
-        c.last_provider_event_at,
-        c.created_at,
-        c.updated_at
-      from email_campaigns ec
-      inner join email_list_members lm on lm.list_id = ec.list_id
-      inner join email_contacts c on c.id = lm.contact_id
-      left join email_unsubscribes eu
-        on eu.business_id = c.business_id
-       and lower(eu.email) = lower(c.email)
-      where ec.business_id = $1::uuid
-        and ec.id = $2::uuid
-        and c.status = 'active'
-        and eu.id is null
-      order by c.created_at asc
+      select *
+      from (
+        select distinct on (c.id)
+          c.id,
+          c.business_id,
+          c.email,
+          c.first_name,
+          c.last_name,
+          c.tags_json,
+          c.status,
+          c.unsubscribe_token,
+          c.unsubscribed_at,
+          c.last_bounce_at,
+          c.last_complaint_at,
+          c.last_provider_event_at,
+          c.created_at,
+          c.updated_at
+        from email_campaigns ec
+        inner join email_lists selected_list on selected_list.id = ec.list_id
+        inner join email_lists scoped_list
+          on scoped_list.business_id = selected_list.business_id
+         and lower(trim(scoped_list.name)) = lower(trim(selected_list.name))
+        inner join email_list_members lm on lm.list_id = scoped_list.id
+        inner join email_contacts c on c.id = lm.contact_id
+        left join email_unsubscribes eu
+          on eu.business_id = c.business_id
+         and lower(eu.email) = lower(c.email)
+        where ec.business_id = $1::uuid
+          and ec.id = $2::uuid
+          and c.status = 'active'
+          and eu.id is null
+        order by c.id, c.created_at asc
+      ) contacts
+      order by created_at asc
     `,
     [businessId, campaignId],
     client,
@@ -3475,7 +3567,11 @@ export async function listEmailContacts(
   const limit = Math.max(1, Math.min(input.limit ?? 100, 500));
   const { hasAttributesJson } = await getEmailContactCapabilities();
   const projection = await buildEmailContactSelectProjection("c");
-  const countValues: unknown[] = [businessId, normalizedSearch, searchPattern, input.listId ?? null, input.status ?? null];
+  const listScope = input.listId
+    ? await loadEmailListScopeById(businessId, input.listId)
+    : null;
+  const scopedListIds = listScope?.memberListIds ?? null;
+  const countValues: unknown[] = [businessId, normalizedSearch, searchPattern, scopedListIds, input.status ?? null];
   const countAttributeClauses = buildEmailContactAttributeFilterClauses({
     values: countValues,
     attributeFilters: input.attributeFilters,
@@ -3484,11 +3580,11 @@ export async function listEmailContacts(
 
   const countResult = await executeQuery<CountRow>(
     `
-      select count(*)::int as total
+      select count(distinct c.id)::int as total
       from email_contacts c
       left join email_list_members lm
         on lm.contact_id = c.id
-       and ($4::uuid is null or lm.list_id = $4::uuid)
+       and ($4::uuid[] is null or lm.list_id = any($4::uuid[]))
       where c.business_id = $1::uuid
         and ($2::text = '' or (
           lower(c.email) like $3
@@ -3496,13 +3592,13 @@ export async function listEmailContacts(
           or lower(coalesce(c.last_name, '')) like $3
         ))
         and ($5::text is null or c.status = $5::text)
-        and ($4::uuid is null or lm.id is not null)
+        and ($4::uuid[] is null or lm.id is not null)
         ${countAttributeClauses}
     `,
     countValues,
   );
 
-  const resultValues: unknown[] = [businessId, normalizedSearch, searchPattern, input.listId ?? null, input.status ?? null];
+  const resultValues: unknown[] = [businessId, normalizedSearch, searchPattern, scopedListIds, input.status ?? null];
   const resultAttributeClauses = buildEmailContactAttributeFilterClauses({
     values: resultValues,
     attributeFilters: input.attributeFilters,
@@ -3511,22 +3607,26 @@ export async function listEmailContacts(
   resultValues.push(limit);
   const result = await executeQuery<EmailContactRow>(
     `
-      select
-        ${projection}
-      from email_contacts c
-      left join email_list_members lm
-        on lm.contact_id = c.id
-       and ($4::uuid is null or lm.list_id = $4::uuid)
-      where c.business_id = $1::uuid
-        and ($2::text = '' or (
-          lower(c.email) like $3
-          or lower(coalesce(c.first_name, '')) like $3
-          or lower(coalesce(c.last_name, '')) like $3
-        ))
-        and ($5::text is null or c.status = $5::text)
-        and ($4::uuid is null or lm.id is not null)
-        ${resultAttributeClauses}
-      order by c.updated_at desc, c.created_at desc
+      select *
+      from (
+        select distinct on (c.id)
+          ${projection}
+        from email_contacts c
+        left join email_list_members lm
+          on lm.contact_id = c.id
+         and ($4::uuid[] is null or lm.list_id = any($4::uuid[]))
+        where c.business_id = $1::uuid
+          and ($2::text = '' or (
+            lower(c.email) like $3
+            or lower(coalesce(c.first_name, '')) like $3
+            or lower(coalesce(c.last_name, '')) like $3
+          ))
+          and ($5::text is null or c.status = $5::text)
+          and ($4::uuid[] is null or lm.id is not null)
+          ${resultAttributeClauses}
+        order by c.id, c.updated_at desc, c.created_at desc
+      ) contacts
+      order by updated_at desc, created_at desc
       limit $${resultValues.length}::int
     `,
     resultValues,
@@ -3536,6 +3636,140 @@ export async function listEmailContacts(
     contacts: result.rows.map(mapEmailContact),
     total: toNumber(countResult.rows[0]?.total),
   };
+}
+
+export async function updateEmailContact(
+  businessId: string,
+  contactId: string,
+  input: {
+    email: string;
+    firstName?: string;
+    lastName?: string;
+    status?: EmailContactStatus;
+  },
+): Promise<{ contact: EmailContact }> {
+  const normalizedEmail = normalizeEmail(input.email);
+
+  if (!normalizedEmail) {
+    throw new HttpError(400, "email_contact_invalid", "A valid email address is required.");
+  }
+
+  const normalizedStatus = input.status;
+
+  if (
+    normalizedStatus &&
+    normalizedStatus !== "active" &&
+    normalizedStatus !== "unsubscribed" &&
+    normalizedStatus !== "bounced" &&
+    normalizedStatus !== "complained" &&
+    normalizedStatus !== "suppressed"
+  ) {
+    throw new HttpError(400, "email_contact_invalid_status", "A valid contact status is required.");
+  }
+
+  return withDbTransaction(async (client) => {
+    const projection = await buildEmailContactSelectProjection("");
+    const existingResult = await executeQuery<EmailContactRow>(
+      `
+        select
+          ${projection}
+        from email_contacts
+        where business_id = $1::uuid
+          and id = $2::uuid
+        limit 1
+      `,
+      [businessId, contactId],
+      client,
+    );
+
+    const existingContact = existingResult.rows[0];
+
+    if (!existingContact) {
+      throw new HttpError(404, "email_contact_not_found", "Email contact not found.");
+    }
+
+    const isSuppressed = await isEmailUnsubscribed(businessId, normalizedEmail, client);
+    const nextStatus = isSuppressed ? "unsubscribed" : normalizedStatus ?? existingContact.status;
+    const shouldSetUnsubscribedAt = nextStatus === "unsubscribed";
+    const shouldClearUnsubscribedAt = !shouldSetUnsubscribedAt && Boolean(normalizedStatus);
+
+    try {
+      const result = await executeQuery<EmailContactRow>(
+        `
+          update email_contacts
+          set
+            email = $2,
+            first_name = $3,
+            last_name = $4,
+            status = $5,
+            unsubscribed_at = case
+              when $6 then coalesce(unsubscribed_at, now())
+              when $7 then null
+              else unsubscribed_at
+            end,
+            updated_at = now()
+          where business_id = $1::uuid
+            and id = $8::uuid
+          returning
+            ${projection}
+        `,
+        [
+          businessId,
+          normalizedEmail,
+          input.firstName?.trim() || null,
+          input.lastName?.trim() || null,
+          nextStatus,
+          shouldSetUnsubscribedAt,
+          shouldClearUnsubscribedAt,
+          contactId,
+        ],
+        client,
+      );
+
+      return {
+        contact: mapEmailContact(result.rows[0]),
+      };
+    } catch (error) {
+      const candidate = error as { code?: string };
+
+      if (candidate.code === "23505") {
+        throw new HttpError(
+          409,
+          "email_contact_duplicate",
+          "A contact with that email already exists in this workspace.",
+        );
+      }
+
+      throw error;
+    }
+  });
+}
+
+export async function deleteEmailContact(
+  businessId: string,
+  contactId: string,
+): Promise<{ success: true; contactId: string }> {
+  return withDbTransaction(async (client) => {
+    const result = await executeQuery<{ id: string }>(
+      `
+        delete from email_contacts
+        where business_id = $1::uuid
+          and id = $2::uuid
+        returning id
+      `,
+      [businessId, contactId],
+      client,
+    );
+
+    if (!result.rows[0]) {
+      throw new HttpError(404, "email_contact_not_found", "Email contact not found.");
+    }
+
+    return {
+      success: true,
+      contactId,
+    };
+  });
 }
 
 export async function processQueuedEmailContactImportJobs(
@@ -3699,7 +3933,7 @@ export async function createEmailCampaign(
   }
 
   return withDbTransaction(async (client) => {
-    await loadEmailListOrThrow(businessId, input.listId, client);
+    const listScope = await loadEmailListScopeById(businessId, input.listId, client);
     const settingsRow = await ensureEmailSettingsRow(businessId, client);
     const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow));
     const campaignSource = await resolveCampaignSource(businessId, input, client);
@@ -3761,7 +3995,7 @@ export async function createEmailCampaign(
       `,
       [
         businessId,
-        input.listId,
+        listScope.canonicalList.id,
         campaignSource.sourceAssetId,
         campaignSource.sourceIdeaId,
         campaignSource.sourceTitle,
@@ -3795,7 +4029,7 @@ export async function updateEmailCampaign(
     const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
     assertEmailCampaignEditable(campaign, "edit");
     const latestSend = await loadLatestCampaignSend(campaignId, client);
-    await loadEmailListOrThrow(businessId, input.listId, client);
+    const listScope = await loadEmailListScopeById(businessId, input.listId, client);
     const settingsRow = await ensureEmailSettingsRow(businessId, client);
     const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow));
     const campaignSource = await resolveCampaignSource(businessId, input, client);
@@ -3861,7 +4095,7 @@ export async function updateEmailCampaign(
       `,
       [
         campaignId,
-        input.listId,
+        listScope.canonicalList.id,
         campaignSource.sourceAssetId,
         campaignSource.sourceIdeaId,
         campaignSource.sourceTitle,
@@ -3909,19 +4143,56 @@ export async function deleteEmailCampaign(
 export async function listEmailLists(businessId: string): Promise<EmailListListResponse> {
   const result = await executeQuery<EmailListRow>(
     `
+      with family_lists as (
+        select
+          l.id,
+          l.business_id,
+          l.name,
+          l.created_by_user_id,
+          l.created_at,
+          l.updated_at,
+          lower(trim(l.name)) as normalized_name_key
+        from email_lists l
+        where l.business_id = $1::uuid
+      ),
+      ranked_lists as (
+        select
+          fl.*,
+          row_number() over (
+            partition by fl.normalized_name_key
+            order by fl.created_at desc, fl.id desc
+          ) as family_rank
+        from family_lists fl
+      ),
+      family_counts as (
+        select
+          fl.normalized_name_key,
+          count(distinct m.contact_id)::int as contact_count
+        from family_lists fl
+        left join email_list_members m on m.list_id = fl.id
+        group by fl.normalized_name_key
+      ),
+      family_members as (
+        select
+          fl.normalized_name_key,
+          json_agg(fl.id order by fl.created_at desc, fl.id desc) as member_list_ids_json
+        from family_lists fl
+        group by fl.normalized_name_key
+      )
       select
-        l.id,
-        l.business_id,
-        l.name,
-        l.created_by_user_id,
-        l.created_at,
-        l.updated_at,
-        count(m.id)::int as contact_count
-      from email_lists l
-      left join email_list_members m on m.list_id = l.id
-      where l.business_id = $1::uuid
-      group by l.id
-      order by l.created_at desc
+        rl.id,
+        rl.business_id,
+        rl.name,
+        rl.created_by_user_id,
+        rl.created_at,
+        rl.updated_at,
+        coalesce(fc.contact_count, 0)::int as contact_count,
+        coalesce(fm.member_list_ids_json, '[]'::json) as member_list_ids_json
+      from ranked_lists rl
+      inner join family_counts fc on fc.normalized_name_key = rl.normalized_name_key
+      inner join family_members fm on fm.normalized_name_key = rl.normalized_name_key
+      where rl.family_rank = 1
+      order by rl.created_at desc, rl.id desc
     `,
     [businessId],
   );

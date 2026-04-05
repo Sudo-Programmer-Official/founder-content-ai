@@ -39,7 +39,9 @@ import {
   requestEmailCampaignStats,
   requestEmailCampaigns,
   requestEmailCampaignUpdate,
+  requestEmailContactDelete,
   requestEmailContactImportJobs,
+  requestEmailContactUpdate,
   requestEmailContacts,
   requestEmailContactsImportJobCreate,
   requestEmailContactsImportPreview,
@@ -396,6 +398,20 @@ const contactStateFilter = ref("all");
 const contactPlanFilter = ref("all");
 const contactTagFilter = ref("all");
 const latestImportJobId = ref("");
+const editingContactId = ref("");
+const isSavingContact = ref(false);
+const deletingContactId = ref("");
+const contactForm = ref<{
+  email: string;
+  firstName: string;
+  lastName: string;
+  status: EmailContactStatus;
+}>({
+  email: "",
+  firstName: "",
+  lastName: "",
+  status: "active",
+});
 const activationDraftLibrary = ref<ActivationDraftRecord[]>([]);
 const campaignSourceMode = ref<CampaignSourceMode>("fresh");
 const campaignTone = ref<CampaignToneMode>("direct");
@@ -533,9 +549,20 @@ const campaignDashboardCards = computed(() =>
     preview: htmlToPreviewText(campaign.bodyText || campaign.bodyHtml).slice(0, 180).trim(),
   })),
 );
-const selectedCampaignList = computed(
-  () => emailLists.value.find((list) => list.id === campaignForm.value.listId) ?? null,
-);
+function findEmailListByReference(listId: string | undefined | null): EmailList | null {
+  const normalized = listId?.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  return (
+    emailLists.value.find((list) => list.id === normalized || list.memberListIds?.includes(normalized))
+    ?? null
+  );
+}
+
+const selectedCampaignList = computed(() => findEmailListByReference(campaignForm.value.listId));
 const selectedCampaignAudienceCount = computed(() => selectedCampaignList.value?.contactCount ?? 0);
 const selectedCampaignAudienceSummary = computed(() => {
   if (!selectedCampaignList.value) {
@@ -682,6 +709,9 @@ const activeImportJob = computed(() => {
     null
   );
 });
+const editingContact = computed(
+  () => emailContacts.value.find((contact) => contact.id === editingContactId.value) ?? null,
+);
 const hasProcessingImportJobs = computed(() =>
   contactImportJobs.value.some((job) => job.status === "queued" || job.status === "processing"),
 );
@@ -1151,7 +1181,11 @@ function loadCampaignIntoComposer(
   campaignEditorMode.value = "edit";
   campaignAdvancedOpen.value = false;
   errorMessage.value = "";
-  campaignForm.value.listId = campaign.listId || emailLists.value[0]?.id || campaignForm.value.listId;
+  campaignForm.value.listId =
+    findEmailListByReference(campaign.listId)?.id
+    || campaign.listId
+    || emailLists.value[0]?.id
+    || campaignForm.value.listId;
   campaignForm.value.name = options.duplicate ? buildDuplicateCampaignName(campaign.name) : campaign.name;
   campaignForm.value.subject = campaign.subject;
   campaignForm.value.bodyText = campaign.bodyText || htmlToPreviewText(campaign.bodyHtml);
@@ -1739,7 +1773,7 @@ function getCampaignActionLabel(campaign: EmailCampaign): string {
 }
 
 function resolveCampaignListName(campaign: EmailCampaign): string {
-  return emailLists.value.find((list) => list.id === campaign.listId)?.name || "Selected audience";
+  return findEmailListByReference(campaign.listId)?.name || "Selected audience";
 }
 
 function formatCampaignStatusChipLabel(campaign: EmailCampaign): string {
@@ -2075,6 +2109,12 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
 
   if (!campaignForm.value.listId && emailLists.value[0]) {
     campaignForm.value.listId = emailLists.value[0].id;
+  } else {
+    const canonicalList = findEmailListByReference(campaignForm.value.listId);
+
+    if (canonicalList && campaignForm.value.listId !== canonicalList.id) {
+      campaignForm.value.listId = canonicalList.id;
+    }
   }
 
   await loadDraftMedia();
@@ -2154,6 +2194,84 @@ async function importContacts(): Promise<void> {
     errorMessage.value = error instanceof Error ? error.message : "Unable to import contacts.";
   } finally {
     isImporting.value = false;
+  }
+}
+
+function startEditContact(contact: EmailContact): void {
+  editingContactId.value = contact.id;
+  contactForm.value.email = contact.email;
+  contactForm.value.firstName = contact.firstName || "";
+  contactForm.value.lastName = contact.lastName || "";
+  contactForm.value.status = contact.status;
+}
+
+function cancelContactEdit(): void {
+  editingContactId.value = "";
+  contactForm.value.email = "";
+  contactForm.value.firstName = "";
+  contactForm.value.lastName = "";
+  contactForm.value.status = "active";
+}
+
+async function saveContactEdits(): Promise<void> {
+  if (!selectedBusinessId.value || !editingContactId.value) {
+    return;
+  }
+
+  if (!contactForm.value.email.trim()) {
+    showEmailToast("Email address is required.", "error");
+    return;
+  }
+
+  isSavingContact.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestEmailContactUpdate(selectedBusinessId.value, editingContactId.value, {
+      email: contactForm.value.email,
+      firstName: contactForm.value.firstName || undefined,
+      lastName: contactForm.value.lastName || undefined,
+      status: contactForm.value.status,
+    });
+    await loadEmailState();
+    cancelContactEdit();
+    feedbackMessage.value = `Contact updated: ${response.contact.email}.`;
+  } catch (error) {
+    showEmailToast(error instanceof Error ? error.message : "Unable to update contact.", "error");
+  } finally {
+    isSavingContact.value = false;
+  }
+}
+
+async function deleteContact(contact: EmailContact): Promise<void> {
+  if (!selectedBusinessId.value) {
+    return;
+  }
+
+  const confirmed =
+    typeof window === "undefined"
+    || window.confirm(`Delete ${contact.email}?\n\nThis removes the contact from this workspace and any attached email lists.`);
+
+  if (!confirmed) {
+    return;
+  }
+
+  deletingContactId.value = contact.id;
+  errorMessage.value = "";
+
+  try {
+    await requestEmailContactDelete(selectedBusinessId.value, contact.id);
+
+    if (editingContactId.value === contact.id) {
+      cancelContactEdit();
+    }
+
+    await loadEmailState();
+    feedbackMessage.value = `Contact deleted: ${contact.email}.`;
+  } catch (error) {
+    showEmailToast(error instanceof Error ? error.message : "Unable to delete contact.", "error");
+  } finally {
+    deletingContactId.value = "";
   }
 }
 
@@ -2267,7 +2385,7 @@ function resolveCampaignAudienceSize(campaign: EmailCampaign): number {
     return campaign.recipientCount;
   }
 
-  const matchingList = emailLists.value.find((list) => list.id === campaign.listId);
+  const matchingList = findEmailListByReference(campaign.listId);
   return matchingList?.contactCount ?? 0;
 }
 
@@ -3305,6 +3423,55 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
+            <article v-if="editingContact" class="workspace-card contact-editor-card">
+              <div class="panel-header compact">
+                <div>
+                  <p class="panel-meta">Edit contact</p>
+                  <h3>{{ editingContact.email }}</h3>
+                </div>
+                <span class="workspace-chip">{{ formatStatus(editingContact.status) }}</span>
+              </div>
+
+              <div class="contact-editor-grid">
+                <label class="contact-editor-field">
+                  <span>Email</span>
+                  <input v-model="contactForm.email" class="workspace-input" type="email" placeholder="founder@yourbrand.com" />
+                </label>
+                <label class="contact-editor-field">
+                  <span>Status</span>
+                  <select v-model="contactForm.status" class="workspace-select">
+                    <option value="active">Active</option>
+                    <option value="unsubscribed">Unsubscribed</option>
+                    <option value="bounced">Bounced</option>
+                    <option value="complained">Complained</option>
+                    <option value="suppressed">Suppressed</option>
+                  </select>
+                </label>
+                <label class="contact-editor-field">
+                  <span>First name</span>
+                  <input v-model="contactForm.firstName" class="workspace-input" placeholder="Abhishek" />
+                </label>
+                <label class="contact-editor-field">
+                  <span>Last name</span>
+                  <input v-model="contactForm.lastName" class="workspace-input" placeholder="Jha" />
+                </label>
+              </div>
+
+              <div class="contact-editor-actions">
+                <button
+                  type="button"
+                  class="primary-action"
+                  :disabled="isSavingContact"
+                  @click="saveContactEdits"
+                >
+                  {{ isSavingContact ? "Saving..." : "Save contact" }}
+                </button>
+                <button type="button" class="workspace-secondary-button" :disabled="isSavingContact" @click="cancelContactEdit">
+                  Cancel
+                </button>
+              </div>
+            </article>
+
             <div class="contact-directory-toolbar">
               <input
                 v-model="contactSearch"
@@ -3342,6 +3509,7 @@ onBeforeUnmount(() => {
                 <span>Plan</span>
                 <span>Tags</span>
                 <span>Updated</span>
+                <span>Actions</span>
               </div>
               <div
                 v-for="contact in filteredContacts"
@@ -3355,6 +3523,19 @@ onBeforeUnmount(() => {
                 <span>{{ contact.attributes.plan || "—" }}</span>
                 <span>{{ contact.tags.join(", ") || "—" }}</span>
                 <span>{{ contact.updatedAt ? new Date(contact.updatedAt).toLocaleDateString() : "—" }}</span>
+                <div class="contact-directory-actions">
+                  <button type="button" class="workspace-secondary-button compact" @click="startEditContact(contact)">
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    class="workspace-secondary-button compact danger"
+                    :disabled="deletingContactId === contact.id"
+                    @click="deleteContact(contact)"
+                  >
+                    {{ deletingContactId === contact.id ? "Deleting..." : "Delete" }}
+                  </button>
+                </div>
               </div>
             </div>
             <p v-else class="empty-note">
@@ -4650,6 +4831,34 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.contact-editor-card {
+  margin-bottom: 18px;
+}
+
+.contact-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.contact-editor-field {
+  display: grid;
+  gap: 8px;
+}
+
+.contact-editor-field span {
+  color: var(--fc-text);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.contact-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
 .contact-directory-row {
   display: grid;
   grid-template-columns:
@@ -4659,7 +4868,8 @@ onBeforeUnmount(() => {
     minmax(100px, 0.7fr)
     minmax(100px, 0.7fr)
     minmax(140px, 0.9fr)
-    minmax(110px, 0.7fr);
+    minmax(110px, 0.7fr)
+    minmax(160px, 0.9fr);
   gap: 12px;
   padding: 14px 16px;
   border: 1px solid var(--fc-border);
@@ -4667,7 +4877,7 @@ onBeforeUnmount(() => {
   background: var(--fc-surface);
 }
 
-.contact-directory-row span {
+.contact-directory-row > * {
   min-width: 0;
   color: var(--fc-text-muted);
   line-height: 1.5;
@@ -4685,6 +4895,22 @@ onBeforeUnmount(() => {
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.contact-directory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.workspace-secondary-button.danger {
+  color: #a04a3a;
+  border-color: color-mix(in srgb, #a04a3a 28%, var(--fc-border));
+}
+
+.workspace-secondary-button.danger:hover {
+  border-color: color-mix(in srgb, #a04a3a 42%, var(--fc-border));
 }
 
 .primary-action,
@@ -5000,7 +5226,8 @@ onBeforeUnmount(() => {
   }
 
   .contact-preview-summary,
-  .contact-mapping-grid {
+  .contact-mapping-grid,
+  .contact-editor-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -5043,6 +5270,7 @@ onBeforeUnmount(() => {
   }
 
   .contact-preview-summary,
+  .contact-editor-grid,
   .contact-mapping-grid,
   .contact-preview-row,
   .contact-directory-row {

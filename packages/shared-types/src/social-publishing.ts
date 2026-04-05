@@ -4,7 +4,7 @@ export type PostAssetType = "image" | "video";
 export type PostAssetSource = "upload" | "generated";
 export type PostAssetStatus = "uploaded" | "processing" | "ready" | "failed";
 export type PostAssetAspectRatio = "1:1" | "9:16";
-export type PostAssetMetadataSource = "upload" | "motion_template";
+export type PostAssetMetadataSource = "upload" | "motion_template" | "promo_composer";
 export type PostPerformanceLabel = "low" | "medium" | "high";
 export type SchedulingSafetyWarningCode = "daily_limit" | "minimum_gap";
 export type ScheduledPostStatus =
@@ -84,6 +84,7 @@ export type MotionAudioPreset =
   | "luxury_minimal"
   | "calm_wellness";
 export type MotionVoiceProvider = "elevenlabs";
+export type PromoVisualLayoutId = "logo_headline" | "screenshot_headline" | "headline_only";
 
 export interface MotionTemplateOverlay {
   headline?: string;
@@ -141,7 +142,7 @@ export interface BasePostAssetMetadata {
 }
 
 export interface ImagePostAssetMetadata extends BasePostAssetMetadata {
-  source?: "upload";
+  source?: "upload" | "promo_composer";
 }
 
 export interface VideoPostAssetMetadata extends BasePostAssetMetadata {
@@ -520,6 +521,24 @@ export interface GenerateMotionPostAssetRequest {
 export interface GenerateMotionPostAssetResponse {
   asset: PostAsset;
   removedAssetIds: string[];
+}
+
+export interface CreatePromoVisualPostAssetRequest {
+  businessId: string;
+  postId: string;
+  layout: PromoVisualLayoutId;
+  headline: string;
+  subheadline?: string;
+  cta?: string;
+  sourceAssetId?: string;
+  aspectRatio?: PostAssetAspectRatio;
+}
+
+export interface CreatePromoVisualPostAssetResponse {
+  asset: PostAsset;
+  resolvedLayout: PromoVisualLayoutId;
+  usedLogo: boolean;
+  usedSourceAssetId?: string;
 }
 
 export interface ListPostAssetsQuery {

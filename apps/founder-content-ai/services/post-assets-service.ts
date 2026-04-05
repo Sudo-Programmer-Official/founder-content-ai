@@ -1,6 +1,8 @@
 import type {
   CreateMediaUploadUrlRequest,
   CreateMediaUploadUrlResponse,
+  CreatePromoVisualPostAssetRequest,
+  CreatePromoVisualPostAssetResponse,
   GenerateMotionPostAssetRequest,
   GenerateMotionPostAssetResponse,
   CreatePostAssetRequest,
@@ -49,6 +51,22 @@ export async function requestGenerateMotionPostAsset(
     );
   } catch (error) {
     throw toFriendlyMediaStorageError(error, "Unable to animate this visual right now.");
+  }
+}
+
+export async function requestCreatePromoVisualPostAsset(
+  input: CreatePromoVisualPostAssetRequest,
+): Promise<CreatePromoVisualPostAssetResponse> {
+  try {
+    return await apiPost<CreatePromoVisualPostAssetRequest, CreatePromoVisualPostAssetResponse>(
+      "/post-assets/promo-visual",
+      input,
+      {
+        timeoutMs: 30000,
+      },
+    );
+  } catch (error) {
+    throw toFriendlyMediaStorageError(error, "Unable to create a promo visual right now.");
   }
 }
 

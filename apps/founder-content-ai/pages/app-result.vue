@@ -21,6 +21,7 @@ import type {
   MotionAudioTrack,
   MotionTemplateId,
   PostAsset,
+  PromoVisualLayoutId,
   PublishAttempt,
   PublishAttemptPlatform,
   RecommendedPostTimeSlot,
@@ -61,6 +62,7 @@ import {
   requestSocialAccounts,
 } from "../services/publishing-service";
 import {
+  requestCreatePromoVisualPostAsset,
   requestCreatePostAsset,
   requestDeletePostAsset,
   requestGenerateMotionPostAsset,
@@ -122,6 +124,7 @@ interface DraftMediaPreferences {
   motionAudioEnabled?: boolean;
   motionAudioPreset?: MotionAudioPreset;
   motionAudioTrack?: MotionAudioTrack;
+  promoVisualLayout?: PromoVisualLayoutId;
 }
 
 const draft = ref<ActivationDraftRecord | null>(null);
@@ -148,6 +151,7 @@ const pendingMetaSession = ref("");
 const isLoadingPostAssets = ref(false);
 const isUploadingPostAssets = ref(false);
 const isGeneratingMotionLite = ref(false);
+const isCreatingPromoVisual = ref(false);
 const removingPostAssetId = ref("");
 const mediaFeedback = ref("");
 const postAssets = ref<PostAsset[]>([]);
@@ -155,6 +159,24 @@ const isWorkspaceAssetPickerOpen = ref(false);
 const selectedMotionTemplateId = ref<MotionTemplateId>("subtle_zoom");
 const selectedMotionAudioEnabled = ref(true);
 const selectedMotionAudioPreset = ref<MotionAudioPreset>("clean_modern");
+const selectedPromoVisualLayout = ref<PromoVisualLayoutId>("logo_headline");
+const PROMO_VISUAL_LAYOUT_OPTIONS: Array<{ value: PromoVisualLayoutId; label: string; description: string }> = [
+  {
+    value: "logo_headline",
+    label: "Logo + headline",
+    description: "Clean branded promo card with your logo or initials, headline, and CTA.",
+  },
+  {
+    value: "screenshot_headline",
+    label: "Screenshot + headline",
+    description: "Use one uploaded screenshot or product image if it is attached to the draft already.",
+  },
+  {
+    value: "headline_only",
+    label: "Headline only",
+    description: "Minimal promo visual with centered copy and brand styling only.",
+  },
+];
 const MOTION_TEMPLATE_OPTIONS: Array<{ value: MotionTemplateId; label: string; description: string }> = [
   {
     value: "offer_burst",
@@ -1206,6 +1228,21 @@ function truncateOverlayLine(value: string | undefined, maxLength = 40): string 
   return (lastSpaceIndex >= Math.floor(maxLength * 0.55) ? truncated.slice(0, lastSpaceIndex) : truncated).trim();
 }
 
+function extractWorkspaceDomainLabel(value: string | undefined): string | undefined {
+  const normalized = (value ?? "").trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  try {
+    const url = /^https?:\/\//i.test(normalized) ? new URL(normalized) : new URL(`https://${normalized}`);
+    return url.hostname.replace(/^www\./i, "");
+  } catch {
+    return undefined;
+  }
+}
+
 const creatorSceneDescription = computed(() => {
   const headlineCue = collapseSceneCue(
     draft.value?.result.idea.title || previewLeadLines.value[0] || "Founder insight",
@@ -1283,7 +1320,7 @@ const motionLiteOverlay = computed(() => {
         : undefined,
     28,
   );
-  const brandText = truncateOverlayLine(selectedConnectedAccountLabel.value.trim(), 30);
+  const brandText = workspaceBrandLabel.value;
 
   return {
     headline,
@@ -1380,6 +1417,19 @@ const selectedConnectedAccountLabel = computed(() =>
 const selectedConnectedAccountDescriptor = computed(() =>
   resolvePublishingDescriptor(selectedPublishingPlatform.value, selectedConnectedAccount.value),
 );
+const currentBusinessMembership = computed(() =>
+  auth.appSession.value?.businesses.find((membership) => membership.businessId === activeBusinessId.value) ?? null,
+);
+const workspaceBrandLabel = computed(() => {
+  const business = currentBusinessMembership.value?.business;
+  const preferredLabel =
+    business?.brandName?.trim()
+    || business?.name?.trim()
+    || extractWorkspaceDomainLabel(business?.websiteUrl)
+    || selectedConnectedAccountLabel.value.trim();
+
+  return truncateOverlayLine(preferredLabel, 30);
+});
 const readyImageCount = computed(() =>
   postAssets.value.filter((asset) => asset.type === "image" && asset.status === "ready").length,
 );
@@ -1389,7 +1439,62 @@ const readyVideoCount = computed(() =>
 const readyImageAssets = computed(() =>
   postAssets.value.filter((asset) => asset.type === "image" && asset.status === "ready"),
 );
-const motionLiteSourceAsset = computed(() => readyImageAssets.value[0] ?? null);
+const promoVisualSourceAsset = computed(() =>
+  readyImageAssets.value.find((asset) => asset.source === "upload" || asset.metadata.source === "upload")
+  ?? null,
+);
+const recommendedPromoVisualLayout = computed<PromoVisualLayoutId>(() => {
+  if (promoVisualSourceAsset.value) {
+    return "screenshot_headline";
+  }
+
+  return isBusinessMode.value ? "logo_headline" : "headline_only";
+});
+const promoVisualPreviewAsset = computed<PostAsset | null>(() =>
+  selectedPromoVisualLayout.value === "screenshot_headline"
+    ? promoVisualSourceAsset.value
+    : null,
+);
+const promoVisualHeadline = computed(() =>
+  truncateOverlayLine(
+    isBusinessMode.value
+      ? businessOutput.value?.visual.headline
+        || draft.value?.result.idea.title
+        || previewLeadLines.value[0]
+        || "New update"
+      : previewLeadLines.value[0]
+        || draft.value?.result.idea.title
+        || "Founder update",
+    92,
+  ) || "New update",
+);
+const promoVisualSubheadline = computed(() =>
+  truncateOverlayLine(
+    isBusinessMode.value
+      ? businessOutput.value?.visual.subheadline
+        || previewBodyParagraphs.value[0]
+        || draft.value?.result.idea.angle
+      : previewBodyParagraphs.value[0]
+        || draft.value?.result.idea.angle
+        || activeCreatorVariant.value?.label,
+    144,
+  ),
+);
+const promoVisualCta = computed(() =>
+  truncateOverlayLine(
+    isBusinessMode.value
+      ? businessOutput.value?.cta.label
+      : creatorContentType.value === "promo_post"
+        ? "Learn more"
+        : undefined,
+    28,
+    ),
+);
+const motionLiteSourceAsset = computed(() =>
+  readyImageAssets.value.find((asset) => asset.id === draftMediaPrimaryAssetId.value)
+  ?? readyImageAssets.value[0]
+  ?? null,
+);
 const motionLiteDerivedVideoAsset = computed(() => {
   const sourceAssetId = motionLiteSourceAsset.value?.id;
 
@@ -1519,10 +1624,6 @@ const motionLiteAspectRatio = computed(() =>
 const motionLiteUnavailableReason = computed(() => {
   if (readyImageCount.value === 0) {
     return "Generate or attach one image first, then animate it into a short promo teaser.";
-  }
-
-  if (readyImageCount.value > 1) {
-    return "Motion-lite currently works on one image at a time. Narrow this draft to a single image first.";
   }
 
   const sourceAssetId = motionLiteSourceAsset.value?.id;
@@ -2742,6 +2843,12 @@ function normalizeDraftMediaPreferences(value: unknown): DraftMediaPreferences |
     || mediaPreferences.motionAudioTrack === "ambient"
       ? mediaPreferences.motionAudioTrack
       : undefined;
+  const promoVisualLayout =
+    mediaPreferences.promoVisualLayout === "logo_headline"
+    || mediaPreferences.promoVisualLayout === "screenshot_headline"
+    || mediaPreferences.promoVisualLayout === "headline_only"
+      ? mediaPreferences.promoVisualLayout
+      : undefined;
 
   return primaryAssetId
     || posterAssetId
@@ -2749,6 +2856,7 @@ function normalizeDraftMediaPreferences(value: unknown): DraftMediaPreferences |
     || motionAudioEnabled !== undefined
     || motionAudioPreset
     || motionAudioTrack
+    || promoVisualLayout
     ? {
         primaryAssetId,
         posterAssetId,
@@ -2756,6 +2864,7 @@ function normalizeDraftMediaPreferences(value: unknown): DraftMediaPreferences |
         motionAudioEnabled,
         motionAudioPreset: motionAudioPreset ?? (motionAudioTrack ? resolveMotionAudioPresetFromLegacyTrack(motionAudioTrack) : undefined),
         motionAudioTrack,
+        promoVisualLayout,
       }
     : undefined;
 }
@@ -3078,14 +3187,16 @@ function buildDraftMediaPreferences(): DraftMediaPreferences | undefined {
   const motionTemplateId = selectedMotionTemplateId.value;
   const motionAudioEnabled = selectedMotionAudioEnabled.value;
   const motionAudioPreset = selectedMotionAudioPreset.value;
+  const promoVisualLayout = selectedPromoVisualLayout.value;
 
-  return primaryAssetId || posterAssetId || motionTemplateId || motionAudioEnabled !== undefined || motionAudioPreset
+  return primaryAssetId || posterAssetId || motionTemplateId || motionAudioEnabled !== undefined || motionAudioPreset || promoVisualLayout
     ? {
         primaryAssetId,
         posterAssetId,
         motionTemplateId,
         motionAudioEnabled,
         motionAudioPreset,
+        promoVisualLayout,
       }
     : undefined;
 }
@@ -3097,6 +3208,7 @@ function syncDraftMediaPreferencesFromDraft(): void {
   selectedMotionTemplateId.value = preferences?.motionTemplateId ?? recommendedMotionTemplateId.value;
   selectedMotionAudioEnabled.value = preferences?.motionAudioEnabled ?? true;
   selectedMotionAudioPreset.value = preferences?.motionAudioPreset ?? resolveRecommendedMotionAudioPreset(selectedMotionTemplateId.value);
+  selectedPromoVisualLayout.value = preferences?.promoVisualLayout ?? recommendedPromoVisualLayout.value;
 }
 
 function buildDraftContentBody(): Record<string, unknown> {
@@ -3549,6 +3661,72 @@ async function triggerPreferredMediaGeneration(): Promise<void> {
   await applyMediaRecommendation(preferredMediaSuggestion.value);
 }
 
+async function createPromoVisualFromBrand(): Promise<void> {
+  if (!activeBusinessId.value) {
+    mediaFeedback.value = "Select a workspace before creating a promo visual.";
+    return;
+  }
+
+  if (!draft.value) {
+    mediaFeedback.value = "Generate a post first, then create a promo visual.";
+    return;
+  }
+
+  isCreatingPromoVisual.value = true;
+  mediaFeedback.value = "";
+
+  try {
+    const persistedId = await ensurePersistedDraft();
+
+    if (!persistedId) {
+      mediaFeedback.value = "Save this draft first, then create a promo visual.";
+      return;
+    }
+
+    const response = await requestCreatePromoVisualPostAsset({
+      businessId: activeBusinessId.value,
+      postId: persistedId,
+      layout: selectedPromoVisualLayout.value,
+      headline: promoVisualHeadline.value,
+      subheadline: promoVisualSubheadline.value,
+      cta: promoVisualCta.value,
+      sourceAssetId:
+        selectedPromoVisualLayout.value === "screenshot_headline"
+          ? promoVisualSourceAsset.value?.id
+          : undefined,
+      aspectRatio: "1:1",
+    });
+
+    await loadPostAssets();
+    await persistDraftMediaPreferences(
+      {
+        primaryAssetId: response.asset.id,
+        posterAssetId: response.asset.id,
+        promoVisualLayout: selectedPromoVisualLayout.value,
+      },
+      {
+        silent: true,
+      },
+    );
+
+    const brandMessage = response.usedLogo
+      ? "Used the saved brand logo."
+      : "No saved logo found, so initials were used instead.";
+    const layoutMessage =
+      response.resolvedLayout !== selectedPromoVisualLayout.value
+        ? "Screenshot layout was requested, but no ready uploaded image was attached, so it fell back to Logo + headline."
+        : response.usedSourceAssetId
+          ? "Used the attached screenshot as the hero visual."
+          : "Built a clean branded still from your headline, CTA, and brand styling.";
+    mediaFeedback.value = `Promo visual created and attached to this draft. ${layoutMessage} ${brandMessage}`;
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to create a promo visual right now.";
+  } finally {
+    isCreatingPromoVisual.value = false;
+  }
+}
+
 async function generateMotionLiteFromCurrentVisual(): Promise<void> {
   if (!activeBusinessId.value) {
     mediaFeedback.value = "Select a workspace before generating motion.";
@@ -3829,8 +4007,8 @@ async function generateRecommendedMedia(
     const coverSlide = currentVisualNarrative.slides[0];
     const isPhotoOverlay = suggestion.suggestedMediaType === "photo_overlay";
     const creatorOverlayFooterText =
-      !isBusinessMode.value && selectedConnectedAccountLabel.value.trim() !== ""
-        ? selectedConnectedAccountLabel.value.trim()
+      !isBusinessMode.value && workspaceBrandLabel.value
+        ? workspaceBrandLabel.value
         : undefined;
     const generatedVisual = await requestVisualGeneration({
       businessId: activeBusinessId.value,
@@ -4693,8 +4871,8 @@ watch(
 );
 
 watch(
-  () => [selectedMotionTemplateId.value, selectedMotionAudioEnabled.value, selectedMotionAudioPreset.value] as const,
-  ([nextTemplateId, nextAudioEnabled, nextAudioPreset], [previousTemplateId, previousAudioEnabled, previousAudioPreset]) => {
+  () => [selectedMotionTemplateId.value, selectedMotionAudioEnabled.value, selectedMotionAudioPreset.value, selectedPromoVisualLayout.value] as const,
+  ([nextTemplateId, nextAudioEnabled, nextAudioPreset, nextPromoLayout], [previousTemplateId, previousAudioEnabled, previousAudioPreset, previousPromoLayout]) => {
     if (
       !draft.value
       || !activeBusinessId.value
@@ -4703,6 +4881,7 @@ watch(
         nextTemplateId === previousTemplateId
         && nextAudioEnabled === previousAudioEnabled
         && nextAudioPreset === previousAudioPreset
+        && nextPromoLayout === previousPromoLayout
       )
     ) {
       return;
@@ -4723,6 +4902,7 @@ watch(
       persistedPreferences?.motionTemplateId === nextTemplateId
       && persistedPreferences?.motionAudioEnabled === nextAudioEnabled
       && persistedPreferences?.motionAudioPreset === nextAudioPreset
+      && persistedPreferences?.promoVisualLayout === nextPromoLayout
     ) {
       return;
     }
@@ -4734,6 +4914,7 @@ watch(
         motionTemplateId: nextTemplateId,
         motionAudioEnabled: nextAudioEnabled,
         motionAudioPreset: nextAudioPreset,
+        promoVisualLayout: nextPromoLayout,
       },
       { silent: true },
     );
@@ -5592,6 +5773,61 @@ onBeforeUnmount(() => {
                   />
                   {{ isUploadingPostAssets ? "Uploading..." : "Upload" }}
                 </label>
+              </div>
+            </div>
+
+            <div class="promo-visual-panel">
+              <div>
+                <p class="panel-meta">Promo visual</p>
+                <strong>Create a clean branded visual from your known brand elements</strong>
+                <p class="ai-command-copy">
+                  Pulls the saved logo from settings when available, falls back to initials when it is missing, and uses the current headline, support text, CTA, and brand colors automatically.
+                </p>
+                <p class="motion-lite-status">
+                  {{
+                    selectedPromoVisualLayout === "screenshot_headline"
+                      ? promoVisualSourceAsset
+                        ? "Screenshot + headline will frame the uploaded image already attached to this draft."
+                        : "Screenshot + headline needs one ready uploaded image. If none is attached, it falls back to Logo + headline."
+                      : "Best when you want a fresh, polished promo still before you animate anything."
+                  }}
+                </p>
+              </div>
+              <div class="motion-lite-actions">
+                <label class="media-style-select-wrap">
+                  <span class="panel-meta media-style-select-label">Layout</span>
+                  <select v-model="selectedPromoVisualLayout" class="media-style-select">
+                    <option
+                      v-for="option in PROMO_VISUAL_LAYOUT_OPTIONS"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <small class="ai-command-copy media-style-select-help">
+                    {{ PROMO_VISUAL_LAYOUT_OPTIONS.find((option) => option.value === selectedPromoVisualLayout)?.description }}
+                  </small>
+                </label>
+                <div v-if="promoVisualPreviewAsset?.previewUrl" class="motion-lite-preview-card">
+                  <p class="panel-meta">Source preview</p>
+                  <img
+                    :src="promoVisualPreviewAsset.previewUrl"
+                    alt="Promo visual source preview"
+                    class="motion-lite-preview"
+                  />
+                  <small class="ai-command-copy media-style-select-help">
+                    Uploaded image that will be framed inside the promo visual.
+                  </small>
+                </div>
+                <button
+                  type="button"
+                  class="secondary-action media-generate-button"
+                  :disabled="isCreatingPromoVisual || isUploadingPostAssets"
+                  @click="void createPromoVisualFromBrand()"
+                >
+                  {{ isCreatingPromoVisual ? "Creating..." : "Create promo visual" }}
+                </button>
               </div>
             </div>
 
@@ -7028,6 +7264,22 @@ onBeforeUnmount(() => {
   border-radius: 18px;
   border: 1px solid color-mix(in srgb, var(--fc-accent) 14%, var(--fc-border));
   background: color-mix(in srgb, var(--fc-accent-soft) 16%, white 84%);
+}
+
+.promo-visual-panel {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 12%, var(--fc-border));
+  background: rgba(255, 255, 255, 0.86);
+  margin-bottom: 14px;
+}
+
+.promo-visual-panel strong {
+  display: block;
 }
 
 .motion-lite-panel strong {

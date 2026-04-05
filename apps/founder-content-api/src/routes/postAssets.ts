@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  createPromoVisualPostAssetController,
   createPostAssetController,
   deletePostAssetController,
   generateMotionPostAssetController,
@@ -26,6 +27,11 @@ postAssetsRoute.options("/api/post-assets/motion-lite", (_request, response) => 
   response.sendStatus(204);
 });
 postAssetsRoute.post("/api/post-assets/motion-lite", requireAuth(), generateMotionPostAssetController);
+
+postAssetsRoute.options("/api/post-assets/promo-visual", (_request, response) => {
+  response.sendStatus(204);
+});
+postAssetsRoute.post("/api/post-assets/promo-visual", requireAuth(), createPromoVisualPostAssetController);
 
 postAssetsRoute.get("/api/post-assets", requireAuth(), getPostAssets);
 

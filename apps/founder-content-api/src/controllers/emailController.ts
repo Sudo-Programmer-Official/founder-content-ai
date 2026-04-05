@@ -5,6 +5,7 @@ import type {
   CreateEmailDomainRequest,
   CreateEmailDomainResponse,
   DeleteEmailCampaignResponse,
+  DeleteEmailContactResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
   EmailContactListResponse,
@@ -21,6 +22,8 @@ import type {
   QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
   UnsubscribeEmailResponse,
+  UpdateEmailContactRequest,
+  UpdateEmailContactResponse,
   UpdateEmailCampaignRequest,
   UpdateEmailCampaignResponse,
   VerifyEmailDomainResponse,
@@ -31,6 +34,7 @@ import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "../serv
 import {
   createEmailCampaign,
   deleteEmailCampaign,
+  deleteEmailContact,
   createEmailDomain,
   getEmailContactImportJob,
   getEmailDomainSettings,
@@ -44,6 +48,7 @@ import {
   queueEmailContactsImport,
   sendEmailCampaign,
   unsubscribeEmail,
+  updateEmailContact,
   updateEmailCampaign,
   verifyEmailDomain,
 } from "../services/email/emailService.ts";
@@ -557,6 +562,74 @@ export async function getEmailContacts(
       code: "email_contacts_load_failed",
       message: "Unable to load contacts.",
       logMessage: "Failed to load email contacts.",
+    });
+  }
+}
+
+export async function patchEmailContactController(
+  request: Request<{ businessId: string; contactId: string }, unknown, UpdateEmailContactRequest>,
+  response: Response<UpdateEmailContactResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+    const result = await updateEmailContact(businessId, request.params.contactId, request.body);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_contact_update_failed",
+      message: "Unable to update contact.",
+      logMessage: "Failed to update email contact.",
+    });
+  }
+}
+
+export async function deleteEmailContactController(
+  request: Request<{ businessId: string; contactId: string }>,
+  response: Response<DeleteEmailContactResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+    const result = await deleteEmailContact(businessId, request.params.contactId);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_contact_delete_failed",
+      message: "Unable to delete contact.",
+      logMessage: "Failed to delete email contact.",
     });
   }
 }

@@ -133,6 +133,7 @@ export interface EmailList {
   name: string;
   createdByUserId?: string;
   contactCount: number;
+  memberListIds?: string[];
   createdAt: string;
   updatedAt?: string;
 }
@@ -394,6 +395,22 @@ export interface EmailContactListResponse {
 
 export interface EmailListListResponse {
   lists: EmailList[];
+}
+
+export interface UpdateEmailContactRequest {
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  status?: EmailContactStatus;
+}
+
+export interface UpdateEmailContactResponse {
+  contact: EmailContact;
+}
+
+export interface DeleteEmailContactResponse {
+  success: true;
+  contactId: string;
 }
 
 export interface CreateEmailCampaignRequest {
