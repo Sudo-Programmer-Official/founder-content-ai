@@ -4,6 +4,7 @@ import type {
   AdminFeatureFlagsResponse,
   AdminOverviewResponse,
   AdminOpsOverviewResponse,
+  DeleteAdminUserResponse,
   AdminUsageResponse,
   AdminUsersResponse,
   AdminWorkspacesResponse,
@@ -24,7 +25,7 @@ import type {
   UpsertAdminPromptTemplateResponse,
   WorkspaceAnalyticsOverviewResponse,
 } from "../../../packages/shared-types";
-import { apiGet, apiPatch, apiPost } from "./api-client";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./api-client";
 
 export async function requestAdminOverview(): Promise<AdminOverviewResponse> {
   return apiGet<AdminOverviewResponse>("/admin/overview");
@@ -32,6 +33,13 @@ export async function requestAdminOverview(): Promise<AdminOverviewResponse> {
 
 export async function requestAdminUsers(): Promise<AdminUsersResponse> {
   return apiGet<AdminUsersResponse>("/admin/users");
+}
+
+export async function requestAdminUserDelete(
+  userId: string,
+): Promise<DeleteAdminUserResponse> {
+  const encodedUserId = encodeURIComponent(userId);
+  return apiDelete<DeleteAdminUserResponse>(`/admin/users/${encodedUserId}`);
 }
 
 export async function requestAdminWorkspaces(): Promise<AdminWorkspacesResponse> {

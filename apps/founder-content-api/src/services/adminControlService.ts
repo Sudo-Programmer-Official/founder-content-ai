@@ -3,10 +3,12 @@ import type {
   AdminFeatureFlag,
   AdminFeatureFlagTarget,
   AdminFeatureFlagsResponse,
+  AdminOwnedWorkspaceSummary,
   AdminWorkspaceAccessState,
   AdminWorkspaceLimitSnapshot,
   AdminWorkspaceListItem,
   BusinessPlanCode,
+  DeleteAdminUserResponse,
   FeatureFlagTargetType,
   UpdateAdminWorkspaceAccessRequest,
   UpsertAdminFeatureFlagRequest,
@@ -72,6 +74,18 @@ interface WorkspaceRow extends QueryResultRow {
   owner_email: string | null;
   member_count: string | number;
   last_active_at: Date | string | null;
+}
+
+interface AdminUserRow extends QueryResultRow {
+  id: string;
+  email: string;
+  full_name: string;
+}
+
+interface AdminOwnedWorkspaceRow extends QueryResultRow {
+  id: string;
+  name: string;
+  slug: string;
 }
 
 interface FeatureFlagRow extends QueryResultRow {
@@ -886,6 +900,116 @@ export async function updateAdminWorkspaceAccess(
     });
 
     return buildWorkspaceAccessState(businessId, client);
+  });
+}
+
+export async function deleteAdminUser(
+  userId: string,
+  actorUserId: string,
+): Promise<DeleteAdminUserResponse> {
+  return withDbTransaction(async (client) => {
+    if (userId === actorUserId) {
+      throw new HttpError(
+        400,
+        "admin_user_self_delete_forbidden",
+        "Delete this account from another super admin session.",
+      );
+    }
+
+    const userResult = await executeQuery<AdminUserRow>(
+      `
+        select
+          id,
+          email,
+          full_name
+        from users
+        where id = $1::uuid
+        limit 1
+      `,
+      [userId],
+      client,
+    );
+    const user = userResult.rows[0];
+
+    if (!user) {
+      throw new HttpError(404, "user_not_found", "User not found.");
+    }
+
+    const ownedWorkspaceResult = await executeQuery<AdminOwnedWorkspaceRow>(
+      `
+        select
+          id,
+          name,
+          slug
+        from businesses
+        where owner_user_id = $1::uuid
+        order by created_at desc
+      `,
+      [userId],
+      client,
+    );
+
+    if (ownedWorkspaceResult.rows.length > 0) {
+      const ownedWorkspaces: AdminOwnedWorkspaceSummary[] = ownedWorkspaceResult.rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+      }));
+
+      throw new HttpError(
+        409,
+        "admin_user_delete_blocked",
+        "Transfer owned workspaces before deleting this user.",
+        { ownedWorkspaces },
+      );
+    }
+
+    await executeQuery(
+      `
+        update business_members
+        set invited_by = null
+        where invited_by = $1::uuid
+      `,
+      [userId],
+      client,
+    );
+
+    const deletedUserResult = await executeQuery<{ id: string }>(
+      `
+        delete from users
+        where id = $1::uuid
+        returning id
+      `,
+      [userId],
+      client,
+    );
+
+    if (!deletedUserResult.rows[0]) {
+      throw new HttpError(404, "user_not_found", "User not found.");
+    }
+
+    await logAdminAction(
+      actorUserId,
+      "user",
+      userId,
+      "delete_user",
+      {
+        deletedUserEmail: user.email,
+        deletedUserName: user.full_name,
+      },
+      client,
+    );
+
+    logInfo("Deleted user from admin control.", {
+      actorUserId,
+      userId,
+      deletedUserEmail: user.email,
+    });
+
+    return {
+      success: true,
+      userId,
+    };
   });
 }
 

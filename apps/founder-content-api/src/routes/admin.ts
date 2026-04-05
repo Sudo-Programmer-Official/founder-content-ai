@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  deleteAdminUser,
   getAdminMediaRegistry,
   getAdminErrors,
   getAdminFeatureFlags,
@@ -24,6 +25,7 @@ adminRoute.get("/api/admin/overview", requireAuth(), requireSuperAdmin(), getAdm
 adminRoute.get("/api/admin/ops/overview", requireAuth(), requireSuperAdmin(), getAdminOpsOverview);
 adminRoute.get("/api/admin/errors", requireAuth(), requireSuperAdmin(), getAdminErrors);
 adminRoute.get("/api/admin/users", requireAuth(), requireSuperAdmin(), getAdminUsers);
+adminRoute.delete("/api/admin/users/:userId", requireAuth(), requireSuperAdmin(), deleteAdminUser);
 adminRoute.get("/api/admin/workspaces", requireAuth(), requireSuperAdmin(), getAdminWorkspaces);
 adminRoute.patch("/api/admin/workspaces/:workspaceId/access", requireAuth(), requireSuperAdmin(), patchAdminWorkspaceAccess);
 adminRoute.get("/api/admin/feature-flags", requireAuth(), requireSuperAdmin(), getAdminFeatureFlags);

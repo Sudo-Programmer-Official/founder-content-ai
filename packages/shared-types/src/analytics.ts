@@ -185,6 +185,16 @@ export interface AdminUserListItem {
   businessCount: number;
 }
 
+export interface AdminOwnedWorkspaceSummary {
+  id: string;
+  name: string;
+  slug: string;
+}
+
+export interface AdminUserDeleteBlockedDetails {
+  ownedWorkspaces: AdminOwnedWorkspaceSummary[];
+}
+
 export interface AdminWorkspaceListItem {
   id: string;
   name: string;
@@ -232,6 +242,11 @@ export interface AdminOverviewResponse {
 export interface AdminUsersResponse {
   users: AdminUserListItem[];
   totalUsers: number;
+}
+
+export interface DeleteAdminUserResponse {
+  success: true;
+  userId: string;
 }
 
 export interface AdminWorkspacesResponse {

@@ -3,6 +3,7 @@ import type {
   AdminErrorsResponse,
   AdminOverviewResponse,
   AdminOpsOverviewResponse,
+  DeleteAdminUserResponse,
   AdminFeatureFlagsResponse,
   AdminUsageResponse,
   AdminUsersResponse,
@@ -35,6 +36,7 @@ import {
   upsertAdminPromptTemplate,
 } from "../services/adminMediaRegistryService.ts";
 import {
+  deleteAdminUser as deleteAdminUserRecord,
   listAdminFeatureFlags,
   listAdminWorkspacesWithAccess,
   updateAdminWorkspaceAccess,
@@ -93,6 +95,29 @@ export async function getAdminUsers(
       code: "admin_users_failed",
       message: "Unable to load admin users.",
       logMessage: "Failed to load admin users.",
+    });
+  }
+}
+
+export async function deleteAdminUser(
+  request: Request<{ userId: string }>,
+  response: Response<DeleteAdminUserResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const actor = await ensureCurrentUser(request.auth);
+    const result = await deleteAdminUserRecord(request.params.userId, actor.id);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_user_delete_failed",
+      message: "Unable to delete admin user.",
+      logMessage: "Failed to delete admin user.",
     });
   }
 }
