@@ -267,6 +267,36 @@ async function updateDisplayName(idToken: string, displayName: string): Promise<
   );
 }
 
+export async function updateCurrentUserDisplayName(
+  displayName: string,
+): Promise<StoredAuthSession> {
+  const normalizedDisplayName = displayName.trim();
+
+  if (!normalizedDisplayName) {
+    throw new Error("Display name is required.");
+  }
+
+  const currentSession = await ensureFreshStoredAuthSession();
+
+  if (!currentSession) {
+    throw new Error("You must be signed in to update your display name.");
+  }
+
+  const response = await updateDisplayName(currentSession.idToken, normalizedDisplayName);
+  const nextSession = toStoredAuthSession(response, {
+    existingSession: currentSession,
+    fallbackEmail: currentSession.email,
+    fallbackDisplayName: normalizedDisplayName,
+  });
+
+  persistAuthSession(
+    nextSession,
+    (getStoredAuthSessionPersistence() ?? "local") as AuthSessionPersistence,
+  );
+
+  return nextSession;
+}
+
 export async function signInWithEmailPassword(
   email: string,
   password: string,

@@ -11,6 +11,7 @@ import {
   sendPasswordResetEmail,
   signInWithEmailPassword,
   signUpWithEmailPassword,
+  updateCurrentUserDisplayName,
 } from "./firebase-auth-client";
 
 export interface FrontendAuthSession {
@@ -139,6 +140,13 @@ export async function signupWithEmailPassword(
       throw error;
     }
   }
+}
+
+export async function updateFrontendDisplayName(
+  displayName: string,
+): Promise<FrontendAuthSession> {
+  const authSession = await updateCurrentUserDisplayName(displayName);
+  return buildFirebaseFrontendSession(authSession);
 }
 
 export async function requestPasswordResetEmail(email: string): Promise<void> {

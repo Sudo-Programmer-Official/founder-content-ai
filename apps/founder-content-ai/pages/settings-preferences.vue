@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
   AiAssistLevel,
+  AuthIdentityProvider,
   BrandKit,
   BrandKitAccentStyle,
   BrandKitBackgroundStyle,
@@ -25,6 +26,7 @@ import type {
   UpdateUserPreferencesRequest,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
+import { useAuthContext } from "../auth/auth-context";
 import AiAssistPanel from "../components/AiAssistPanel.vue";
 import MetaPageSelectionModal from "../components/MetaPageSelectionModal.vue";
 import { useAiAssistSuggestions } from "../composables/use-ai-assist";
@@ -134,8 +136,14 @@ const FOUNDER_VOICE_STARTER = {
 
 const { preferences, isSaving, errorMessage, updatePreferences } = usePreferenceContext();
 const { bootstrap } = useProductAccessContext();
+const auth = useAuthContext();
 const route = useRoute();
 const router = useRouter();
+const accountFullNameInput = ref("");
+const isSavingAccount = ref(false);
+const isSendingPasswordReset = ref(false);
+const accountFeedback = ref("");
+const accountError = ref("");
 
 const socialAccounts = ref<SocialAccount[]>([]);
 const isLoadingChannels = ref(false);
@@ -285,6 +293,47 @@ const BRAND_THEME_PRESETS: readonly BrandThemePreset[] = [
   },
 ] as const;
 
+const currentUserFullName = computed(
+  () =>
+    auth.currentUser.value?.fullName?.trim() ||
+    auth.authSession.value?.displayName?.trim() ||
+    "",
+);
+const currentUserEmail = computed(
+  () =>
+    auth.currentUser.value?.email?.trim() ||
+    auth.authSession.value?.email?.trim() ||
+    "",
+);
+const authProviders = computed<readonly AuthIdentityProvider[]>(
+  () => auth.appSession.value?.authProviders ?? [],
+);
+const hasPasswordProvider = computed(() => authProviders.value.includes("firebase_password"));
+const canSaveAccountName = computed(
+  () =>
+    !auth.isUsingStub.value &&
+    accountFullNameInput.value.trim().length > 0 &&
+    accountFullNameInput.value.trim() !== currentUserFullName.value,
+);
+const canSendPasswordReset = computed(
+  () => !auth.isUsingStub.value && hasPasswordProvider.value && currentUserEmail.value !== "",
+);
+const passwordResetHelpText = computed(() => {
+  if (auth.isUsingStub.value) {
+    return "Password reset is disabled while development stub auth is active.";
+  }
+
+  if (hasPasswordProvider.value) {
+    return "Email yourself a reset link for this account and choose a new password securely.";
+  }
+
+  if (authProviders.value.includes("google")) {
+    return "This account signs in with Google, so there is no separate Founder Content password to reset.";
+  }
+
+  return "Password reset is only available for email and password accounts.";
+});
+
 const themeModel = computed<UiTheme>({
   get: () => preferences.value.theme,
   set: (value) => {
@@ -342,6 +391,68 @@ async function updatePreference<T extends keyof typeof preferences.value>(
     [key]: value,
   } as UpdateUserPreferencesRequest;
   await updatePreferences(payload);
+}
+
+async function saveAccountName(): Promise<void> {
+  const normalizedName = accountFullNameInput.value.trim();
+
+  if (!normalizedName) {
+    accountError.value = "Your name is required.";
+    accountFeedback.value = "";
+    return;
+  }
+
+  if (auth.isUsingStub.value) {
+    accountError.value = "Account profile editing is disabled while stub auth is active.";
+    accountFeedback.value = "";
+    return;
+  }
+
+  if (normalizedName === currentUserFullName.value) {
+    accountFeedback.value = "Your account name is already up to date.";
+    accountError.value = "";
+    return;
+  }
+
+  isSavingAccount.value = true;
+  accountError.value = "";
+  accountFeedback.value = "";
+
+  try {
+    await auth.updateDisplayName(normalizedName);
+    accountFeedback.value = "Your account name was updated.";
+  } catch (error) {
+    accountError.value = error instanceof Error ? error.message : "Unable to update your account name.";
+  } finally {
+    isSavingAccount.value = false;
+  }
+}
+
+async function sendPasswordResetLink(): Promise<void> {
+  if (!currentUserEmail.value) {
+    accountError.value = "This account does not have a usable email address.";
+    accountFeedback.value = "";
+    return;
+  }
+
+  if (!canSendPasswordReset.value) {
+    accountError.value = passwordResetHelpText.value;
+    accountFeedback.value = "";
+    return;
+  }
+
+  isSendingPasswordReset.value = true;
+  accountError.value = "";
+  accountFeedback.value = "";
+
+  try {
+    await auth.requestPasswordReset(currentUserEmail.value);
+    accountFeedback.value = `Password reset link sent to ${currentUserEmail.value}.`;
+  } catch (error) {
+    accountError.value = error instanceof Error ? error.message : "Unable to send the password reset email.";
+  } finally {
+    isSendingPasswordReset.value = false;
+  }
 }
 
 const assistSuggestions = useAiAssistSuggestions([
@@ -1586,6 +1697,14 @@ watch(
   },
   { immediate: true },
 );
+
+watch(
+  currentUserFullName,
+  (nextValue) => {
+    accountFullNameInput.value = nextValue;
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -1600,6 +1719,74 @@ watch(
 
     <p v-if="errorMessage" class="dashboard-feedback error">{{ errorMessage }}</p>
     <p v-else-if="isSaving" class="dashboard-feedback">Saving preferences...</p>
+
+    <section class="dashboard-panel account-panel">
+      <div class="account-panel-header">
+        <div>
+          <p class="panel-meta">Account</p>
+          <h2>Update your name and security settings.</h2>
+          <p class="dashboard-description">
+            Keep your profile current and send yourself a reset link when you want to rotate your password.
+          </p>
+        </div>
+        <span class="channel-status-badge" :class="{ connected: hasPasswordProvider }">
+          {{ hasPasswordProvider ? "Password account" : "External sign-in" }}
+        </span>
+      </div>
+
+      <p v-if="accountError" class="dashboard-feedback error">{{ accountError }}</p>
+      <p v-else-if="accountFeedback" class="dashboard-feedback account-feedback">{{ accountFeedback }}</p>
+
+      <div class="account-grid">
+        <article class="account-card">
+          <label class="dashboard-field">
+            <span>Full name</span>
+            <input
+              v-model="accountFullNameInput"
+              type="text"
+              autocomplete="name"
+              placeholder="Your name"
+              :disabled="auth.isUsingStub.value || isSavingAccount"
+            />
+          </label>
+
+          <label class="dashboard-field">
+            <span>Email</span>
+            <input :value="currentUserEmail" type="email" readonly disabled />
+          </label>
+
+          <div class="account-action-row">
+            <button
+              type="button"
+              class="dashboard-button"
+              :disabled="!canSaveAccountName || isSavingAccount"
+              @click="void saveAccountName()"
+            >
+              {{ isSavingAccount ? "Saving..." : "Save account name" }}
+            </button>
+          </div>
+        </article>
+
+        <article class="account-card">
+          <p class="panel-meta">Password</p>
+          <h3>Reset password</h3>
+          <p class="dashboard-description">
+            {{ passwordResetHelpText }}
+          </p>
+
+          <div class="account-action-row">
+            <button
+              type="button"
+              class="dashboard-button secondary"
+              :disabled="!canSendPasswordReset || isSendingPasswordReset"
+              @click="void sendPasswordResetLink()"
+            >
+              {{ isSendingPasswordReset ? "Sending link..." : "Email reset link" }}
+            </button>
+          </div>
+        </article>
+      </div>
+    </section>
 
     <section class="dashboard-grid-two">
       <article class="dashboard-panel">
@@ -2845,6 +3032,50 @@ watch(
   gap: 16px;
 }
 
+.account-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.account-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.account-panel-header h2,
+.account-card h3 {
+  margin: 0;
+}
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.account-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 84%, var(--fc-surface-muted));
+}
+
+.account-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.account-feedback {
+  color: var(--fc-success-text);
+}
+
 .usage-panel {
   display: grid;
   gap: 18px;
@@ -3743,6 +3974,7 @@ watch(
 
 @media (max-width: 920px) {
   .brand-context-layout,
+  .account-grid,
   .channel-grid,
   .usage-grid {
     grid-template-columns: 1fr;

@@ -8,6 +8,7 @@ import {
   requestPasswordResetEmail,
   restoreFrontendAuthSession,
   signupWithEmailPassword,
+  updateFrontendDisplayName,
 } from "../services/auth-service";
 import {
   AUTH_SESSION_CHANGED_EVENT,
@@ -126,6 +127,26 @@ async function requestPasswordReset(email: string): Promise<void> {
   }
 }
 
+async function updateDisplayName(displayName: string): Promise<MeResponse | null> {
+  isLoading.value = true;
+
+  try {
+    const session = await updateFrontendDisplayName(displayName);
+    authSession.value = session.authSession;
+    appSession.value = session.appSession;
+    mode.value = session.mode;
+    errorMessage.value = "";
+    sessionVersion.value += 1;
+    return session.appSession;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to update your name.";
+    throw error;
+  } finally {
+    isLoading.value = false;
+    isReady.value = true;
+  }
+}
+
 async function logout(): Promise<void> {
   await logoutFrontendSession();
   setAnonymousState();
@@ -158,6 +179,7 @@ provide(AuthContextKey, {
   refreshSession,
   login,
   signup,
+  updateDisplayName,
   requestPasswordReset,
   logout,
 });

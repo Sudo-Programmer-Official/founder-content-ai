@@ -22,6 +22,7 @@ export interface AuthContextValue {
     password: string;
     displayName?: string;
   }) => Promise<MeResponse | null>;
+  updateDisplayName: (displayName: string) => Promise<MeResponse | null>;
   requestPasswordReset: (email: string) => Promise<void>;
   logout: () => Promise<void>;
 }

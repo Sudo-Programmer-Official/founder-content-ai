@@ -11,8 +11,9 @@ import type {
 } from "../../../../packages/shared-types/index.ts";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { queryDb, withDbTransaction } from "./db/client.ts";
+import { sendPlatformEmail } from "./email/emailTransportService.ts";
 import { HttpError } from "../utils/http.ts";
-import { logInfo } from "../utils/logger.ts";
+import { logInfo, logWarn } from "../utils/logger.ts";
 
 interface UserRow extends QueryResultRow {
   id: string;
@@ -20,6 +21,7 @@ interface UserRow extends QueryResultRow {
   email: string;
   full_name: string;
   avatar_url: string | null;
+  welcome_email_sent_at: Date | string | null;
   status: AppUser["status"];
   created_at: Date | string;
   updated_at: Date | string;
@@ -66,6 +68,153 @@ interface BusinessRow extends QueryResultRow {
 function normalizeOptional(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function resolveWelcomeFirstName(user: UserRow): string {
+  const firstName = user.full_name.trim().split(/\s+/).find(Boolean);
+
+  if (firstName) {
+    return firstName;
+  }
+
+  return user.email.split("@")[0] || "there";
+}
+
+function resolveFrontendOrigin(): string {
+  const configuredOrigin = process.env.FRONTEND_ORIGIN?.trim().replace(/\/$/, "");
+  return configuredOrigin || "https://foundercontent.ai";
+}
+
+function buildWelcomeEmailMessage(user: UserRow): {
+  subject: string;
+  htmlBody: string;
+  textBody: string;
+} {
+  const firstName = resolveWelcomeFirstName(user);
+  const appOrigin = resolveFrontendOrigin();
+  const htmlFirstName = escapeHtml(firstName);
+
+  return {
+    subject: "Welcome to Founder Content",
+    htmlBody: [
+      `<p>Hi ${htmlFirstName},</p>`,
+      "<p>Welcome to Founder Content.</p>",
+      "<p>We help you turn rough ideas, notes, customer signals, and existing content into clearer posts, campaigns, and repeatable publishing workflows without starting from a blank page every time.</p>",
+      "<p>The fastest way to get value is simple:</p>",
+      "<ol>",
+      "<li>Bring one real idea or source.</li>",
+      "<li>Generate a draft.</li>",
+      "<li>Tighten the hook and ship something useful.</li>",
+      "</ol>",
+      `<p><a href="${escapeHtml(appOrigin)}">Open Founder Content</a> and run one workflow end to end.</p>`,
+      "<p>If you get stuck, just reply to this email and tell us what you are trying to publish.</p>",
+      "<p>Founder Content</p>",
+    ].join(""),
+    textBody: [
+      `Hi ${firstName},`,
+      "",
+      "Welcome to Founder Content.",
+      "",
+      "We help you turn rough ideas, notes, customer signals, and existing content into clearer posts, campaigns, and repeatable publishing workflows without starting from a blank page every time.",
+      "",
+      "The fastest way to get value is simple:",
+      "1. Bring one real idea or source.",
+      "2. Generate a draft.",
+      "3. Tighten the hook and ship something useful.",
+      "",
+      `Open Founder Content: ${appOrigin}`,
+      "",
+      "If you get stuck, reply to this email and tell us what you are trying to publish.",
+      "",
+      "Founder Content",
+    ].join("\n"),
+  };
+}
+
+async function claimWelcomeEmailSend(userId: string): Promise<boolean> {
+  const result = await queryDb<{ id: string }>(
+    `
+      update users
+      set welcome_email_sent_at = now()
+      where id = $1
+        and welcome_email_sent_at is null
+      returning id
+    `,
+    [userId],
+  );
+
+  return Boolean(result.rows[0]);
+}
+
+async function releaseWelcomeEmailSendClaim(userId: string): Promise<void> {
+  await queryDb(
+    `
+      update users
+      set welcome_email_sent_at = null
+      where id = $1
+    `,
+    [userId],
+  );
+}
+
+async function sendWelcomeEmail(user: UserRow): Promise<void> {
+  const claimed = await claimWelcomeEmailSend(user.id);
+
+  if (!claimed) {
+    return;
+  }
+
+  try {
+    const message = buildWelcomeEmailMessage(user);
+    const result = await sendPlatformEmail({
+      fromEmail: process.env.SYSTEM_FROM_EMAIL?.trim() || "hello@foundercontent.ai",
+      fromName: "Founder Content",
+      replyToEmail: process.env.SYSTEM_FROM_EMAIL?.trim() || "hello@foundercontent.ai",
+      toEmail: user.email,
+      subject: message.subject,
+      htmlBody: message.htmlBody,
+      textBody: message.textBody,
+      tags: {
+        notification_type: "welcome_signup",
+      },
+    });
+
+    logInfo("Sent welcome email to new user.", {
+      userId: user.id,
+      email: user.email,
+      provider: result.provider,
+    });
+  } catch (error) {
+    await releaseWelcomeEmailSendClaim(user.id);
+    throw error;
+  }
+}
+
+function maybeDispatchWelcomeEmail(
+  user: UserRow,
+  principal: AuthenticatedPrincipal,
+  client?: PoolClient,
+): void {
+  if (client || principal.provider === "stub" || user.welcome_email_sent_at) {
+    return;
+  }
+
+  void sendWelcomeEmail(user).catch((error) => {
+    logWarn("Welcome email failed.", {
+      userId: user.id,
+      email: user.email,
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+  });
 }
 
 function slugify(value: string): string {
@@ -162,6 +311,7 @@ async function ensureUserRecord(
         email,
         full_name,
         avatar_url,
+        welcome_email_sent_at,
         status,
         created_at,
         updated_at
@@ -191,6 +341,7 @@ async function ensureUserRecord(
           email,
           full_name,
           avatar_url,
+          welcome_email_sent_at,
           status,
           created_at,
           updated_at
@@ -206,6 +357,7 @@ async function ensureUserRecord(
 
     const updatedUser = updatedUserResult.rows[0];
     await upsertAuthIdentity(updatedUser.id, principal, client);
+    maybeDispatchWelcomeEmail(updatedUser, principal, client);
     return updatedUser;
   }
 
@@ -236,6 +388,7 @@ async function ensureUserRecord(
         email,
         full_name,
         avatar_url,
+        welcome_email_sent_at,
         status,
         created_at,
         updated_at
@@ -251,6 +404,7 @@ async function ensureUserRecord(
 
   const createdUser = createdUserResult.rows[0];
   await upsertAuthIdentity(createdUser.id, principal, client);
+  maybeDispatchWelcomeEmail(createdUser, principal, client);
   logInfo("Bootstrapped authenticated user.", {
     userId: createdUser.id,
     authSubject: principal.subject,

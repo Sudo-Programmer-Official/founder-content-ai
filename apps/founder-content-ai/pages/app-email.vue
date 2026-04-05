@@ -45,7 +45,7 @@ import {
   requestEmailContactImportJobs,
   requestEmailContactUpdate,
   requestEmailContacts,
-  requestEmailContactsImportJobCreate,
+  requestEmailContactsImport,
   requestEmailContactsImportPreview,
   requestEmailDomainCreate,
   requestEmailDomainSettings,
@@ -2541,15 +2541,18 @@ async function importContacts(): Promise<void> {
   errorMessage.value = "";
 
   try {
-    const response = await requestEmailContactsImportJobCreate(selectedBusinessId.value, {
+    const response = await requestEmailContactsImport(selectedBusinessId.value, {
       ...contactImport.value,
-      fileName: contactImportFileName.value || undefined,
       mapping: Object.keys(contactImportMapping.value).length > 0 ? contactImportMapping.value : undefined,
       duplicateStrategy: contactImportDuplicateStrategy.value,
     });
-    latestImportJobId.value = response.importJob.id;
-    feedbackMessage.value = `Import queued for ${response.importJob.listName}. ${response.importJob.totalRows} rows are being processed in the background.`;
+    latestImportJobId.value = "";
+    feedbackMessage.value = [
+      `Contacts imported into ${response.list.name}.`,
+      `Created ${response.createdCount}, updated ${response.updatedCount}, skipped ${response.skippedCount}.`,
+    ].join(" ");
     contactImport.value.csvText = "";
+    contactImport.value.listName = "";
     contactImportFileName.value = "";
     resetContactImportPreview();
     await loadEmailState();
