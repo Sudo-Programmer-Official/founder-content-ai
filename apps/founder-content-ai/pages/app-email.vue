@@ -112,6 +112,37 @@ function linkifyHtmlText(value: string): string {
   return html.replace(/\n/g, "<br />");
 }
 
+const EMAIL_CTA_BLOCK_PATTERN = /^\[(?:button|cta):\s*(.+?)\]\((https?:\/\/[^\s)]+)\)$/i;
+
+function parseEmailCtaBlock(value: string): { label: string; url: string } | null {
+  const normalized = value.trim();
+  const match = normalized.match(EMAIL_CTA_BLOCK_PATTERN);
+
+  if (!match) {
+    return null;
+  }
+
+  const [, rawLabel = "", rawUrl = ""] = match;
+  const label = rawLabel.trim();
+  const url = rawUrl.trim();
+
+  if (!label || !url) {
+    return null;
+  }
+
+  return { label, url };
+}
+
+function renderEmailPreviewBlock(value: string): string {
+  const cta = parseEmailCtaBlock(value);
+
+  if (!cta) {
+    return `<p>${linkifyHtmlText(value)}</p>`;
+  }
+
+  return `<div class="email-preview-cta-row"><a href="${escapeHtml(cta.url)}" target="_blank" rel="noopener noreferrer" class="email-preview-cta-button">${escapeHtml(cta.label)}</a></div>`;
+}
+
 function buildSourceTitle(text: string, fallback?: string): string {
   const normalized = text
     .split("\n")
@@ -189,7 +220,7 @@ function buildFreshCampaignTemplate(intent: CampaignComposerIntent): {
       name: "Offer Campaign",
       subject: "A quick offer for you",
       bodyText:
-        "Hi {{first_name}},\n\nI wanted to send you one clear offer:\n\n- What it is\n- Why it matters now\n- What to do next\n\nIf it fits, use the link below or reply and I will point you in the right direction.",
+        "Hi {{first_name}},\n\nI wanted to send you one clear offer:\n\n- What it is\n- Why it matters now\n- What to do next\n\nIf it fits, use the link below or reply and I will point you in the right direction.\n\n[Button: Claim your spot](https://your-link.com)",
     };
   }
 
@@ -367,6 +398,7 @@ const CONTACT_IMPORT_FIELDS: Array<{
   { field: "name", label: "Full name", required: false },
   { field: "firstName", label: "First name", required: false },
   { field: "lastName", label: "Last name", required: false },
+  { field: "lists", label: "Lists", required: false },
   { field: "tags", label: "Tags", required: false },
   { field: "state", label: "State", required: false },
   { field: "city", label: "City", required: false },
@@ -384,7 +416,7 @@ const resolvedUserName = computed(
 );
 
 const contactImport = ref<ImportEmailContactsRequest>({
-  listName: "Launch List",
+  listName: "",
   csvText: "",
 });
 const contactImportPreview = ref<ImportEmailContactsPreviewResponse | null>(null);
@@ -638,12 +670,23 @@ const filteredCampaigns = computed(() => {
   });
 });
 const contactImportColumns = computed(() => contactImportPreview.value?.columns ?? []);
+const hasMappedImportLists = computed(() => {
+  if (contactImportMapping.value.lists?.trim()) {
+    return true;
+  }
+
+  return Boolean(
+    contactImportPreview.value?.fields.some(
+      (field) => field.field === "lists" && Boolean(field.columnName?.trim()),
+    ),
+  );
+});
 const canPreviewContacts = computed(() => contactImport.value.csvText.trim().length > 0);
 const canImportContacts = computed(
   () =>
     Boolean(selectedBusinessId.value) &&
-    contactImport.value.listName.trim().length > 0 &&
     contactImport.value.csvText.trim().length > 0 &&
+    (contactImport.value.listName.trim().length > 0 || hasMappedImportLists.value) &&
     Boolean(contactImportMapping.value.email || contactImportPreview.value?.suggestedMapping.email),
 );
 const contactStateOptions = computed(() =>
@@ -832,7 +875,7 @@ const previewEmailHtml = computed(() => {
   }
 
   paragraphs.forEach((paragraph, index) => {
-    htmlParts.push(`<p>${linkifyHtmlText(paragraph)}</p>`);
+    htmlParts.push(renderEmailPreviewBlock(paragraph));
 
     if (index === 0) {
       for (const imageUrl of campaignForm.value.inlineImageUrls) {
@@ -1337,6 +1380,12 @@ function closeCampaignComposer(): void {
 function insertLinkPlaceholder(): void {
   const nextValue = campaignForm.value.bodyText.trimEnd();
   campaignForm.value.bodyText = nextValue ? `${nextValue}\n\nhttps://` : "https://";
+}
+
+function insertCtaButtonPlaceholder(): void {
+  const placeholder = "[Button: Claim your spot](https://your-link.com)";
+  const nextValue = campaignForm.value.bodyText.trimEnd();
+  campaignForm.value.bodyText = nextValue ? `${nextValue}\n\n${placeholder}` : placeholder;
 }
 
 function toggleSignature(): void {
@@ -2989,6 +3038,9 @@ onBeforeUnmount(() => {
                 <button type="button" class="workspace-secondary-button compact" @click="insertLinkPlaceholder">
                   Insert link
                 </button>
+                <button type="button" class="workspace-secondary-button compact" @click="insertCtaButtonPlaceholder">
+                  Insert CTA button
+                </button>
                 <button
                   type="button"
                   class="workspace-secondary-button compact"
@@ -3250,7 +3302,14 @@ onBeforeUnmount(() => {
 
           <div class="contact-import-stack">
             <div class="contact-import-inputs">
-              <input v-model="contactImport.listName" class="workspace-input" placeholder="List name" />
+              <input
+                v-model="contactImport.listName"
+                class="workspace-input"
+                placeholder="Optional fallback list"
+              />
+              <p class="panel-note">
+                If your CSV includes a <strong>Lists</strong> column, audience groups are created automatically.
+              </p>
 
               <div class="contact-upload-row">
                 <label class="secondary-action contact-upload-button">
@@ -3270,7 +3329,7 @@ onBeforeUnmount(() => {
               <textarea
                 v-model="contactImport.csvText"
                 class="workspace-textarea compact"
-                placeholder="email,name&#10;founder@yourbrand.com, Founder"
+                placeholder="email,name,lists&#10;founder@yourbrand.com, Founder, Launch List; Premium Users"
               />
             </div>
 
@@ -3337,6 +3396,7 @@ onBeforeUnmount(() => {
                 <div class="contact-preview-row contact-preview-head">
                   <span>Email</span>
                   <span>Name</span>
+                  <span>Lists</span>
                   <span>Attributes</span>
                   <span>Tags</span>
                   <span>Issues</span>
@@ -3348,6 +3408,7 @@ onBeforeUnmount(() => {
                 >
                   <span>{{ row.email || "—" }}</span>
                   <span>{{ row.name || [row.firstName, row.lastName].filter(Boolean).join(' ') || "—" }}</span>
+                  <span>{{ row.lists.join(", ") || contactImport.listName || "—" }}</span>
                   <span>{{ buildContactAttributeSummary(row.attributes) || "—" }}</span>
                   <span>{{ row.tags.join(", ") || "—" }}</span>
                   <span>{{ row.issues.join(", ") || "Looks good" }}</span>
@@ -3409,7 +3470,9 @@ onBeforeUnmount(() => {
               {{ list.name }} · {{ list.contactCount }} contacts
             </li>
           </ul>
-          <div v-else class="empty-note">No lists yet. Import a CSV and the first list is created automatically.</div>
+          <div v-else class="empty-note">
+            No lists yet. Import a CSV and we will create audience groups from your file automatically.
+          </div>
 
           <section class="contact-directory">
             <div class="panel-header">
@@ -4333,6 +4396,30 @@ onBeforeUnmount(() => {
   text-decoration: underline;
 }
 
+.email-preview-frame :deep(.email-preview-cta-row) {
+  margin: 24px 0;
+}
+
+.email-preview-frame :deep(.email-preview-cta-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 46px;
+  padding: 0 20px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+  color: var(--fc-accent-contrast);
+  font-size: 15px;
+  font-weight: 800;
+  text-decoration: none;
+  box-shadow: 0 18px 30px rgba(215, 102, 52, 0.18);
+}
+
+.email-preview-frame :deep(.email-preview-cta-button:hover) {
+  color: var(--fc-accent-contrast);
+  text-decoration: none;
+}
+
 .email-preview-frame :deep(.email-preview-image) {
   margin: 20px 0;
 }
@@ -4760,6 +4847,7 @@ onBeforeUnmount(() => {
   grid-template-columns:
     minmax(180px, 1.2fr)
     minmax(140px, 0.9fr)
+    minmax(170px, 1fr)
     minmax(180px, 1.1fr)
     minmax(120px, 0.8fr)
     minmax(180px, 1.2fr);

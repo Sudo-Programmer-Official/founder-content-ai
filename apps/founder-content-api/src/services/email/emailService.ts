@@ -1331,6 +1331,31 @@ function linkifyHtmlText(value: string): string {
   return html.replace(/\n/g, "<br />");
 }
 
+const EMAIL_CTA_BLOCK_PATTERN = /^\[(?:button|cta):\s*(.+?)\]\((https?:\/\/[^\s)]+)\)$/i;
+
+function parseEmailCtaBlock(value: string): { label: string; url: string } | null {
+  const normalized = value.trim();
+  const match = normalized.match(EMAIL_CTA_BLOCK_PATTERN);
+
+  if (!match) {
+    return null;
+  }
+
+  const [, rawLabel = "", rawUrl = ""] = match;
+  const label = rawLabel.trim();
+  const url = rawUrl.trim();
+
+  if (!label || !url) {
+    return null;
+  }
+
+  return { label, url };
+}
+
+function renderEmailCtaButtonBlock(cta: { label: string; url: string }): string {
+  return `<div style="margin:24px 0;text-align:left;"><a href="${escapeHtml(cta.url)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;min-height:46px;padding:12px 22px;border-radius:999px;background:linear-gradient(135deg, #d76634 0%, #b94d1f 100%);color:#fffaf5;font-size:15px;font-weight:800;line-height:1.2;text-decoration:none;">${escapeHtml(cta.label)}</a></div>`;
+}
+
 function renderEmailImageBlock(input: { url: string; altText?: string; variant: "header" | "inline" }): string {
   const altText = input.altText?.trim() || (input.variant === "header" ? "Email header image" : "Email image");
   const margin = input.variant === "header" ? "0 0 24px" : "20px 0";
@@ -1419,10 +1444,17 @@ function buildEmailCampaignBodies(
   }
 
   paragraphs.forEach((paragraph, index) => {
-    htmlParts.push(
-      `<p style="margin:0 0 18px;font-size:16px;line-height:1.8;color:#241813;">${linkifyHtmlText(paragraph)}</p>`,
-    );
-    textParts.push(paragraph);
+    const cta = parseEmailCtaBlock(paragraph);
+
+    if (cta) {
+      htmlParts.push(renderEmailCtaButtonBlock(cta));
+      textParts.push(`${cta.label}: ${cta.url}`);
+    } else {
+      htmlParts.push(
+        `<p style="margin:0 0 18px;font-size:16px;line-height:1.8;color:#241813;">${linkifyHtmlText(paragraph)}</p>`,
+      );
+      textParts.push(paragraph);
+    }
 
     if (index === 0 && inlineImages.length > 0) {
       for (const image of inlineImages) {
@@ -1493,6 +1525,7 @@ interface ParsedEmailImportContact {
   email: string;
   firstName?: string;
   lastName?: string;
+  lists: string[];
   tags: string[];
   attributes: EmailContactAttributes;
   raw: Record<string, string>;
@@ -1522,6 +1555,7 @@ const EMAIL_CONTACT_IMPORT_FIELDS: Array<{
   { field: "name", label: "Full name", required: false },
   { field: "firstName", label: "First name", required: false },
   { field: "lastName", label: "Last name", required: false },
+  { field: "lists", label: "Lists", required: false },
   { field: "tags", label: "Tags", required: false },
   { field: "state", label: "State", required: false },
   { field: "city", label: "City", required: false },
@@ -1565,6 +1599,7 @@ const EMAIL_CONTACT_IMPORT_FIELD_ALIASES: Record<EmailContactImportField, string
     "familyname",
     "family_name",
   ],
+  lists: ["lists", "list", "listname", "list_name", "audience_groups", "audiences", "groups"],
   tags: ["tags", "tag", "labels", "segments", "interests"],
   state: ["state", "region", "province", "territory"],
   city: ["city", "town", "municipality"],
@@ -1804,11 +1839,82 @@ function sanitizeImportMapping(
   return sanitized;
 }
 
-function splitTags(value: string | undefined): string[] {
+function splitDelimitedImportValues(value: string | undefined): string[] {
   return (value ?? "")
     .split(/[|,;]+/)
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function splitTags(value: string | undefined): string[] {
+  return splitDelimitedImportValues(value);
+}
+
+function splitListNames(value: string | undefined): string[] {
+  const seen = new Set<string>();
+  const names: string[] = [];
+
+  for (const candidate of splitDelimitedImportValues(value)) {
+    const normalizedKey = normalizeEmailListNameKey(candidate);
+
+    if (!normalizedKey || seen.has(normalizedKey)) {
+      continue;
+    }
+
+    seen.add(normalizedKey);
+    names.push(candidate);
+  }
+
+  return names;
+}
+
+function extractImportedListNames(contacts: ParsedEmailImportContact[], fallbackListName: string): string[] {
+  const seen = new Set<string>();
+  const listNames: string[] = [];
+
+  const register = (candidate: string | undefined): void => {
+    const normalized = candidate?.trim();
+
+    if (!normalized) {
+      return;
+    }
+
+    const key = normalizeEmailListNameKey(normalized);
+
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    listNames.push(normalized);
+  };
+
+  register(fallbackListName);
+
+  for (const contact of contacts) {
+    for (const listName of contact.lists) {
+      register(listName);
+    }
+  }
+
+  return listNames;
+}
+
+function describeImportedLists(
+  contacts: ParsedEmailImportContact[],
+  fallbackListName: string,
+): string {
+  const listNames = extractImportedListNames(contacts, fallbackListName);
+
+  if (listNames.length === 0) {
+    return "Imported contacts";
+  }
+
+  if (listNames.length === 1) {
+    return listNames[0];
+  }
+
+  return `${listNames[0]} + ${listNames.length - 1} more lists`;
 }
 
 function extractAppliedImportMapping(
@@ -1893,12 +1999,14 @@ function parseContactImportPayload(
       duplicateRows += 1;
     }
 
+    const lists = splitListNames(sanitizedMapping.lists ? raw[sanitizedMapping.lists] : undefined);
     const tags = splitTags(sanitizedMapping.tags ? raw[sanitizedMapping.tags] : undefined);
     const attributes = extractContactAttributesFromRaw(raw, sanitizedMapping);
     const parsedContact: ParsedEmailImportContact = {
       email,
       firstName: firstNameValue || fallbackFirstName || undefined,
       lastName: lastNameValue || (fallbackRest.length > 0 ? fallbackRest.join(" ") : undefined),
+      lists,
       tags,
       attributes,
       raw,
@@ -1918,6 +2026,7 @@ function parseContactImportPayload(
         name: nameValue || undefined,
         firstName: parsedContact.firstName,
         lastName: parsedContact.lastName,
+        lists,
         tags,
         attributes,
         issues,
@@ -3190,17 +3299,34 @@ export async function importEmailContacts(
   input: ImportEmailContactsRequest,
 ): Promise<ImportEmailContactsResponse> {
   const listName = input.listName.trim();
-
-  if (listName === "") {
-    throw new HttpError(400, "email_list_name_required", "List name is required.");
-  }
-
   const parsedImport = parseContactImportPayload(input.csvText, input.mapping);
   const contacts = parsedImport.contacts;
   const duplicateStrategy = input.duplicateStrategy ?? "upsert";
+  const importedListNames = extractImportedListNames(contacts, listName);
+
+  if (importedListNames.length === 0) {
+    throw new HttpError(
+      400,
+      "email_list_name_required",
+      "Add a fallback list name or map a Lists column in the CSV before importing.",
+    );
+  }
 
   return withDbTransaction(async (client) => {
-    const listRow = await ensureEmailListByName(businessId, listName, actorUserId, client);
+    const listCache = new Map<string, EmailListRow>();
+    const ensureList = async (candidate: string): Promise<EmailListRow> => {
+      const normalizedName = candidate.trim();
+      const cacheKey = normalizeEmailListNameKey(normalizedName);
+      const cached = listCache.get(cacheKey);
+
+      if (cached) {
+        return cached;
+      }
+
+      const row = await ensureEmailListByName(businessId, normalizedName, actorUserId, client);
+      listCache.set(cacheKey, row);
+      return row;
+    };
 
     const importedContacts: EmailContact[] = [];
     let createdCount = 0;
@@ -3209,20 +3335,26 @@ export async function importEmailContacts(
 
     for (const contact of contacts) {
       const contactResult = await upsertContact(businessId, contact, duplicateStrategy, client);
-      await executeQuery(
-        `
-          insert into email_list_members (
-            list_id,
-            contact_id
-          ) values (
-            $1::uuid,
-            $2::uuid
-          )
-          on conflict (list_id, contact_id) do nothing
-        `,
-        [listRow.id, contactResult.row.id],
-        client,
-      );
+      const membershipListNames = extractImportedListNames([contact], listName);
+
+      for (const membershipListName of membershipListNames) {
+        const targetList = await ensureList(membershipListName);
+        await executeQuery(
+          `
+            insert into email_list_members (
+              list_id,
+              contact_id
+            ) values (
+              $1::uuid,
+              $2::uuid
+            )
+            on conflict (list_id, contact_id) do nothing
+          `,
+          [targetList.id, contactResult.row.id],
+          client,
+        );
+      }
+
       importedContacts.push(mapEmailContact(contactResult.row));
 
       if (contactResult.operation === "created") {
@@ -3234,7 +3366,13 @@ export async function importEmailContacts(
       }
     }
 
-    const hydratedList = await loadEmailListOrThrow(businessId, listRow.id, client);
+    const representativeListName = listName || importedListNames[0];
+    const hydratedList = await loadEmailListOrThrow(
+      businessId,
+      (await ensureList(representativeListName)).id,
+      client,
+    );
+
     return {
       list: mapEmailList(hydratedList),
       contacts: importedContacts,
@@ -3437,14 +3575,20 @@ export async function queueEmailContactsImport(
   input: QueueEmailContactsImportRequest,
 ): Promise<QueueEmailContactsImportResponse> {
   const listName = input.listName.trim();
-
-  if (listName === "") {
-    throw new HttpError(400, "email_list_name_required", "List name is required.");
-  }
-
   const parsedImport = parseContactImportPayload(input.csvText, input.mapping);
   const appliedMapping = extractAppliedImportMapping(parsedImport.fieldPreviews);
   const errorSummary = buildImportErrorSummary(parsedImport.summary);
+  const importedListNames = extractImportedListNames(parsedImport.contacts, listName);
+
+  if (importedListNames.length === 0) {
+    throw new HttpError(
+      400,
+      "email_list_name_required",
+      "Add a fallback list name or map a Lists column in the CSV before importing.",
+    );
+  }
+
+  const importLabel = describeImportedLists(parsedImport.contacts, listName);
 
   return withDbTransaction(async (client) => {
     const queuedJob = await createJob({
@@ -3517,7 +3661,7 @@ export async function queueEmailContactsImport(
       [
         businessId,
         queuedJob.id,
-        listName,
+        importLabel,
         input.fileName?.trim() || null,
         parsedImport.summary.totalRows,
         parsedImport.summary.invalidRows,
@@ -3838,6 +3982,15 @@ export async function processQueuedEmailContactImportJobs(
       let updatedCount = 0;
       let skippedCount = parsedImport.summary.duplicateRows;
       const errorCount = parsedImport.summary.invalidRows;
+      const importedListNames = extractImportedListNames(parsedImport.contacts, payload.listName);
+
+      if (importedListNames.length === 0) {
+        throw new HttpError(
+          400,
+          "email_list_name_required",
+          "Add a fallback list name or map a Lists column in the CSV before importing.",
+        );
+      }
 
       await updateEmailContactImportJobProgress(importJob.id, {
         status: "processing",
@@ -3852,9 +4005,7 @@ export async function processQueuedEmailContactImportJobs(
         startedAt: new Date().toISOString(),
       });
 
-      const listRow = await withDbTransaction(async (client) =>
-        ensureEmailListByName(job.businessId!, payload.listName, payload.actorUserId ?? undefined, client),
-      );
+      const listCache = new Map<string, EmailListRow>();
 
       for (const contact of parsedImport.contacts) {
         const contactResult = await withDbTransaction(async (client) => {
@@ -3865,20 +4016,37 @@ export async function processQueuedEmailContactImportJobs(
             client,
           );
 
-          await executeQuery(
-            `
-              insert into email_list_members (
-                list_id,
-                contact_id
-              ) values (
-                $1::uuid,
-                $2::uuid
-              )
-              on conflict (list_id, contact_id) do nothing
-            `,
-            [listRow.id, upsertedContact.row.id],
-            client,
-          );
+          const membershipListNames = extractImportedListNames([contact], payload.listName);
+
+          for (const membershipListName of membershipListNames) {
+            const cacheKey = normalizeEmailListNameKey(membershipListName);
+            let listRow = listCache.get(cacheKey);
+
+            if (!listRow) {
+              listRow = await ensureEmailListByName(
+                job.businessId!,
+                membershipListName,
+                payload.actorUserId ?? undefined,
+                client,
+              );
+              listCache.set(cacheKey, listRow);
+            }
+
+            await executeQuery(
+              `
+                insert into email_list_members (
+                  list_id,
+                  contact_id
+                ) values (
+                  $1::uuid,
+                  $2::uuid
+                )
+                on conflict (list_id, contact_id) do nothing
+              `,
+              [listRow.id, upsertedContact.row.id],
+              client,
+            );
+          }
 
           return upsertedContact;
         });
