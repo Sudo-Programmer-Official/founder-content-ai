@@ -3144,14 +3144,41 @@ async function markCampaignRecipientSent(
         updated.send_id,
         'sent',
         $2,
-        $3::jsonb,
-        $4::timestamptz
+        $4::jsonb,
+        $3::timestamptz
       from updated
     `,
     [
       recipientId,
       sent.messageId,
+      sent.sentAt,
       JSON.stringify({ provider: sent.provider }),
+    ],
+  );
+}
+
+async function markCampaignRecipientSentStatusOnly(
+  recipientId: string,
+  sent: {
+    messageId: string;
+    sentAt: string;
+  },
+): Promise<void> {
+  await executeQuery(
+    `
+      update email_campaign_recipients
+      set
+        status = 'sent',
+        ses_message_id = $2,
+        sent_at = $3::timestamptz,
+        failed_at = null,
+        failure_reason = null,
+        updated_at = now()
+      where id = $1::uuid
+    `,
+    [
+      recipientId,
+      sent.messageId,
       sent.sentAt,
     ],
   );
@@ -4513,7 +4540,35 @@ export async function processQueuedEmailCampaigns(
           },
         });
 
-        await markCampaignRecipientSent(recipientRow.id, sent);
+        try {
+          await markCampaignRecipientSent(recipientRow.id, sent);
+        } catch (persistError) {
+          logWarn("Email recipient send succeeded but the send ledger update failed. Falling back to recipient-only sent status.", {
+            businessId: campaign.business_id,
+            campaignId: campaign.id,
+            recipientId: recipientRow.id,
+            messageId: sent.messageId,
+            message: persistError instanceof Error ? persistError.message : "Unknown error",
+          });
+
+          await markCampaignRecipientSentStatusOnly(recipientRow.id, sent);
+
+          void safeCreateSystemErrorLog({
+            route: "/api/businesses/:id/email/campaigns/:campaignId/send",
+            businessId: campaign.business_id,
+            code: "email_send_persist_partial_failure",
+            message:
+              persistError instanceof Error
+                ? persistError.message
+                : "Email recipient send ledger update failed after provider success.",
+            metadata: {
+              campaignId: campaign.id,
+              recipientId: recipientRow.id,
+              providerMessageId: sent.messageId,
+            },
+          });
+        }
+
         summary.recipientsSent += 1;
       } catch (error) {
         const failureMessage = error instanceof Error ? error.message : "Unknown email send failure.";
