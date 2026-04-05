@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { parseEmailBodyBlocks } from "../../../../../packages/shared-types/index.ts";
 import type {
   BusinessEmailSettings,
   CreateEmailCampaignRequest,
@@ -9,6 +10,7 @@ import type {
   EmailCampaign,
   EmailCampaignSend,
   EmailCampaignListResponse,
+  EmailBodyBlock,
   EmailCampaignRecipient,
   EmailCampaignStats,
   EmailCampaignStatsResponse,
@@ -1331,29 +1333,129 @@ function linkifyHtmlText(value: string): string {
   return html.replace(/\n/g, "<br />");
 }
 
-const EMAIL_CTA_BLOCK_PATTERN = /^\[(?:button|cta):\s*(.+?)\]\((https?:\/\/[^\s)]+)\)$/i;
-
-function parseEmailCtaBlock(value: string): { label: string; url: string } | null {
-  const normalized = value.trim();
-  const match = normalized.match(EMAIL_CTA_BLOCK_PATTERN);
-
-  if (!match) {
-    return null;
-  }
-
-  const [, rawLabel = "", rawUrl = ""] = match;
-  const label = rawLabel.trim();
-  const url = rawUrl.trim();
-
-  if (!label || !url) {
-    return null;
-  }
-
-  return { label, url };
-}
-
 function renderEmailCtaButtonBlock(cta: { label: string; url: string }): string {
   return `<div style="margin:24px 0;text-align:left;"><a href="${escapeHtml(cta.url)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;min-height:46px;padding:12px 22px;border-radius:999px;background:linear-gradient(135deg, #d76634 0%, #b94d1f 100%);color:#fffaf5;font-size:15px;font-weight:800;line-height:1.2;text-decoration:none;">${escapeHtml(cta.label)}</a></div>`;
+}
+
+function renderEmailParagraphBlock(text: string): string {
+  return `<p style="margin:0 0 18px;font-size:16px;line-height:1.8;color:#241813;">${linkifyHtmlText(text)}</p>`;
+}
+
+function renderEmailHeroBlock(block: Extract<EmailBodyBlock, { type: "hero" }>): string {
+  const parts: string[] = [
+    `<section style="margin:0 0 24px;padding:28px 28px 24px;border-radius:26px;background:linear-gradient(135deg, #fff3ea 0%, #f7e2d3 100%);border:1px solid #f0d7c8;">`,
+  ];
+
+  if (block.headline) {
+    parts.push(
+      `<h2 style="margin:0 0 12px;font-size:28px;line-height:1.2;font-weight:900;letter-spacing:-0.02em;color:#241813;">${escapeHtml(block.headline)}</h2>`,
+    );
+  }
+
+  if (block.body) {
+    parts.push(
+      `<p style="margin:0 0 18px;font-size:16px;line-height:1.75;color:#5e4639;">${linkifyHtmlText(block.body)}</p>`,
+    );
+  }
+
+  if (block.buttonLabel && block.buttonUrl) {
+    parts.push(renderEmailCtaButtonBlock({ label: block.buttonLabel, url: block.buttonUrl }));
+  }
+
+  parts.push(`</section>`);
+  return parts.join("");
+}
+
+function renderEmailCtaSectionBlock(block: Extract<EmailBodyBlock, { type: "cta_section" }>): string {
+  const parts: string[] = [
+    `<section style="margin:24px 0;padding:22px 24px;border-radius:22px;background:#fff7f1;border:1px solid #ead6c7;">`,
+  ];
+
+  if (block.headline) {
+    parts.push(
+      `<h3 style="margin:0 0 10px;font-size:22px;line-height:1.3;font-weight:800;color:#241813;">${escapeHtml(block.headline)}</h3>`,
+    );
+  }
+
+  if (block.body) {
+    parts.push(
+      `<p style="margin:0 0 16px;font-size:15px;line-height:1.75;color:#5e4639;">${linkifyHtmlText(block.body)}</p>`,
+    );
+  }
+
+  if (block.buttonLabel && block.buttonUrl) {
+    parts.push(renderEmailCtaButtonBlock({ label: block.buttonLabel, url: block.buttonUrl }));
+  }
+
+  parts.push(`</section>`);
+  return parts.join("");
+}
+
+function renderEmailFeatureListBlock(block: Extract<EmailBodyBlock, { type: "feature_list" }>): string {
+  const itemsHtml = block.items
+    .map(
+      (item) =>
+        `<li style="margin:0 0 10px;color:#4b3528;font-size:15px;line-height:1.7;">${linkifyHtmlText(item)}</li>`,
+    )
+    .join("");
+
+  return [
+    `<section style="margin:24px 0;padding:22px 24px;border-radius:22px;background:#fffdf8;border:1px solid #efe3d8;">`,
+    block.title
+      ? `<h3 style="margin:0 0 14px;font-size:20px;line-height:1.3;font-weight:800;color:#241813;">${escapeHtml(block.title)}</h3>`
+      : "",
+    itemsHtml ? `<ul style="margin:0;padding-left:20px;">${itemsHtml}</ul>` : "",
+    `</section>`,
+  ].join("");
+}
+
+function renderEmailBodyBlockHtml(block: EmailBodyBlock): string {
+  switch (block.type) {
+    case "paragraph":
+      return renderEmailParagraphBlock(block.text);
+    case "cta_button":
+      return renderEmailCtaButtonBlock({ label: block.label, url: block.url });
+    case "hero":
+      return renderEmailHeroBlock(block);
+    case "cta_section":
+      return renderEmailCtaSectionBlock(block);
+    case "feature_list":
+      return renderEmailFeatureListBlock(block);
+    default:
+      return "";
+  }
+}
+
+function renderEmailBodyBlockText(block: EmailBodyBlock): string {
+  switch (block.type) {
+    case "paragraph":
+      return block.text;
+    case "cta_button":
+      return `${block.label}: ${block.url}`;
+    case "hero":
+    case "cta_section": {
+      const lines = [block.headline, block.body]
+        .map((value) => value?.trim() || "")
+        .filter((value) => value !== "");
+
+      if (block.buttonLabel && block.buttonUrl) {
+        lines.push(`${block.buttonLabel}: ${block.buttonUrl}`);
+      } else if (block.buttonUrl) {
+        lines.push(block.buttonUrl);
+      }
+
+      return lines.join("\n");
+    }
+    case "feature_list": {
+      const lines = block.items.map((item) => `- ${item}`);
+      if (block.title) {
+        lines.unshift(block.title);
+      }
+      return lines.join("\n");
+    }
+    default:
+      return "";
+  }
 }
 
 function renderEmailImageBlock(input: { url: string; altText?: string; variant: "header" | "inline" }): string {
@@ -1422,10 +1524,7 @@ function buildEmailCampaignBodies(
   const includeSignature = content?.includeSignature !== false;
   const signatureText = includeSignature ? resolveEmailSignatureText(settings) : "";
 
-  const paragraphs = baseText
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph !== "");
+  const blocks = parseEmailBodyBlocks(baseText);
 
   const htmlParts: string[] = [
     `<div style="width:100%;max-width:600px;margin:0 auto;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#241813;background:#fffaf5;">`,
@@ -1443,18 +1542,9 @@ function buildEmailCampaignBodies(
     textParts.push(`Header image: ${headerImageUrl}`);
   }
 
-  paragraphs.forEach((paragraph, index) => {
-    const cta = parseEmailCtaBlock(paragraph);
-
-    if (cta) {
-      htmlParts.push(renderEmailCtaButtonBlock(cta));
-      textParts.push(`${cta.label}: ${cta.url}`);
-    } else {
-      htmlParts.push(
-        `<p style="margin:0 0 18px;font-size:16px;line-height:1.8;color:#241813;">${linkifyHtmlText(paragraph)}</p>`,
-      );
-      textParts.push(paragraph);
-    }
+  blocks.forEach((block, index) => {
+    htmlParts.push(renderEmailBodyBlockHtml(block));
+    textParts.push(renderEmailBodyBlockText(block));
 
     if (index === 0 && inlineImages.length > 0) {
       for (const image of inlineImages) {
@@ -1470,7 +1560,14 @@ function buildEmailCampaignBodies(
     }
   });
 
-  if (paragraphs.length === 0 && inlineImages.length > 0) {
+  if (blocks.length === 0) {
+    if (baseText) {
+      htmlParts.push(renderEmailParagraphBlock(baseText));
+      textParts.push(baseText);
+    }
+  }
+
+  if (blocks.length === 0 && inlineImages.length > 0) {
     for (const image of inlineImages) {
       htmlParts.push(
         renderEmailImageBlock({

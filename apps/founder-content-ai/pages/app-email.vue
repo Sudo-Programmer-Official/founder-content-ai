@@ -3,6 +3,7 @@ import type {
   BusinessEmailSettings,
   BusinessMembership,
   EmailContact,
+  EmailBodyBlock,
   EmailContactAttributes,
   EmailCampaignContent,
   EmailContactImportDuplicateStrategy,
@@ -20,6 +21,7 @@ import type {
   PostAsset,
   WorkspaceAsset,
 } from "../../../packages/shared-types";
+import { parseEmailBodyBlocks } from "../../../packages/shared-types";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "../access/product-access-context";
@@ -112,35 +114,39 @@ function linkifyHtmlText(value: string): string {
   return html.replace(/\n/g, "<br />");
 }
 
-const EMAIL_CTA_BLOCK_PATTERN = /^\[(?:button|cta):\s*(.+?)\]\((https?:\/\/[^\s)]+)\)$/i;
-
-function parseEmailCtaBlock(value: string): { label: string; url: string } | null {
-  const normalized = value.trim();
-  const match = normalized.match(EMAIL_CTA_BLOCK_PATTERN);
-
-  if (!match) {
-    return null;
+function renderEmailPreviewBlock(block: EmailBodyBlock): string {
+  if (block.type === "paragraph") {
+    return `<p>${linkifyHtmlText(block.text)}</p>`;
   }
 
-  const [, rawLabel = "", rawUrl = ""] = match;
-  const label = rawLabel.trim();
-  const url = rawUrl.trim();
-
-  if (!label || !url) {
-    return null;
+  if (block.type === "cta_button") {
+    return `<div class="email-preview-cta-row"><a href="${escapeHtml(block.url)}" target="_blank" rel="noopener noreferrer" class="email-preview-cta-button">${escapeHtml(block.label)}</a></div>`;
   }
 
-  return { label, url };
-}
+  if (block.type === "feature_list") {
+    const titleHtml = block.title
+      ? `<h3 class="email-preview-section-title">${escapeHtml(block.title)}</h3>`
+      : "";
+    const itemsHtml = block.items
+      .map((item) => `<li>${linkifyHtmlText(item)}</li>`)
+      .join("");
 
-function renderEmailPreviewBlock(value: string): string {
-  const cta = parseEmailCtaBlock(value);
-
-  if (!cta) {
-    return `<p>${linkifyHtmlText(value)}</p>`;
+    return `<section class="email-preview-feature-block">${titleHtml}<ul class="email-preview-feature-list">${itemsHtml}</ul></section>`;
   }
 
-  return `<div class="email-preview-cta-row"><a href="${escapeHtml(cta.url)}" target="_blank" rel="noopener noreferrer" class="email-preview-cta-button">${escapeHtml(cta.label)}</a></div>`;
+  const sectionClass = block.type === "hero" ? "email-preview-hero" : "email-preview-cta-section";
+  const headlineHtml = block.headline
+    ? `<h2 class="email-preview-section-title">${escapeHtml(block.headline)}</h2>`
+    : "";
+  const bodyHtml = block.body
+    ? `<p class="email-preview-section-body">${linkifyHtmlText(block.body)}</p>`
+    : "";
+  const buttonHtml =
+    block.buttonLabel && block.buttonUrl
+      ? `<div class="email-preview-cta-row"><a href="${escapeHtml(block.buttonUrl)}" target="_blank" rel="noopener noreferrer" class="email-preview-cta-button">${escapeHtml(block.buttonLabel)}</a></div>`
+      : "";
+
+  return `<section class="${sectionClass}">${headlineHtml}${bodyHtml}${buttonHtml}</section>`;
 }
 
 function buildSourceTitle(text: string, fallback?: string): string {
@@ -220,7 +226,7 @@ function buildFreshCampaignTemplate(intent: CampaignComposerIntent): {
       name: "Offer Campaign",
       subject: "A quick offer for you",
       bodyText:
-        "Hi {{first_name}},\n\nI wanted to send you one clear offer:\n\n- What it is\n- Why it matters now\n- What to do next\n\nIf it fits, use the link below or reply and I will point you in the right direction.\n\n[Button: Claim your spot](https://your-link.com)",
+        "Hi {{first_name}},\n\n[Hero]\nHeadline: One clear update for your daycare\nBody: Share the feature, launch, or offer in one sentence that makes the value obvious.\nButton: See what's new\nLink: https://your-link.com\n[/Hero]\n\n[Feature List]\nTitle: Why it matters\n- Add the first benefit here\n- Add the second benefit here\n- Add the third benefit here\n[/Feature List]\n\n[CTA Section]\nHeadline: Ready to take a look?\nBody: Add one final line that makes the next step feel simple.\nButton: Claim your spot\nLink: https://your-link.com\n[/CTA Section]",
     };
   }
 
@@ -357,6 +363,21 @@ type CampaignToneMode = "direct" | "story" | "educational";
 type CampaignEditorMode = "edit" | "preview";
 type CampaignComposerIntent = "quick_update" | "promotion" | "story_email" | "weekly_newsletter";
 type DomainValidationField = "domainName" | "fromEmail";
+type EmailComposerBlockType = EmailBodyBlock["type"];
+
+type EmailComposerBlockDraft = {
+  id: string;
+  type: EmailComposerBlockType;
+  text: string;
+  label: string;
+  url: string;
+  headline: string;
+  body: string;
+  buttonLabel: string;
+  buttonUrl: string;
+  title: string;
+  itemsText: string;
+};
 
 const EMAIL_TABS: Array<{ key: EmailTabKey; label: string }> = [
   { key: "campaigns", label: "Campaigns" },
@@ -407,6 +428,230 @@ const CONTACT_IMPORT_FIELDS: Array<{
   { field: "language", label: "Language", required: false },
   { field: "plan", label: "Plan", required: false },
 ];
+
+const EMAIL_COMPOSER_BLOCK_LIBRARY: Array<{
+  type: EmailComposerBlockType;
+  label: string;
+  description: string;
+}> = [
+  {
+    type: "paragraph",
+    label: "Paragraph",
+    description: "Plain copy for updates, intros, or closing notes.",
+  },
+  {
+    type: "hero",
+    label: "Hero",
+    description: "Lead with one clear announcement and CTA.",
+  },
+  {
+    type: "feature_list",
+    label: "Feature list",
+    description: "Package benefits or reasons in one scannable block.",
+  },
+  {
+    type: "cta_section",
+    label: "CTA section",
+    description: "Finish with one clear next step and button.",
+  },
+  {
+    type: "cta_button",
+    label: "Button",
+    description: "Drop in a single clickable CTA block.",
+  },
+];
+
+let emailComposerBlockSeed = 0;
+
+function nextEmailComposerBlockId(): string {
+  emailComposerBlockSeed += 1;
+  return `email-block-${Date.now()}-${emailComposerBlockSeed}`;
+}
+
+function createEmailComposerBlockDraft(
+  type: EmailComposerBlockType,
+  overrides: Partial<EmailComposerBlockDraft> = {},
+): EmailComposerBlockDraft {
+  const base: EmailComposerBlockDraft = {
+    id: nextEmailComposerBlockId(),
+    type,
+    text: "",
+    label: type === "cta_button" ? "Claim your spot" : "",
+    url: type === "cta_button" ? "https://your-link.com" : "",
+    headline:
+      type === "hero"
+        ? "Big update for your audience"
+        : type === "cta_section"
+          ? "Ready to take the next step?"
+          : "",
+    body:
+      type === "hero"
+        ? "Share the announcement in one clear sentence."
+        : type === "cta_section"
+          ? "Add one sentence that makes the action obvious."
+          : "",
+    buttonLabel: type === "hero" || type === "cta_section" ? "Claim your spot" : "",
+    buttonUrl: type === "hero" || type === "cta_section" ? "https://your-link.com" : "",
+    title: type === "feature_list" ? "Why it matters" : "",
+    itemsText: type === "feature_list" ? "First benefit\nSecond benefit\nThird benefit" : "",
+  };
+
+  return {
+    ...base,
+    ...overrides,
+  };
+}
+
+function emailBodyBlockToDraft(block: EmailBodyBlock): EmailComposerBlockDraft {
+  if (block.type === "paragraph") {
+    return createEmailComposerBlockDraft("paragraph", { text: block.text });
+  }
+
+  if (block.type === "cta_button") {
+    return createEmailComposerBlockDraft("cta_button", {
+      label: block.label,
+      url: block.url,
+    });
+  }
+
+  if (block.type === "feature_list") {
+    return createEmailComposerBlockDraft("feature_list", {
+      title: block.title || "",
+      itemsText: block.items.join("\n"),
+    });
+  }
+
+  return createEmailComposerBlockDraft(block.type, {
+    headline: block.headline || "",
+    body: block.body || "",
+    buttonLabel: block.buttonLabel || "",
+    buttonUrl: block.buttonUrl || "",
+  });
+}
+
+function parseEmailBodyBlocksToDrafts(bodyText: string): EmailComposerBlockDraft[] {
+  return parseEmailBodyBlocks(bodyText).map(emailBodyBlockToDraft);
+}
+
+function draftToEmailBodyBlock(draft: EmailComposerBlockDraft): EmailBodyBlock | null {
+  if (draft.type === "paragraph") {
+    const text = draft.text.trim();
+    return text ? { type: "paragraph", text } : null;
+  }
+
+  if (draft.type === "cta_button") {
+    const label = draft.label.trim();
+    const url = draft.url.trim();
+    return label && url ? { type: "cta_button", label, url } : null;
+  }
+
+  if (draft.type === "feature_list") {
+    const title = draft.title.trim();
+    const items = draft.itemsText
+      .split("\n")
+      .map((item) => item.trim())
+      .filter((item) => item !== "");
+
+    if (!title && items.length === 0) {
+      return null;
+    }
+
+    return {
+      type: "feature_list",
+      title: title || undefined,
+      items,
+    };
+  }
+
+  const headline = draft.headline.trim();
+  const body = draft.body.trim();
+  const buttonLabel = draft.buttonLabel.trim();
+  const buttonUrl = draft.buttonUrl.trim();
+
+  if (!headline && !body && !buttonLabel && !buttonUrl) {
+    return null;
+  }
+
+  return {
+    type: draft.type,
+    headline: headline || undefined,
+    body: body || undefined,
+    buttonLabel: buttonLabel || undefined,
+    buttonUrl: buttonUrl || undefined,
+  };
+}
+
+function serializeEmailComposerBlock(block: EmailBodyBlock): string {
+  switch (block.type) {
+    case "paragraph":
+      return block.text.trim();
+    case "cta_button":
+      return `[Button: ${block.label}](${block.url})`;
+    case "hero":
+      return [
+        "[Hero]",
+        block.headline ? `Headline: ${block.headline}` : "",
+        block.body ? `Body: ${block.body}` : "",
+        block.buttonLabel ? `Button: ${block.buttonLabel}` : "",
+        block.buttonUrl ? `Link: ${block.buttonUrl}` : "",
+        "[/Hero]",
+      ]
+        .filter((line) => line !== "")
+        .join("\n");
+    case "cta_section":
+      return [
+        "[CTA Section]",
+        block.headline ? `Headline: ${block.headline}` : "",
+        block.body ? `Body: ${block.body}` : "",
+        block.buttonLabel ? `Button: ${block.buttonLabel}` : "",
+        block.buttonUrl ? `Link: ${block.buttonUrl}` : "",
+        "[/CTA Section]",
+      ]
+        .filter((line) => line !== "")
+        .join("\n");
+    case "feature_list":
+      return [
+        "[Feature List]",
+        block.title ? `Title: ${block.title}` : "",
+        ...block.items.map((item) => `- ${item}`),
+        "[/Feature List]",
+      ]
+        .filter((line) => line !== "")
+        .join("\n");
+    default:
+      return "";
+  }
+}
+
+function serializeEmailComposerBlocks(drafts: EmailComposerBlockDraft[]): string {
+  return drafts
+    .map(draftToEmailBodyBlock)
+    .filter((block): block is EmailBodyBlock => Boolean(block))
+    .map(serializeEmailComposerBlock)
+    .filter((block) => block !== "")
+    .join("\n\n")
+    .trim();
+}
+
+function formatEmailComposerBlockLabel(type: EmailComposerBlockType): string {
+  return EMAIL_COMPOSER_BLOCK_LIBRARY.find((entry) => entry.type === type)?.label || "Block";
+}
+
+function summarizeEmailComposerBlock(draft: EmailComposerBlockDraft): string {
+  if (draft.type === "paragraph") {
+    return draft.text.trim() || "Write the copy for this section.";
+  }
+
+  if (draft.type === "cta_button") {
+    return draft.label.trim() || "Add a button label and destination.";
+  }
+
+  if (draft.type === "feature_list") {
+    return draft.title.trim() || "Add a title and one item per line.";
+  }
+
+  return draft.headline.trim() || "Add a headline and supporting message.";
+}
 
 const resolvedUserName = computed(
   () =>
@@ -468,6 +713,9 @@ const campaignForm = ref({
   includeSignature: true,
   mediaUrlInput: "",
 });
+const campaignBlocks = ref<EmailComposerBlockDraft[]>([]);
+let isSyncingCampaignBlocksFromBody = false;
+let isSyncingCampaignBodyFromBlocks = false;
 
 const domainForm = ref({
   domainName: "",
@@ -861,10 +1109,7 @@ const libraryDraftCards = computed(() =>
 const previewEmailHtml = computed(() => {
   const bodyText = campaignForm.value.bodyText.trim();
   const signatureText = campaignForm.value.includeSignature ? effectiveSignatureText.value.trim() : "";
-  const paragraphs = bodyText
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph !== "");
+  const blocks = parseEmailBodyBlocks(bodyText);
 
   const htmlParts: string[] = ['<div class="email-preview-frame-inner">'];
 
@@ -874,8 +1119,8 @@ const previewEmailHtml = computed(() => {
     );
   }
 
-  paragraphs.forEach((paragraph, index) => {
-    htmlParts.push(renderEmailPreviewBlock(paragraph));
+  blocks.forEach((block, index) => {
+    htmlParts.push(renderEmailPreviewBlock(block));
 
     if (index === 0) {
       for (const imageUrl of campaignForm.value.inlineImageUrls) {
@@ -886,7 +1131,7 @@ const previewEmailHtml = computed(() => {
     }
   });
 
-  if (paragraphs.length === 0) {
+  if (blocks.length === 0) {
     htmlParts.push('<p class="email-preview-placeholder">Write the email body here to see the preview.</p>');
   }
 
@@ -1171,6 +1416,53 @@ function applySourceToCampaign(sourceText: string, titleFallback?: string): void
   campaignEditorMode.value = "edit";
 }
 
+function syncCampaignBlocksFromBodyText(): void {
+  if (isSyncingCampaignBodyFromBlocks) {
+    return;
+  }
+
+  isSyncingCampaignBlocksFromBody = true;
+  campaignBlocks.value = parseEmailBodyBlocksToDrafts(campaignForm.value.bodyText);
+  isSyncingCampaignBlocksFromBody = false;
+}
+
+function syncCampaignBodyTextFromBlocks(): void {
+  if (isSyncingCampaignBlocksFromBody) {
+    return;
+  }
+
+  isSyncingCampaignBodyFromBlocks = true;
+  campaignForm.value.bodyText = serializeEmailComposerBlocks(campaignBlocks.value);
+  isSyncingCampaignBodyFromBlocks = false;
+}
+
+function appendCampaignBlock(type: EmailComposerBlockType): void {
+  campaignBlocks.value = [...campaignBlocks.value, createEmailComposerBlockDraft(type)];
+}
+
+function removeCampaignBlock(blockId: string): void {
+  campaignBlocks.value = campaignBlocks.value.filter((block) => block.id !== blockId);
+}
+
+function moveCampaignBlock(blockId: string, direction: "up" | "down"): void {
+  const currentIndex = campaignBlocks.value.findIndex((block) => block.id === blockId);
+
+  if (currentIndex < 0) {
+    return;
+  }
+
+  const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+
+  if (targetIndex < 0 || targetIndex >= campaignBlocks.value.length) {
+    return;
+  }
+
+  const nextBlocks = [...campaignBlocks.value];
+  const [moved] = nextBlocks.splice(currentIndex, 1);
+  nextBlocks.splice(targetIndex, 0, moved);
+  campaignBlocks.value = nextBlocks;
+}
+
 function applyActivationSeed(): void {
   if (!activationSeed.value || campaignSourceMode.value !== "current") {
     return;
@@ -1378,14 +1670,36 @@ function closeCampaignComposer(): void {
 }
 
 function insertLinkPlaceholder(): void {
-  const nextValue = campaignForm.value.bodyText.trimEnd();
-  campaignForm.value.bodyText = nextValue ? `${nextValue}\n\nhttps://` : "https://";
+  const paragraphBlock = [...campaignBlocks.value].reverse().find((block) => block.type === "paragraph");
+
+  if (paragraphBlock) {
+    const nextValue = paragraphBlock.text.trimEnd();
+    paragraphBlock.text = nextValue ? `${nextValue}\nhttps://` : "https://";
+    return;
+  }
+
+  appendCampaignBlock("paragraph");
+  const nextBlock = campaignBlocks.value[campaignBlocks.value.length - 1];
+
+  if (nextBlock) {
+    nextBlock.text = "https://";
+  }
 }
 
 function insertCtaButtonPlaceholder(): void {
-  const placeholder = "[Button: Claim your spot](https://your-link.com)";
-  const nextValue = campaignForm.value.bodyText.trimEnd();
-  campaignForm.value.bodyText = nextValue ? `${nextValue}\n\n${placeholder}` : placeholder;
+  appendCampaignBlock("cta_button");
+}
+
+function insertHeroAnnouncementBlock(): void {
+  appendCampaignBlock("hero");
+}
+
+function insertFeatureListBlock(): void {
+  appendCampaignBlock("feature_list");
+}
+
+function insertCtaSectionBlock(): void {
+  appendCampaignBlock("cta_section");
 }
 
 function toggleSignature(): void {
@@ -2618,6 +2932,22 @@ watch(
 );
 
 watch(
+  () => campaignForm.value.bodyText,
+  () => {
+    syncCampaignBlocksFromBodyText();
+  },
+  { immediate: true },
+);
+
+watch(
+  campaignBlocks,
+  () => {
+    syncCampaignBodyTextFromBlocks();
+  },
+  { deep: true },
+);
+
+watch(
   () => [
     selectedBusinessId.value,
     campaignForm.value.subject,
@@ -2972,11 +3302,109 @@ onBeforeUnmount(() => {
 
                 <input v-model="campaignForm.subject" class="workspace-input" placeholder="Subject line" />
 
-                <textarea
-                  v-model="campaignForm.bodyText"
-                  class="workspace-textarea"
-                  placeholder="Write the email body here."
-                />
+                <section class="email-block-composer">
+                  <div class="email-block-composer-header">
+                    <div>
+                      <p class="panel-meta">Email blocks</p>
+                      <h3>Compose the message without raw markup</h3>
+                      <p class="panel-note">Add sections, edit the content, and let the system render the HTML email.</p>
+                    </div>
+                  </div>
+
+                  <div class="email-block-library">
+                    <button
+                      v-for="entry in EMAIL_COMPOSER_BLOCK_LIBRARY"
+                      :key="entry.type"
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      @click="appendCampaignBlock(entry.type)"
+                    >
+                      Add {{ entry.label }}
+                    </button>
+                  </div>
+
+                  <p v-if="campaignBlocks.length === 0" class="panel-note">
+                    Start with a hero or paragraph block. The email body is built from these sections automatically.
+                  </p>
+
+                  <div v-else class="email-block-stack">
+                    <article v-for="(block, index) in campaignBlocks" :key="block.id" class="email-block-card">
+                      <div class="email-block-card-header">
+                        <div class="email-block-card-copy">
+                          <p class="panel-meta">{{ formatEmailComposerBlockLabel(block.type) }}</p>
+                          <strong>{{ summarizeEmailComposerBlock(block) }}</strong>
+                        </div>
+
+                        <div class="email-block-card-actions">
+                          <button
+                            type="button"
+                            class="workspace-secondary-button compact"
+                            :disabled="index === 0"
+                            @click="moveCampaignBlock(block.id, 'up')"
+                          >
+                            Up
+                          </button>
+                          <button
+                            type="button"
+                            class="workspace-secondary-button compact"
+                            :disabled="index === campaignBlocks.length - 1"
+                            @click="moveCampaignBlock(block.id, 'down')"
+                          >
+                            Down
+                          </button>
+                          <button
+                            type="button"
+                            class="workspace-secondary-button compact"
+                            @click="removeCampaignBlock(block.id)"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+
+                      <template v-if="block.type === 'paragraph'">
+                        <textarea
+                          v-model="block.text"
+                          class="workspace-textarea compact"
+                          placeholder="Write the paragraph copy here."
+                        />
+                      </template>
+
+                      <template v-else-if="block.type === 'cta_button'">
+                        <div class="email-block-field-grid two-up">
+                          <input v-model="block.label" class="workspace-input" placeholder="Button label" />
+                          <input v-model="block.url" class="workspace-input" placeholder="https://your-link.com" />
+                        </div>
+                      </template>
+
+                      <template v-else-if="block.type === 'feature_list'">
+                        <div class="email-block-field-grid">
+                          <input v-model="block.title" class="workspace-input" placeholder="Section title" />
+                          <textarea
+                            v-model="block.itemsText"
+                            class="workspace-textarea compact"
+                            placeholder="One feature or benefit per line."
+                          />
+                        </div>
+                      </template>
+
+                      <template v-else>
+                        <div class="email-block-field-grid">
+                          <input v-model="block.headline" class="workspace-input" placeholder="Headline" />
+                          <textarea
+                            v-model="block.body"
+                            class="workspace-textarea compact"
+                            placeholder="Supporting copy"
+                          />
+                          <div class="email-block-field-grid two-up">
+                            <input v-model="block.buttonLabel" class="workspace-input" placeholder="Button label" />
+                            <input v-model="block.buttonUrl" class="workspace-input" placeholder="https://your-link.com" />
+                          </div>
+                        </div>
+                      </template>
+                    </article>
+                  </div>
+                </section>
 
                 <div class="workspace-actions">
                   <p v-if="campaignSendBlockReason" class="inline-form-message warning">
@@ -3035,11 +3463,23 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="email-editor-toolbar">
+                <button type="button" class="workspace-secondary-button compact" @click="appendCampaignBlock('paragraph')">
+                  Add paragraph
+                </button>
                 <button type="button" class="workspace-secondary-button compact" @click="insertLinkPlaceholder">
                   Insert link
                 </button>
                 <button type="button" class="workspace-secondary-button compact" @click="insertCtaButtonPlaceholder">
                   Insert CTA button
+                </button>
+                <button type="button" class="workspace-secondary-button compact" @click="insertHeroAnnouncementBlock">
+                  Insert hero
+                </button>
+                <button type="button" class="workspace-secondary-button compact" @click="insertFeatureListBlock">
+                  Insert feature list
+                </button>
+                <button type="button" class="workspace-secondary-button compact" @click="insertCtaSectionBlock">
+                  Insert CTA section
                 </button>
                 <button
                   type="button"
@@ -3057,6 +3497,18 @@ onBeforeUnmount(() => {
                 >
                   Preview
                 </button>
+              </div>
+
+              <div v-if="campaignEditorMode === 'edit'" class="email-raw-editor">
+                <div>
+                  <p class="panel-meta">Raw body markup</p>
+                  <p class="panel-note">Optional. Editing this text updates the block composer above.</p>
+                </div>
+                <textarea
+                  v-model="campaignForm.bodyText"
+                  class="workspace-textarea compact"
+                  placeholder="Use raw email block syntax if you need direct control."
+                />
               </div>
 
               <section v-if="campaignEditorMode === 'preview'" class="email-preview-shell">
@@ -4033,6 +4485,76 @@ onBeforeUnmount(() => {
   gap: 16px;
 }
 
+.email-block-composer,
+.email-raw-editor {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 86%, transparent);
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--fc-surface) 96%, white 4%);
+}
+
+.email-block-composer-header {
+  display: grid;
+  gap: 6px;
+}
+
+.email-block-composer-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.email-block-library,
+.email-block-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.email-block-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.email-block-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  border-radius: 22px;
+  background: linear-gradient(180deg, rgba(255, 253, 250, 0.96), rgba(255, 248, 241, 0.9));
+  box-shadow: 0 14px 28px rgba(60, 36, 21, 0.05);
+}
+
+.email-block-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.email-block-card-copy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.email-block-card-copy strong {
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+.email-block-field-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.email-block-field-grid.two-up {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .email-composer-side-card {
   display: grid;
   gap: 10px;
@@ -4418,6 +4940,52 @@ onBeforeUnmount(() => {
 .email-preview-frame :deep(.email-preview-cta-button:hover) {
   color: var(--fc-accent-contrast);
   text-decoration: none;
+}
+
+.email-preview-frame :deep(.email-preview-hero),
+.email-preview-frame :deep(.email-preview-cta-section),
+.email-preview-frame :deep(.email-preview-feature-block) {
+  margin: 24px 0;
+  padding: 24px;
+  border-radius: 24px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+  background: linear-gradient(180deg, rgba(255, 251, 247, 0.98), rgba(255, 245, 236, 0.92));
+}
+
+.email-preview-frame :deep(.email-preview-hero) {
+  text-align: center;
+  background: linear-gradient(180deg, rgba(255, 244, 232, 0.96), rgba(255, 239, 226, 0.9));
+}
+
+.email-preview-frame :deep(.email-preview-cta-section) {
+  background: linear-gradient(180deg, rgba(255, 247, 241, 0.98), rgba(255, 242, 232, 0.92));
+}
+
+.email-preview-frame :deep(.email-preview-section-title) {
+  margin: 0 0 12px;
+  color: #241813;
+  font-size: clamp(1.5rem, 3vw, 2.1rem);
+  line-height: 1.08;
+  font-weight: 900;
+}
+
+.email-preview-frame :deep(.email-preview-section-body) {
+  margin: 0 0 18px;
+  color: #5a463a;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.email-preview-frame :deep(.email-preview-feature-list) {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.email-preview-frame :deep(.email-preview-feature-list li) {
+  color: #3e3028;
+  line-height: 1.65;
 }
 
 .email-preview-frame :deep(.email-preview-image) {
@@ -5361,7 +5929,8 @@ onBeforeUnmount(() => {
   .contact-editor-grid,
   .contact-mapping-grid,
   .contact-preview-row,
-  .contact-directory-row {
+  .contact-directory-row,
+  .email-block-field-grid.two-up {
     grid-template-columns: 1fr;
   }
 }
