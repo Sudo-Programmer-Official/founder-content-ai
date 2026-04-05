@@ -277,6 +277,7 @@ export type EmailContactImportField =
   | "name"
   | "firstName"
   | "lastName"
+  | "lists"
   | "tags"
   | "state"
   | "city"
@@ -329,6 +330,7 @@ export interface EmailContactImportPreviewRow {
   name?: string;
   firstName?: string;
   lastName?: string;
+  lists: string[];
   tags: string[];
   attributes: EmailContactAttributes;
   issues: string[];

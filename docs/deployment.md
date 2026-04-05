@@ -56,17 +56,23 @@ Required environment variables:
 - `OPENAI_MODEL`
 - `PORT`
 - `FRONTEND_ORIGIN`
+- `META_APP_ID`
+- `META_APP_SECRET`
+- `META_REDIRECT_URI`
 
 Recommended production values:
 
 - `OPENAI_MODEL=gpt-4o-mini`
 - `FRONTEND_ORIGIN=https://foundercontent.ai,https://www.foundercontent.ai,https://founder-content-ai.vercel.app`
+- `META_REDIRECT_URI=https://api.foundercontent.ai/api/social-auth/meta/callback`
 
 Notes:
 
 - Render usually injects `PORT` automatically.
 - `FRONTEND_ORIGIN` may be provided as a comma-separated list.
 - the backend also allows the main Vercel project domain and Vercel preview URLs for browser-based testing and preview deploys
+- `META_REDIRECT_URI` must exactly match a Valid OAuth Redirect URI in the Meta app dashboard.
+- use the backend API host for the Meta callback. Do not point Meta OAuth back to the frontend app host.
 
 ## Health Check
 

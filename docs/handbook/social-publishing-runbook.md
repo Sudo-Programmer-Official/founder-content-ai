@@ -46,6 +46,12 @@ Required media and publishing envs:
 - `S3_MEDIA_PUBLIC_BASE_URL`
 - `S3_INSTAGRAM_PUBLIC_PREFIX`
 - `S3_INSTAGRAM_PUBLIC_BASE_URL`
+- `META_APP_ID`
+- `META_APP_SECRET`
+- `META_REDIRECT_URI`
+- `META_GRAPH_VERSION`
+- `META_SCOPE`
+- `META_AUTH_SESSION_SECRET`
 
 Recommended production values:
 
@@ -61,6 +67,21 @@ Notes:
 - `S3_MEDIA_PUBLIC_BASE_URL` is the general public asset host
 - `S3_INSTAGRAM_PUBLIC_BASE_URL` is the Instagram-specific public host
 - the Instagram host should point to a static media CDN distribution, not the website
+- `META_REDIRECT_URI` should resolve to the backend callback route on `api.foundercontent.ai`
+
+## Meta OAuth Checklist
+
+When Facebook Login shows a Meta-hosted "Feature Unavailable" screen before redirecting back to FounderContent AI, treat it as a Meta app configuration or review problem first.
+
+Verify:
+
+- the Meta app is in Live mode for the users you are testing with
+- the Facebook Login product is enabled on the Meta app
+- the Valid OAuth Redirect URI list includes the exact backend callback URL
+- the callback URL uses the backend host: `https://api.foundercontent.ai/api/social-auth/meta/callback`
+- required app details such as privacy policy, app icon, and contact details are filled in
+- Data Use Checkup or any Meta-requested app details are completed in the dashboard
+- the testing Facebook account has access to a Facebook Page, because the app expects `/me/accounts` to return pages after login
 
 ## Storage Layout
 

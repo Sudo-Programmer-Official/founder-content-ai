@@ -161,6 +161,59 @@ Development note:
 
 - local stub mode can also elevate a request with `X-Dev-Super-Admin: true`
 
+### `META_APP_ID`
+
+Purpose:
+
+- Meta app id used to start the Facebook Login OAuth flow for Facebook and Instagram publishing
+
+### `META_APP_SECRET`
+
+Purpose:
+
+- Meta app secret used for OAuth code exchange and token inspection
+
+### `META_REDIRECT_URI`
+
+Purpose:
+
+- exact backend callback URL registered in the Meta app for Facebook Login
+
+Production rule:
+
+- this must point to the backend host, not the frontend host
+- recommended production value: `https://api.foundercontent.ai/api/social-auth/meta/callback`
+
+### `META_GRAPH_VERSION`
+
+Purpose:
+
+- Graph API version used for Meta OAuth and page discovery
+
+Recommended default:
+
+- `v21.0`
+
+### `META_SCOPE`
+
+Purpose:
+
+- space-separated Meta permissions requested during connect
+
+Current default:
+
+- `business_management pages_show_list pages_read_engagement pages_manage_posts pages_manage_metadata instagram_basic instagram_content_publish`
+
+### `META_AUTH_SESSION_SECRET`
+
+Purpose:
+
+- encrypts the short-lived page-selection payload returned after Meta OAuth succeeds
+
+Runtime note:
+
+- if omitted, the backend falls back to `SOCIAL_AUTH_STATE_SECRET`
+
 ### `AI_ESTIMATED_COST_PER_1K_TOKENS_USD`
 
 Purpose:

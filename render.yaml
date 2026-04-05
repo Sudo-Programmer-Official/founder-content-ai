@@ -46,6 +46,18 @@ services:
         sync: false
       - key: LINKEDIN_SCOPE
         sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_REDIRECT_URI
+        sync: false
+      - key: META_GRAPH_VERSION
+        sync: false
+      - key: META_SCOPE
+        sync: false
+      - key: META_AUTH_SESSION_SECRET
+        sync: false
       - key: SOCIAL_ACCOUNT_ENCRYPTION_SECRET
         sync: false
       - key: SOCIAL_AUTH_STATE_SECRET
@@ -133,6 +145,18 @@ services:
       - key: LINKEDIN_REDIRECT_URI
         sync: false
       - key: LINKEDIN_SCOPE
+        sync: false
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_REDIRECT_URI
+        sync: false
+      - key: META_GRAPH_VERSION
+        sync: false
+      - key: META_SCOPE
+        sync: false
+      - key: META_AUTH_SESSION_SECRET
         sync: false
       - key: SOCIAL_ACCOUNT_ENCRYPTION_SECRET
         sync: false
