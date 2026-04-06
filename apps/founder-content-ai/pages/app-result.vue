@@ -8131,7 +8131,7 @@ onBeforeUnmount(() => {
 .result-operator-grid {
   display: grid;
   gap: 20px;
-  grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
 
@@ -8143,6 +8143,10 @@ onBeforeUnmount(() => {
 
 .result-primary-surface {
   height: auto;
+  align-self: start;
+}
+
+.result-preview-surface {
   align-self: start;
 }
 
@@ -8298,7 +8302,7 @@ onBeforeUnmount(() => {
 .result-platform-card-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   margin-top: 18px;
 }
 
