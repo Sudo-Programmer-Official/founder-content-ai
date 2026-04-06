@@ -406,10 +406,16 @@ export interface PublishPostResponse {
   asset?: import("./analytics.ts").ContentAsset;
 }
 
+export interface CreatePublishAttemptPlatformInput {
+  platform: SocialPlatform;
+  contentText: string;
+}
+
 export interface CreatePublishAttemptRequest {
   businessId: string;
   platforms: SocialPlatform[];
   contentText: string;
+  platformInputs?: CreatePublishAttemptPlatformInput[];
   assetId?: string;
   slides?: ScheduledPostSlide[];
   title?: string;

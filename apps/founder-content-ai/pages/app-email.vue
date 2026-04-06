@@ -364,6 +364,14 @@ type CampaignEditorMode = "edit" | "preview";
 type CampaignComposerIntent = "quick_update" | "promotion" | "story_email" | "weekly_newsletter";
 type DomainValidationField = "domainName" | "fromEmail";
 type EmailComposerBlockType = EmailBodyBlock["type"];
+type EmailRoutePrefill = {
+  title: string;
+  subject: string;
+  body: string;
+  ctaLabel: string;
+  ctaUrl: string;
+  headerImageUrl: string;
+};
 
 type EmailComposerBlockDraft = {
   id: string;
@@ -1036,15 +1044,50 @@ const activationSeed = computed(() => {
   const draftId = typeof route.query.draftId === "string" ? route.query.draftId : "";
   const prefillText = typeof route.query.prefill === "string" ? route.query.prefill.trim() : "";
 
-  if (draftId) {
-    return getActivationDraft(draftId)?.result.post ?? prefillText;
+  if (prefillText) {
+    return prefillText;
   }
 
-  return prefillText;
+  if (draftId) {
+    return getActivationDraft(draftId)?.result.post ?? "";
+  }
+
+  return "";
 });
 const activationDraft = computed(() => {
   const draftId = typeof route.query.draftId === "string" ? route.query.draftId : "";
   return draftId ? getActivationDraft(draftId) : null;
+});
+const activationEmailPrefill = computed<EmailRoutePrefill | null>(() => {
+  const routeTitle = typeof route.query.emailTitle === "string" ? route.query.emailTitle.trim() : "";
+  const routeSubject = typeof route.query.emailSubject === "string" ? route.query.emailSubject.trim() : "";
+  const routeBody = typeof route.query.emailBody === "string" ? route.query.emailBody.trim() : "";
+  const routeCtaLabel = typeof route.query.emailCtaLabel === "string" ? route.query.emailCtaLabel.trim() : "";
+  const routeCtaUrl = typeof route.query.emailCtaUrl === "string" ? route.query.emailCtaUrl.trim() : "";
+  const routeHeaderImageUrl =
+    typeof route.query.emailHeaderImageUrl === "string" ? route.query.emailHeaderImageUrl.trim() : "";
+  const businessOutput = activationDraft.value?.result.businessOutput;
+  const title =
+    routeTitle
+    || activationDraft.value?.result.idea.title?.trim()
+    || (activationSeed.value ? buildSourceTitle(activationSeed.value) : "");
+  const subject = routeSubject || businessOutput?.email?.subject?.trim() || "";
+  const body = routeBody || businessOutput?.email?.body?.trim() || "";
+  const ctaLabel = routeCtaLabel || businessOutput?.cta.label?.trim() || "";
+  const ctaUrl = routeCtaUrl || businessOutput?.cta.url?.trim() || "";
+
+  if (!subject && !body && !ctaLabel && !ctaUrl && !routeHeaderImageUrl) {
+    return null;
+  }
+
+  return {
+    title,
+    subject,
+    body,
+    ctaLabel,
+    ctaUrl,
+    headerImageUrl: routeHeaderImageUrl,
+  };
 });
 const selectedLibraryDraft = computed(() =>
   selectedLibraryDraftId.value ? getActivationDraft(selectedLibraryDraftId.value) : null,
@@ -1471,6 +1514,53 @@ function applyActivationSeed(): void {
   applySourceToCampaign(activationSeed.value, activationDraft.value?.result.idea.title);
 }
 
+function buildEmailBlocksFromPrefill(
+  bodyText: string,
+  ctaLabel: string,
+  ctaUrl: string,
+): EmailComposerBlockDraft[] {
+  const blocks = parseEmailBodyBlocksToDrafts(bodyText);
+  const hasExistingCta = blocks.some((block) => block.type === "cta_button" || block.type === "cta_section");
+
+  if (ctaLabel && ctaUrl && !hasExistingCta) {
+    blocks.push(
+      createEmailComposerBlockDraft("cta_button", {
+        label: ctaLabel,
+        url: ctaUrl,
+      }),
+    );
+  }
+
+  return blocks;
+}
+
+function applyActivationEmailPrefill(prefill: EmailRoutePrefill): void {
+  if (prefill.title) {
+    campaignForm.value.name = prefill.title;
+  }
+
+  if (prefill.subject) {
+    campaignForm.value.subject = prefill.subject;
+  }
+
+  const nextBodyText = prefill.body || campaignForm.value.bodyText.trim();
+
+  if (prefill.body) {
+    campaignForm.value.bodyText = prefill.body;
+  }
+
+  const nextBlocks = buildEmailBlocksFromPrefill(nextBodyText, prefill.ctaLabel, prefill.ctaUrl);
+
+  if (nextBlocks.length > 0) {
+    campaignBlocks.value = nextBlocks;
+  }
+
+  if (prefill.headerImageUrl) {
+    campaignForm.value.headerImageUrl = prefill.headerImageUrl;
+    campaignAdvancedOpen.value = true;
+  }
+}
+
 function useCurrentSource(): void {
   campaignSourceMode.value = "current";
   resetSelectedMedia();
@@ -1533,13 +1623,20 @@ function buildCampaignRouteSyncKey(): string {
   const draftId = typeof route.query.draftId === "string" ? route.query.draftId : "";
   const duplicateId = duplicateCampaignId.value;
   const prefill = typeof route.query.prefill === "string" ? route.query.prefill.trim() : "";
+  const emailTitle = typeof route.query.emailTitle === "string" ? route.query.emailTitle.trim() : "";
+  const emailSubject = typeof route.query.emailSubject === "string" ? route.query.emailSubject.trim() : "";
+  const emailBody = typeof route.query.emailBody === "string" ? route.query.emailBody.trim() : "";
+  const emailCtaLabel = typeof route.query.emailCtaLabel === "string" ? route.query.emailCtaLabel.trim() : "";
+  const emailCtaUrl = typeof route.query.emailCtaUrl === "string" ? route.query.emailCtaUrl.trim() : "";
+  const emailHeaderImageUrl =
+    typeof route.query.emailHeaderImageUrl === "string" ? route.query.emailHeaderImageUrl.trim() : "";
 
   if (isEmailEditRoute.value) {
     return `edit:${routeCampaignId.value}`;
   }
 
   if (isEmailNewRoute.value) {
-    return `new:${draftId}:${duplicateId}:${prefill}`;
+    return `new:${draftId}:${duplicateId}:${prefill}:${emailTitle}:${emailSubject}:${emailBody}:${emailCtaLabel}:${emailCtaUrl}:${emailHeaderImageUrl}`;
   }
 
   return `dashboard:${activeEmailTab.value}`;
@@ -1579,6 +1676,20 @@ function syncCampaignComposerToRoute(options: { force?: boolean } = {}): void {
     if (activationSeed.value) {
       campaignSourceMode.value = "current";
       applyActivationSeed();
+    }
+
+    if (activationDraft.value?.result.idea.title?.trim()) {
+      campaignForm.value.name = activationDraft.value.result.idea.title.trim();
+    }
+
+    if (activationEmailPrefill.value) {
+      applyActivationEmailPrefill(activationEmailPrefill.value);
+      feedbackMessage.value =
+        activationEmailPrefill.value.headerImageUrl
+          ? "Draft pulled into the email composer with subject, CTA, and media prefilled."
+          : activationEmailPrefill.value.ctaLabel && activationEmailPrefill.value.ctaUrl
+            ? "Draft pulled into the email composer with subject and CTA prefilled."
+            : "Draft pulled into the email composer with subject and body prefilled.";
     }
 
     campaignRouteSyncKey.value = nextRouteKey;
@@ -2325,6 +2436,12 @@ function setEmailTab(tab: EmailTabKey): void {
 
     delete nextQuery.draftId;
     delete nextQuery.prefill;
+    delete nextQuery.emailTitle;
+    delete nextQuery.emailSubject;
+    delete nextQuery.emailBody;
+    delete nextQuery.emailCtaLabel;
+    delete nextQuery.emailCtaUrl;
+    delete nextQuery.emailHeaderImageUrl;
     void router.replace({ path: appRoutes.appEmail, query: nextQuery });
     return;
   }
@@ -2919,7 +3036,20 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
 });
 
 watch(
-  () => [route.name, route.params.campaignId, route.query.draftId, route.query.duplicateCampaignId, route.query.prefill, selectedBusinessId.value],
+  () => [
+    route.name,
+    route.params.campaignId,
+    route.query.draftId,
+    route.query.duplicateCampaignId,
+    route.query.prefill,
+    route.query.emailTitle,
+    route.query.emailSubject,
+    route.query.emailBody,
+    route.query.emailCtaLabel,
+    route.query.emailCtaUrl,
+    route.query.emailHeaderImageUrl,
+    selectedBusinessId.value,
+  ],
   () => {
     loadActivationDraftLibrary();
     syncCampaignComposerToRoute({ force: true });

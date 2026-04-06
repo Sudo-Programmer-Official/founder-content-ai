@@ -117,6 +117,31 @@ interface PlatformPublishAttemptResult {
   externalPostUrl?: string;
 }
 
+type PreviewNoticeTone = "default" | "warning";
+
+interface ResultPreviewNotice {
+  tone: PreviewNoticeTone;
+  label: string;
+  detail: string;
+}
+
+interface ResultPlatformPreviewCard {
+  surface: ResultPreviewSurface;
+  label: string;
+  accountLabel: string;
+  accountDescriptor: string;
+  previewText: string;
+  previewParagraphs: string[];
+  subject: string;
+  primaryMetric: string;
+  secondaryMetric: string;
+  excerpt: string;
+  notices: ResultPreviewNotice[];
+  mediaSummary: string;
+  previewAsset: PostAsset | null;
+  isDirty: boolean;
+}
+
 interface DraftMediaPreferences {
   primaryAssetId?: string;
   posterAssetId?: string;
@@ -126,6 +151,8 @@ interface DraftMediaPreferences {
   motionAudioTrack?: MotionAudioTrack;
   promoVisualLayout?: PromoVisualLayoutId;
 }
+
+type ResultPreviewSurface = PublishableSocialPlatform | "email";
 
 const draft = ref<ActivationDraftRecord | null>(null);
 const selectedCreatorVariantId = ref("");
@@ -146,6 +173,7 @@ const selectedPublishingPlatform = ref<PublishableSocialPlatform>(initialPublish
 const selectedPublishingPlatforms = ref<PublishableSocialPlatform[]>(
   initialPublishingPlatforms.length > 0 ? initialPublishingPlatforms : [initialPublishingPlatform],
 );
+const selectedResultPreviewSurface = ref<ResultPreviewSurface>(initialPublishingPlatform);
 const isMetaSelectionModalOpen = ref(false);
 const pendingMetaSession = ref("");
 const isLoadingPostAssets = ref(false);
@@ -160,6 +188,17 @@ const selectedMotionTemplateId = ref<MotionTemplateId>("subtle_zoom");
 const selectedMotionAudioEnabled = ref(true);
 const selectedMotionAudioPreset = ref<MotionAudioPreset>("clean_modern");
 const selectedPromoVisualLayout = ref<PromoVisualLayoutId>("logo_headline");
+const editablePostContent = ref("");
+const isSavingManualEdit = ref(false);
+const manualEditFeedback = ref("");
+const editableInstagramContent = ref("");
+const editableFacebookContent = ref("");
+const editableEmailSubject = ref("");
+const editableEmailBody = ref("");
+const editableCtaLabel = ref("");
+const editableCtaUrl = ref("");
+const isSavingPublishingSetup = ref(false);
+const publishingSetupFeedback = ref("");
 const PROMO_VISUAL_LAYOUT_OPTIONS: Array<{ value: PromoVisualLayoutId; label: string; description: string }> = [
   {
     value: "logo_headline",
@@ -417,6 +456,274 @@ function extractPreviewBody(paragraphs: string[], leadLines: string[]): string[]
   return [firstParagraph, ...paragraphs.slice(1)]
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph !== "");
+}
+
+function countWords(value: string): number {
+  return value
+    .trim()
+    .split(/\s+/)
+    .filter((token) => token !== "").length;
+}
+
+function cloneBusinessOutput(source: BusinessContentOutput): BusinessContentOutput {
+  return {
+    hooks: [...source.hooks],
+    visual: { ...source.visual },
+    captions: { ...source.captions },
+    cta: {
+      ...source.cta,
+      alternatives: source.cta.alternatives ? [...source.cta.alternatives] : undefined,
+    },
+    hashtags: source.hashtags ? [...source.hashtags] : undefined,
+    email: source.email ? { ...source.email } : undefined,
+  };
+}
+
+function formatPostAssetChoiceLabel(asset: PostAsset): string {
+  const sourceLabel = asset.source === "generated" ? "Generated" : "Uploaded";
+  const typeLabel = asset.type === "video" ? "video" : "image";
+  const aspectRatio = asset.metadata.aspectRatio ? ` · ${asset.metadata.aspectRatio}` : "";
+
+  return `${sourceLabel} ${typeLabel} ${asset.orderIndex + 1}${aspectRatio}`;
+}
+
+function resolvePublishingContentText(platform: PublishableSocialPlatform): string {
+  if (platform === "instagram") {
+    return businessOutput.value?.captions.instagram?.trim() || postContent.value;
+  }
+
+  if (platform === "facebook") {
+    return businessOutput.value?.captions.facebook?.trim() || postContent.value;
+  }
+
+  return postContent.value;
+}
+
+function countHashtags(value: string): number {
+  return value.match(/(^|\s)#[^\s#]+/g)?.length ?? 0;
+}
+
+function truncatePreviewExcerpt(value: string, limit = 156): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+
+  if (compact.length <= limit) {
+    return compact;
+  }
+
+  return `${compact.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+function resolvePreviewSurfaceText(surface: ResultPreviewSurface): string {
+  if (surface === "email") {
+    return editableEmailBody.value;
+  }
+
+  if (surface === "instagram") {
+    return editableInstagramContent.value;
+  }
+
+  if (surface === "facebook") {
+    return editableFacebookContent.value;
+  }
+
+  return editablePostContent.value;
+}
+
+function resolvePreviewSurfaceSubject(surface: ResultPreviewSurface): string {
+  return surface === "email" ? editableEmailSubject.value : "";
+}
+
+function resolvePreviewSurfaceDirty(surface: ResultPreviewSurface): boolean {
+  if (surface === "email") {
+    return isEmailEditDirty.value;
+  }
+
+  if (surface === "instagram") {
+    return isInstagramEditDirty.value;
+  }
+
+  if (surface === "facebook") {
+    return isFacebookEditDirty.value;
+  }
+
+  return isManualEditDirty.value;
+}
+
+function resolveConnectedAccountForPlatform(platform: PublishableSocialPlatform): SocialAccount | null {
+  if (platform === "instagram") {
+    return connectedInstagramAccount.value;
+  }
+
+  if (platform === "facebook") {
+    return connectedFacebookAccount.value;
+  }
+
+  return connectedLinkedInAccount.value;
+}
+
+function resolvePreviewSurfaceAccountLabel(surface: ResultPreviewSurface): string {
+  if (surface === "email") {
+    return workspaceBrandLabel.value || "Workspace email";
+  }
+
+  return resolvePublishingAccountLabel(surface, resolveConnectedAccountForPlatform(surface));
+}
+
+function resolvePreviewSurfaceAccountDescriptor(surface: ResultPreviewSurface): string {
+  if (surface === "email") {
+    return "Email draft preview";
+  }
+
+  return resolvePublishingDescriptor(surface, resolveConnectedAccountForPlatform(surface));
+}
+
+function resolvePreviewSurfaceMediaSummary(surface: ResultPreviewSurface): string {
+  if (surface === "email") {
+    if (readyImageCount.value > 0) {
+      return `${readyImageCount.value} image${readyImageCount.value === 1 ? "" : "s"} available for the email header`;
+    }
+
+    return "Text-first email preview";
+  }
+
+  const counts = summarizeEffectivePostAssetsForPlatform(surface);
+
+  if (counts.videoCount > 0) {
+    return `${counts.videoCount} video${counts.videoCount === 1 ? "" : "s"} ready`;
+  }
+
+  if (counts.imageCount > 0) {
+    return `${counts.imageCount} image${counts.imageCount === 1 ? "" : "s"} ready`;
+  }
+
+  return "Text-first preview";
+}
+
+function resolvePreviewSurfaceAsset(surface: ResultPreviewSurface): PostAsset | null {
+  if (surface === "email") {
+    return null;
+  }
+
+  return resolveEffectivePostAssetsForPlatform(surface).find((asset) => Boolean(asset.previewUrl)) ?? null;
+}
+
+function buildPreviewSurfaceNotices(
+  surface: ResultPreviewSurface,
+  previewText: string,
+  subject: string,
+): ResultPreviewNotice[] {
+  const text = previewText.trim();
+  const normalizedSubject = subject.trim();
+  const paragraphs = splitPostParagraphs(previewText);
+  const opener = paragraphs[0]?.replace(/\s+/g, " ").trim() ?? "";
+  const charCount = text.length;
+  const wordCount = countWords(previewText);
+  const notices: ResultPreviewNotice[] = [];
+
+  if (surface === "email") {
+    if (!normalizedSubject) {
+      notices.push({
+        tone: "warning",
+        label: "Subject still needs a line",
+        detail: "Add a subject before routing this into the email flow so the inbox preview is not blank.",
+      });
+    } else if (normalizedSubject.length > 68) {
+      notices.push({
+        tone: "warning",
+        label: "Subject may truncate",
+        detail: "Trim the subject so more of the promise survives the inbox preview.",
+      });
+    }
+
+    if (!text) {
+      notices.push({
+        tone: "warning",
+        label: "Email body is empty",
+        detail: "Add the body copy before converting or sending this version.",
+      });
+    } else if (wordCount > 260 || paragraphs.length > 7) {
+      notices.push({
+        tone: "warning",
+        label: "Body is getting dense",
+        detail: "Cut a section or tighten paragraphs so the main CTA stays visible without too much scrolling.",
+      });
+    }
+  } else {
+    if (!text) {
+      notices.push({
+        tone: "warning",
+        label: "No copy yet",
+        detail: `Add the ${resolveSocialPlatformLabel(surface)} version before publishing this platform.`,
+      });
+    }
+
+    if (surface === "linkedin") {
+      if (opener.length > 220) {
+        notices.push({
+          tone: "warning",
+          label: "Opening may fold too early",
+          detail: "Trim the first beat so the hook lands before LinkedIn hides the rest behind the fold.",
+        });
+      } else if (charCount > 2400) {
+        notices.push({
+          tone: "warning",
+          label: "Long for a feed read",
+          detail: "This is still publishable, but shortening the body will make the CTA easier to reach.",
+        });
+      }
+    } else if (surface === "instagram") {
+      if (opener.length > 150) {
+        notices.push({
+          tone: "warning",
+          label: "Caption opener is heavy",
+          detail: "Instagram lands better when the first lines carry the promise quickly.",
+        });
+      }
+
+      if (charCount > 1800) {
+        notices.push({
+          tone: "warning",
+          label: "Caption may feel long",
+          detail: "Consider a tighter caption so the visual and CTA do more of the work.",
+        });
+      }
+
+      if (countHashtags(previewText) > 12) {
+        notices.push({
+          tone: "warning",
+          label: "Hashtag block is noisy",
+          detail: "Cut the hashtag stack so the CTA and main message stay more credible.",
+        });
+      }
+    } else if (surface === "facebook") {
+      if (opener.length > 240) {
+        notices.push({
+          tone: "warning",
+          label: "First paragraph is heavy",
+          detail: "Shorten the opener so the value lands before the copy starts to feel like a wall.",
+        });
+      } else if (charCount > 1500 || paragraphs.length > 6) {
+        notices.push({
+          tone: "warning",
+          label: "Facebook copy is dense",
+          detail: "Break this down or cut a section so the post is easier to skim on mobile.",
+        });
+      }
+    }
+  }
+
+  if (notices.length === 0) {
+    notices.push({
+      tone: "default",
+      label: "Preview is in range",
+      detail:
+        surface === "email"
+          ? "Subject and body should preview cleanly before you move into audience and send review."
+          : `${resolveSocialPlatformLabel(surface)} copy is sitting in a reasonable range for a fast feed scan.`,
+    });
+  }
+
+  return notices.slice(0, 2);
 }
 
 function normalizeCarouselDraftSlide(value: unknown): CarouselDraftSlide | null {
@@ -1029,6 +1336,31 @@ const isSingleBusinessPost = computed(
 const businessSingleOutputLabel = computed(() =>
   businessSelectedChannels.value[0] === "email" ? "email" : "post",
 );
+const resultPreviewSurfaceOptions = computed<Array<{
+  value: ResultPreviewSurface;
+  label: string;
+}>>(() => {
+  const options: Array<{
+    value: ResultPreviewSurface;
+    label: string;
+  }> = [
+    { value: "linkedin", label: "LinkedIn" },
+  ];
+
+  if (!isBusinessMode.value || businessOutput.value?.captions.instagram) {
+    options.push({ value: "instagram", label: "Instagram" });
+  }
+
+  if (!isBusinessMode.value || businessOutput.value?.captions.facebook) {
+    options.push({ value: "facebook", label: "Facebook" });
+  }
+
+  if (businessOutput.value?.email) {
+    options.push({ value: "email", label: "Email" });
+  }
+
+  return options;
+});
 const creatorOutput = computed<CreatorPostGenerationOutput | null>(() =>
   generationOutput.value?.kind === "creator_post" ? generationOutput.value : null,
 );
@@ -1158,6 +1490,182 @@ const postContent = computed(() => {
   }
 
   return activeCreatorVariant.value?.content ?? draft.value?.result.post ?? "";
+});
+const isManualEditDirty = computed(() =>
+  editablePostContent.value.trim() !== postContent.value.trim(),
+);
+const isInstagramEditDirty = computed(() =>
+  editableInstagramContent.value.trim() !== (businessOutput.value?.captions.instagram ?? "").trim(),
+);
+const isFacebookEditDirty = computed(() =>
+  editableFacebookContent.value.trim() !== (businessOutput.value?.captions.facebook ?? "").trim(),
+);
+const isEmailEditDirty = computed(() =>
+  editableEmailSubject.value.trim() !== (businessOutput.value?.email?.subject ?? "").trim()
+  || editableEmailBody.value.trim() !== (businessOutput.value?.email?.body ?? "").trim(),
+);
+const isCtaDirty = computed(() =>
+  editableCtaLabel.value.trim() !== (businessOutput.value?.cta.label ?? "").trim()
+  || editableCtaUrl.value.trim() !== (businessOutput.value?.cta.url ?? "").trim(),
+);
+const isSelectedSurfaceDirty = computed(() => {
+  if (selectedResultPreviewSurface.value === "email") {
+    return isEmailEditDirty.value;
+  }
+
+  if (selectedResultPreviewSurface.value === "instagram") {
+    return isInstagramEditDirty.value;
+  }
+
+  if (selectedResultPreviewSurface.value === "facebook") {
+    return isFacebookEditDirty.value;
+  }
+
+  return isManualEditDirty.value;
+});
+const hasPendingSocialPublishChanges = computed(() =>
+  isManualEditDirty.value
+  || isInstagramEditDirty.value
+  || isFacebookEditDirty.value,
+);
+const selectedSurfaceEditorCopy = computed(() => {
+  if (selectedResultPreviewSurface.value === "email") {
+    return {
+      title: "Edit email variant",
+      primary: `Subject ${editableEmailSubject.value.trim().length} chars`,
+      secondary: `${countWords(editableEmailBody.value)} words · ${editableEmailBody.value.trim().length} chars`,
+      hint: "Keep the subject tight. The body can go longer when it stays broken into scannable sections.",
+    };
+  }
+
+  const activeText =
+    selectedResultPreviewSurface.value === "instagram"
+      ? editableInstagramContent.value
+      : selectedResultPreviewSurface.value === "facebook"
+        ? editableFacebookContent.value
+        : editablePostContent.value;
+  const charCount = activeText.trim().length;
+  const wordCount = countWords(activeText);
+
+  if (selectedResultPreviewSurface.value === "instagram") {
+    return {
+      title: "Edit Instagram caption",
+      primary: `${charCount} chars`,
+      secondary: `${wordCount} words`,
+      hint: "Instagram lands better when the first lines do the work quickly. Tight is usually easier to scan than long.",
+    };
+  }
+
+  if (selectedResultPreviewSurface.value === "facebook") {
+    return {
+      title: "Edit Facebook caption",
+      primary: `${charCount} chars`,
+      secondary: `${wordCount} words`,
+      hint: "Facebook can hold a bit more context, but the opener still needs to make the value obvious fast.",
+    };
+  }
+
+  return {
+    title: "Edit LinkedIn draft",
+    primary: `${charCount} chars`,
+    secondary: `${wordCount} words`,
+    hint: "LinkedIn gives you room for a hook, proof, and CTA, but the opening still has to carry the first swipe.",
+  };
+});
+const selectedResultPreviewText = computed(() => {
+  return resolvePreviewSurfaceText(selectedResultPreviewSurface.value);
+});
+const selectedResultPreviewParagraphs = computed(() =>
+  splitPostParagraphs(selectedResultPreviewText.value),
+);
+const selectedResultPreviewSubject = computed(() =>
+  resolvePreviewSurfaceSubject(selectedResultPreviewSurface.value).trim(),
+);
+const selectedPreviewLengthSummary = computed(() => {
+  if (selectedResultPreviewSurface.value === "email") {
+    return {
+      primary: `Subject ${selectedResultPreviewSubject.value.length} chars`,
+      secondary: `${countWords(selectedResultPreviewText.value)} words in body`,
+    };
+  }
+
+  return {
+    primary: `${selectedResultPreviewText.value.trim().length} chars`,
+      secondary: `${countWords(selectedResultPreviewText.value)} words`,
+  };
+});
+const platformPreviewCards = computed<ResultPlatformPreviewCard[]>(() =>
+  resultPreviewSurfaceOptions.value.map((option) => {
+    const previewText = resolvePreviewSurfaceText(option.value);
+    const previewParagraphs = splitPostParagraphs(previewText);
+    const subject = resolvePreviewSurfaceSubject(option.value).trim();
+    const notices = buildPreviewSurfaceNotices(option.value, previewText, subject);
+    const excerptSource =
+      option.value === "email"
+        ? `${subject}${subject && previewText.trim() ? " · " : ""}${previewText}`
+        : previewText;
+
+    return {
+      surface: option.value,
+      label: option.label,
+      accountLabel: resolvePreviewSurfaceAccountLabel(option.value),
+      accountDescriptor: resolvePreviewSurfaceAccountDescriptor(option.value),
+      previewText,
+      previewParagraphs,
+      subject,
+      primaryMetric:
+        option.value === "email"
+          ? `Subject ${subject.length} chars`
+          : `${previewText.trim().length} chars`,
+      secondaryMetric:
+        option.value === "email"
+          ? `${countWords(previewText)} words in body`
+          : `${countWords(previewText)} words`,
+      excerpt: truncatePreviewExcerpt(excerptSource || "No preview text yet."),
+      notices,
+      mediaSummary: resolvePreviewSurfaceMediaSummary(option.value),
+      previewAsset: resolvePreviewSurfaceAsset(option.value),
+      isDirty: resolvePreviewSurfaceDirty(option.value),
+    };
+  }),
+);
+const selectedPreviewCard = computed<ResultPlatformPreviewCard | null>(() =>
+  platformPreviewCards.value.find((card) => card.surface === selectedResultPreviewSurface.value)
+  ?? platformPreviewCards.value[0]
+  ?? null,
+);
+const selectedPreviewWarnings = computed(() => selectedPreviewCard.value?.notices ?? []);
+const selectedPublishingOverflowWarnings = computed(() =>
+  selectedPublishingPlatforms.value.flatMap((platform) => {
+    const previewCard = platformPreviewCards.value.find((card) => card.surface === platform);
+
+    if (!previewCard) {
+      return [];
+    }
+
+    return previewCard.notices
+      .filter((notice) => notice.tone === "warning")
+      .slice(0, 2)
+      .map((notice) => ({
+        platform,
+        label: notice.label,
+        detail: notice.detail,
+      }));
+  }),
+);
+const editorHelperCopy = computed(() => {
+  if (selectedResultPreviewSurface.value === "email" && businessOutput.value?.email) {
+    return "Edit the email subject and body here, then use Convert to Email for audience, sender, and final send review.";
+  }
+
+  if (
+    isBusinessMode.value &&
+    (selectedResultPreviewSurface.value === "instagram" || selectedResultPreviewSurface.value === "facebook")
+  ) {
+    return `${resolveSocialPlatformLabel(selectedResultPreviewSurface.value)} can ship a tighter variant than LinkedIn. Save the channel-specific copy here to keep the preview and publish flow aligned.`;
+  }
+
+  return "Edit the final draft here, save it, then publish, schedule, or convert it without bouncing between helper cards.";
 });
 const postParagraphs = computed(() => splitPostParagraphs(postContent.value));
 const previewLeadLines = computed(() => extractPreviewLead(postParagraphs.value));
@@ -1643,6 +2151,9 @@ const motionLiteUnavailableReason = computed(() => {
   return "";
 });
 const canGenerateMotionLite = computed(() => motionLiteUnavailableReason.value === "");
+const shouldShowAdvancedMotionControls = computed(() =>
+  readyImageCount.value > 0 || Boolean(motionLiteDerivedVideoAsset.value),
+);
 
 function getMotionTemplateLabel(templateId: MotionTemplateId): string {
   switch (templateId) {
@@ -2481,6 +2992,56 @@ const signalPills = computed(() => [
   `${structureSignal.value} structure`,
   `${hooks.value.length} alternate hook${hooks.value.length === 1 ? "" : "s"}`,
 ]);
+const readyPostAssets = computed(() =>
+  postAssets.value.filter((asset) => asset.status === "ready"),
+);
+const currentPrimaryAssetSelectionId = computed(() =>
+  draftMediaPrimaryAssetId.value.trim() || "",
+);
+const currentPosterAssetSelectionId = computed(() =>
+  draftMediaPosterAssetId.value.trim() || "",
+);
+const selectedPublishingPreviewAsset = computed(() =>
+  resolveEffectivePostAssetsForPlatform(selectedPublishingPlatform.value).find((asset) => Boolean(asset.previewUrl)) ?? null,
+);
+const selectedPublishingMediaSummary = computed(() => {
+  const counts = summarizeEffectivePostAssetsForPlatform(selectedPublishingPlatform.value);
+
+  if (counts.videoCount > 0) {
+    return `${counts.videoCount} video${counts.videoCount === 1 ? "" : "s"} ready`;
+  }
+
+  if (counts.imageCount > 0) {
+    return `${counts.imageCount} image${counts.imageCount === 1 ? "" : "s"} ready`;
+  }
+
+  return "No media attached yet";
+});
+const selectedPublishingCtaLabel = computed(() =>
+  businessOutput.value?.cta.label?.trim() || "No CTA attached",
+);
+const primaryAssetSelectionSummary = computed(() => {
+  const selectedAsset = readyPostAssets.value.find((asset) => asset.id === currentPrimaryAssetSelectionId.value);
+
+  if (selectedAsset) {
+    return formatPostAssetChoiceLabel(selectedAsset);
+  }
+
+  if (selectedPublishingPreviewAsset.value) {
+    return `${formatPostAssetChoiceLabel(selectedPublishingPreviewAsset.value)} · currently previewing`;
+  }
+
+  return "No explicit primary asset selected";
+});
+const posterAssetSelectionSummary = computed(() => {
+  const selectedAsset = readyImageAssets.value.find((asset) => asset.id === currentPosterAssetSelectionId.value);
+
+  if (selectedAsset) {
+    return formatPostAssetChoiceLabel(selectedAsset);
+  }
+
+  return "LinkedIn uses the current image preview when a fallback is not pinned yet.";
+});
 
 const growthMechanics = computed(() => [
   {
@@ -3091,12 +3652,14 @@ async function loadDraft(): Promise<void> {
 }
 
 async function copyPost(options?: { silent?: boolean }): Promise<boolean> {
-  if (!postContent.value.trim() || typeof navigator === "undefined" || !navigator.clipboard) {
+  const valueToCopy = resolvePreviewSurfaceText(selectedPublishingPlatform.value).trim();
+
+  if (!valueToCopy || typeof navigator === "undefined" || !navigator.clipboard) {
     return false;
   }
 
   try {
-    await navigator.clipboard.writeText(postContent.value);
+    await navigator.clipboard.writeText(valueToCopy);
 
     if (!options?.silent) {
       feedbackMessage.value = "Ready to post. Copied to clipboard.";
@@ -3149,36 +3712,288 @@ async function copyCustomText(
   }
 }
 
+function setResultPreviewSurface(surface: ResultPreviewSurface): void {
+  selectedResultPreviewSurface.value = surface;
+
+  if (surface !== "email") {
+    selectedPublishingPlatform.value = surface;
+  }
+}
+
+function resetManualPostEdit(): void {
+  editablePostContent.value = postContent.value;
+  manualEditFeedback.value = "";
+}
+
+async function saveManualPostEdit(): Promise<void> {
+  if (!isManualEditDirty.value) {
+    manualEditFeedback.value = "The draft is already up to date.";
+    return;
+  }
+
+  isSavingManualEdit.value = true;
+  manualEditFeedback.value = "";
+
+  try {
+    await updateDraftPostContent(editablePostContent.value, "Draft updated and saved.");
+    manualEditFeedback.value = "Draft updated and saved.";
+  } catch (error) {
+    manualEditFeedback.value =
+      error instanceof Error ? error.message : "Unable to save this draft right now.";
+  } finally {
+    isSavingManualEdit.value = false;
+  }
+}
+
+function resetSelectedSurfaceEdit(): void {
+  manualEditFeedback.value = "";
+
+  if (selectedResultPreviewSurface.value === "instagram") {
+    editableInstagramContent.value = businessOutput.value?.captions.instagram ?? "";
+    return;
+  }
+
+  if (selectedResultPreviewSurface.value === "facebook") {
+    editableFacebookContent.value = businessOutput.value?.captions.facebook ?? "";
+    return;
+  }
+
+  if (selectedResultPreviewSurface.value === "email") {
+    editableEmailSubject.value = businessOutput.value?.email?.subject ?? "";
+    editableEmailBody.value = businessOutput.value?.email?.body ?? "";
+    return;
+  }
+
+  resetManualPostEdit();
+}
+
+async function persistBusinessOutputChanges(
+  nextBusinessOutput: BusinessContentOutput,
+  successMessage: string,
+): Promise<void> {
+  if (!draft.value) {
+    return;
+  }
+
+  let nextAsset = draft.value.result.asset;
+
+  if (activeBusinessId.value && draft.value.result.asset?.id) {
+    const response = await requestUpdatePipelineItem({
+      businessId: activeBusinessId.value,
+      assetId: draft.value.result.asset.id,
+      textContent: postContent.value,
+      contentBody: buildDraftContentBodyWithBusinessOutput(nextBusinessOutput),
+    });
+
+    nextAsset = response.asset;
+  }
+
+  draft.value = replaceActivationDraft({
+    ...draft.value,
+    result: {
+      ...draft.value.result,
+      businessOutput: nextBusinessOutput,
+      generationOutput: buildSyncedGenerationOutput(nextBusinessOutput) ?? draft.value.result.generationOutput,
+      asset: nextAsset,
+    },
+  });
+  feedbackMessage.value = successMessage;
+}
+
+async function saveSelectedSurfaceEdit(): Promise<void> {
+  if (selectedResultPreviewSurface.value === "linkedin") {
+    await saveManualPostEdit();
+    return;
+  }
+
+  if (!businessOutput.value) {
+    manualEditFeedback.value = "This surface does not have a separate saved variant yet.";
+    return;
+  }
+
+  const nextBusinessOutput = cloneBusinessOutput(businessOutput.value);
+
+  if (selectedResultPreviewSurface.value === "instagram") {
+    if (!isInstagramEditDirty.value) {
+      manualEditFeedback.value = "Instagram copy is already up to date.";
+      return;
+    }
+
+    nextBusinessOutput.captions.instagram = editableInstagramContent.value.trim();
+  } else if (selectedResultPreviewSurface.value === "facebook") {
+    if (!isFacebookEditDirty.value) {
+      manualEditFeedback.value = "Facebook copy is already up to date.";
+      return;
+    }
+
+    nextBusinessOutput.captions.facebook = editableFacebookContent.value.trim();
+  } else if (selectedResultPreviewSurface.value === "email") {
+    if (!nextBusinessOutput.email) {
+      nextBusinessOutput.email = {
+        subject: "",
+        body: "",
+      };
+    }
+
+    if (!isEmailEditDirty.value) {
+      manualEditFeedback.value = "Email copy is already up to date.";
+      return;
+    }
+
+    nextBusinessOutput.email.subject = editableEmailSubject.value.trim();
+    nextBusinessOutput.email.body = editableEmailBody.value.trim();
+  }
+
+  isSavingManualEdit.value = true;
+  manualEditFeedback.value = "";
+
+  try {
+    await persistBusinessOutputChanges(
+      nextBusinessOutput,
+      `${resultPreviewSurfaceOptions.value.find((option) => option.value === selectedResultPreviewSurface.value)?.label || "Variant"} saved to this draft.`,
+    );
+    manualEditFeedback.value = "Saved and synced with preview.";
+  } catch (error) {
+    manualEditFeedback.value =
+      error instanceof Error ? error.message : "Unable to save this channel variant right now.";
+  } finally {
+    isSavingManualEdit.value = false;
+  }
+}
+
+function resetPublishingSetup(): void {
+  editableCtaLabel.value = businessOutput.value?.cta.label ?? "";
+  editableCtaUrl.value = businessOutput.value?.cta.url ?? "";
+  publishingSetupFeedback.value = "";
+}
+
+async function savePublishingSetup(): Promise<void> {
+  if (!businessOutput.value) {
+    publishingSetupFeedback.value = "Structured CTA editing is available on business campaign drafts.";
+    return;
+  }
+
+  if (!isCtaDirty.value) {
+    publishingSetupFeedback.value = "CTA is already up to date.";
+    return;
+  }
+
+  const nextBusinessOutput = cloneBusinessOutput(businessOutput.value);
+  nextBusinessOutput.cta.label = editableCtaLabel.value.trim();
+  nextBusinessOutput.cta.url = editableCtaUrl.value.trim();
+  isSavingPublishingSetup.value = true;
+  publishingSetupFeedback.value = "";
+
+  try {
+    await persistBusinessOutputChanges(nextBusinessOutput, "CTA updated for this draft.");
+    publishingSetupFeedback.value = "CTA saved and ready for preview, publish, and email handoff.";
+  } catch (error) {
+    publishingSetupFeedback.value =
+      error instanceof Error ? error.message : "Unable to save this CTA right now.";
+  } finally {
+    isSavingPublishingSetup.value = false;
+  }
+}
+
+async function setPrimaryAssetPreference(assetId: string): Promise<void> {
+  const asset = readyPostAssets.value.find((candidate) => candidate.id === assetId);
+
+  if (!asset) {
+    return;
+  }
+
+  try {
+    await persistDraftMediaPreferences(
+      {
+        primaryAssetId: asset.id,
+        posterAssetId:
+          asset.type === "image"
+            ? asset.id
+            : draftMediaPosterAssetId.value || readyImageAssets.value[0]?.id,
+        motionTemplateId: selectedMotionTemplateId.value,
+        motionAudioEnabled: selectedMotionAudioEnabled.value,
+        motionAudioPreset: selectedMotionAudioPreset.value,
+        promoVisualLayout: selectedPromoVisualLayout.value,
+      },
+      {
+        successMessage:
+          asset.type === "video"
+            ? "Instagram and Facebook will prefer this video. LinkedIn keeps the selected image fallback."
+            : "This image is now the primary media across the draft.",
+      },
+    );
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to update the primary media right now.";
+  }
+}
+
+async function setPosterAssetPreference(assetId: string): Promise<void> {
+  const asset = readyImageAssets.value.find((candidate) => candidate.id === assetId);
+
+  if (!asset) {
+    return;
+  }
+
+  try {
+    await persistDraftMediaPreferences(
+      {
+        primaryAssetId: draftMediaPrimaryAssetId.value || undefined,
+        posterAssetId: asset.id,
+        motionTemplateId: selectedMotionTemplateId.value,
+        motionAudioEnabled: selectedMotionAudioEnabled.value,
+        motionAudioPreset: selectedMotionAudioPreset.value,
+        promoVisualLayout: selectedPromoVisualLayout.value,
+      },
+      {
+        successMessage: "LinkedIn fallback image updated for this draft.",
+      },
+    );
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to update the LinkedIn fallback image right now.";
+  }
+}
+
 function clearAiEditPreview(): void {
   aiEditPreview.value = null;
   aiEditFeedback.value = "";
 }
 
-function buildSyncedGenerationOutput(): RepurposeContentResponse["generationOutput"] | undefined {
+function buildSyncedGenerationOutput(
+  nextBusinessOutput: BusinessContentOutput | undefined = draft.value?.result.businessOutput,
+): RepurposeContentResponse["generationOutput"] | undefined {
   if (!draft.value?.result.generationOutput) {
     return undefined;
   }
 
-  if (draft.value.result.generationOutput.kind !== "creator_post") {
-    return draft.value.result.generationOutput;
+  if (draft.value.result.generationOutput.kind === "business_campaign") {
+    return {
+      ...draft.value.result.generationOutput,
+      content: nextBusinessOutput ?? draft.value.result.generationOutput.content,
+    };
   }
 
-  return {
-    ...draft.value.result.generationOutput,
-    post: postContent.value,
-    variants: (
-      Array.isArray(draft.value.result.generationOutput.variants)
-        ? draft.value.result.generationOutput.variants
-        : creatorVariants.value
-    ).map((variant) =>
-      variant.id === selectedCreatorVariantId.value
-        ? {
-            ...variant,
-            content: postContent.value,
-          }
-        : variant,
-    ),
-  };
+  if (draft.value.result.generationOutput.kind === "creator_post") {
+    return {
+      ...draft.value.result.generationOutput,
+      post: postContent.value,
+      variants: (
+        Array.isArray(draft.value.result.generationOutput.variants)
+          ? draft.value.result.generationOutput.variants
+          : creatorVariants.value
+      ).map((variant) =>
+        variant.id === selectedCreatorVariantId.value
+          ? {
+              ...variant,
+              content: postContent.value,
+            }
+          : variant,
+      ),
+    };
+  }
+
+  return draft.value.result.generationOutput;
 }
 
 function buildDraftMediaPreferences(): DraftMediaPreferences | undefined {
@@ -3228,6 +4043,34 @@ function buildDraftContentBody(): Record<string, unknown> {
     ...resultWithoutAsset,
     post: postContent.value,
     generationOutput: buildSyncedGenerationOutput(),
+    visualNarrative: nextVisualNarrative,
+    carouselDraft: mapCarouselDraftFromNarrative(nextVisualNarrative),
+    ...(buildDraftMediaPreferences() ? { mediaPreferences: buildDraftMediaPreferences() } : {}),
+  };
+}
+
+function buildDraftContentBodyWithBusinessOutput(nextBusinessOutput: BusinessContentOutput): Record<string, unknown> {
+  if (!draft.value) {
+    return {
+      content: postContent.value,
+      post: postContent.value,
+      businessOutput: nextBusinessOutput,
+    };
+  }
+
+  const { asset: _ignoredAsset, ...resultWithoutAsset } = draft.value.result;
+  const nextVisualNarrative = mapPersistableNarrative(
+    normalizeContentNarrative(resultWithoutAsset.visualNarrative, {
+      title: draft.value.result.idea.title,
+      subtitle: draft.value.result.idea.angle,
+    }),
+  );
+
+  return {
+    ...resultWithoutAsset,
+    post: postContent.value,
+    businessOutput: nextBusinessOutput,
+    generationOutput: buildSyncedGenerationOutput(nextBusinessOutput),
     visualNarrative: nextVisualNarrative,
     carouselDraft: mapCarouselDraftFromNarrative(nextVisualNarrative),
     ...(buildDraftMediaPreferences() ? { mediaPreferences: buildDraftMediaPreferences() } : {}),
@@ -4247,6 +5090,11 @@ async function openSchedulePanel(): Promise<void> {
     return;
   }
 
+  if (hasPendingSocialPublishChanges.value) {
+    feedbackMessage.value = "Save the inline edits first so the scheduled post matches the current preview.";
+    return;
+  }
+
   if (!canPublishSelectedPlatforms.value) {
     feedbackMessage.value = "Select at least one publishable platform before scheduling.";
     return;
@@ -4346,10 +5194,11 @@ async function scheduleDraft(): Promise<void> {
     const failures: string[] = [];
 
     for (const platform of selectedPublishingPlatforms.value) {
+      const platformContentText = resolvePublishingContentText(platform);
       const scheduleRequest = {
         businessId: activeBusinessId.value,
         platform,
-        contentText: postContent.value,
+        contentText: platformContentText,
         assetGroupId: ensuredPostId,
         slides: [],
         scheduledAt,
@@ -4437,7 +5286,7 @@ async function goToOutreach(): Promise<void> {
     path: appRoutes.appOutreach,
     query: {
       draftId: draft.value.id,
-      prefill: postContent.value,
+      prefill: editablePostContent.value.trim() || postContent.value,
     },
   });
 }
@@ -4470,12 +5319,47 @@ async function goToEmail(): Promise<void> {
     return;
   }
 
+  const socialDraft = editablePostContent.value.trim() || postContent.value.trim();
+  const emailSubject = editableEmailSubject.value.trim() || businessOutput.value?.email?.subject?.trim() || "";
+  const emailBody = editableEmailBody.value.trim() || businessOutput.value?.email?.body?.trim() || "";
+  const emailCtaLabel = editableCtaLabel.value.trim() || businessOutput.value?.cta.label?.trim() || "";
+  const emailCtaUrl = editableCtaUrl.value.trim() || businessOutput.value?.cta.url?.trim() || "";
+  const emailHeaderImageUrl =
+    selectedPublishingPreviewAsset.value?.type !== "video"
+      ? selectedPublishingPreviewAsset.value?.previewUrl?.trim() || ""
+      : "";
+  const nextQuery: Record<string, string> = {
+    draftId: draft.value.id,
+    prefill: socialDraft,
+  };
+
+  if (draft.value.result.idea.title.trim()) {
+    nextQuery.emailTitle = draft.value.result.idea.title.trim();
+  }
+
+  if (emailSubject) {
+    nextQuery.emailSubject = emailSubject;
+  }
+
+  if (emailBody) {
+    nextQuery.emailBody = emailBody;
+  }
+
+  if (emailCtaLabel) {
+    nextQuery.emailCtaLabel = emailCtaLabel;
+  }
+
+  if (emailCtaUrl) {
+    nextQuery.emailCtaUrl = emailCtaUrl;
+  }
+
+  if (emailHeaderImageUrl) {
+    nextQuery.emailHeaderImageUrl = emailHeaderImageUrl;
+  }
+
   await router.push({
     path: appRoutes.appEmailNew,
-    query: {
-      draftId: draft.value.id,
-      prefill: postContent.value,
-    },
+    query: nextQuery,
   });
 }
 
@@ -4711,6 +5595,11 @@ async function publishToSelectedPlatforms(): Promise<void> {
 }
 
 async function triggerPrimaryPublishAction(): Promise<void> {
+  if (hasPendingSocialPublishChanges.value) {
+    feedbackMessage.value = "Save the inline edits first so the published version matches the preview.";
+    return;
+  }
+
   if (!canPublishSelectedPlatforms.value) {
     await connectSelectedPlatform();
     return;
@@ -4768,7 +5657,6 @@ async function publishToPlatforms(
         ? (
           await requestRetryFailedPublishAttempt(currentPublishAttemptId.value, {
             businessId: activeBusinessId.value,
-            contentText: postContent.value,
             assetId: ensuredPostId,
             title: draft.value.result.idea.title,
           })
@@ -4778,6 +5666,10 @@ async function publishToPlatforms(
             businessId: activeBusinessId.value,
             platforms,
             contentText: postContent.value,
+            platformInputs: platforms.map((platform) => ({
+              platform,
+              contentText: resolvePublishingContentText(platform),
+            })),
             assetId: ensuredPostId,
             title: draft.value.result.idea.title,
           })
@@ -4938,6 +5830,57 @@ watch(
       creatorContentType.value,
       draft.value?.result.post ?? "",
     );
+  },
+  { immediate: true },
+);
+
+watch(
+  () => postContent.value,
+  (nextValue) => {
+    editablePostContent.value = nextValue;
+    manualEditFeedback.value = "";
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [
+    businessOutput.value?.captions.instagram ?? "",
+    businessOutput.value?.captions.facebook ?? "",
+    businessOutput.value?.email?.subject ?? "",
+    businessOutput.value?.email?.body ?? "",
+    businessOutput.value?.cta.label ?? "",
+    businessOutput.value?.cta.url ?? "",
+  ] as const,
+  ([nextInstagram, nextFacebook, nextEmailSubject, nextEmailBody, nextCtaLabel, nextCtaUrl]) => {
+    editableInstagramContent.value = nextInstagram;
+    editableFacebookContent.value = nextFacebook;
+    editableEmailSubject.value = nextEmailSubject;
+    editableEmailBody.value = nextEmailBody;
+    editableCtaLabel.value = nextCtaLabel;
+    editableCtaUrl.value = nextCtaUrl;
+    manualEditFeedback.value = "";
+    publishingSetupFeedback.value = "";
+  },
+  { immediate: true },
+);
+
+watch(
+  () => selectedPublishingPlatform.value,
+  (nextPlatform) => {
+    if (selectedResultPreviewSurface.value !== "email") {
+      selectedResultPreviewSurface.value = nextPlatform;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  resultPreviewSurfaceOptions,
+  (nextOptions) => {
+    if (!nextOptions.some((option) => option.value === selectedResultPreviewSurface.value)) {
+      selectedResultPreviewSurface.value = nextOptions[0]?.value ?? "linkedin";
+    }
   },
   { immediate: true },
 );
@@ -5133,204 +6076,605 @@ onBeforeUnmount(() => {
         </p>
       </section>
 
-      <section class="result-grid">
-        <article class="result-post-card">
-          <div class="result-card-header">
-            <div>
-              <p class="panel-meta">
-                {{
-                  businessWeeklyPlan
-                    ? "Generated weekly plan"
-                    : isSingleBusinessPost
-                      ? `Generated ${businessSingleOutputLabel}`
-                      : isBusinessMode
-                      ? "Generated campaign"
-                      : "Generated post"
-                }}
-              </p>
-              <h2>{{ businessOutput?.visual.headline || businessWeeklyPlan?.days[0]?.headline || draft.result.idea.title }}</h2>
-            </div>
-            <div class="score-badge" :data-tone="attentionSignal.tone">
-              Attention {{ attentionSignal.label }} · {{ postScore }}/100
-            </div>
+      <section class="result-operator-panel">
+        <div class="result-operator-header">
+          <div>
+            <p class="panel-meta">Final asset</p>
+            <h2>This is the version the team should react to first.</h2>
+            <p class="shortcut-note">
+              Keep the editable draft, destination choice, attached media, and publish actions in one place.
+            </p>
           </div>
+          <div class="score-badge" :data-tone="attentionSignal.tone">
+            Attention {{ attentionSignal.label }} · {{ postScore }}/100
+          </div>
+        </div>
 
-          <p v-if="quickSignals" class="signal-line">
-            <span>{{ quickSignals.readyLabel }}</span>
-            <span>{{ quickSignals.formatLabel }}</span>
-          </p>
-          <p v-if="povSummary" class="signal-line">
-            <span>{{ povSummary }}</span>
-            <span v-if="qualitySummary">POV quality {{ qualitySummary.overall }}/100</span>
-          </p>
-
-          <section v-if="businessWeeklyPlan" class="execution-status-grid">
-            <article
-              v-for="day in businessWeeklyPlan.days"
-              :key="`weekly-plan-${day.dayNumber}`"
-              class="execution-status-block"
-            >
-              <p class="panel-meta">Day {{ day.dayNumber }} · {{ day.theme }}</p>
-              <strong>{{ day.headline }}</strong>
-              <p class="execution-status-description">{{ day.summary }}</p>
-              <p v-if="day.cta" class="panel-note">CTA: {{ day.cta }}</p>
-            </article>
-          </section>
-
-          <section v-if="isBusinessMode && businessOutput" class="result-signal-grid">
-            <article class="result-signal-card">
-              <p class="panel-meta">Visual brief</p>
-              <strong>{{ businessOutput.visual.headline }}</strong>
-              <span>{{ businessOutput.visual.visualDirection || businessOutput.visual.subheadline || "Headline-first creative ready for generation." }}</span>
-            </article>
-            <article class="result-signal-card">
-              <p class="panel-meta">CTA</p>
-              <strong>{{ businessOutput.cta.label }}</strong>
-              <span>{{ businessOutput.cta.url }}</span>
-            </article>
-            <article class="result-signal-card">
-              <p class="panel-meta">Channels</p>
-              <strong>{{ businessChannelSummary || "Business" }}</strong>
-              <span>
-                {{
-                  isSingleBusinessPost
-                    ? "This output is focused on one destination."
-                    : "Campaign copy is already adapted per destination."
-                }}
-              </span>
-            </article>
-          </section>
-
-          <section v-if="isBusinessMode && businessOutput" class="execution-status-grid">
-            <article v-if="businessOutput.hooks?.length" class="execution-status-block">
-              <p class="panel-meta">Hook options</p>
-              <ul class="result-bullet-list">
-                <li v-for="hook in businessOutput.hooks" :key="hook">{{ hook }}</li>
-              </ul>
-            </article>
-
-            <article v-if="businessOutput.captions.instagram" class="execution-status-block">
-              <p class="panel-meta">{{ isSingleBusinessPost ? "Instagram post" : "Instagram caption" }}</p>
-              <p class="execution-status-description">
-                {{ businessOutput.captions.instagram }}
-              </p>
-            </article>
-
-            <article v-if="businessOutput.captions.facebook" class="execution-status-block">
-              <p class="panel-meta">{{ isSingleBusinessPost ? "Facebook post" : "Facebook caption" }}</p>
-              <p class="execution-status-description">
-                {{ businessOutput.captions.facebook }}
-              </p>
-            </article>
-
-            <article v-if="businessOutput.email" class="execution-status-block">
-              <p class="panel-meta">{{ isSingleBusinessPost ? "Email draft" : "Email subject" }}</p>
-              <strong>{{ businessOutput.email.subject }}</strong>
-              <p class="execution-status-description">{{ businessOutput.email.body }}</p>
-            </article>
-
-            <article v-if="businessOutput.cta.alternatives?.length" class="execution-status-block">
-              <p class="panel-meta">CTA options</p>
-              <ul class="result-bullet-list">
-                <li v-for="option in businessOutput.cta.alternatives" :key="option">{{ option }}</li>
-              </ul>
-            </article>
-
-            <article v-if="businessOutput.hashtags?.length" class="execution-status-block">
-              <p class="panel-meta">Hashtags</p>
-              <p class="execution-status-description">{{ businessOutput.hashtags.join(" ") }}</p>
-            </article>
-
-            <article class="execution-status-block">
-              <p class="panel-meta">Image prompt</p>
-              <p class="execution-status-description">{{ businessOutput.visual.imagePrompt }}</p>
-            </article>
-          </section>
-
-          <section v-if="!isBusinessMode && creatorVariants.length > 0" class="variant-switcher-panel">
-            <div class="variant-switcher-header">
+        <div class="result-operator-grid">
+          <article class="result-post-card result-primary-surface">
+            <div class="result-card-header">
               <div>
-                <p class="panel-meta">Text variants</p>
-                <strong>Switch the output before you publish</strong>
-                <p class="execution-status-description">
-                  The same idea is now packaged as multiple usable formats instead of one fixed LinkedIn post.
-                </p>
+                <p class="panel-meta">Editable final draft</p>
+                <h2>{{ selectedSurfaceEditorCopy.title }}</h2>
               </div>
-              <span v-if="activeCreatorVariant" class="workspace-chip">
-                {{ activeCreatorVariant.length === "short" ? "Short form" : "Full post" }}
+              <span class="workspace-chip" :data-tone="isSelectedSurfaceDirty ? 'warning' : 'default'">
+                {{ isSelectedSurfaceDirty ? "Unsaved changes" : "Saved draft" }}
               </span>
             </div>
 
-            <div class="variant-switcher-row">
+            <div class="result-editor-stat-row">
+              <span class="workspace-chip">{{ selectedSurfaceEditorCopy.primary }}</span>
+              <span class="workspace-chip">{{ selectedSurfaceEditorCopy.secondary }}</span>
+            </div>
+
+            <p class="shortcut-note">
+              {{ editorHelperCopy }}
+            </p>
+
+            <template v-if="selectedResultPreviewSurface === 'email'">
+              <label class="result-inline-field">
+                <span class="panel-meta">Email subject</span>
+                <input
+                  v-model="editableEmailSubject"
+                  type="text"
+                  class="result-inline-input"
+                  placeholder="Subject line for the email version"
+                />
+              </label>
+
+              <label class="result-inline-field">
+                <span class="panel-meta">Email body</span>
+                <textarea
+                  v-model="editableEmailBody"
+                  class="result-draft-textarea"
+                  placeholder="Refine the email body here before converting or sending."
+                />
+              </label>
+            </template>
+
+            <template v-else-if="selectedResultPreviewSurface === 'instagram'">
+              <label class="result-inline-field">
+                <span class="panel-meta">Instagram caption</span>
+                <textarea
+                  v-model="editableInstagramContent"
+                  class="result-draft-textarea"
+                  placeholder="Tighten the Instagram caption here before publishing."
+                />
+              </label>
+            </template>
+
+            <template v-else-if="selectedResultPreviewSurface === 'facebook'">
+              <label class="result-inline-field">
+                <span class="panel-meta">Facebook caption</span>
+                <textarea
+                  v-model="editableFacebookContent"
+                  class="result-draft-textarea"
+                  placeholder="Refine the Facebook version here before publishing."
+                />
+              </label>
+            </template>
+
+            <template v-else>
+              <textarea
+                v-model="editablePostContent"
+                class="result-draft-textarea"
+                placeholder="Refine the LinkedIn draft here before publishing."
+              />
+            </template>
+
+            <p class="shortcut-note result-editor-guidance">
+              {{ selectedSurfaceEditorCopy.hint }}
+            </p>
+
+            <div class="result-editor-actions">
               <button
-                v-for="variant in creatorVariants"
-                :key="variant.id"
                 type="button"
-                class="variant-switcher-chip"
-                :class="{ active: activeCreatorVariant?.id === variant.id }"
-                @click="selectedCreatorVariantId = variant.id"
+                class="primary-action"
+                :disabled="isSavingManualEdit || !isSelectedSurfaceDirty"
+                @click="void saveSelectedSurfaceEdit()"
               >
-                {{ variant.label }}
+                {{ isSavingManualEdit ? "Saving..." : "Save changes" }}
+              </button>
+              <button
+                type="button"
+                class="secondary-action"
+                :disabled="isSavingManualEdit || !isSelectedSurfaceDirty"
+                @click="resetSelectedSurfaceEdit"
+              >
+                Reset
               </button>
             </div>
 
-            <article v-if="activeCreatorVariant" class="variant-detail-card">
-              <div class="variant-detail-topline">
-                <strong>{{ activeCreatorVariant.label }}</strong>
-                <span>{{ activeCreatorVariant.ctaStyle === "direct" ? "Direct CTA" : "Soft CTA" }}</span>
+            <p v-if="manualEditFeedback" class="result-feedback subtle">
+              {{ manualEditFeedback }}
+            </p>
+          </article>
+
+          <article class="result-post-card result-preview-surface">
+            <div class="result-card-header">
+              <div>
+                <p class="panel-meta">What will publish</p>
+                <h2>{{ selectedPreviewCard?.label || "Preview" }}</h2>
               </div>
-              <p class="execution-status-description">{{ activeCreatorVariant.description }}</p>
-              <div class="variant-channel-row">
-                <span
-                  v-for="channel in activeCreatorVariant.recommendedChannels"
-                  :key="`${activeCreatorVariant.id}-${channel}`"
-                  class="saved-source-chip"
+              <span class="workspace-chip" :data-tone="selectedPreviewCard?.isDirty ? 'warning' : 'default'">
+                {{ selectedPreviewCard?.isDirty ? "Unsaved preview" : "Preview synced" }}
+              </span>
+            </div>
+
+            <div class="result-platform-card-grid">
+              <article
+                v-for="card in platformPreviewCards"
+                :key="card.surface"
+                class="result-platform-card"
+                :data-active="selectedResultPreviewSurface === card.surface"
+                :data-platform="card.surface"
+                @click="setResultPreviewSurface(card.surface)"
+              >
+                <div class="result-platform-card-topline">
+                  <span class="workspace-chip">{{ card.label }}</span>
+                  <span v-if="card.isDirty" class="workspace-chip" data-tone="warning">Unsaved</span>
+                </div>
+
+                <div class="result-platform-card-header">
+                  <div class="result-platform-card-avatar">
+                    {{ card.accountLabel.charAt(0).toUpperCase() }}
+                  </div>
+                  <div>
+                    <strong>{{ card.accountLabel }}</strong>
+                    <p>{{ card.accountDescriptor }}</p>
+                  </div>
+                </div>
+
+                <div
+                  v-if="card.previewAsset?.previewUrl && card.surface !== 'email'"
+                  class="result-platform-card-media"
+                  :data-platform="card.surface"
                 >
-                  {{ channel }}
-                </span>
+                  <video
+                    v-if="card.previewAsset.type === 'video'"
+                    :src="card.previewAsset.previewUrl"
+                    class="result-platform-card-media-inner"
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <img
+                    v-else
+                    :src="card.previewAsset.previewUrl"
+                    alt="Platform preview media"
+                    class="result-platform-card-media-inner"
+                  />
+                </div>
+
+                <p v-if="card.subject" class="result-platform-card-subject">
+                  {{ card.subject }}
+                </p>
+                <p class="result-platform-card-excerpt">
+                  {{ card.excerpt }}
+                </p>
+
+                <div class="result-platform-card-metrics">
+                  <span class="workspace-chip">{{ card.primaryMetric }}</span>
+                  <span class="workspace-chip">{{ card.secondaryMetric }}</span>
+                  <span
+                    v-if="card.notices[0]"
+                    class="workspace-chip"
+                    :data-tone="card.notices[0].tone === 'warning' ? 'warning' : 'default'"
+                  >
+                    {{ card.notices[0].label }}
+                  </span>
+                </div>
+
+                <div class="result-platform-card-actions">
+                  <button
+                    type="button"
+                    class="secondary-action"
+                    @click.stop="setResultPreviewSurface(card.surface)"
+                  >
+                    {{ selectedResultPreviewSurface === card.surface ? "Editing this version" : "Edit this version" }}
+                  </button>
+                  <button
+                    v-if="card.surface === 'email'"
+                    type="button"
+                    class="secondary-action"
+                    @click.stop="goToEmail"
+                  >
+                    Open in Email
+                  </button>
+                </div>
+              </article>
+            </div>
+
+            <div class="result-preview-metrics">
+              <span class="workspace-chip">{{ selectedPreviewLengthSummary.primary }}</span>
+              <span class="workspace-chip">{{ selectedPreviewLengthSummary.secondary }}</span>
+            </div>
+
+            <div class="result-preview-notice-row">
+              <span
+                v-for="notice in selectedPreviewWarnings"
+                :key="`${selectedResultPreviewSurface}-${notice.label}`"
+                class="workspace-chip"
+                :data-tone="notice.tone === 'warning' ? 'warning' : 'default'"
+              >
+                {{ notice.label }}
+              </span>
+            </div>
+
+            <div v-if="selectedPreviewCard?.surface === 'email'" class="result-email-preview-card">
+              <div class="result-email-preview-head">
+                <div>
+                  <p class="panel-meta">Subject</p>
+                  <strong>{{ selectedPreviewCard.subject || "Add a subject to preview the inbox line." }}</strong>
+                </div>
+                <button type="button" class="secondary-action" @click="goToEmail">
+                  Edit in Email
+                </button>
               </div>
-            </article>
-          </section>
+              <div class="result-preview-body">
+                <p
+                  v-for="paragraph in selectedPreviewCard.previewParagraphs"
+                  :key="`email-preview-${paragraph}`"
+                  class="linkedin-feed-paragraph"
+                >
+                  {{ paragraph }}
+                </p>
+              </div>
+            </div>
 
-          <section class="result-signal-grid">
-            <article class="result-signal-card" :data-tone="attentionSignal.tone">
-              <p class="panel-meta">Attention signal</p>
-              <strong>{{ attentionSignal.label }}</strong>
-              <span>{{ attentionSignal.copy }}</span>
-            </article>
-            <article class="result-signal-card">
-              <p class="panel-meta">Structure</p>
-              <strong>{{ structureSignal }}</strong>
-              <span>{{ postParagraphs.length }} paragraph{{ postParagraphs.length === 1 ? "" : "s" }} ready for feed reading.</span>
-            </article>
-            <article v-if="qualitySummary" class="result-signal-card">
-              <p class="panel-meta">POV profile</p>
-              <strong>{{ draft.result.pov?.boldness || "balanced" }}</strong>
-              <span>
-                Hook {{ qualitySummary.hookStrength }}/100 · Clarity {{ qualitySummary.clarity }}/100 · Alignment {{ qualitySummary.businessAlignment }}/100
-              </span>
-            </article>
-            <article class="result-signal-card">
-              <p class="panel-meta">Best next move</p>
-              <strong>{{ actionPriorityLabel }}</strong>
-              <span>
-                {{
-                  canScheduleDraft
-                    ? "Lock a slot in planner before the draft loses momentum."
-                    : selectedConnectedAccount
-                      ? `This draft can publish directly to ${selectedPublishingPlatformLabel} from the workspace.`
-                      : `Connect ${selectedPublishingPlatformLabel} first, or keep refining before publishing.`
-                }}
-              </span>
-            </article>
-          </section>
+            <template v-else-if="selectedPreviewCard?.surface === 'instagram'">
+              <div class="result-social-platform-preview result-inline-preview" data-platform="instagram">
+                <div class="result-social-preview-header" data-platform="instagram">
+                  <div class="result-social-preview-identity">
+                    <div class="result-social-preview-avatar" data-platform="instagram">
+                      {{ selectedPreviewCard.accountLabel.charAt(0).toUpperCase() }}
+                    </div>
+                    <div>
+                      <strong>{{ selectedPreviewCard.accountLabel }}</strong>
+                      <p>{{ selectedPreviewCard.accountDescriptor }}</p>
+                    </div>
+                  </div>
+                  <span class="workspace-chip">Instagram feed</span>
+                </div>
 
-          <section class="channel-selector-card">
+                <div
+                  v-if="selectedPreviewCard.previewAsset?.previewUrl"
+                  class="result-social-preview-media"
+                  data-platform="instagram"
+                >
+                  <video
+                    v-if="selectedPreviewCard.previewAsset.type === 'video'"
+                    :src="selectedPreviewCard.previewAsset.previewUrl"
+                    class="result-social-preview-media-inner"
+                    controls
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <img
+                    v-else
+                    :src="selectedPreviewCard.previewAsset.previewUrl"
+                    alt="Instagram preview media"
+                    class="result-social-preview-media-inner"
+                  />
+                </div>
+
+                <div class="result-social-preview-actions-row" data-platform="instagram">
+                  <span>Like</span>
+                  <span>Comment</span>
+                  <span>Send</span>
+                  <span>Save</span>
+                </div>
+
+                <div class="result-instagram-caption-stack">
+                  <p class="result-instagram-caption-line">
+                    <strong>{{ workspaceBrandLabel }}</strong>
+                    <span>{{ selectedPreviewCard.previewParagraphs[0] || "Your caption will preview here." }}</span>
+                  </p>
+                  <p
+                    v-for="(paragraph, index) in selectedPreviewCard.previewParagraphs.slice(1)"
+                    :key="`instagram-preview-${index}-${paragraph}`"
+                    class="linkedin-feed-paragraph"
+                  >
+                    {{ paragraph }}
+                  </p>
+                </div>
+              </div>
+            </template>
+
+            <template v-else-if="selectedPreviewCard?.surface === 'facebook'">
+              <div class="result-social-platform-preview result-inline-preview" data-platform="facebook">
+                <div class="result-social-preview-header" data-platform="facebook">
+                  <div class="result-social-preview-identity">
+                    <div class="result-social-preview-avatar" data-platform="facebook">
+                      {{ selectedPreviewCard.accountLabel.charAt(0).toUpperCase() }}
+                    </div>
+                    <div>
+                      <strong>{{ selectedPreviewCard.accountLabel }}</strong>
+                      <p>{{ selectedPreviewCard.accountDescriptor }}</p>
+                    </div>
+                  </div>
+                  <span class="workspace-chip">Facebook post</span>
+                </div>
+
+                <div class="result-preview-body">
+                  <p
+                    v-for="(paragraph, index) in selectedPreviewCard.previewParagraphs"
+                    :key="`facebook-preview-${index}-${paragraph}`"
+                    class="linkedin-feed-paragraph"
+                    :class="{ 'result-facebook-lead': index === 0 }"
+                  >
+                    {{ paragraph }}
+                  </p>
+                </div>
+
+                <div
+                  v-if="selectedPreviewCard.previewAsset?.previewUrl"
+                  class="result-social-preview-media"
+                  data-platform="facebook"
+                >
+                  <video
+                    v-if="selectedPreviewCard.previewAsset.type === 'video'"
+                    :src="selectedPreviewCard.previewAsset.previewUrl"
+                    class="result-social-preview-media-inner"
+                    controls
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <img
+                    v-else
+                    :src="selectedPreviewCard.previewAsset.previewUrl"
+                    alt="Facebook preview media"
+                    class="result-social-preview-media-inner"
+                  />
+                </div>
+
+                <div class="result-social-preview-actions-row" data-platform="facebook">
+                  <span>Like</span>
+                  <span>Comment</span>
+                  <span>Share</span>
+                </div>
+              </div>
+            </template>
+
+            <template v-else-if="selectedPreviewCard">
+              <div class="linkedin-feed-preview result-inline-preview">
+                <div class="linkedin-feed-header">
+                  <div class="linkedin-feed-avatar">{{ selectedPreviewCard.accountLabel.charAt(0).toUpperCase() }}</div>
+                  <div class="linkedin-feed-identity">
+                    <strong>{{ selectedPreviewCard.accountLabel }}</strong>
+                    <p>{{ selectedPreviewCard.accountDescriptor }}</p>
+                  </div>
+                </div>
+
+                <div class="linkedin-preview-pills">
+                  <span v-for="pill in signalPills" :key="pill">{{ pill }}</span>
+                </div>
+
+                <div class="result-preview-body">
+                  <p
+                    v-for="(paragraph, index) in selectedPreviewCard.previewParagraphs"
+                    :key="`${selectedPreviewCard.surface}-${index}-${paragraph}`"
+                    class="linkedin-feed-paragraph"
+                    :class="{ 'linkedin-feed-hook': index === 0 }"
+                  >
+                    {{ paragraph }}
+                  </p>
+                </div>
+
+                <div
+                  v-if="selectedPreviewCard.previewAsset?.previewUrl"
+                  class="result-social-preview-media"
+                  data-platform="linkedin"
+                >
+                  <video
+                    v-if="selectedPreviewCard.previewAsset.type === 'video'"
+                    :src="selectedPreviewCard.previewAsset.previewUrl"
+                    class="result-social-preview-media-inner"
+                    controls
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <img
+                    v-else
+                    :src="selectedPreviewCard.previewAsset.previewUrl"
+                    alt="LinkedIn preview media"
+                    class="result-social-preview-media-inner"
+                  />
+                </div>
+              </div>
+            </template>
+
+            <div class="result-preview-summary-grid">
+              <article class="result-signal-card">
+                <p class="panel-meta">Destination</p>
+                <strong>{{ selectedPreviewCard?.accountLabel || selectedPublishingPlatformLabel }}</strong>
+                <span>
+                  {{
+                    selectedPreviewCard?.surface === "email"
+                      ? "Route this into the email composer when the preview is ready."
+                      : isLoadingChannels
+                        ? "Checking workspace channel..."
+                        : selectedPublishingStatus
+                  }}
+                </span>
+              </article>
+              <article class="result-signal-card">
+                <p class="panel-meta">CTA</p>
+                <strong>{{ selectedPublishingCtaLabel }}</strong>
+                <span>{{ businessOutput?.cta.url || "Use the main draft CTA or add one in email." }}</span>
+              </article>
+              <article class="result-signal-card">
+                <p class="panel-meta">Media</p>
+                <strong>{{ selectedPreviewCard?.mediaSummary || selectedPublishingMediaSummary }}</strong>
+                <span>
+                  {{
+                    selectedPreviewCard?.previewAsset?.previewUrl
+                      ? "Attached media is already part of this preview."
+                      : "Generate or upload media if this version should ship with a visual."
+                  }}
+                </span>
+              </article>
+            </div>
+
+            <div class="result-inline-setup-grid">
+              <article class="result-inline-setup-card">
+                <p class="panel-meta">CTA</p>
+                <template v-if="businessOutput">
+                  <div class="result-inline-field-grid">
+                    <label class="result-inline-field">
+                      <span class="panel-meta">Label</span>
+                      <input
+                        v-model="editableCtaLabel"
+                        type="text"
+                        class="result-inline-input"
+                        placeholder="Book your demo"
+                      />
+                    </label>
+                    <label class="result-inline-field">
+                      <span class="panel-meta">URL</span>
+                      <input
+                        v-model="editableCtaUrl"
+                        type="url"
+                        class="result-inline-input"
+                        placeholder="https://your-link.com"
+                      />
+                    </label>
+                  </div>
+
+                  <div class="result-inline-card-actions">
+                    <button
+                      type="button"
+                      class="primary-action"
+                      :disabled="isSavingPublishingSetup || !isCtaDirty"
+                      @click="void savePublishingSetup()"
+                    >
+                      {{ isSavingPublishingSetup ? "Saving..." : "Save CTA" }}
+                    </button>
+                    <button
+                      type="button"
+                      class="secondary-action"
+                      :disabled="isSavingPublishingSetup || !isCtaDirty"
+                      @click="resetPublishingSetup"
+                    >
+                      Reset
+                    </button>
+                  </div>
+
+                  <p v-if="publishingSetupFeedback" class="result-feedback subtle">
+                    {{ publishingSetupFeedback }}
+                  </p>
+                </template>
+                <p v-else class="shortcut-note">
+                  Structured CTA editing is available on business campaign drafts. For founder posts, keep the CTA inside the main draft copy.
+                </p>
+              </article>
+
+              <article class="result-inline-setup-card">
+                <div class="result-inline-card-header">
+                  <div>
+                    <p class="panel-meta">Media</p>
+                    <strong>{{ selectedPublishingMediaSummary }}</strong>
+                  </div>
+                </div>
+
+                <p class="shortcut-note">
+                  Choose the media that should lead the preview. Primary media drives Instagram and Facebook. LinkedIn can keep a separate image fallback.
+                </p>
+
+                <div class="result-inline-media-actions">
+                  <button
+                    type="button"
+                    class="secondary-action"
+                    :disabled="isUploadingPostAssets"
+                    @click="isWorkspaceAssetPickerOpen = true"
+                  >
+                    Use existing
+                  </button>
+                  <label class="media-upload-button result-inline-upload">
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/gif,video/mp4"
+                      multiple
+                      :disabled="isUploadingPostAssets"
+                      @change="void handleMediaSelection($event)"
+                    />
+                    {{ isUploadingPostAssets ? "Uploading..." : "Upload media" }}
+                  </label>
+                </div>
+
+                <p class="result-feedback subtle">
+                  {{ primaryAssetSelectionSummary }}
+                </p>
+
+                <div v-if="readyPostAssets.length > 0" class="result-asset-choice-grid">
+                  <button
+                    v-for="asset in readyPostAssets"
+                    :key="`primary-${asset.id}`"
+                    type="button"
+                    class="result-asset-choice-card"
+                    :data-active="currentPrimaryAssetSelectionId === asset.id"
+                    @click="void setPrimaryAssetPreference(asset.id)"
+                  >
+                    <video
+                      v-if="asset.type === 'video' && asset.previewUrl"
+                      :src="asset.previewUrl"
+                      class="result-asset-choice-preview"
+                      muted
+                      playsinline
+                      preload="metadata"
+                    />
+                    <img
+                      v-else-if="asset.previewUrl"
+                      :src="asset.previewUrl"
+                      alt="Ready media preview"
+                      class="result-asset-choice-preview"
+                    />
+                    <span>{{ formatPostAssetChoiceLabel(asset) }}</span>
+                    <small>{{ currentPrimaryAssetSelectionId === asset.id ? "Primary" : "Use as primary" }}</small>
+                  </button>
+                </div>
+                <p v-else class="shortcut-note">
+                  No ready media yet. Upload or reuse an asset, or keep this post text-first.
+                </p>
+
+                <template v-if="readyImageAssets.length > 0">
+                  <p class="panel-meta result-inline-submeta">LinkedIn fallback image</p>
+                  <p class="shortcut-note result-inline-poster-copy">
+                    {{ posterAssetSelectionSummary }}
+                  </p>
+
+                  <div class="result-poster-choice-row">
+                    <button
+                      v-for="asset in readyImageAssets"
+                      :key="`poster-${asset.id}`"
+                      type="button"
+                      class="result-poster-choice"
+                      :data-active="currentPosterAssetSelectionId === asset.id"
+                      @click="void setPosterAssetPreference(asset.id)"
+                    >
+                      {{ asset.orderIndex + 1 }}
+                    </button>
+                  </div>
+                </template>
+
+                <p v-if="mediaFeedback" class="result-feedback subtle">
+                  {{ mediaFeedback }}
+                </p>
+              </article>
+            </div>
+          </article>
+        </div>
+
+        <div class="result-action-grid">
+          <section class="channel-selector-card result-compact-card">
             <div>
               <p class="panel-meta">Destination</p>
               <strong>Select platforms for this post</strong>
               <p class="shortcut-note">
-                Pick one, two, or all three. Instagram stays media-first, Facebook stays flexible, and LinkedIn remains text-first.
+                Pick the platforms that should receive this draft. The focused one drives the preview and publish status.
               </p>
             </div>
 
@@ -5376,213 +6720,897 @@ onBeforeUnmount(() => {
             </p>
           </section>
 
-          <section class="linkedin-feed-preview">
-            <div class="linkedin-feed-header">
-              <div class="linkedin-feed-avatar">{{ (selectedConnectedAccountLabel || selectedPublishingPlatformLabel).charAt(0).toUpperCase() }}</div>
-              <div class="linkedin-feed-identity">
-                <strong>{{ selectedConnectedAccountLabel || (selectedPublishingPlatform === "instagram" ? "Your Instagram business account" : selectedPublishingPlatform === "facebook" ? "Your Facebook Page" : "Your LinkedIn profile") }}</strong>
-                <p>
-                  {{
-                    selectedConnectedAccount
-                      ? `${selectedPublishingPlatformLabel} ${isBusinessMode ? "campaign" : "post"} preview`
-                      : "Workspace preview before publishing"
-                  }}
-                </p>
-              </div>
-            </div>
-
-            <div class="linkedin-preview-pills">
-              <span v-for="pill in signalPills" :key="pill">{{ pill }}</span>
-            </div>
-
-            <div class="linkedin-status-card" :data-connected="Boolean(selectedConnectedAccount) && !selectedPublishingGuardrail">
+          <section class="result-post-card result-action-card">
+            <div class="result-card-header">
               <div>
-                <p class="panel-meta">{{ selectedPublishingPlatformLabel }} publishing</p>
-                <strong>
-                  {{
-                    selectedPublishingGuardrail
-                      ? `${selectedPublishingPlatformLabel} setup needs attention`
-                      : selectedConnectedAccount
-                      ? "Execution channel is ready"
-                      : "Direct publishing not connected"
-                  }}
-                </strong>
-                <p class="linkedin-status-copy">
-                  {{
-                    isLoadingChannels
-                      ? "Checking workspace channel..."
-                      : selectedConnectedAccount
-                        ? selectedConnectedAccountDescriptor
-                        : selectedPublishingStatus
-                  }}
-                </p>
+                <p class="panel-meta">Actions</p>
+                <h2>Publish, schedule, or route this draft.</h2>
               </div>
+              <span class="workspace-chip">{{ actionPriorityLabel }}</span>
             </div>
 
-            <div class="linkedin-feed-body">
-              <p
-                v-for="(line, index) in previewLeadLines"
-                :key="`${line}-${index}`"
-                class="linkedin-feed-hook"
-                :class="{ companion: index > 0 }"
-              >
-                {{ line }}
-              </p>
-              <p v-for="paragraph in previewBodyParagraphs" :key="paragraph" class="linkedin-feed-paragraph">
-                {{ paragraph }}
-              </p>
-            </div>
-          </section>
-
-          <section class="execution-status-card" :data-tone="executionStatus.tone">
-            <div class="execution-status-header">
-              <div>
-                <p class="panel-meta">{{ executionStatus.label }}</p>
-                <strong>{{ executionStatus.title }}</strong>
-                <p class="execution-status-description">{{ executionStatus.description }}</p>
-              </div>
-              <button
-                v-if="canScheduleDraft"
-                type="button"
-                class="secondary-action execution-status-button"
-                :disabled="isUploadingPostAssets"
-                @click="goToPlanner"
-              >
-                View in planner
-              </button>
-            </div>
-
-            <div class="execution-chip-row">
-              <article
-                v-for="fact in executionPanelFacts"
-                :key="`status-${fact.label}`"
-                class="execution-chip"
-              >
+            <div class="execution-fact-grid result-action-facts">
+              <article v-for="fact in executionPanelFacts.slice(0, 4)" :key="fact.label" class="execution-fact-card">
                 <span>{{ fact.label }}</span>
                 <strong>{{ fact.value }}</strong>
               </article>
             </div>
 
-            <div class="execution-status-grid">
-              <article class="execution-status-block">
-                <p class="panel-meta">Preview outcome</p>
-                <ul class="execution-timeline-list">
-                  <li v-for="step in executionTimeline" :key="step">{{ step }}</li>
-                </ul>
+            <div v-if="selectedPublishingOverflowWarnings.length > 0" class="result-publish-warning-stack">
+              <article
+                v-for="warning in selectedPublishingOverflowWarnings"
+                :key="`${warning.platform}-${warning.label}`"
+                class="result-signal-card"
+                data-tone="warning"
+              >
+                <p class="panel-meta">{{ resolveSocialPlatformLabel(warning.platform) }}</p>
+                <strong>{{ warning.label }}</strong>
+                <span>{{ warning.detail }}</span>
               </article>
+            </div>
 
-              <article class="execution-status-block">
-                <p class="panel-meta">Delivery confidence</p>
-                <strong>{{ actionPriorityLabel }}</strong>
-                <p class="execution-status-description">{{ executionStatus.detail }}</p>
-              </article>
+            <div class="result-primary-actions result-primary-actions-compact">
+              <button
+                type="button"
+                class="primary-action"
+                :disabled="
+                  isPublishingToLinkedIn ||
+                  isConnectingLinkedIn ||
+                  isConnectingMeta ||
+                  isUploadingPostAssets ||
+                  hasPendingSocialPublishChanges ||
+                  !activeBusinessId ||
+                  !canRunPublishingAction
+                "
+                @click="void triggerPrimaryPublishAction()"
+              >
+                {{ primaryPublishActionLabel }}
+              </button>
+
+              <button
+                v-if="canScheduleDraft"
+                type="button"
+                class="secondary-action"
+                :disabled="
+                  isSchedulingDraft ||
+                  isUploadingPostAssets ||
+                  hasPendingSocialPublishChanges ||
+                  !canPublishSelectedPlatforms ||
+                  Boolean(selectedSchedulingCapacityGuardrail)
+                "
+                @click="void openSchedulePanel()"
+              >
+                {{ primaryScheduleActionLabel }}
+              </button>
+
+              <button type="button" class="secondary-action" @click="goToEmail">
+                Convert to Email
+              </button>
+              <button type="button" class="secondary-action" @click="goToOutreach">
+                Send via Outreach
+              </button>
             </div>
 
             <p
-              v-if="feedbackMessage && feedbackTone === 'success'"
-              class="result-feedback execution-feedback"
-              data-tone="success"
+              v-if="feedbackMessage && feedbackTone === 'warning'"
+              class="result-feedback"
+              data-tone="warning"
             >
               {{ feedbackMessage }}
             </p>
-
-            <div v-if="selectedPublishAttemptResults.length > 0" class="publish-attempt-panel">
-              <div class="publish-attempt-header">
-                <div>
-                  <p class="panel-meta">Per-platform status</p>
-                  <strong>Successful platforms stay posted. Failed platforms can be retried safely.</strong>
-                </div>
-                <button
-                  v-if="canRetryFailedPlatforms"
-                  type="button"
-                  class="secondary-action execution-status-button"
-                  :disabled="isPublishingToLinkedIn"
-                  @click="void retryFailedPlatforms()"
-                >
-                  {{ isPublishingToLinkedIn ? "Retrying..." : "Retry failed only" }}
-                </button>
-              </div>
-
-              <article
-                v-for="result in selectedPublishAttemptResults"
-                :key="`publish-attempt-${result.platform}`"
-                class="publish-attempt-row"
-                :data-status="result.status"
-              >
-                <div class="publish-attempt-copy">
-                  <strong>{{ resolveSocialPlatformLabel(result.platform) }}</strong>
-                  <p>{{ result.message }}</p>
-                </div>
-
-                <div class="publish-attempt-actions">
-                  <span class="publish-attempt-badge" :data-status="result.status">
-                    {{ result.status === "success" ? "Posted" : "Failed" }}
-                  </span>
-                  <a
-                    v-if="result.status === 'success' && result.externalPostUrl"
-                    :href="result.externalPostUrl"
-                    class="publish-attempt-link"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    {{ resolveExternalPostLabel(result.platform) }}
-                  </a>
-                </div>
-              </article>
-            </div>
+            <p v-else-if="hasPendingSocialPublishChanges" class="result-feedback subtle">
+              Save the LinkedIn, Instagram, or Facebook edits above before publishing or scheduling so the live post matches this workspace preview.
+            </p>
           </section>
+        </div>
 
-          <div class="result-primary-actions">
+        <section v-if="isSchedulePanelOpen && canScheduleDraft" class="schedule-panel">
+          <div class="schedule-panel-header">
+            <div>
+              <p class="panel-meta">Choose a delivery window</p>
+              <strong>Lock the post into a real publishing slot</strong>
+              <p class="ai-command-copy">
+                Pick the audience time once, then let planner and the worker handle execution.
+              </p>
+            </div>
+            <button type="button" class="secondary-action schedule-close-button" @click="closeSchedulePanel">
+              Close
+            </button>
+          </div>
+
+          <div v-if="bestRecommendedSlot" class="schedule-best-slot">
+            <div>
+              <p class="panel-meta">Best time</p>
+              <strong>{{ bestRecommendedSlot.localLabel }} in {{ recommendedTimezone }}</strong>
+              <p class="ai-command-copy">{{ bestRecommendedSlot.reason }}</p>
+            </div>
+            <button
+              type="button"
+              class="secondary-action"
+              :disabled="isLoadingRecommendedSlots || isSchedulingDraft"
+              @click="applyRecommendedSchedule"
+            >
+              Use best time
+            </button>
+          </div>
+
+          <div
+            v-if="hasScheduledQueuePreview"
+            class="schedule-best-slot"
+            :data-tone="queueLimitReached ? 'warning' : 'default'"
+          >
+            <div>
+              <p class="panel-meta">Queue preview</p>
+              <strong>{{ queuePreviewHeadline }}</strong>
+              <p class="ai-command-copy">{{ queueLimitReached ? queueLimitPrompt : queuePreviewCopy }}</p>
+            </div>
+          </div>
+
+          <div class="schedule-form-grid">
+            <label>
+              <span>Date</span>
+              <input v-model="scheduleDateKey" type="date" />
+            </label>
+            <label>
+              <span>Time</span>
+              <input v-model="scheduleTime" type="time" />
+            </label>
+            <label>
+              <span>Audience timezone</span>
+              <select v-model="audienceTimezone">
+                <option
+                  v-for="option in audienceTimezoneOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+          </div>
+
+          <p class="schedule-helper-copy">
+            Audience time: {{ selectedAudienceDateLabel }} at {{ selectedAudienceTimeLabel }}
+            <span v-if="selectedLocalTimeLabel"> · Your time: {{ selectedLocalTimeLabel }}</span>
+          </p>
+
+          <p v-if="selectedPublishingGuardrail" class="result-feedback subtle">
+            {{ selectedPublishingGuardrail }}
+          </p>
+
+          <p v-if="isLoadingRecommendedSlots" class="result-feedback subtle">
+            Loading best posting windows...
+          </p>
+          <p v-if="scheduleFeedback" class="result-feedback">{{ scheduleFeedback }}</p>
+
+          <div class="schedule-panel-actions">
             <button
               type="button"
               class="primary-action"
-              :disabled="
-                isPublishingToLinkedIn ||
-                isConnectingLinkedIn ||
-                isConnectingMeta ||
-                isUploadingPostAssets ||
-                !activeBusinessId ||
-                !canRunPublishingAction
-              "
-              @click="void triggerPrimaryPublishAction()"
+              :disabled="isSchedulingDraft || queueLimitReached"
+              @click="void scheduleDraft()"
             >
-              {{ primaryPublishActionLabel }}
+              {{
+                queueLimitReached
+                  ? "Queue full"
+                  : isSchedulingDraft
+                    ? "Adding to queue..."
+                    : "Add to queue"
+              }}
             </button>
-
-            <button
-              v-if="canScheduleDraft"
-              type="button"
-              class="secondary-action"
-              :disabled="
-                isSchedulingDraft ||
-                isUploadingPostAssets ||
-                !canPublishSelectedPlatforms ||
-                Boolean(selectedSchedulingCapacityGuardrail)
-              "
-              @click="void openSchedulePanel()"
-            >
-              {{ primaryScheduleActionLabel }}
-            </button>
-
-            <button
-              v-if="canScheduleDraft"
-              type="button"
-              class="secondary-action"
-              :disabled="isUploadingPostAssets"
-              @click="goToPlanner"
-            >
+            <button type="button" class="secondary-action" @click="goToPlanner">
               Open planner
             </button>
+          </div>
+        </section>
+      </section>
 
-            <button type="button" class="secondary-action" @click="goToImprove">
-              Improve
-            </button>
-            <button type="button" class="secondary-action" @click="void goToContinueWriting()">
-              Continue writing
-            </button>
-            <div class="result-strategy-actions">
-              <span class="panel-meta">One-click angles</span>
-              <div class="result-strategy-row">
+      <section class="result-helper-stack">
+        <details class="result-helper-section" open>
+          <summary>
+            <span>Campaign pack and diagnostics</span>
+            <span>Core source material</span>
+          </summary>
+
+          <div class="result-helper-content">
+            <section v-if="businessWeeklyPlan" class="execution-status-grid">
+              <article
+                v-for="day in businessWeeklyPlan.days"
+                :key="`weekly-plan-${day.dayNumber}`"
+                class="execution-status-block"
+              >
+                <p class="panel-meta">Day {{ day.dayNumber }} · {{ day.theme }}</p>
+                <strong>{{ day.headline }}</strong>
+                <p class="execution-status-description">{{ day.summary }}</p>
+                <p v-if="day.cta" class="panel-note">CTA: {{ day.cta }}</p>
+              </article>
+            </section>
+
+            <section v-if="isBusinessMode && businessOutput" class="result-signal-grid">
+              <article class="result-signal-card">
+                <p class="panel-meta">Visual brief</p>
+                <strong>{{ businessOutput.visual.headline }}</strong>
+                <span>{{ businessOutput.visual.visualDirection || businessOutput.visual.subheadline || "Headline-first creative ready for generation." }}</span>
+              </article>
+              <article class="result-signal-card">
+                <p class="panel-meta">CTA</p>
+                <strong>{{ businessOutput.cta.label }}</strong>
+                <span>{{ businessOutput.cta.url }}</span>
+              </article>
+              <article class="result-signal-card">
+                <p class="panel-meta">Channels</p>
+                <strong>{{ businessChannelSummary || "Business" }}</strong>
+                <span>
+                  {{
+                    isSingleBusinessPost
+                      ? "This output is focused on one destination."
+                      : "Campaign copy is already adapted per destination."
+                  }}
+                </span>
+              </article>
+            </section>
+
+            <section v-if="isBusinessMode && businessOutput" class="execution-status-grid">
+              <article v-if="businessOutput.hooks?.length" class="execution-status-block">
+                <p class="panel-meta">Hook options</p>
+                <ul class="result-bullet-list">
+                  <li v-for="hook in businessOutput.hooks" :key="hook">{{ hook }}</li>
+                </ul>
+              </article>
+
+              <article v-if="businessOutput.captions.instagram" class="execution-status-block">
+                <p class="panel-meta">{{ isSingleBusinessPost ? "Instagram post" : "Instagram caption" }}</p>
+                <p class="execution-status-description">
+                  {{ businessOutput.captions.instagram }}
+                </p>
+              </article>
+
+              <article v-if="businessOutput.captions.facebook" class="execution-status-block">
+                <p class="panel-meta">{{ isSingleBusinessPost ? "Facebook post" : "Facebook caption" }}</p>
+                <p class="execution-status-description">
+                  {{ businessOutput.captions.facebook }}
+                </p>
+              </article>
+
+              <article v-if="businessOutput.email" class="execution-status-block">
+                <p class="panel-meta">{{ isSingleBusinessPost ? "Email draft" : "Email subject" }}</p>
+                <strong>{{ businessOutput.email.subject }}</strong>
+                <p class="execution-status-description">{{ businessOutput.email.body }}</p>
+              </article>
+
+              <article v-if="businessOutput.cta.alternatives?.length" class="execution-status-block">
+                <p class="panel-meta">CTA options</p>
+                <ul class="result-bullet-list">
+                  <li v-for="option in businessOutput.cta.alternatives" :key="option">{{ option }}</li>
+                </ul>
+              </article>
+
+              <article v-if="businessOutput.hashtags?.length" class="execution-status-block">
+                <p class="panel-meta">Hashtags</p>
+                <p class="execution-status-description">{{ businessOutput.hashtags.join(" ") }}</p>
+              </article>
+
+              <article class="execution-status-block">
+                <p class="panel-meta">Image prompt</p>
+                <p class="execution-status-description">{{ businessOutput.visual.imagePrompt }}</p>
+              </article>
+            </section>
+
+            <section v-if="!isBusinessMode && creatorVariants.length > 0" class="variant-switcher-panel">
+              <div class="variant-switcher-header">
+                <div>
+                  <p class="panel-meta">Text variants</p>
+                  <strong>Switch the output before you publish</strong>
+                  <p class="execution-status-description">
+                    The same idea is now packaged as multiple usable formats instead of one fixed LinkedIn post.
+                  </p>
+                </div>
+                <span v-if="activeCreatorVariant" class="workspace-chip">
+                  {{ activeCreatorVariant.length === "short" ? "Short form" : "Full post" }}
+                </span>
+              </div>
+
+              <div class="variant-switcher-row">
+                <button
+                  v-for="variant in creatorVariants"
+                  :key="variant.id"
+                  type="button"
+                  class="variant-switcher-chip"
+                  :class="{ active: activeCreatorVariant?.id === variant.id }"
+                  @click="selectedCreatorVariantId = variant.id"
+                >
+                  {{ variant.label }}
+                </button>
+              </div>
+
+              <article v-if="activeCreatorVariant" class="variant-detail-card">
+                <div class="variant-detail-topline">
+                  <strong>{{ activeCreatorVariant.label }}</strong>
+                  <span>{{ activeCreatorVariant.ctaStyle === "direct" ? "Direct CTA" : "Soft CTA" }}</span>
+                </div>
+                <p class="execution-status-description">{{ activeCreatorVariant.description }}</p>
+                <div class="variant-channel-row">
+                  <span
+                    v-for="channel in activeCreatorVariant.recommendedChannels"
+                    :key="`${activeCreatorVariant.id}-${channel}`"
+                    class="saved-source-chip"
+                  >
+                    {{ channel }}
+                  </span>
+                </div>
+              </article>
+            </section>
+
+            <section class="result-signal-grid">
+              <article class="result-signal-card" :data-tone="attentionSignal.tone">
+                <p class="panel-meta">Attention signal</p>
+                <strong>{{ attentionSignal.label }}</strong>
+                <span>{{ attentionSignal.copy }}</span>
+              </article>
+              <article class="result-signal-card">
+                <p class="panel-meta">Structure</p>
+                <strong>{{ structureSignal }}</strong>
+                <span>{{ postParagraphs.length }} paragraph{{ postParagraphs.length === 1 ? "" : "s" }} ready for feed reading.</span>
+              </article>
+              <article v-if="qualitySummary" class="result-signal-card">
+                <p class="panel-meta">POV profile</p>
+                <strong>{{ draft.result.pov?.boldness || "balanced" }}</strong>
+                <span>
+                  Hook {{ qualitySummary.hookStrength }}/100 · Clarity {{ qualitySummary.clarity }}/100 · Alignment {{ qualitySummary.businessAlignment }}/100
+                </span>
+              </article>
+              <article class="result-signal-card">
+                <p class="panel-meta">Best next move</p>
+                <strong>{{ actionPriorityLabel }}</strong>
+                <span>
+                  {{
+                    canScheduleDraft
+                      ? "Lock a slot in planner before the draft loses momentum."
+                      : selectedConnectedAccount
+                        ? `This draft can publish directly to ${selectedPublishingPlatformLabel} from the workspace.`
+                        : `Connect ${selectedPublishingPlatformLabel} first, or keep refining before publishing.`
+                  }}
+                </span>
+              </article>
+            </section>
+          </div>
+        </details>
+
+        <details class="result-helper-section" :open="feedbackMessage !== '' || selectedPublishAttemptResults.length > 0">
+          <summary>
+            <span>Delivery status</span>
+            <span>Execution, retries, and planner handoff</span>
+          </summary>
+
+          <div class="result-helper-content">
+            <section class="execution-status-card" :data-tone="executionStatus.tone">
+              <div class="execution-status-header">
+                <div>
+                  <p class="panel-meta">{{ executionStatus.label }}</p>
+                  <strong>{{ executionStatus.title }}</strong>
+                  <p class="execution-status-description">{{ executionStatus.description }}</p>
+                </div>
+                <button
+                  v-if="canScheduleDraft"
+                  type="button"
+                  class="secondary-action execution-status-button"
+                  :disabled="isUploadingPostAssets"
+                  @click="goToPlanner"
+                >
+                  View in planner
+                </button>
+              </div>
+
+              <div class="execution-chip-row">
+                <article
+                  v-for="fact in executionPanelFacts"
+                  :key="`status-${fact.label}`"
+                  class="execution-chip"
+                >
+                  <span>{{ fact.label }}</span>
+                  <strong>{{ fact.value }}</strong>
+                </article>
+              </div>
+
+              <div class="execution-status-grid">
+                <article class="execution-status-block">
+                  <p class="panel-meta">Preview outcome</p>
+                  <ul class="execution-timeline-list">
+                    <li v-for="step in executionTimeline" :key="step">{{ step }}</li>
+                  </ul>
+                </article>
+
+                <article class="execution-status-block">
+                  <p class="panel-meta">Delivery confidence</p>
+                  <strong>{{ actionPriorityLabel }}</strong>
+                  <p class="execution-status-description">{{ executionStatus.detail }}</p>
+                </article>
+              </div>
+
+              <p
+                v-if="feedbackMessage && feedbackTone === 'success'"
+                class="result-feedback execution-feedback"
+                data-tone="success"
+              >
+                {{ feedbackMessage }}
+              </p>
+
+              <div v-if="selectedPublishAttemptResults.length > 0" class="publish-attempt-panel">
+                <div class="publish-attempt-header">
+                  <div>
+                    <p class="panel-meta">Per-platform status</p>
+                    <strong>Successful platforms stay posted. Failed platforms can be retried safely.</strong>
+                  </div>
+                  <button
+                    v-if="canRetryFailedPlatforms"
+                    type="button"
+                    class="secondary-action execution-status-button"
+                    :disabled="isPublishingToLinkedIn"
+                    @click="void retryFailedPlatforms()"
+                  >
+                    {{ isPublishingToLinkedIn ? "Retrying..." : "Retry failed only" }}
+                  </button>
+                </div>
+
+                <article
+                  v-for="result in selectedPublishAttemptResults"
+                  :key="`publish-attempt-${result.platform}`"
+                  class="publish-attempt-row"
+                  :data-status="result.status"
+                >
+                  <div class="publish-attempt-copy">
+                    <strong>{{ resolveSocialPlatformLabel(result.platform) }}</strong>
+                    <p>{{ result.message }}</p>
+                  </div>
+
+                  <div class="publish-attempt-actions">
+                    <span class="publish-attempt-badge" :data-status="result.status">
+                      {{ result.status === "success" ? "Posted" : "Failed" }}
+                    </span>
+                    <a
+                      v-if="result.status === 'success' && result.externalPostUrl"
+                      :href="result.externalPostUrl"
+                      class="publish-attempt-link"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {{ resolveExternalPostLabel(result.platform) }}
+                    </a>
+                  </div>
+                </article>
+              </div>
+            </section>
+          </div>
+        </details>
+
+        <details class="result-helper-section">
+          <summary>
+            <span>Media and visuals</span>
+            <span>Generate, upload, and attach assets intentionally</span>
+          </summary>
+
+          <div class="result-helper-content">
+            <section v-if="draft" class="media-panel">
+              <div class="media-panel-header">
+                <div>
+                  <p class="panel-meta">Media</p>
+                  <strong>Turn this post into visuals</strong>
+                  <p class="ai-command-copy">
+                    {{
+                      isBusinessMode
+                        ? "Generate a launch image here, or upload a short MP4 promo if you already have motion ready."
+                        : "Keep the workflow text-first. When the post earns visuals, generate a narrative deck before you add or upload anything manually."
+                    }}
+                  </p>
+                </div>
+
+                <div class="media-panel-actions">
+                  <label class="media-style-select-wrap">
+                    <span class="panel-meta media-style-select-label">Visual style</span>
+                    <select v-model="selectedVisualStylePreference" class="media-style-select">
+                      <option
+                        v-for="option in selectableVisualStyleOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    class="primary-action media-generate-button"
+                    :disabled="isLoadingMediaRecommendations || isUploadingPostAssets"
+                    @click="void triggerPreferredMediaGeneration()"
+                  >
+                    {{ mediaPrimaryActionLabel }}
+                  </button>
+                  <button
+                    type="button"
+                    class="secondary-action"
+                    @click="isWorkspaceAssetPickerOpen = true"
+                  >
+                    Use existing
+                  </button>
+                  <label class="media-upload-button">
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/gif,video/mp4"
+                      multiple
+                      :disabled="isUploadingPostAssets"
+                      @change="void handleMediaSelection($event)"
+                    />
+                    {{ isUploadingPostAssets ? "Uploading..." : "Upload" }}
+                  </label>
+                </div>
+              </div>
+
+              <div class="promo-visual-panel">
+                <div>
+                  <p class="panel-meta">Promo visual</p>
+                  <strong>Create a clean branded visual from your known brand elements</strong>
+                  <p class="ai-command-copy">
+                    Pulls the saved logo from settings when available, falls back to initials when it is missing, and uses the current headline, support text, CTA, and brand colors automatically.
+                  </p>
+                  <p class="motion-lite-status">
+                    {{
+                      selectedPromoVisualLayout === "screenshot_headline"
+                        ? promoVisualSourceAsset
+                          ? "Screenshot + headline will frame the uploaded image already attached to this draft."
+                          : "Screenshot + headline needs one ready uploaded image. If none is attached, it falls back to Logo + headline."
+                        : "Best when you want a fresh, polished promo still before you animate anything."
+                    }}
+                  </p>
+                </div>
+                <div class="motion-lite-actions">
+                  <label class="media-style-select-wrap">
+                    <span class="panel-meta media-style-select-label">Layout</span>
+                    <select v-model="selectedPromoVisualLayout" class="media-style-select">
+                      <option
+                        v-for="option in PROMO_VISUAL_LAYOUT_OPTIONS"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <small class="ai-command-copy media-style-select-help">
+                      {{ PROMO_VISUAL_LAYOUT_OPTIONS.find((option) => option.value === selectedPromoVisualLayout)?.description }}
+                    </small>
+                  </label>
+                  <div v-if="promoVisualPreviewAsset?.previewUrl" class="motion-lite-preview-card">
+                    <p class="panel-meta">Source preview</p>
+                    <img
+                      :src="promoVisualPreviewAsset.previewUrl"
+                      alt="Promo visual source preview"
+                      class="motion-lite-preview"
+                    />
+                    <small class="ai-command-copy media-style-select-help">
+                      Uploaded image that will be framed inside the promo visual.
+                    </small>
+                  </div>
+                  <button
+                    type="button"
+                    class="secondary-action media-generate-button"
+                    :disabled="isCreatingPromoVisual || isUploadingPostAssets"
+                    @click="void createPromoVisualFromBrand()"
+                  >
+                    {{ isCreatingPromoVisual ? "Creating..." : "Create promo visual" }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="shouldShowAdvancedMotionControls" class="motion-lite-panel">
+                <div>
+                  <p class="panel-meta">Motion-lite</p>
+                  <strong>Animate the current visual into a short promo teaser</strong>
+                  <p class="ai-command-copy">
+                    {{ motionLiteBehaviorCopy }}
+                  </p>
+                  <p v-if="motionLiteDerivedVideoAsset" class="motion-lite-status">
+                    Animated version created. Instagram and Facebook use the video, and LinkedIn keeps the original image.
+                  </p>
+                  <p class="motion-lite-status">
+                    Recommended: {{ getMotionTemplateLabel(recommendedMotionTemplateId) }}. {{ recommendedMotionTemplateReason }}
+                  </p>
+                  <p v-if="motionLiteNeedsRefresh" class="motion-lite-status motion-lite-status-warning">
+                    Current teaser uses {{ getMotionTemplateLabel(motionLiteCurrentTemplateId || "subtle_zoom") }}. Re-generate to switch this draft to {{ getMotionTemplateLabel(selectedMotionTemplateId) }}.
+                  </p>
+                </div>
+                <div class="motion-lite-actions">
+                  <label class="media-style-select-wrap">
+                    <span class="panel-meta media-style-select-label">Motion style</span>
+                    <select v-model="selectedMotionTemplateId" class="media-style-select">
+                      <option
+                        v-for="option in MOTION_TEMPLATE_OPTIONS"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <small class="ai-command-copy media-style-select-help">
+                      {{ MOTION_TEMPLATE_OPTIONS.find((option) => option.value === selectedMotionTemplateId)?.description }}
+                    </small>
+                  </label>
+                  <div class="motion-audio-controls">
+                    <label class="motion-audio-toggle">
+                      <input v-model="selectedMotionAudioEnabled" type="checkbox" />
+                      <span>Audio on</span>
+                    </label>
+                    <label class="media-style-select-wrap" :class="{ muted: !selectedMotionAudioEnabled }">
+                      <span class="panel-meta media-style-select-label">Choose a vibe</span>
+                      <select
+                        v-model="selectedMotionAudioPreset"
+                        class="media-style-select"
+                        :disabled="!selectedMotionAudioEnabled"
+                      >
+                        <option
+                          v-for="option in MOTION_AUDIO_OPTIONS"
+                          :key="option.value"
+                          :value="option.value"
+                        >
+                          {{ option.label }}
+                        </option>
+                      </select>
+                      <small class="ai-command-copy media-style-select-help">
+                        {{
+                          selectedMotionAudioEnabled
+                            ? `${motionLiteAudioDescription} Recommended: ${MOTION_AUDIO_OPTIONS.find((option) => option.value === recommendedMotionAudioPreset)?.label}.`
+                            : "Render a silent teaser. Re-generate later if you want sound back."
+                        }}
+                      </small>
+                    </label>
+                  </div>
+                  <div v-if="motionLitePreviewAsset?.previewUrl" class="motion-lite-preview-card">
+                    <p class="panel-meta">Current preview</p>
+                    <video
+                      v-if="motionLitePreviewAsset.type === 'video'"
+                      :src="motionLitePreviewAsset.previewUrl"
+                      class="motion-lite-preview"
+                      controls
+                      muted
+                      playsinline
+                      preload="metadata"
+                    />
+                    <img
+                      v-else
+                      :src="motionLitePreviewAsset.previewUrl"
+                      alt="Motion-lite preview"
+                      class="motion-lite-preview"
+                    />
+                    <small class="ai-command-copy media-style-select-help">
+                      {{
+                        motionLitePreviewAsset.type === "video"
+                          ? "Current Meta-ready teaser preview."
+                          : "Current still image that motion-lite will animate."
+                      }}
+                    </small>
+                  </div>
+                  <button
+                    type="button"
+                    class="secondary-action media-generate-button"
+                    :disabled="!canGenerateMotionLite || isGeneratingMotionLite || isUploadingPostAssets"
+                    @click="void generateMotionLiteFromCurrentVisual()"
+                  >
+                    {{ isGeneratingMotionLite ? "Animating..." : motionLiteDerivedVideoAsset ? "Re-generate" : "Animate this visual" }}
+                  </button>
+                  <button
+                    v-if="motionLiteDerivedVideoAsset"
+                    type="button"
+                    class="secondary-action"
+                    :disabled="!canGenerateMotionLite || isGeneratingMotionLite || isUploadingPostAssets"
+                    @click="void tryAnotherMotionStyle()"
+                  >
+                    Try another style
+                  </button>
+                  <button
+                    v-if="motionLiteDerivedVideoAsset"
+                    type="button"
+                    class="secondary-action"
+                    :disabled="isGeneratingMotionLite || isUploadingPostAssets"
+                    @click="void preferStillImageForDraft()"
+                  >
+                    Use image instead
+                  </button>
+                  <button
+                    v-if="motionLiteDerivedVideoAsset"
+                    type="button"
+                    class="secondary-action"
+                    :disabled="isGeneratingMotionLite || isUploadingPostAssets"
+                    @click="void preferMotionVideoForDraft()"
+                  >
+                    Use video instead
+                  </button>
+                </div>
+              </div>
+
+              <p v-if="motionLiteUnavailableReason && shouldShowAdvancedMotionControls" class="result-feedback subtle">
+                {{ motionLiteUnavailableReason }}
+              </p>
+
+              <section
+                v-if="shouldShowCarouselBlueprint && carouselDraft && carouselDraft.slides.length > 0"
+                class="carousel-blueprint-panel"
+              >
+                <div class="carousel-blueprint-header">
+                  <div>
+                    <p class="panel-meta">Carousel blueprint</p>
+                    <strong>{{ carouselNarrativeLabel }} narrative · {{ carouselDraft.slides.length }} slides</strong>
+                    <p class="ai-command-copy">
+                      This is the story system behind the visual output. Generate carousel to render this narrative into matching slides.
+                    </p>
+                  </div>
+                  <span class="workspace-chip">Carousel recommended</span>
+                </div>
+
+                <div class="carousel-blueprint-grid">
+                  <article
+                    v-for="(slide, index) in carouselDraft.slides"
+                    :key="`${carouselDraft.title}-${index}`"
+                    class="carousel-blueprint-card"
+                  >
+                    <div class="carousel-blueprint-card-header">
+                      <strong>Slide {{ index + 1 }}</strong>
+                      <span v-if="slide.narrativeRole">{{ slide.narrativeRole.replace(/_/g, " ") }}</span>
+                    </div>
+                    <p>{{ slide.headline }}</p>
+                    <small v-if="slide.supportingText">{{ slide.supportingText }}</small>
+                    <ul v-if="slide.bulletPoints.length > 0" class="carousel-blueprint-points">
+                      <li v-for="point in slide.bulletPoints" :key="point">{{ point }}</li>
+                    </ul>
+                  </article>
+                </div>
+              </section>
+
+              <div
+                v-if="displayedMediaRecommendations.length > 0 || isLoadingMediaRecommendations"
+                ref="mediaRecommendationPanelRef"
+                class="media-recommendation-panel"
+              >
+                <div class="media-recommendation-header">
+                  <div>
+                    <p class="panel-meta">Recommended next move</p>
+                    <strong>
+                      {{
+                        isBusinessMode
+                          ? "Generate the best post visual for this campaign"
+                          : isUsingFallbackMediaRecommendations
+                            ? "Generate media for this post"
+                            : "Choose the safest visual path for this post"
+                      }}
+                    </strong>
+                  </div>
+                  <span class="workspace-chip">
+                    {{ mediaRecommendationStatusLabel }}
+                  </span>
+                </div>
+
+                <p v-if="isLoadingMediaRecommendations" class="result-feedback subtle">
+                  Loading media recommendations...
+                </p>
+                <p v-else-if="isUsingFallbackMediaRecommendations" class="result-feedback subtle">
+                  No strong visual match yet. You can still generate media manually.
+                </p>
+
+                <div v-else class="media-recommendation-grid">
+                  <article
+                    v-for="suggestion in displayedMediaRecommendations"
+                    :key="suggestion.id"
+                    class="media-recommendation-card"
+                    :data-recommended="suggestion.visualTemplateType === 'carousel'"
+                  >
+                    <div>
+                      <p class="panel-meta">{{ suggestion.actionType.replace(/_/g, " ") }}</p>
+                      <strong>{{ getMediaSuggestionTitle(suggestion) }}</strong>
+                      <p>{{ getMediaSuggestionDescription(suggestion) }}</p>
+                      <small>{{ getMediaSuggestionReason(suggestion) }}</small>
+                    </div>
+                    <button
+                      type="button"
+                      class="secondary-action"
+                      :disabled="isGeneratingRecommendationId === suggestion.id || isUploadingPostAssets"
+                      @click="void applyMediaRecommendation(suggestion)"
+                    >
+                      {{
+                        suggestion.actionType === "generate_visual"
+                          ? isGeneratingRecommendationId === suggestion.id
+                            ? "Generating..."
+                            : suggestion.suggestedMediaType === "photo_overlay"
+                              ? "Generate image"
+                            : suggestion.visualTemplateType === "carousel"
+                              ? "Generate carousel"
+                              : "Generate visual"
+                          : suggestion.actionType === "use_existing_asset"
+                            ? "Use existing"
+                            : "Skip media"
+                      }}
+                    </button>
+                  </article>
+                </div>
+              </div>
+
+              <p v-if="mediaFeedback" class="result-feedback">{{ mediaFeedback }}</p>
+              <p v-else-if="isLoadingPostAssets" class="result-feedback">Loading attached media...</p>
+
+              <div v-if="postAssets.length > 0" class="media-grid">
+                <article v-for="asset in postAssets" :key="asset.id" class="media-card">
+                  <video
+                    v-if="asset.previewUrl && asset.mimeType.startsWith('video/')"
+                    :src="asset.previewUrl"
+                    class="media-preview"
+                    controls
+                    muted
+                    playsinline
+                    preload="metadata"
+                  />
+                  <img
+                    v-else-if="asset.previewUrl"
+                    :src="asset.previewUrl"
+                    :alt="`Attached media ${asset.orderIndex + 1}`"
+                    class="media-preview"
+                  />
+                  <div class="media-meta">
+                    <span>{{ asset.mimeType }}</span>
+                    <strong>{{ Math.max(1, Math.round(asset.sizeBytes / 1024)) }} KB</strong>
+                  </div>
+                  <span v-if="getMediaAssetRoleLabel(asset)" class="media-role-chip">
+                    {{ getMediaAssetRoleLabel(asset) }}
+                  </span>
+                  <button
+                    type="button"
+                    class="secondary-action media-remove-button"
+                    :disabled="removingPostAssetId === asset.id"
+                    @click="void removePostAsset(asset.id)"
+                  >
+                    {{ removingPostAssetId === asset.id ? "Removing..." : "Remove" }}
+                  </button>
+                </article>
+              </div>
+
+              <p v-else class="result-feedback subtle">
+                {{
+                  isBusinessMode
+                    ? "No visual attached yet. Generate or upload one before publishing to Instagram or Facebook."
+                    : "No media attached yet. This post will publish as text until you add supported media."
+                }}
+              </p>
+            </section>
+          </div>
+        </details>
+
+        <details class="result-helper-section">
+          <summary>
+            <span>AI helpers</span>
+            <span>Improvement prompts, hooks, comments, and hashtags</span>
+          </summary>
+
+          <div class="result-helper-content helper-two-column">
+            <section class="ai-command-panel">
+              <div class="ai-command-header">
+                <div>
+                  <p class="panel-meta">AI editor</p>
+                  <strong>Ask AI to improve this draft</strong>
+                  <p class="ai-command-copy">
+                    Preview the change first. Nothing overwrites the post until you apply it.
+                  </p>
+                </div>
+              </div>
+
+              <div class="ai-suggestion-callout">
+                <p class="panel-meta">Suggested improvements</p>
+                <p class="ai-command-copy">
+                  Start with a stronger hook, a tighter ending, or a more specific founder example.
+                </p>
+              </div>
+
+              <div class="result-secondary-actions">
+                <button type="button" class="secondary-action" @click="goToImprove">
+                  Improve
+                </button>
+                <button type="button" class="secondary-action" @click="void goToContinueWriting()">
+                  Continue writing
+                </button>
                 <button
                   v-for="option in FOLLOW_UP_STRATEGY_OPTIONS"
                   :key="option.value"
@@ -5593,791 +7621,245 @@ onBeforeUnmount(() => {
                   {{ option.shortLabel }}
                 </button>
               </div>
-            </div>
 
-            <button
-              v-if="!canScheduleDraft"
-              type="button"
-              class="secondary-action"
-              :disabled="
-                isPublishingToLinkedIn ||
-                isConnectingLinkedIn ||
-                isConnectingMeta ||
-                isUploadingPostAssets ||
-                !activeBusinessId ||
-                !canRunPublishingAction
-              "
-              @click="void triggerPrimaryPublishAction()"
-            >
-              {{ primaryPublishActionLabel }}
-            </button>
-          </div>
-
-          <p
-            v-if="feedbackMessage && feedbackTone === 'warning'"
-            class="result-feedback"
-            data-tone="warning"
-          >
-            {{ feedbackMessage }}
-          </p>
-
-          <section v-if="isSchedulePanelOpen && canScheduleDraft" class="schedule-panel">
-            <div class="schedule-panel-header">
-              <div>
-                <p class="panel-meta">Choose a delivery window</p>
-                <strong>Lock the post into a real publishing slot</strong>
-                <p class="ai-command-copy">
-                  Pick the audience time once, then let planner and the worker handle execution.
-                </p>
-              </div>
-              <button type="button" class="secondary-action schedule-close-button" @click="closeSchedulePanel">
-                Close
-              </button>
-            </div>
-
-            <div v-if="bestRecommendedSlot" class="schedule-best-slot">
-              <div>
-                <p class="panel-meta">Best time</p>
-                <strong>{{ bestRecommendedSlot.localLabel }} in {{ recommendedTimezone }}</strong>
-                <p class="ai-command-copy">{{ bestRecommendedSlot.reason }}</p>
-              </div>
-              <button
-                type="button"
-                class="secondary-action"
-                :disabled="isLoadingRecommendedSlots || isSchedulingDraft"
-                @click="applyRecommendedSchedule"
-              >
-                Use best time
-              </button>
-            </div>
-
-            <div
-              v-if="hasScheduledQueuePreview"
-              class="schedule-best-slot"
-              :data-tone="queueLimitReached ? 'warning' : 'default'"
-            >
-              <div>
-                <p class="panel-meta">Queue preview</p>
-                <strong>{{ queuePreviewHeadline }}</strong>
-                <p class="ai-command-copy">{{ queueLimitReached ? queueLimitPrompt : queuePreviewCopy }}</p>
-              </div>
-            </div>
-
-            <div class="schedule-form-grid">
-              <label>
-                <span>Date</span>
-                <input v-model="scheduleDateKey" type="date" />
-              </label>
-              <label>
-                <span>Time</span>
-                <input v-model="scheduleTime" type="time" />
-              </label>
-              <label>
-                <span>Audience timezone</span>
-                <select v-model="audienceTimezone">
-                  <option
-                    v-for="option in audienceTimezoneOptions"
-                    :key="option.value"
-                    :value="option.value"
-                  >
-                    {{ option.label }}
-                  </option>
-                </select>
-              </label>
-            </div>
-
-            <p class="schedule-helper-copy">
-              Audience time: {{ selectedAudienceDateLabel }} at {{ selectedAudienceTimeLabel }}
-              <span v-if="selectedLocalTimeLabel"> · Your time: {{ selectedLocalTimeLabel }}</span>
-            </p>
-
-            <p v-if="selectedPublishingGuardrail" class="result-feedback subtle">
-              {{ selectedPublishingGuardrail }}
-            </p>
-
-            <p v-if="isLoadingRecommendedSlots" class="result-feedback subtle">
-              Loading best posting windows...
-            </p>
-            <p v-if="scheduleFeedback" class="result-feedback">{{ scheduleFeedback }}</p>
-
-            <div class="schedule-panel-actions">
-              <button
-                type="button"
-                class="primary-action"
-                :disabled="isSchedulingDraft || queueLimitReached"
-                @click="void scheduleDraft()"
-              >
-                {{
-                  queueLimitReached
-                    ? "Queue full"
-                    : isSchedulingDraft
-                      ? "Adding to queue..."
-                      : "Add to queue"
-                }}
-              </button>
-              <button type="button" class="secondary-action" @click="goToPlanner">
-                Open planner
-              </button>
-            </div>
-          </section>
-
-          <section v-if="draft" class="media-panel">
-            <div class="media-panel-header">
-              <div>
-                <p class="panel-meta">Media</p>
-                <strong>Turn this post into visuals</strong>
-                <p class="ai-command-copy">
-                  {{
-                    isBusinessMode
-                      ? "Generate a launch image here, or upload a short MP4 promo if you already have motion ready."
-                      : "Keep the workflow text-first. When the post earns visuals, generate a narrative deck before you add or upload anything manually."
-                  }}
-                </p>
-              </div>
-
-              <div class="media-panel-actions">
-                <label class="media-style-select-wrap">
-                  <span class="panel-meta media-style-select-label">Visual style</span>
-                  <select v-model="selectedVisualStylePreference" class="media-style-select">
-                    <option
-                      v-for="option in selectableVisualStyleOptions"
-                      :key="option.value"
-                      :value="option.value"
-                    >
-                      {{ option.label }}
-                    </option>
-                  </select>
-                </label>
+              <div class="ai-command-row">
+                <input
+                  v-model="aiEditInstruction"
+                  type="text"
+                  class="ai-command-input"
+                  placeholder="Try: make this sharper, remove emojis, or shorten the ending"
+                  @keydown.enter.prevent="void previewAiEdit()"
+                />
                 <button
                   type="button"
-                  class="primary-action media-generate-button"
-                  :disabled="isLoadingMediaRecommendations || isUploadingPostAssets"
-                  @click="void triggerPreferredMediaGeneration()"
+                  class="secondary-action ai-command-submit"
+                  :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                  @click="void previewAiEdit()"
                 >
-                  {{ mediaPrimaryActionLabel }}
+                  {{ isPreviewingAiEdit ? "Thinking..." : "Preview change" }}
                 </button>
-                <button
-                  type="button"
-                  class="secondary-action"
-                  @click="isWorkspaceAssetPickerOpen = true"
-                >
-                  Use existing
-                </button>
-                <label class="media-upload-button">
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/gif,video/mp4"
-                    multiple
-                    :disabled="isUploadingPostAssets"
-                    @change="void handleMediaSelection($event)"
-                  />
-                  {{ isUploadingPostAssets ? "Uploading..." : "Upload" }}
-                </label>
-              </div>
-            </div>
-
-            <div class="promo-visual-panel">
-              <div>
-                <p class="panel-meta">Promo visual</p>
-                <strong>Create a clean branded visual from your known brand elements</strong>
-                <p class="ai-command-copy">
-                  Pulls the saved logo from settings when available, falls back to initials when it is missing, and uses the current headline, support text, CTA, and brand colors automatically.
-                </p>
-                <p class="motion-lite-status">
-                  {{
-                    selectedPromoVisualLayout === "screenshot_headline"
-                      ? promoVisualSourceAsset
-                        ? "Screenshot + headline will frame the uploaded image already attached to this draft."
-                        : "Screenshot + headline needs one ready uploaded image. If none is attached, it falls back to Logo + headline."
-                      : "Best when you want a fresh, polished promo still before you animate anything."
-                  }}
-                </p>
-              </div>
-              <div class="motion-lite-actions">
-                <label class="media-style-select-wrap">
-                  <span class="panel-meta media-style-select-label">Layout</span>
-                  <select v-model="selectedPromoVisualLayout" class="media-style-select">
-                    <option
-                      v-for="option in PROMO_VISUAL_LAYOUT_OPTIONS"
-                      :key="option.value"
-                      :value="option.value"
-                    >
-                      {{ option.label }}
-                    </option>
-                  </select>
-                  <small class="ai-command-copy media-style-select-help">
-                    {{ PROMO_VISUAL_LAYOUT_OPTIONS.find((option) => option.value === selectedPromoVisualLayout)?.description }}
-                  </small>
-                </label>
-                <div v-if="promoVisualPreviewAsset?.previewUrl" class="motion-lite-preview-card">
-                  <p class="panel-meta">Source preview</p>
-                  <img
-                    :src="promoVisualPreviewAsset.previewUrl"
-                    alt="Promo visual source preview"
-                    class="motion-lite-preview"
-                  />
-                  <small class="ai-command-copy media-style-select-help">
-                    Uploaded image that will be framed inside the promo visual.
-                  </small>
-                </div>
-                <button
-                  type="button"
-                  class="secondary-action media-generate-button"
-                  :disabled="isCreatingPromoVisual || isUploadingPostAssets"
-                  @click="void createPromoVisualFromBrand()"
-                >
-                  {{ isCreatingPromoVisual ? "Creating..." : "Create promo visual" }}
-                </button>
-              </div>
-            </div>
-
-            <div class="motion-lite-panel">
-              <div>
-                <p class="panel-meta">Motion-lite</p>
-                <strong>Animate the current visual into a short promo teaser</strong>
-                <p class="ai-command-copy">
-                  {{ motionLiteBehaviorCopy }}
-                </p>
-                <p v-if="motionLiteDerivedVideoAsset" class="motion-lite-status">
-                  Animated version created. Instagram and Facebook use the video, and LinkedIn keeps the original image.
-                </p>
-                <p class="motion-lite-status">
-                  Recommended: {{ getMotionTemplateLabel(recommendedMotionTemplateId) }}. {{ recommendedMotionTemplateReason }}
-                </p>
-                <p v-if="motionLiteNeedsRefresh" class="motion-lite-status motion-lite-status-warning">
-                  Current teaser uses {{ getMotionTemplateLabel(motionLiteCurrentTemplateId || "subtle_zoom") }}. Re-generate to switch this draft to {{ getMotionTemplateLabel(selectedMotionTemplateId) }}.
-                </p>
-              </div>
-              <div class="motion-lite-actions">
-                <label class="media-style-select-wrap">
-                  <span class="panel-meta media-style-select-label">Motion style</span>
-                  <select v-model="selectedMotionTemplateId" class="media-style-select">
-                    <option
-                      v-for="option in MOTION_TEMPLATE_OPTIONS"
-                      :key="option.value"
-                      :value="option.value"
-                    >
-                      {{ option.label }}
-                    </option>
-                  </select>
-                  <small class="ai-command-copy media-style-select-help">
-                    {{ MOTION_TEMPLATE_OPTIONS.find((option) => option.value === selectedMotionTemplateId)?.description }}
-                  </small>
-                </label>
-                <div class="motion-audio-controls">
-                  <label class="motion-audio-toggle">
-                    <input v-model="selectedMotionAudioEnabled" type="checkbox" />
-                    <span>Audio on</span>
-                  </label>
-                  <label class="media-style-select-wrap" :class="{ muted: !selectedMotionAudioEnabled }">
-                    <span class="panel-meta media-style-select-label">Choose a vibe</span>
-                    <select
-                      v-model="selectedMotionAudioPreset"
-                      class="media-style-select"
-                      :disabled="!selectedMotionAudioEnabled"
-                    >
-                      <option
-                        v-for="option in MOTION_AUDIO_OPTIONS"
-                        :key="option.value"
-                        :value="option.value"
-                      >
-                        {{ option.label }}
-                      </option>
-                    </select>
-                    <small class="ai-command-copy media-style-select-help">
-                      {{
-                        selectedMotionAudioEnabled
-                          ? `${motionLiteAudioDescription} Recommended: ${MOTION_AUDIO_OPTIONS.find((option) => option.value === recommendedMotionAudioPreset)?.label}.`
-                          : "Render a silent teaser. Re-generate later if you want sound back."
-                      }}
-                    </small>
-                  </label>
-                </div>
-                <div v-if="motionLitePreviewAsset?.previewUrl" class="motion-lite-preview-card">
-                  <p class="panel-meta">Current preview</p>
-                  <video
-                    v-if="motionLitePreviewAsset.type === 'video'"
-                    :src="motionLitePreviewAsset.previewUrl"
-                    class="motion-lite-preview"
-                    controls
-                    muted
-                    playsinline
-                    preload="metadata"
-                  />
-                  <img
-                    v-else
-                    :src="motionLitePreviewAsset.previewUrl"
-                    alt="Motion-lite preview"
-                    class="motion-lite-preview"
-                  />
-                  <small class="ai-command-copy media-style-select-help">
-                    {{
-                      motionLitePreviewAsset.type === "video"
-                        ? "Current Meta-ready teaser preview."
-                        : "Current still image that motion-lite will animate."
-                    }}
-                  </small>
-                </div>
-                <button
-                  type="button"
-                  class="secondary-action media-generate-button"
-                  :disabled="!canGenerateMotionLite || isGeneratingMotionLite || isUploadingPostAssets"
-                  @click="void generateMotionLiteFromCurrentVisual()"
-                >
-                  {{ isGeneratingMotionLite ? "Animating..." : motionLiteDerivedVideoAsset ? "Re-generate" : "Animate this visual" }}
-                </button>
-                <button
-                  v-if="motionLiteDerivedVideoAsset"
-                  type="button"
-                  class="secondary-action"
-                  :disabled="!canGenerateMotionLite || isGeneratingMotionLite || isUploadingPostAssets"
-                  @click="void tryAnotherMotionStyle()"
-                >
-                  Try another style
-                </button>
-                <button
-                  v-if="motionLiteDerivedVideoAsset"
-                  type="button"
-                  class="secondary-action"
-                  :disabled="isGeneratingMotionLite || isUploadingPostAssets"
-                  @click="void preferStillImageForDraft()"
-                >
-                  Use image instead
-                </button>
-                <button
-                  v-if="motionLiteDerivedVideoAsset"
-                  type="button"
-                  class="secondary-action"
-                  :disabled="isGeneratingMotionLite || isUploadingPostAssets"
-                  @click="void preferMotionVideoForDraft()"
-                >
-                  Use video instead
-                </button>
-              </div>
-            </div>
-
-            <p v-if="motionLiteUnavailableReason" class="result-feedback subtle">
-              {{ motionLiteUnavailableReason }}
-            </p>
-
-            <section
-              v-if="shouldShowCarouselBlueprint && carouselDraft && carouselDraft.slides.length > 0"
-              class="carousel-blueprint-panel"
-            >
-              <div class="carousel-blueprint-header">
-                <div>
-                  <p class="panel-meta">Carousel blueprint</p>
-                  <strong>{{ carouselNarrativeLabel }} narrative · {{ carouselDraft.slides.length }} slides</strong>
-                  <p class="ai-command-copy">
-                    This is the story system behind the visual output. Generate carousel to render this narrative into matching slides.
-                  </p>
-                </div>
-                <span class="workspace-chip">Carousel recommended</span>
               </div>
 
-              <div class="carousel-blueprint-grid">
-                <article
-                  v-for="(slide, index) in carouselDraft.slides"
-                  :key="`${carouselDraft.title}-${index}`"
-                  class="carousel-blueprint-card"
+              <div class="ai-command-chips">
+                <button
+                  v-for="command in AI_QUICK_COMMANDS"
+                  :key="command.value"
+                  type="button"
+                  class="ai-command-chip"
+                  :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                  @click="void previewAiEdit(command.value)"
                 >
-                  <div class="carousel-blueprint-card-header">
-                    <strong>Slide {{ index + 1 }}</strong>
-                    <span v-if="slide.narrativeRole">{{ slide.narrativeRole.replace(/_/g, " ") }}</span>
+                  {{ command.label }}
+                </button>
+              </div>
+
+              <p v-if="aiEditFeedback" class="result-feedback">{{ aiEditFeedback }}</p>
+
+              <div v-if="isPreviewingAiEdit" class="ai-edit-preview-card loading">
+                Generating a scoped suggestion...
+              </div>
+
+              <div v-else-if="aiEditPreview" class="ai-edit-preview-card">
+                <div class="ai-edit-preview-header">
+                  <div>
+                    <p class="panel-meta">Change preview</p>
+                    <p class="ai-edit-summary">{{ aiEditPreview.summary }}</p>
+                    <p class="ai-edit-scope">{{ aiEditPreview.scopeHint }}</p>
                   </div>
-                  <p>{{ slide.headline }}</p>
-                  <small v-if="slide.supportingText">{{ slide.supportingText }}</small>
-                  <ul v-if="slide.bulletPoints.length > 0" class="carousel-blueprint-points">
-                    <li v-for="point in slide.bulletPoints" :key="point">{{ point }}</li>
-                  </ul>
-                </article>
+                  <div v-if="aiPreviewActions.length > 0" class="ai-edit-action-pills">
+                    <span v-for="action in aiPreviewActions" :key="action">{{ action }}</span>
+                  </div>
+                </div>
+
+                <div class="ai-edit-diff">
+                  <article class="ai-edit-diff-card">
+                    <p class="panel-meta">Before</p>
+                    <pre>{{ aiEditPreview.beforeExcerpt }}</pre>
+                  </article>
+                  <article class="ai-edit-diff-card updated">
+                    <p class="panel-meta">After</p>
+                    <pre>{{ aiEditPreview.afterExcerpt }}</pre>
+                  </article>
+                </div>
+
+                <div class="ai-edit-actions">
+                  <button
+                    type="button"
+                    class="primary-action"
+                    :disabled="isApplyingAiEdit"
+                    @click="void applyAiEditPreview()"
+                  >
+                    {{ isApplyingAiEdit ? "Applying..." : "Apply changes" }}
+                  </button>
+                  <button type="button" class="secondary-action" @click="clearAiEditPreview">
+                    Keep original
+                  </button>
+                </div>
               </div>
             </section>
 
-            <div
-              v-if="displayedMediaRecommendations.length > 0 || isLoadingMediaRecommendations"
-              ref="mediaRecommendationPanelRef"
-              class="media-recommendation-panel"
-            >
-              <div class="media-recommendation-header">
-                <div>
-                  <p class="panel-meta">Recommended next move</p>
-                  <strong>
-                    {{
-                      isBusinessMode
-                        ? "Generate the best post visual for this campaign"
-                        : isUsingFallbackMediaRecommendations
-                          ? "Generate media for this post"
-                          : "Choose the safest visual path for this post"
-                    }}
-                  </strong>
+            <div class="result-helper-rail">
+              <article class="side-card">
+                <p class="panel-meta">Growth mechanics</p>
+                <h3>Make this easier to react to</h3>
+                <p class="shortcut-note side-intro-copy">
+                  Use these moves to sharpen hook tension, improve retention, and create a cleaner reason to comment.
+                </p>
+
+                <div class="growth-mechanics-grid">
+                  <article
+                    v-for="mechanic in growthMechanics"
+                    :key="mechanic.id"
+                    class="growth-mechanic-card"
+                  >
+                    <div>
+                      <p class="panel-meta">{{ mechanic.label }}</p>
+                      <strong>{{ mechanic.title }}</strong>
+                      <p>{{ mechanic.copy }}</p>
+                    </div>
+                    <button
+                      type="button"
+                      class="secondary-action side-action-button"
+                      :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                      @click="void previewAiEdit(mechanic.command)"
+                    >
+                      {{ mechanic.actionLabel }}
+                    </button>
+                  </article>
                 </div>
-                <span class="workspace-chip">
-                  {{ mediaRecommendationStatusLabel }}
-                </span>
-              </div>
 
-              <p v-if="isLoadingMediaRecommendations" class="result-feedback subtle">
-                Loading media recommendations...
-              </p>
-              <p v-else-if="isUsingFallbackMediaRecommendations" class="result-feedback subtle">
-                No strong visual match yet. You can still generate media manually.
-              </p>
+                <div class="growth-callout">
+                  <p class="panel-meta">Comment prompts</p>
+                  <strong>Give people a reason to respond</strong>
+                  <p class="shortcut-note">
+                    Add one direct question to the post, then use a stronger first comment to boost early conversation.
+                  </p>
+                </div>
 
-              <div v-else class="media-recommendation-grid">
-                <article
-                  v-for="suggestion in displayedMediaRecommendations"
-                  :key="suggestion.id"
-                  class="media-recommendation-card"
-                  :data-recommended="suggestion.visualTemplateType === 'carousel'"
-                >
-                  <div>
-                    <p class="panel-meta">{{ suggestion.actionType.replace(/_/g, " ") }}</p>
-                    <strong>{{ getMediaSuggestionTitle(suggestion) }}</strong>
-                    <p>{{ getMediaSuggestionDescription(suggestion) }}</p>
-                    <small>{{ getMediaSuggestionReason(suggestion) }}</small>
-                  </div>
+                <div class="prompt-stack">
+                  <article
+                    v-for="prompt in conversationPrompts"
+                    :key="prompt"
+                    class="prompt-card"
+                  >
+                    <p>{{ prompt }}</p>
+                    <button
+                      type="button"
+                      class="secondary-action side-action-button"
+                      @click="void copyConversationPrompt(prompt)"
+                    >
+                      Copy prompt
+                    </button>
+                  </article>
+                </div>
+
+                <article v-if="suggestedFirstComment" class="first-comment-card">
+                  <p class="panel-meta">First comment</p>
+                  <strong>Use this as comment bait</strong>
+                  <pre>{{ suggestedFirstComment }}</pre>
                   <button
                     type="button"
-                    class="secondary-action"
-                    :disabled="isGeneratingRecommendationId === suggestion.id || isUploadingPostAssets"
-                    @click="void applyMediaRecommendation(suggestion)"
+                    class="secondary-action side-action-button"
+                    @click="void copyConversationPrompt(suggestedFirstComment)"
                   >
-                    {{
-                      suggestion.actionType === "generate_visual"
-                        ? isGeneratingRecommendationId === suggestion.id
-                          ? "Generating..."
-                          : suggestion.suggestedMediaType === "photo_overlay"
-                            ? "Generate image"
-                          : suggestion.visualTemplateType === "carousel"
-                            ? "Generate carousel"
-                            : "Generate visual"
-                        : suggestion.actionType === "use_existing_asset"
-                          ? "Use existing"
-                          : "Skip media"
-                    }}
+                    Copy first comment
                   </button>
                 </article>
-              </div>
-            </div>
 
-            <p v-if="mediaFeedback" class="result-feedback">{{ mediaFeedback }}</p>
-            <p v-else-if="isLoadingPostAssets" class="result-feedback">Loading attached media...</p>
+                <article class="hashtag-card">
+                  <div class="hashtag-card-header">
+                    <div>
+                      <p class="panel-meta">Discoverability</p>
+                      <strong>Add focused hashtags</strong>
+                    </div>
+                    <button
+                      type="button"
+                      class="secondary-action"
+                      :disabled="isGeneratingHashtags"
+                      @click="void generateHashtags()"
+                    >
+                      {{ isGeneratingHashtags ? "Generating..." : "Generate hashtags" }}
+                    </button>
+                  </div>
 
-            <div v-if="postAssets.length > 0" class="media-grid">
-              <article v-for="asset in postAssets" :key="asset.id" class="media-card">
-                <video
-                  v-if="asset.previewUrl && asset.mimeType.startsWith('video/')"
-                  :src="asset.previewUrl"
-                  class="media-preview"
-                  controls
-                  muted
-                  playsinline
-                  preload="metadata"
-                />
-                <img
-                  v-else-if="asset.previewUrl"
-                  :src="asset.previewUrl"
-                  :alt="`Attached media ${asset.orderIndex + 1}`"
-                  class="media-preview"
-                />
-                <div class="media-meta">
-                  <span>{{ asset.mimeType }}</span>
-                  <strong>{{ Math.max(1, Math.round(asset.sizeBytes / 1024)) }} KB</strong>
-                </div>
-                <span v-if="getMediaAssetRoleLabel(asset)" class="media-role-chip">
-                  {{ getMediaAssetRoleLabel(asset) }}
-                </span>
-                <button
-                  type="button"
-                  class="secondary-action media-remove-button"
-                  :disabled="removingPostAssetId === asset.id"
-                  @click="void removePostAsset(asset.id)"
-                >
-                  {{ removingPostAssetId === asset.id ? "Removing..." : "Remove" }}
-                </button>
-              </article>
-            </div>
+                  <p class="shortcut-note">
+                    Keep it tight. Three to five relevant tags is better than a stuffed footer.
+                  </p>
 
-            <p v-else class="result-feedback subtle">
-              {{
-                isBusinessMode
-                  ? "No visual attached yet. Generate or upload one before publishing to Instagram or Facebook."
-                  : "No media attached yet. This post will publish as text until you add supported media."
-              }}
-            </p>
-          </section>
+                  <div v-if="generatedHashtags.length > 0" class="hashtag-chip-row">
+                    <span v-for="tag in generatedHashtags" :key="tag">{{ tag }}</span>
+                  </div>
 
-          <WorkspaceAssetPickerModal
-            :open="isWorkspaceAssetPickerOpen"
-            :business-id="activeBusinessId"
-            asset-type="all"
-            multiple
-            title="Attach existing workspace media"
-            @close="isWorkspaceAssetPickerOpen = false"
-            @select="void attachWorkspaceAssets($event)"
-          />
+                  <div v-if="generatedHashtags.length > 0" class="hashtag-actions">
+                    <button type="button" class="primary-action hashtag-action" @click="void applyGeneratedHashtags()">
+                      Apply to post
+                    </button>
+                    <button type="button" class="secondary-action hashtag-action" @click="void copyHashtagCaption()">
+                      Copy caption
+                    </button>
+                  </div>
 
-          <MetaPageSelectionModal
-            :open="isMetaSelectionModalOpen"
-            :business-id="activeBusinessId"
-            :session="pendingMetaSession"
-            :platform="selectedPublishingPlatform === 'instagram' ? 'instagram' : 'facebook'"
-            @close="closeMetaSelectionModal"
-            @connected="void handleMetaConnected()"
-            @error="handleMetaSelectionError"
-          />
+                  <p v-if="hashtagFeedback" class="result-feedback subtle hashtag-feedback">
+                    {{ hashtagFeedback }}
+                  </p>
+                </article>
 
-          <section class="ai-command-panel">
-            <div class="ai-command-header">
-              <div>
-                <p class="panel-meta">AI editor</p>
-                <strong>Ask AI to improve this draft</strong>
-                <p class="ai-command-copy">
-                  Preview the change first. Nothing overwrites the post until you apply it.
+                <p v-if="growthMechanicsFeedback" class="result-feedback subtle growth-feedback">
+                  {{ growthMechanicsFeedback }}
                 </p>
-              </div>
-            </div>
+              </article>
 
-            <div class="ai-suggestion-callout">
-              <p class="panel-meta">Suggested improvements</p>
-              <p class="ai-command-copy">
-                Start with a stronger hook, a tighter ending, or a more specific founder example.
-              </p>
-            </div>
+              <article class="side-card">
+                <p class="panel-meta">Hook bank</p>
+                <h3>Backup openings</h3>
+                <ul class="hook-list">
+                  <li v-for="hook in hooks" :key="hook">{{ hook }}</li>
+                </ul>
+              </article>
 
-            <div class="ai-command-row">
-              <input
-                v-model="aiEditInstruction"
-                type="text"
-                class="ai-command-input"
-                placeholder="Try: make this sharper, remove emojis, or shorten the ending"
-                @keydown.enter.prevent="void previewAiEdit()"
-              />
-              <button
-                type="button"
-                class="secondary-action ai-command-submit"
-                :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
-                @click="void previewAiEdit()"
-              >
-                {{ isPreviewingAiEdit ? "Thinking..." : "Preview change" }}
-              </button>
-            </div>
-
-            <div class="ai-command-chips">
-              <button
-                v-for="command in AI_QUICK_COMMANDS"
-                :key="command.value"
-                type="button"
-                class="ai-command-chip"
-                :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
-                @click="void previewAiEdit(command.value)"
-              >
-                {{ command.label }}
-              </button>
-            </div>
-
-            <p v-if="aiEditFeedback" class="result-feedback">{{ aiEditFeedback }}</p>
-
-            <div v-if="isPreviewingAiEdit" class="ai-edit-preview-card loading">
-              Generating a scoped suggestion...
-            </div>
-
-            <div v-else-if="aiEditPreview" class="ai-edit-preview-card">
-              <div class="ai-edit-preview-header">
-                <div>
-                  <p class="panel-meta">Change preview</p>
-                  <p class="ai-edit-summary">{{ aiEditPreview.summary }}</p>
-                  <p class="ai-edit-scope">{{ aiEditPreview.scopeHint }}</p>
+              <article class="side-card">
+                <p class="panel-meta">Use this draft elsewhere</p>
+                <h3>Route the same work into the rest of the product.</h3>
+                <div class="side-action-stack">
+                  <button type="button" class="secondary-action side-action-button" @click="void copyPost()">
+                    Copy for {{ selectedPublishingPlatformLabel }}
+                  </button>
+                  <button type="button" class="secondary-action side-action-button" @click="goToOutreach">
+                    Send via Outreach
+                  </button>
+                  <button type="button" class="secondary-action side-action-button" @click="goToEmail">
+                    Convert to Email
+                  </button>
+                  <button type="button" class="secondary-action side-action-button" @click="goToGrowth">
+                    Capture engaged lead
+                  </button>
                 </div>
-                <div v-if="aiPreviewActions.length > 0" class="ai-edit-action-pills">
-                  <span v-for="action in aiPreviewActions" :key="action">{{ action }}</span>
-                </div>
-              </div>
-
-              <div class="ai-edit-diff">
-                <article class="ai-edit-diff-card">
-                  <p class="panel-meta">Before</p>
-                  <pre>{{ aiEditPreview.beforeExcerpt }}</pre>
-                </article>
-                <article class="ai-edit-diff-card updated">
-                  <p class="panel-meta">After</p>
-                  <pre>{{ aiEditPreview.afterExcerpt }}</pre>
-                </article>
-              </div>
-
-              <div class="ai-edit-actions">
-                <button
-                  type="button"
-                  class="primary-action"
-                  :disabled="isApplyingAiEdit"
-                  @click="void applyAiEditPreview()"
-                >
-                  {{ isApplyingAiEdit ? "Applying..." : "Apply changes" }}
-                </button>
-                <button type="button" class="secondary-action" @click="clearAiEditPreview">
-                  Keep original
-                </button>
-              </div>
-            </div>
-          </section>
-        </article>
-
-        <aside class="result-side-rail">
-          <article class="side-card">
-            <p class="panel-meta">Growth mechanics</p>
-            <h3>Make this easier to react to</h3>
-            <p class="shortcut-note side-intro-copy">
-              Use these moves to sharpen hook tension, improve retention, and create a cleaner reason to comment.
-            </p>
-
-            <div class="growth-mechanics-grid">
-              <article
-                v-for="mechanic in growthMechanics"
-                :key="mechanic.id"
-                class="growth-mechanic-card"
-              >
-                <div>
-                  <p class="panel-meta">{{ mechanic.label }}</p>
-                  <strong>{{ mechanic.title }}</strong>
-                  <p>{{ mechanic.copy }}</p>
-                </div>
-                <button
-                  type="button"
-                  class="secondary-action side-action-button"
-                  :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
-                  @click="void previewAiEdit(mechanic.command)"
-                >
-                  {{ mechanic.actionLabel }}
-                </button>
+                <p class="shortcut-note">Shortcuts: Cmd/Ctrl + Shift + O for outreach, + E for email.</p>
               </article>
             </div>
-
-            <div class="growth-callout">
-              <p class="panel-meta">Comment prompts</p>
-              <strong>Give people a reason to respond</strong>
-              <p class="shortcut-note">
-                Add one direct question to the post, then use a stronger first comment to boost early conversation.
-              </p>
-            </div>
-
-            <div class="prompt-stack">
-              <article
-                v-for="prompt in conversationPrompts"
-                :key="prompt"
-                class="prompt-card"
-              >
-                <p>{{ prompt }}</p>
-                <button
-                  type="button"
-                  class="secondary-action side-action-button"
-                  @click="void copyConversationPrompt(prompt)"
-                >
-                  Copy prompt
-                </button>
-              </article>
-            </div>
-
-            <article v-if="suggestedFirstComment" class="first-comment-card">
-              <p class="panel-meta">First comment</p>
-              <strong>Use this as comment bait</strong>
-              <pre>{{ suggestedFirstComment }}</pre>
-              <button
-                type="button"
-                class="secondary-action side-action-button"
-                @click="void copyConversationPrompt(suggestedFirstComment)"
-              >
-                Copy first comment
-              </button>
-            </article>
-
-            <article class="hashtag-card">
-              <div class="hashtag-card-header">
-                <div>
-                  <p class="panel-meta">Discoverability</p>
-                  <strong>Add focused hashtags</strong>
-                </div>
-                <button
-                  type="button"
-                  class="secondary-action"
-                  :disabled="isGeneratingHashtags"
-                  @click="void generateHashtags()"
-                >
-                  {{ isGeneratingHashtags ? "Generating..." : "Generate hashtags" }}
-                </button>
-              </div>
-
-              <p class="shortcut-note">
-                Keep it tight. Three to five relevant tags is better than a stuffed footer.
-              </p>
-
-              <div v-if="generatedHashtags.length > 0" class="hashtag-chip-row">
-                <span v-for="tag in generatedHashtags" :key="tag">{{ tag }}</span>
-              </div>
-
-              <div v-if="generatedHashtags.length > 0" class="hashtag-actions">
-                <button type="button" class="primary-action hashtag-action" @click="void applyGeneratedHashtags()">
-                  Apply to post
-                </button>
-                <button type="button" class="secondary-action hashtag-action" @click="void copyHashtagCaption()">
-                  Copy caption
-                </button>
-              </div>
-
-              <p v-if="hashtagFeedback" class="result-feedback subtle hashtag-feedback">
-                {{ hashtagFeedback }}
-              </p>
-            </article>
-
-            <p v-if="growthMechanicsFeedback" class="result-feedback subtle growth-feedback">
-              {{ growthMechanicsFeedback }}
-            </p>
-          </article>
-
-          <article class="side-card">
-            <p class="panel-meta">Hook bank</p>
-            <h3>Backup openings</h3>
-            <ul class="hook-list">
-              <li v-for="hook in hooks" :key="hook">{{ hook }}</li>
-            </ul>
-          </article>
-
-          <article class="side-card">
-            <p class="panel-meta">Execution panel</p>
-            <h3>What happens next</h3>
-            <div class="execution-fact-grid">
-              <article v-for="fact in executionPanelFacts" :key="fact.label" class="execution-fact-card">
-                <span>{{ fact.label }}</span>
-                <strong>{{ fact.value }}</strong>
-              </article>
-            </div>
-            <div class="execution-delivery-note">
-              <p class="panel-meta">Delivery</p>
-              <p class="shortcut-note">
-                Scheduling hands this draft to the worker loop. Publish now skips the queue and
-                goes directly to {{ selectedPublishingPlatformLabel }}.
-              </p>
-            </div>
-
-            <p class="panel-meta secondary-panel-meta">Use this draft elsewhere</p>
-            <div class="side-action-stack">
-              <button type="button" class="secondary-action side-action-button" @click="void copyPost()">
-                Copy for {{ selectedPublishingPlatformLabel }}
-              </button>
-              <button type="button" class="secondary-action side-action-button" @click="goToOutreach">
-                Send via Outreach
-              </button>
-              <button type="button" class="secondary-action side-action-button" @click="goToEmail">
-                Convert to Email
-              </button>
-              <button type="button" class="secondary-action side-action-button" @click="goToGrowth">
-                Capture engaged lead
-              </button>
-            </div>
-            <p class="shortcut-note">Shortcuts: Cmd/Ctrl + Shift + O for outreach, + E for email.</p>
-          </article>
-        </aside>
+          </div>
+        </details>
       </section>
+
+      <WorkspaceAssetPickerModal
+        :open="isWorkspaceAssetPickerOpen"
+        :business-id="activeBusinessId"
+        asset-type="all"
+        multiple
+        title="Attach existing workspace media"
+        @close="isWorkspaceAssetPickerOpen = false"
+        @select="void attachWorkspaceAssets($event)"
+      />
+
+      <MetaPageSelectionModal
+        :open="isMetaSelectionModalOpen"
+        :business-id="activeBusinessId"
+        :session="pendingMetaSession"
+        :platform="selectedPublishingPlatform === 'instagram' ? 'instagram' : 'facebook'"
+        @close="closeMetaSelectionModal"
+        @connected="void handleMetaConnected()"
+        @error="handleMetaSelectionError"
+      />
     </template>
 
     <section v-else class="result-empty-card">
@@ -6437,6 +7919,632 @@ onBeforeUnmount(() => {
   margin: 16px 0 0;
   color: var(--fc-text-muted);
   line-height: 1.7;
+}
+
+.result-operator-panel,
+.result-helper-section {
+  border: 1px solid var(--fc-border);
+  border-radius: 28px;
+  background: linear-gradient(180deg, var(--fc-surface) 0%, var(--fc-surface-subtle) 100%);
+  box-shadow: var(--fc-card-shadow);
+}
+
+.result-operator-panel {
+  display: grid;
+  gap: 22px;
+  padding: clamp(22px, 3vw, 32px);
+}
+
+.result-operator-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.result-operator-header h2 {
+  margin: 0;
+  line-height: 1.1;
+}
+
+.result-operator-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+}
+
+.result-primary-surface,
+.result-preview-surface,
+.result-action-card,
+.result-compact-card {
+  height: 100%;
+}
+
+.result-draft-textarea {
+  width: 100%;
+  min-height: 360px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 14%, var(--fc-border));
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--fc-text);
+  font: inherit;
+  line-height: 1.75;
+  resize: vertical;
+}
+
+.result-draft-textarea:focus,
+.result-inline-input:focus,
+.result-preview-tab:focus-visible,
+.result-helper-section summary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--fc-accent) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.result-editor-actions,
+.result-preview-tabs,
+.result-secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.result-editor-actions {
+  margin-top: 16px;
+}
+
+.result-preview-tabs {
+  margin-top: 18px;
+}
+
+.result-preview-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: transparent;
+  color: var(--fc-text-muted);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.result-preview-tab:hover {
+  transform: translateY(-1px);
+}
+
+.result-preview-tab.active {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+  color: var(--fc-accent-contrast);
+  box-shadow: var(--fc-accent-shadow);
+}
+
+.result-email-preview-card {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  border-radius: 24px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--fc-accent-soft) 22%, transparent) 0%, transparent 38%),
+    rgba(255, 255, 255, 0.82);
+}
+
+.result-email-preview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.result-inline-preview {
+  margin-top: 18px;
+}
+
+.result-preview-body {
+  display: grid;
+  gap: 14px;
+}
+
+.result-preview-summary-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.result-preview-asset {
+  margin-top: 18px;
+}
+
+.result-preview-asset-media {
+  width: 100%;
+  max-height: 360px;
+  object-fit: cover;
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: color-mix(in srgb, var(--fc-accent-soft) 16%, white 84%);
+}
+
+.result-action-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+}
+
+.result-compact-card.channel-selector-card {
+  margin-top: 0;
+}
+
+.result-action-facts {
+  margin-top: 0;
+}
+
+.result-primary-actions-compact {
+  margin-top: 18px;
+}
+
+.result-editor-stat-row,
+.result-preview-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.result-preview-metrics {
+  margin-top: 14px;
+}
+
+.result-platform-card-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-top: 18px;
+}
+
+.result-platform-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+.result-platform-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 22px rgba(35, 21, 13, 0.08);
+}
+
+.result-platform-card[data-active="true"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 28%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 28%, white 72%);
+  box-shadow: 0 14px 28px rgba(35, 21, 13, 0.1);
+}
+
+.result-platform-card[data-platform="instagram"] {
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, #ff9f8e 22%, transparent) 0%, transparent 34%),
+    rgba(255, 255, 255, 0.82);
+}
+
+.result-platform-card[data-platform="facebook"] {
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, #dce8ff 44%, transparent) 0%, transparent 38%),
+    rgba(255, 255, 255, 0.82);
+}
+
+.result-platform-card[data-platform="linkedin"] {
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, #d8efff 42%, transparent) 0%, transparent 36%),
+    rgba(255, 255, 255, 0.82);
+}
+
+.result-platform-card[data-platform="email"] {
+  background:
+    radial-gradient(circle at top right, color-mix(in srgb, var(--fc-accent-soft) 30%, transparent) 0%, transparent 32%),
+    rgba(255, 255, 255, 0.84);
+}
+
+.result-platform-card-topline,
+.result-platform-card-actions,
+.result-platform-card-metrics,
+.result-preview-notice-row,
+.result-social-preview-actions-row,
+.result-publish-warning-stack {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.result-platform-card-header,
+.result-social-preview-header,
+.result-social-preview-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.result-platform-card-header strong,
+.result-social-preview-identity strong {
+  display: block;
+  line-height: 1.2;
+}
+
+.result-platform-card-header p,
+.result-social-preview-identity p {
+  margin: 4px 0 0;
+  color: var(--fc-text-muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.result-platform-card-avatar,
+.result-social-preview-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  background: linear-gradient(135deg, var(--fc-accent-soft) 0%, color-mix(in srgb, var(--fc-accent-soft) 55%, white 45%) 100%);
+  font-weight: 800;
+}
+
+.result-social-preview-avatar[data-platform="instagram"] {
+  background: linear-gradient(135deg, #ffd8b8 0%, #ffb7d5 52%, #d5c7ff 100%);
+}
+
+.result-social-preview-avatar[data-platform="facebook"] {
+  background: linear-gradient(135deg, #dbe8ff 0%, #bdd4ff 100%);
+}
+
+.result-platform-card-media {
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: color-mix(in srgb, var(--fc-accent-soft) 14%, white 86%);
+}
+
+.result-platform-card-media[data-platform="instagram"] {
+  aspect-ratio: 4 / 5;
+}
+
+.result-platform-card-media[data-platform="facebook"],
+.result-platform-card-media[data-platform="linkedin"] {
+  aspect-ratio: 16 / 9;
+}
+
+.result-platform-card-media-inner,
+.result-social-preview-media-inner {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.result-platform-card-subject {
+  margin: 0;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.result-platform-card-excerpt {
+  margin: 0;
+  color: var(--fc-text);
+  line-height: 1.55;
+  font-size: 0.96rem;
+}
+
+.result-preview-notice-row {
+  margin-top: 14px;
+}
+
+.result-social-platform-preview {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding: clamp(18px, 3vw, 24px);
+  border-radius: 28px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.result-social-platform-preview[data-platform="instagram"] {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(255, 248, 250, 0.94) 100%);
+}
+
+.result-social-platform-preview[data-platform="facebook"] {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 251, 255, 0.94) 100%);
+}
+
+.result-social-preview-header {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.result-social-preview-media {
+  overflow: hidden;
+  border-radius: 24px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: color-mix(in srgb, var(--fc-accent-soft) 16%, white 84%);
+}
+
+.result-social-preview-media[data-platform="instagram"] {
+  aspect-ratio: 4 / 5;
+}
+
+.result-social-preview-media[data-platform="facebook"],
+.result-social-preview-media[data-platform="linkedin"] {
+  aspect-ratio: 16 / 9;
+}
+
+.result-social-preview-actions-row {
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+  color: var(--fc-text-muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.result-instagram-caption-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.result-instagram-caption-line {
+  margin: 0;
+  color: var(--fc-text);
+  line-height: 1.7;
+}
+
+.result-instagram-caption-line strong {
+  margin-right: 8px;
+}
+
+.result-facebook-lead {
+  font-weight: 700;
+}
+
+.result-publish-warning-stack {
+  margin-top: 18px;
+}
+
+.result-publish-warning-stack .result-signal-card {
+  flex: 1 1 220px;
+}
+
+.result-inline-field {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.result-inline-input {
+  min-height: 48px;
+  width: 100%;
+  padding: 0 16px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 14%, var(--fc-border));
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--fc-text);
+  font: inherit;
+}
+
+.result-editor-guidance {
+  margin-top: 12px;
+}
+
+.result-inline-setup-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.result-inline-setup-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.result-inline-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.result-inline-card-header strong {
+  display: block;
+  line-height: 1.25;
+}
+
+.result-inline-field-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.result-inline-card-actions,
+.result-inline-media-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.result-inline-upload {
+  min-height: 48px;
+}
+
+.result-asset-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 12px;
+}
+
+.result-asset-choice-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--fc-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.result-asset-choice-card[data-active="true"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 30%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 24%, white 76%);
+  box-shadow: 0 12px 24px rgba(35, 21, 13, 0.08);
+}
+
+.result-asset-choice-card span {
+  font-size: 0.88rem;
+  line-height: 1.4;
+  font-weight: 700;
+}
+
+.result-asset-choice-card small {
+  color: var(--fc-text-muted);
+  line-height: 1.4;
+}
+
+.result-asset-choice-preview {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: color-mix(in srgb, var(--fc-accent-soft) 16%, white 84%);
+}
+
+.result-inline-submeta {
+  margin-top: 4px;
+}
+
+.result-inline-poster-copy {
+  margin-top: 0;
+}
+
+.result-poster-choice-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.result-poster-choice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  min-height: 42px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--fc-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.result-poster-choice[data-active="true"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 30%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 24%, white 76%);
+}
+
+.result-helper-stack {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.result-helper-section {
+  overflow: hidden;
+}
+
+.result-helper-section summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.result-helper-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.result-helper-section summary span:last-child {
+  color: var(--fc-text-muted);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.result-helper-section[open] summary {
+  border-bottom: 1px solid color-mix(in srgb, var(--fc-border) 86%, transparent);
+  background: color-mix(in srgb, var(--fc-accent-soft) 8%, transparent);
+}
+
+.result-helper-content {
+  display: grid;
+  gap: 18px;
+  padding: 22px 24px 24px;
+}
+
+.helper-two-column {
+  grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+  align-items: start;
+}
+
+.result-helper-rail {
+  display: grid;
+  gap: 18px;
+}
+
+.workspace-chip[data-tone="warning"] {
+  background: color-mix(in srgb, #f8b84e 18%, white 82%);
+  color: #8a5200;
+}
+
+.workspace-chip[data-tone="default"] {
+  background: rgba(245, 232, 219, 0.82);
 }
 
 .result-grid {
@@ -7895,11 +10003,16 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
+  .result-operator-grid,
+  .result-action-grid,
   .result-grid {
     grid-template-columns: 1fr;
   }
 
+  .helper-two-column,
   .result-signal-grid,
+  .result-preview-summary-grid,
+  .result-inline-setup-grid,
   .channel-selector-grid,
   .execution-chip-row,
   .execution-status-grid,
@@ -7912,6 +10025,35 @@ onBeforeUnmount(() => {
 
   .linkedin-feed-hook {
     max-width: none;
+  }
+
+  .result-helper-section summary {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .result-shell {
+    padding-inline: 16px;
+  }
+
+  .result-operator-panel,
+  .result-post-card,
+  .side-card,
+  .result-helper-content,
+  .result-helper-section summary {
+    padding-inline: 18px;
+  }
+
+  .result-draft-textarea {
+    min-height: 300px;
+    padding: 16px;
+  }
+
+  .result-preview-asset-media,
+  .motion-lite-preview {
+    border-radius: 18px;
   }
 }
 </style>

@@ -205,6 +205,18 @@ export async function createPublishAttemptController(
         businessId,
         platforms: request.body?.platforms ?? [],
         contentText: request.body?.contentText?.trim() ?? "",
+        platformInputs: Array.isArray(request.body?.platformInputs)
+          ? request.body.platformInputs
+              .filter((entry): entry is { platform: "linkedin" | "facebook" | "instagram"; contentText: string } =>
+                Boolean(entry)
+                && (entry.platform === "linkedin" || entry.platform === "facebook" || entry.platform === "instagram")
+                && typeof entry.contentText === "string",
+              )
+              .map((entry) => ({
+                platform: entry.platform,
+                contentText: entry.contentText.trim(),
+              }))
+          : undefined,
         assetId: request.body?.assetId?.trim(),
         slides: request.body?.slides ?? [],
         title: request.body?.title?.trim(),

@@ -3461,15 +3461,33 @@ export async function createPublishAttempt(
   input: CreatePublishAttemptRequest,
 ): Promise<CreatePublishAttemptResponse> {
   const businessId = input.businessId.trim();
+  const requestedPlatformInputs = Array.from(
+    new Map(
+      (input.platformInputs ?? [])
+        .filter(
+          (entry): entry is { platform: SocialPlatform; contentText: string } =>
+            Boolean(entry)
+            && (entry.platform === "linkedin" || entry.platform === "facebook" || entry.platform === "instagram")
+            && typeof entry.contentText === "string",
+        )
+        .map((entry) => [entry.platform, entry.contentText.trim()]),
+    ).entries(),
+  ).map(([platform, contentText]) => ({ platform, contentText }));
   const platforms = Array.from(
     new Set(
-      (input.platforms ?? []).filter(
+      (requestedPlatformInputs.length > 0
+        ? requestedPlatformInputs.map((entry) => entry.platform)
+        : (input.platforms ?? [])
+      ).filter(
         (platform): platform is SocialPlatform =>
           platform === "linkedin" || platform === "facebook" || platform === "instagram",
       ),
     ),
   );
-  const contentText = input.contentText.trim();
+  const sharedContentText = input.contentText.trim();
+  const contentTextByPlatform = new Map<SocialPlatform, string>(
+    requestedPlatformInputs.map((entry) => [entry.platform, entry.contentText]),
+  );
   const assetGroupId = input.assetId?.trim() || null;
   const slides = input.slides ?? [];
 
@@ -3484,28 +3502,35 @@ export async function createPublishAttempt(
     throw new HttpError(401, "auth_required", "Authenticated user context is incomplete.");
   }
 
-  if (!contentText) {
-    throw new HttpError(400, "bad_request", "contentText is required.");
-  }
-
   if (platforms.length === 0) {
     throw new HttpError(400, "bad_request", "Select at least one platform to publish.");
   }
 
+  for (const platform of platforms) {
+    const resolvedContentText = contentTextByPlatform.get(platform) || sharedContentText;
+
+    if (!resolvedContentText.trim()) {
+      throw new HttpError(400, "bad_request", `contentText is required for ${platform}.`);
+    }
+
+    contentTextByPlatform.set(platform, resolvedContentText.trim());
+  }
+
   const requestedAssets = await loadReadyAssetsForPostGroup(businessId, assetGroupId);
   const mediaSummary = summarizePublishMedia(requestedAssets, slides);
-  const title = input.title?.trim() || extractPublishAttemptTitle(contentText);
+  const fallbackContentText = sharedContentText || contentTextByPlatform.get(platforms[0]) || "";
+  const title = input.title?.trim() || extractPublishAttemptTitle(fallbackContentText);
   const ledger = await createPublishAttemptLedger({
     businessId,
     userId: principal.userId,
     sourceKind: "manual",
     title,
-    contentText,
+    contentText: fallbackContentText,
     assetGroupId,
     slides,
     platforms: platforms.map((platform) => ({
       platform,
-      contentText,
+      contentText: contentTextByPlatform.get(platform) || fallbackContentText,
       assetGroupId,
       slides,
       mediaSummary,
@@ -3520,10 +3545,11 @@ export async function createPublishAttempt(
     }
 
     try {
+      const platformContentText = contentTextByPlatform.get(platform) || fallbackContentText;
       const result = await runDirectPlatformPublishInternal(principal, {
         businessId,
         platform,
-        contentText,
+        contentText: platformContentText,
         assetId: assetGroupId ?? undefined,
         slides,
         title: input.title?.trim(),
