@@ -22,6 +22,7 @@ const LINKEDIN_IMAGES_API_URL = "https://api.linkedin.com/rest/images";
 const LINKEDIN_POSTS_API_URL = "https://api.linkedin.com/rest/posts";
 const META_GRAPH_BASE_URL = "https://graph.facebook.com";
 const META_FETCH_USER_AGENT = "facebookexternalhit/1.1";
+const INSTAGRAM_TRANSIENT_RETRY_DELAYS_MS = [1500, 4000, 9000] as const;
 
 interface LinkedInImageInitializationResponse {
   value?: {
@@ -78,6 +79,13 @@ interface MetaFacebookVideoPayload {
 interface MetaFacebookPostPayload {
   id?: string;
   permalink_url?: string;
+}
+
+interface InstagramTransientRetryContext {
+  instagramUserId: string;
+  operation: "image_container" | "video_container" | "carousel_parent_container" | "media_publish";
+  mediaUrl?: string;
+  isCarouselItem?: boolean;
 }
 
 export type PublishingChannel = "linkedin" | "instagram" | "facebook" | "x";
@@ -1391,7 +1399,7 @@ function isInstagramMediaFetchFailure(error: unknown): boolean {
   );
 }
 
-function isRetryableInstagramContainerError(error: unknown): error is HttpError {
+function isRetryableInstagramTransientError(error: unknown): error is HttpError {
   if (!(error instanceof HttpError) || error.code !== "instagram_post_failed") {
     return false;
   }
@@ -1400,9 +1408,81 @@ function isRetryableInstagramContainerError(error: unknown): error is HttpError 
   const errorCode = Number(error.details?.errorCode);
 
   return (
-    (statusCode === 500 && errorCode === 2)
+    (Number.isFinite(statusCode) && statusCode >= 500 && statusCode < 600)
+    || statusCode === 429
+    || errorCode === 2
     || /unexpected error has occurred/i.test(error.message)
   );
+}
+
+function buildInstagramTransientFailureMessage(operation: InstagramTransientRetryContext["operation"]): string {
+  switch (operation) {
+    case "image_container":
+      return "Instagram temporarily failed while preparing the image. Please retry in a minute.";
+    case "video_container":
+      return "Instagram temporarily failed while preparing the video. Please retry in a minute.";
+    case "carousel_parent_container":
+      return "Instagram temporarily failed while assembling the carousel. Please retry in a minute.";
+    case "media_publish":
+      return "Instagram temporarily failed while publishing the post. Please retry in a minute.";
+  }
+}
+
+async function postInstagramGraphFormWithRetry<TPayload extends MetaGraphErrorPayload>(
+  path: string,
+  accessToken: string,
+  params: Record<string, string | undefined>,
+  options: {
+    errorCode?: string;
+    fallbackMessage?: string;
+    retryContext: InstagramTransientRetryContext;
+  },
+): Promise<TPayload> {
+  let retryIndex = 0;
+
+  while (true) {
+    try {
+      return await postMetaGraphForm<TPayload>(path, accessToken, params, {
+        errorCode: options.errorCode,
+        fallbackMessage: options.fallbackMessage,
+      });
+    } catch (error) {
+      if (!isRetryableInstagramTransientError(error)) {
+        throw error;
+      }
+
+      if (retryIndex >= INSTAGRAM_TRANSIENT_RETRY_DELAYS_MS.length) {
+        throw new HttpError(
+          502,
+          options.errorCode ?? "instagram_post_failed",
+          buildInstagramTransientFailureMessage(options.retryContext.operation),
+          {
+            ...error.details,
+            transient: true,
+            operation: options.retryContext.operation,
+            mediaUrl: options.retryContext.mediaUrl ? normalizeAssetUrlForLogs(options.retryContext.mediaUrl) : null,
+          },
+        );
+      }
+
+      const delayMs = INSTAGRAM_TRANSIENT_RETRY_DELAYS_MS[retryIndex];
+      retryIndex += 1;
+
+      logWarn("Instagram Graph request failed transiently. Retrying.", {
+        instagramUserId: options.retryContext.instagramUserId,
+        operation: options.retryContext.operation,
+        mediaUrl: options.retryContext.mediaUrl ? normalizeAssetUrlForLogs(options.retryContext.mediaUrl) : null,
+        isCarouselItem: Boolean(options.retryContext.isCarouselItem),
+        attempt: retryIndex,
+        nextDelayMs: delayMs,
+        statusCode: error.details?.statusCode ?? null,
+        errorCode: error.details?.errorCode ?? null,
+        errorSubcode: error.details?.errorSubcode ?? null,
+        fbTraceId: error.details?.fbTraceId ?? null,
+      });
+      await sleep(delayMs);
+    }
+  }
 }
 
 async function createInstagramImageContainer(input: {
@@ -1412,66 +1492,44 @@ async function createInstagramImageContainer(input: {
   caption?: string;
   isCarouselItem?: boolean;
 }): Promise<string> {
-  const createContainer = async (imageUrl: string): Promise<{ id?: string } & MetaGraphErrorPayload> =>
-    {
-      const caption = input.caption?.trim() || undefined;
-
-      logInfo("Submitting Instagram media container request.", {
-        instagramUserId: input.instagramUserId,
-        imageUrl: normalizeAssetUrlForLogs(imageUrl),
-        hasCaption: Boolean(caption),
-        captionLength: caption?.length ?? 0,
-        isCarouselItem: Boolean(input.isCarouselItem),
-        paramKeys: [
-          "image_url",
-          ...(caption ? ["caption"] : []),
-          ...(input.isCarouselItem ? ["is_carousel_item"] : []),
-          "access_token",
-        ],
-      });
-
-      return postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
-        `${input.instagramUserId}/media`,
-        input.accessToken,
-        {
-          image_url: imageUrl,
-          caption,
-          is_carousel_item: input.isCarouselItem ? "true" : undefined,
-        },
-        {
-          errorCode: "instagram_post_failed",
-          fallbackMessage: "Instagram media container creation failed.",
-        },
-      );
-    };
-
   const createContainerWithRetry = async (
     imageUrl: string,
   ): Promise<{ id?: string } & MetaGraphErrorPayload> => {
-    let attempt = 0;
+    const caption = input.caption?.trim() || undefined;
 
-    while (true) {
-      try {
-        return await createContainer(imageUrl);
-      } catch (error) {
-        if (!isRetryableInstagramContainerError(error) || attempt >= 1) {
-          throw error;
-        }
+    logInfo("Submitting Instagram media container request.", {
+      instagramUserId: input.instagramUserId,
+      imageUrl: normalizeAssetUrlForLogs(imageUrl),
+      hasCaption: Boolean(caption),
+      captionLength: caption?.length ?? 0,
+      isCarouselItem: Boolean(input.isCarouselItem),
+      paramKeys: [
+        "image_url",
+        ...(caption ? ["caption"] : []),
+        ...(input.isCarouselItem ? ["is_carousel_item"] : []),
+        "access_token",
+      ],
+    });
 
-        attempt += 1;
-        logWarn("Instagram media container request failed transiently. Retrying.", {
+    return postInstagramGraphFormWithRetry<{ id?: string } & MetaGraphErrorPayload>(
+      `${input.instagramUserId}/media`,
+      input.accessToken,
+      {
+        image_url: imageUrl,
+        caption,
+        is_carousel_item: input.isCarouselItem ? "true" : undefined,
+      },
+      {
+        errorCode: "instagram_post_failed",
+        fallbackMessage: "Instagram media container creation failed.",
+        retryContext: {
           instagramUserId: input.instagramUserId,
-          imageUrl: normalizeAssetUrlForLogs(imageUrl),
-          isCarouselItem: Boolean(input.isCarouselItem),
-          attempt,
-          statusCode: error.details?.statusCode ?? null,
-          errorCode: error.details?.errorCode ?? null,
-          errorSubcode: error.details?.errorSubcode ?? null,
-          fbTraceId: error.details?.fbTraceId ?? null,
-        });
-        await sleep(1500 * attempt);
-      }
-    }
+          operation: "image_container",
+          mediaUrl: imageUrl,
+          isCarouselItem: input.isCarouselItem,
+        },
+      },
+    );
   };
 
   const imageTarget = await createInstagramReadyImageUrl(input.asset);
@@ -1558,7 +1616,7 @@ async function createInstagramVideoContainer(input: {
     "instagram_video_url_not_public",
   );
   await assertMetaCanFetchAssetUrl(videoUrl, "video", "instagram_media_invalid");
-  const creation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+  const creation = await postInstagramGraphFormWithRetry<{ id?: string } & MetaGraphErrorPayload>(
     `${input.instagramUserId}/media`,
     input.accessToken,
     {
@@ -1568,6 +1626,11 @@ async function createInstagramVideoContainer(input: {
     {
       errorCode: "instagram_post_failed",
       fallbackMessage: "Instagram video container creation failed.",
+      retryContext: {
+        instagramUserId: input.instagramUserId,
+        operation: "video_container",
+        mediaUrl: videoUrl,
+      },
     },
   ).catch((error) => normalizeInstagramMediaFetchError(error, videoUrl));
   const creationId = creation.id?.trim();
@@ -1757,7 +1820,7 @@ async function publishInstagram(
         logInfo("Creating Instagram carousel parent container.", {
           childCount: childCreationIds.length,
         });
-        const parentCreation = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+        const parentCreation = await postInstagramGraphFormWithRetry<{ id?: string } & MetaGraphErrorPayload>(
           `${instagramUserId}/media`,
           accessToken,
           {
@@ -1768,6 +1831,10 @@ async function publishInstagram(
           {
             errorCode: "instagram_post_failed",
             fallbackMessage: "Instagram carousel container creation failed.",
+            retryContext: {
+              instagramUserId,
+              operation: "carousel_parent_container",
+            },
           },
         );
         const parentCreationId = parentCreation.id?.trim();
@@ -1784,7 +1851,7 @@ async function publishInstagram(
         return parentCreationId;
       })();
 
-  const publishPayload = await postMetaGraphForm<{ id?: string } & MetaGraphErrorPayload>(
+  const publishPayload = await postInstagramGraphFormWithRetry<{ id?: string } & MetaGraphErrorPayload>(
     `${instagramUserId}/media_publish`,
     accessToken,
     {
@@ -1793,6 +1860,10 @@ async function publishInstagram(
     {
       errorCode: "instagram_post_failed",
       fallbackMessage: "Instagram publish failed.",
+      retryContext: {
+        instagramUserId,
+        operation: "media_publish",
+      },
     },
   );
   const externalPostId = publishPayload.id?.trim();

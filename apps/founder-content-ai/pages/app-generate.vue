@@ -122,6 +122,14 @@ type StoredBusinessCampaignSetup = {
   channels?: BusinessGenerationChannel[];
 };
 
+type GenerationStatusStep = {
+  id: string;
+  label: string;
+  detail: string;
+};
+
+const GENERATION_STATUS_ROTATE_MS = 1400;
+
 const creatorContentTypeOptions: Array<{
   value: CreatorContentType;
   label: string;
@@ -620,10 +628,14 @@ const businessTone = ref<BusinessGenerationTone>(DEFAULT_BUSINESS_TONE);
 const businessLocation = ref("");
 const businessOffer = ref("");
 const businessChannels = ref<BusinessGenerationChannel[]>([...DEFAULT_BUSINESS_CHANNELS]);
+const generationStatusPhaseIndex = ref(0);
+const generationElapsedSeconds = ref(0);
 const isHydratingBusinessCampaignSetup = ref(false);
 const businessCampaignSetupSaveState = ref<"idle" | "saving" | "saved" | "error">("idle");
 let businessLocationSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let businessCampaignSetupFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+let generationStatusPhaseTimer: ReturnType<typeof setInterval> | null = null;
+let generationElapsedTimer: ReturnType<typeof setInterval> | null = null;
 
 const isEditMode = computed(() => improvementSourceId.value !== "");
 const pageTitle = computed(() =>
@@ -765,6 +777,213 @@ const creatorVisualStyleSelection = computed(
     creatorVisualStyleOptions.find((option) => option.value === creatorVisualStyle.value)
     ?? creatorVisualStyleOptions[0],
 );
+const generationStatusHeadline = computed(() => {
+  if (isEditMode.value) {
+    return "Refreshing your draft";
+  }
+
+  if (isBusinessWorkspace.value) {
+    return isSingleBusinessChannelFlow.value
+      ? businessPrimaryChannel.value === "email"
+        ? "Generating your email"
+        : "Generating your post"
+      : "Generating your campaign pack";
+  }
+
+  if (creatorContentType.value === "carousel") {
+    return "Generating your carousel";
+  }
+
+  if (creatorContentType.value === "image_post") {
+    return "Generating your image post";
+  }
+
+  if (creatorContentType.value === "quote_card") {
+    return "Generating your quote card";
+  }
+
+  if (creatorContentType.value === "promo_post") {
+    return "Generating your promotion";
+  }
+
+  return "Generating your post";
+});
+const generationStatusDescription = computed(() => {
+  if (isEditMode.value) {
+    return "The current draft stays intact until the next version is ready. Review the revision on the result page before publishing.";
+  }
+
+  if (isBusinessWorkspace.value) {
+    return isSingleBusinessChannelFlow.value
+      ? "The engine is matching your offer, brand tone, and selected channel so the result lands ready to review instead of needing manual cleanup."
+      : "The engine is shaping one campaign idea into channel-ready assets with CTA, visual direction, and delivery-specific copy.";
+  }
+
+  return "The engine is structuring the idea, matching the chosen tone and format, and preparing a cleaner draft for the result page.";
+});
+const generationStatusSteps = computed<GenerationStatusStep[]>(() => {
+  if (isEditMode.value) {
+    return [
+      {
+        id: "review",
+        label: "Reviewing the current draft",
+        detail: "Preserving your latest edits before changing structure or tone.",
+      },
+      {
+        id: "apply",
+        label: "Applying the new direction",
+        detail: "Reworking the hook, flow, or framing without resetting the core idea.",
+      },
+      {
+        id: "shape",
+        label: "Balancing readability",
+        detail: "Tightening sentence length and sequencing so the update feels publishable.",
+      },
+      {
+        id: "finish",
+        label: "Finalizing the next version",
+        detail: "Packaging the regenerated draft for preview and review.",
+      },
+    ];
+  }
+
+  if (isBusinessWorkspace.value) {
+    return isSingleBusinessChannelFlow.value
+      ? [
+          {
+            id: "context",
+            label: "Matching local context",
+            detail: "Mapping your offer, location, and brand signals into one focused campaign direction.",
+          },
+          {
+            id: "caption",
+            label: businessPrimaryChannel.value === "email" ? "Drafting the email flow" : "Drafting the platform copy",
+            detail: businessPrimaryChannel.value === "email"
+              ? "Building subject, body, and CTA structure around the selected outcome."
+              : `Sizing the ${businessPrimaryChannelLabel.value.toLowerCase()} draft for a cleaner publish-ready first pass.`,
+          },
+          {
+            id: "cta",
+            label: "Sharpening the CTA",
+            detail: "Making the ask clearer so the final asset has a stronger action point.",
+          },
+          {
+            id: "finish",
+            label: "Finalizing the handoff",
+            detail: "Preparing the draft so result, preview, and publish stay aligned.",
+          },
+        ]
+      : [
+          {
+            id: "direction",
+            label: "Choosing the campaign direction",
+            detail: "Turning the brief into one visual and messaging angle the whole pack can follow.",
+          },
+          {
+            id: "channels",
+            label: "Sizing copy per channel",
+            detail: "Adjusting caption and email depth so each surface gets the right amount of content.",
+          },
+          {
+            id: "cta",
+            label: "Aligning CTA and offer",
+            detail: "Keeping the action clear across the pack instead of repeating generic asks.",
+          },
+          {
+            id: "finish",
+            label: "Finalizing the pack",
+            detail: "Bundling preview-ready assets for social, email, and downstream scheduling.",
+          },
+        ];
+  }
+
+  return [
+    {
+      id: "angle",
+      label: "Framing the core angle",
+      detail: "Turning the brief into a clear point of view instead of a loose note.",
+    },
+    {
+      id: "tone",
+      label: "Matching tone and format",
+      detail: `Adapting the draft to ${creatorContentTypeSelection.value.label.toLowerCase()} with ${creatorVisualStyleSelection.value.label.toLowerCase()} direction.`,
+    },
+    {
+      id: "shape",
+      label: "Sizing the draft for delivery",
+      detail: "Breaking the copy into a stronger opening, body flow, and clearer takeaway.",
+    },
+    {
+      id: "finish",
+      label: "Finalizing the result",
+      detail: "Preparing the draft so the next screen opens with a usable first version.",
+    },
+  ];
+});
+const activeGenerationStepIndex = computed(() =>
+  Math.min(generationStatusPhaseIndex.value, Math.max(generationStatusSteps.value.length - 1, 0)),
+);
+const generationElapsedLabel = computed(() => {
+  const minutes = Math.floor(generationElapsedSeconds.value / 60);
+  const seconds = generationElapsedSeconds.value % 60;
+
+  if (minutes === 0) {
+    return `${seconds}s elapsed`;
+  }
+
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+});
+const generationStatusContextChips = computed(() => {
+  if (isEditMode.value) {
+    return [
+      "Editor mode",
+      editorAiInstruction.value.trim() ? `Requested change: ${editorAiInstruction.value.trim()}` : "Keep manual control",
+    ].filter((value) => value !== "");
+  }
+
+  if (isBusinessWorkspace.value) {
+    const channelLabel = businessChannels.value
+      .map((channel) => channel.charAt(0).toUpperCase() + channel.slice(1))
+      .join(" + ");
+
+    return [
+      `Intent: ${activeIntentSelection.value.label}`,
+      `Tone: ${businessToneOptions.find((option) => option.value === businessTone.value)?.label ?? "Friendly"}`,
+      channelLabel ? `Channels: ${channelLabel}` : "",
+      businessOffer.value.trim() ? `Offer: ${businessOffer.value.trim()}` : "",
+    ].filter((value) => value !== "");
+  }
+
+  return [
+    `Intent: ${activeIntentSelection.value.label}`,
+    `Format: ${creatorContentTypeSelection.value.label}`,
+    `Tone: ${toneOptions.find((option) => option.value === tone.value)?.label ?? "Creator"}`,
+    sourceMode.value === "feed" ? "Source mode: Repurpose" : "Source mode: Fresh",
+  ];
+});
+const generationStatusWhatHappeningNotes = computed(() => {
+  if (isEditMode.value) {
+    return [
+      "The existing draft remains the source of truth until the updated version is ready.",
+      "Regeneration keeps the same workflow, so preview and publishing still happen from the result page.",
+      "Nothing is published from this screen.",
+    ];
+  }
+
+  if (isBusinessWorkspace.value) {
+    return [
+      "Brand profile, tone, location, and offer are being folded into the draft automatically.",
+      "Channel-specific copy is being sized separately so social and email do not all inherit the same length.",
+      "The result page is where you will still review, edit, preview, and publish.",
+    ];
+  }
+
+  return [
+    "The engine is converting your note or source material into a stronger opening, body, and ending.",
+    "Format and visual-style choices are influencing how dense the copy should be on the result page.",
+    "You still control the final edit, preview, and publish decision after generation completes.",
+  ];
+});
 const inputPanelMeta = computed(() => {
   if (isEditMode.value) {
     return "Editor";
@@ -1987,6 +2206,43 @@ function handleVoiceTranscript(value: string): void {
   errorMessage.value = "";
 }
 
+function clearGenerationStatusTimers(): void {
+  if (generationStatusPhaseTimer) {
+    clearInterval(generationStatusPhaseTimer);
+    generationStatusPhaseTimer = null;
+  }
+
+  if (generationElapsedTimer) {
+    clearInterval(generationElapsedTimer);
+    generationElapsedTimer = null;
+  }
+}
+
+function resetGenerationStatus(): void {
+  generationStatusPhaseIndex.value = 0;
+  generationElapsedSeconds.value = 0;
+}
+
+function startGenerationStatus(): void {
+  clearGenerationStatusTimers();
+  resetGenerationStatus();
+
+  generationElapsedTimer = setInterval(() => {
+    generationElapsedSeconds.value += 1;
+  }, 1000);
+
+  generationStatusPhaseTimer = setInterval(() => {
+    const lastIndex = Math.max(generationStatusSteps.value.length - 1, 0);
+
+    generationStatusPhaseIndex.value = Math.min(generationStatusPhaseIndex.value + 1, lastIndex);
+
+    if (generationStatusPhaseIndex.value >= lastIndex && generationStatusPhaseTimer) {
+      clearInterval(generationStatusPhaseTimer);
+      generationStatusPhaseTimer = null;
+    }
+  }, GENERATION_STATUS_ROTATE_MS);
+}
+
 function handleKeydown(event: KeyboardEvent): void {
   if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.key !== "Enter") {
     return;
@@ -2148,6 +2404,19 @@ watch(
   { immediate: true },
 );
 
+watch(
+  isLoading,
+  (nextValue) => {
+    if (nextValue) {
+      startGenerationStatus();
+      return;
+    }
+
+    clearGenerationStatusTimers();
+    resetGenerationStatus();
+  },
+);
+
 onMounted(() => {
   window.addEventListener("keydown", handleKeydown);
 });
@@ -2162,6 +2431,8 @@ onBeforeUnmount(() => {
   if (businessCampaignSetupFeedbackTimer) {
     clearTimeout(businessCampaignSetupFeedbackTimer);
   }
+
+  clearGenerationStatusTimers();
 });
 </script>
 
@@ -2878,6 +3149,58 @@ onBeforeUnmount(() => {
         }}
       </p>
 
+      <div v-if="isLoading" class="generation-status-panel">
+        <div class="generation-status-header">
+          <div class="generation-status-copy">
+            <p class="panel-meta">Generation in progress</p>
+            <h3>{{ generationStatusHeadline }}</h3>
+            <p class="activation-helper">
+              {{ generationStatusDescription }}
+            </p>
+          </div>
+          <span class="activation-chip generation-status-timer">{{ generationElapsedLabel }}</span>
+        </div>
+
+        <div class="generation-status-context">
+          <span
+            v-for="chip in generationStatusContextChips"
+            :key="chip"
+            class="saved-source-chip"
+          >
+            {{ chip }}
+          </span>
+        </div>
+
+        <ol class="generation-status-list">
+          <li
+            v-for="(step, index) in generationStatusSteps"
+            :key="step.id"
+            class="generation-status-step"
+            :data-state="index < activeGenerationStepIndex ? 'complete' : index === activeGenerationStepIndex ? 'active' : 'pending'"
+          >
+            <span class="generation-status-marker">
+              {{ index < activeGenerationStepIndex ? "✓" : index + 1 }}
+            </span>
+            <div class="generation-status-step-copy">
+              <strong>{{ step.label }}</strong>
+              <p>{{ step.detail }}</p>
+            </div>
+          </li>
+        </ol>
+
+        <details class="generation-status-details">
+          <summary>What’s happening</summary>
+          <ul class="generation-status-note-list">
+            <li
+              v-for="note in generationStatusWhatHappeningNotes"
+              :key="note"
+            >
+              {{ note }}
+            </li>
+          </ul>
+        </details>
+      </div>
+
       <div class="activation-actions">
         <button
           v-if="isEditMode"
@@ -3455,6 +3778,144 @@ onBeforeUnmount(() => {
   color: var(--fc-danger-text, #a63d32);
 }
 
+.generation-status-panel {
+  display: grid;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  border-radius: 22px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--fc-surface) 94%, var(--fc-accent) 6%) 0%,
+    color-mix(in srgb, var(--fc-surface-subtle) 88%, var(--fc-accent) 12%) 100%
+  );
+}
+
+.generation-status-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.generation-status-copy {
+  display: grid;
+  gap: 8px;
+}
+
+.generation-status-copy h3 {
+  margin: 0;
+  font-size: clamp(1.05rem, 2vw, 1.25rem);
+  line-height: 1.12;
+}
+
+.generation-status-timer {
+  flex: 0 0 auto;
+  background: var(--fc-surface);
+}
+
+.generation-status-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.generation-status-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.generation-status-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 14px 16px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-surface) 92%, white 8%);
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.generation-status-step[data-state="active"] {
+  border-color: color-mix(in srgb, var(--fc-accent) 30%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent) 10%, var(--fc-surface));
+  transform: translateY(-1px);
+}
+
+.generation-status-step[data-state="complete"] {
+  border-color: color-mix(in srgb, var(--fc-success-text) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-success-bg) 48%, var(--fc-surface));
+}
+
+.generation-status-marker {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--fc-surface-subtle);
+  color: var(--fc-text-muted);
+  font-size: 0.84rem;
+  font-weight: 800;
+}
+
+.generation-status-step[data-state="active"] .generation-status-marker {
+  background: var(--fc-accent);
+  color: var(--fc-accent-contrast);
+}
+
+.generation-status-step[data-state="complete"] .generation-status-marker {
+  background: color-mix(in srgb, var(--fc-success-bg) 88%, var(--fc-panel-bg));
+  color: var(--fc-success-text);
+}
+
+.generation-status-step-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.generation-status-step-copy strong {
+  line-height: 1.3;
+}
+
+.generation-status-step-copy p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
+}
+
+.generation-status-details {
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-surface) 88%, white 12%);
+}
+
+.generation-status-details summary {
+  cursor: pointer;
+  padding: 14px 16px;
+  font-weight: 800;
+  list-style: none;
+}
+
+.generation-status-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.generation-status-note-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0 18px 18px 34px;
+  color: var(--fc-text-muted);
+  line-height: 1.6;
+}
+
 .activation-actions {
   align-items: center;
   margin-top: 24px;
@@ -3502,7 +3963,8 @@ onBeforeUnmount(() => {
   .channel-context-panel,
   .brand-context-header,
   .suggestion-launch-header,
-  .activation-helper-row {
+  .activation-helper-row,
+  .generation-status-header {
     flex-direction: column;
   }
 
