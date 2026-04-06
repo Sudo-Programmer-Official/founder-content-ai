@@ -489,11 +489,11 @@ function formatPostAssetChoiceLabel(asset: PostAsset): string {
 
 function resolvePublishingContentText(platform: PublishableSocialPlatform): string {
   if (platform === "instagram") {
-    return businessOutput.value?.captions.instagram?.trim() || postContent.value;
+    return resolveEditableCaptionBaseline("instagram").trim();
   }
 
   if (platform === "facebook") {
-    return businessOutput.value?.captions.facebook?.trim() || postContent.value;
+    return resolveEditableCaptionBaseline("facebook").trim();
   }
 
   return postContent.value;
@@ -511,6 +511,135 @@ function truncatePreviewExcerpt(value: string, limit = 156): string {
   }
 
   return `${compact.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+function shortenCaptionParagraphs(
+  paragraphs: string[],
+  input: { maxChars: number; maxParagraphs: number },
+): string {
+  const selected: string[] = [];
+  let usedChars = 0;
+
+  for (const paragraph of paragraphs) {
+    const normalized = paragraph.replace(/\s+/g, " ").trim();
+
+    if (!normalized) {
+      continue;
+    }
+
+    if (selected.length >= input.maxParagraphs) {
+      break;
+    }
+
+    const separatorChars = selected.length > 0 ? 2 : 0;
+    const remainingChars = input.maxChars - usedChars - separatorChars;
+
+    if (remainingChars <= 0) {
+      break;
+    }
+
+    const nextParagraph = normalized.length <= remainingChars
+      ? normalized
+      : `${normalized.slice(0, Math.max(0, remainingChars - 1)).trimEnd()}…`;
+
+    if (!nextParagraph) {
+      break;
+    }
+
+    selected.push(nextParagraph);
+    usedChars += separatorChars + nextParagraph.length;
+
+    if (nextParagraph.endsWith("…")) {
+      break;
+    }
+  }
+
+  return selected.join("\n\n");
+}
+
+function buildPlatformCaptionFallback(platform: "instagram" | "facebook"): string {
+  const baseText = postContent.value.trim();
+
+  if (!baseText) {
+    return "";
+  }
+
+  const maxChars = platform === "instagram" ? 520 : 900;
+  const maxParagraphs = platform === "instagram" ? 3 : 4;
+  const baseParagraphs = splitPostParagraphs(baseText);
+
+  if (baseText.length <= maxChars && baseParagraphs.length <= maxParagraphs) {
+    return baseText;
+  }
+
+  const leadLines = extractPreviewLead(baseParagraphs);
+  const bodyParagraphs = extractPreviewBody(baseParagraphs, leadLines);
+  const normalizedLead = leadLines.join("\n").trim();
+  const normalizedBody = bodyParagraphs.map((paragraph) => paragraph.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const candidateParagraphs = [
+    normalizedLead,
+    ...normalizedBody,
+  ].filter((paragraph) => paragraph !== "");
+
+  const shortened = shortenCaptionParagraphs(candidateParagraphs, { maxChars, maxParagraphs });
+
+  return shortened || truncatePreviewExcerpt(baseText, maxChars);
+}
+
+function resolveDraftBusinessOutputSeed(): BusinessContentOutput {
+  const trimmedPost = postContent.value.trim();
+  const previewLead = splitPostParagraphs(trimmedPost)[0] ?? trimmedPost;
+  const ideaTitle = draft.value?.result.idea.title?.trim() || truncatePreviewExcerpt(previewLead, 72).replace(/…$/, "");
+  const ideaAngle = draft.value?.result.idea.angle?.trim() || "";
+  const imagePrompt = [
+    ideaTitle,
+    ideaAngle,
+    "Create a clean branded social visual that matches this post.",
+  ]
+    .filter((value) => value && value.trim() !== "")
+    .join(" ");
+
+  const seedInstagram = editableInstagramContent.value.trim() || buildPlatformCaptionFallback("instagram");
+  const seedFacebook = editableFacebookContent.value.trim() || buildPlatformCaptionFallback("facebook");
+  const seedEmailSubject = editableEmailSubject.value.trim();
+  const seedEmailBody = editableEmailBody.value.trim();
+
+  return {
+    hooks: [...(draft.value?.result.hooks ?? [])],
+    visual: {
+      headline: ideaTitle || "Saved draft",
+      subheadline: ideaAngle || undefined,
+      imagePrompt,
+      visualDirection: ideaAngle || undefined,
+    },
+    captions: {
+      instagram: seedInstagram,
+      facebook: seedFacebook,
+    },
+    cta: {
+      label: editableCtaLabel.value.trim(),
+      url: editableCtaUrl.value.trim(),
+    },
+    ...(seedEmailSubject || seedEmailBody
+      ? {
+          email: {
+            subject: seedEmailSubject,
+            body: seedEmailBody,
+          },
+        }
+      : {}),
+  };
+}
+
+function resolveEditableCaptionBaseline(platform: "instagram" | "facebook"): string {
+  const explicitCaption =
+    platform === "instagram"
+      ? businessOutput.value?.captions.instagram
+      : businessOutput.value?.captions.facebook;
+
+  return explicitCaption && explicitCaption.trim() !== ""
+    ? explicitCaption
+    : buildPlatformCaptionFallback(platform);
 }
 
 function resolvePreviewSurfaceText(surface: ResultPreviewSurface): string {
@@ -1495,10 +1624,10 @@ const isManualEditDirty = computed(() =>
   editablePostContent.value.trim() !== postContent.value.trim(),
 );
 const isInstagramEditDirty = computed(() =>
-  editableInstagramContent.value.trim() !== (businessOutput.value?.captions.instagram ?? "").trim(),
+  editableInstagramContent.value.trim() !== resolveEditableCaptionBaseline("instagram").trim(),
 );
 const isFacebookEditDirty = computed(() =>
-  editableFacebookContent.value.trim() !== (businessOutput.value?.captions.facebook ?? "").trim(),
+  editableFacebookContent.value.trim() !== resolveEditableCaptionBaseline("facebook").trim(),
 );
 const isEmailEditDirty = computed(() =>
   editableEmailSubject.value.trim() !== (businessOutput.value?.email?.subject ?? "").trim()
@@ -3754,12 +3883,12 @@ function resetSelectedSurfaceEdit(): void {
   manualEditFeedback.value = "";
 
   if (selectedResultPreviewSurface.value === "instagram") {
-    editableInstagramContent.value = businessOutput.value?.captions.instagram ?? "";
+    editableInstagramContent.value = resolveEditableCaptionBaseline("instagram");
     return;
   }
 
   if (selectedResultPreviewSurface.value === "facebook") {
-    editableFacebookContent.value = businessOutput.value?.captions.facebook ?? "";
+    editableFacebookContent.value = resolveEditableCaptionBaseline("facebook");
     return;
   }
 
@@ -3811,12 +3940,9 @@ async function saveSelectedSurfaceEdit(): Promise<void> {
     return;
   }
 
-  if (!businessOutput.value) {
-    manualEditFeedback.value = "This surface does not have a separate saved variant yet.";
-    return;
-  }
-
-  const nextBusinessOutput = cloneBusinessOutput(businessOutput.value);
+  const nextBusinessOutput = businessOutput.value
+    ? cloneBusinessOutput(businessOutput.value)
+    : resolveDraftBusinessOutputSeed();
 
   if (selectedResultPreviewSurface.value === "instagram") {
     if (!isInstagramEditDirty.value) {
@@ -5870,6 +5996,7 @@ watch(
 
 watch(
   () => [
+    postContent.value,
     businessOutput.value?.captions.instagram ?? "",
     businessOutput.value?.captions.facebook ?? "",
     businessOutput.value?.email?.subject ?? "",
@@ -5877,9 +6004,32 @@ watch(
     businessOutput.value?.cta.label ?? "",
     businessOutput.value?.cta.url ?? "",
   ] as const,
-  ([nextInstagram, nextFacebook, nextEmailSubject, nextEmailBody, nextCtaLabel, nextCtaUrl]) => {
-    editableInstagramContent.value = nextInstagram;
-    editableFacebookContent.value = nextFacebook;
+  ([nextPost, nextInstagram, nextFacebook, nextEmailSubject, nextEmailBody, nextCtaLabel, nextCtaUrl], previousValues) => {
+    const [
+      previousPost = "",
+      previousInstagram = "",
+      previousFacebook = "",
+    ] = previousValues ?? [];
+
+    const previousInstagramBaseline = previousInstagram.trim() !== "" ? previousInstagram : previousPost;
+    const previousFacebookBaseline = previousFacebook.trim() !== "" ? previousFacebook : previousPost;
+    const nextInstagramBaseline = nextInstagram.trim() !== "" ? nextInstagram : nextPost;
+    const nextFacebookBaseline = nextFacebook.trim() !== "" ? nextFacebook : nextPost;
+
+    if (
+      editableInstagramContent.value.trim() === ""
+      || editableInstagramContent.value === previousInstagramBaseline
+    ) {
+      editableInstagramContent.value = nextInstagramBaseline;
+    }
+
+    if (
+      editableFacebookContent.value.trim() === ""
+      || editableFacebookContent.value === previousFacebookBaseline
+    ) {
+      editableFacebookContent.value = nextFacebookBaseline;
+    }
+
     editableEmailSubject.value = nextEmailSubject;
     editableEmailBody.value = nextEmailBody;
     editableCtaLabel.value = nextCtaLabel;
