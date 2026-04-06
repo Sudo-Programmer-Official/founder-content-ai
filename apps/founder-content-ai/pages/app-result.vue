@@ -1849,6 +1849,7 @@ const hasPersistedAsset = computed(() => Boolean(draft.value?.result.asset?.id))
 const persistedPostId = computed(() => draft.value?.result.asset?.id ?? "");
 const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? "");
 const accessLimits = computed(() => bootstrap.value?.limits ?? null);
+const currentWorkspacePlanCode = computed(() => bootstrap.value?.access?.planCode ?? "free");
 const canPersistDraft = computed(() => Boolean(activeBusinessId.value && draft.value));
 const schedulerEnabled = computed(
   () =>
@@ -1881,14 +1882,18 @@ const queuePreviewCopy = computed(() => {
   }
 
   if (queueLimitReached.value) {
-    return "Your free queue is full. Upgrade to plan the rest of your week and stay consistent.";
+    return currentWorkspacePlanCode.value === "free"
+      ? "Your free queue is full. Upgrade to plan the rest of your week and stay consistent."
+      : "Your scheduling queue is full right now. Open planner to clear or publish queued work before adding another slot.";
   }
 
   return `Queue up to ${scheduledQueueLimit.value} post${scheduledQueueLimit.value === 1 ? "" : "s"} for free, keep the best-time guidance visible, then upgrade when you want a real scheduling cadence.`;
 });
 const queueLimitPrompt = computed(() =>
   queueLimitReached.value
-    ? "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue."
+    ? currentWorkspacePlanCode.value === "free"
+      ? "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue."
+      : "The current scheduling queue is full. Open planner to remove or publish a queued post, or refresh if this workspace was just upgraded."
     : "",
 );
 const audienceTimezoneOptions = computed(() => {
@@ -5746,6 +5751,26 @@ function handleKeydown(event: KeyboardEvent): void {
   }
 }
 
+async function syncWorkspaceAccessState(): Promise<void> {
+  if (!auth.isReady.value || !auth.isAuthenticated.value) {
+    return;
+  }
+
+  await refreshProductAccess(activeBusinessId.value || null);
+}
+
+function handleWindowFocus(): void {
+  void syncWorkspaceAccessState();
+}
+
+function handleVisibilityChange(): void {
+  if (typeof document === "undefined" || document.visibilityState !== "visible") {
+    return;
+  }
+
+  void syncWorkspaceAccessState();
+}
+
 watch(
   () => [route.query.id, activeBusinessId.value],
   () => {
@@ -5888,6 +5913,7 @@ watch(
 watch(
   () => activeBusinessId.value,
   () => {
+    void syncWorkspaceAccessState();
     void loadWorkspaceChannels();
   },
   { immediate: true },
@@ -6034,10 +6060,14 @@ watch(
 
 onMounted(() => {
   window.addEventListener("keydown", handleKeydown);
+  window.addEventListener("focus", handleWindowFocus);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleKeydown);
+  window.removeEventListener("focus", handleWindowFocus);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 </script>
 
@@ -7952,18 +7982,24 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 20px;
   grid-template-columns: minmax(0, 1.08fr) minmax(300px, 0.92fr);
+  align-items: start;
 }
 
-.result-primary-surface,
 .result-preview-surface,
 .result-action-card,
 .result-compact-card {
   height: 100%;
 }
 
+.result-primary-surface {
+  height: auto;
+  align-self: start;
+}
+
 .result-draft-textarea {
   width: 100%;
-  min-height: 360px;
+  min-height: 260px;
+  max-height: 340px;
   margin-top: 18px;
   padding: 18px 20px;
   border: 1px solid color-mix(in srgb, var(--fc-accent) 14%, var(--fc-border));
@@ -8365,12 +8401,14 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 14px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   margin-top: 18px;
 }
 
 .result-inline-setup-card {
   display: grid;
   gap: 12px;
+  align-content: start;
   padding: 16px 18px;
   border-radius: 22px;
   border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
@@ -8398,6 +8436,7 @@ onBeforeUnmount(() => {
 .result-inline-card-actions,
 .result-inline-media-actions {
   display: flex;
+  align-items: flex-start;
   flex-wrap: wrap;
   gap: 10px;
 }
@@ -10047,7 +10086,8 @@ onBeforeUnmount(() => {
   }
 
   .result-draft-textarea {
-    min-height: 300px;
+    min-height: 220px;
+    max-height: 300px;
     padding: 16px;
   }
 
