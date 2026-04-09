@@ -2325,7 +2325,6 @@ export async function getMetaPublishingCredentialsForBusiness(input: {
 
   if (
     account?.platform !== "facebook"
-    || account.business_id !== input.businessId
     || account.status !== "connected"
   ) {
     account = null;

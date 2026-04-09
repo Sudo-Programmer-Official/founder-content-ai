@@ -4471,20 +4471,32 @@ async function applyAiEditPreview(): Promise<void> {
 }
 
 async function loadWorkspaceChannels(): Promise<void> {
-  if (!activeBusinessId.value) {
-    socialAccounts.value = [];
+  const businessId = activeBusinessId.value;
+  socialAccounts.value = [];
+
+  if (!businessId) {
     return;
   }
 
   isLoadingChannels.value = true;
 
   try {
-    const response = await requestSocialAccounts(activeBusinessId.value);
+    const response = await requestSocialAccounts(businessId);
+    if (activeBusinessId.value !== businessId) {
+      return;
+    }
+
     socialAccounts.value = response.accounts;
   } catch {
+    if (activeBusinessId.value !== businessId) {
+      return;
+    }
+
     socialAccounts.value = [];
   } finally {
-    isLoadingChannels.value = false;
+    if (activeBusinessId.value === businessId) {
+      isLoadingChannels.value = false;
+    }
   }
 }
 
