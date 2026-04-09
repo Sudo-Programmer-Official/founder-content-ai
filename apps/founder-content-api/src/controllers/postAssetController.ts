@@ -15,6 +15,8 @@ import type {
   GetPostAssetResponse,
   ListPostAssetsQuery,
   ListPostAssetsResponse,
+  ReorderPostAssetsRequest,
+  ReorderPostAssetsResponse,
 } from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
 import {
@@ -26,6 +28,7 @@ import {
   getPostAsset,
   getPostAssetDownload,
   listPostAssets,
+  reorderPostAssets,
 } from "../services/postAssetService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
@@ -238,6 +241,47 @@ export async function getPostAssets(
       code: "post_assets_lookup_failed",
       message: "Unable to load post media.",
       logMessage: "Failed to load post media.",
+    });
+  }
+}
+
+export async function reorderPostAssetsController(
+  request: Request<unknown, ReorderPostAssetsResponse | ApiError, Partial<ReorderPostAssetsRequest>>,
+  response: Response<ReorderPostAssetsResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const postId = request.body?.postId?.trim();
+  const assetIds = Array.isArray(request.body?.assetIds)
+    ? request.body.assetIds
+        .filter((assetId): assetId is string => typeof assetId === "string")
+        .map((assetId) => assetId.trim())
+        .filter((assetId) => assetId !== "")
+    : [];
+
+  if (!businessId || !postId || assetIds.length === 0) {
+    sendApiError(response, 400, "bad_request", "businessId, postId, and assetIds are required.");
+    return;
+  }
+
+  try {
+    response.json(
+      await reorderPostAssets(request.auth, {
+        businessId,
+        postId,
+        assetIds,
+      }),
+    );
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "post_assets_reorder_failed",
+      message: "Unable to update media order for this post.",
+      logMessage: "Failed to reorder post assets.",
     });
   }
 }

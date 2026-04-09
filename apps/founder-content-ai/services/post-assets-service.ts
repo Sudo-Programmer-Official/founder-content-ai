@@ -11,8 +11,10 @@ import type {
   DownloadPostAssetResponse,
   GetPostAssetResponse,
   ListPostAssetsResponse,
+  ReorderPostAssetsRequest,
+  ReorderPostAssetsResponse,
 } from "../../../packages/shared-types";
-import { apiDelete, apiGet, apiPost } from "./api-client";
+import { apiDelete, apiGet, apiPatch, apiPost } from "./api-client";
 import { toFriendlyMediaStorageError } from "./media-storage-errors";
 
 export async function requestMediaUploadUrl(
@@ -106,5 +108,14 @@ export async function requestDeletePostAsset(
 ): Promise<DeletePostAssetResponse> {
   return apiDelete<DeletePostAssetResponse>(
     `/post-assets/${encodeURIComponent(assetId)}?businessId=${encodeURIComponent(businessId)}`,
+  );
+}
+
+export async function requestReorderPostAssets(
+  input: ReorderPostAssetsRequest,
+): Promise<ReorderPostAssetsResponse> {
+  return apiPatch<ReorderPostAssetsRequest, ReorderPostAssetsResponse>(
+    "/post-assets/order",
+    input,
   );
 }

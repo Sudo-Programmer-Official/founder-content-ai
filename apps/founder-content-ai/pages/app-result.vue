@@ -68,6 +68,7 @@ import {
   requestGenerateMotionPostAsset,
   requestMediaUploadUrl,
   requestPostAssets,
+  requestReorderPostAssets,
 } from "../services/post-assets-service";
 import { appRoutes } from "../utils/routes";
 import {
@@ -181,6 +182,7 @@ const isUploadingPostAssets = ref(false);
 const isGeneratingMotionLite = ref(false);
 const isCreatingPromoVisual = ref(false);
 const removingPostAssetId = ref("");
+const reorderingPostAssetId = ref("");
 const mediaFeedback = ref("");
 const postAssets = ref<PostAsset[]>([]);
 const isWorkspaceAssetPickerOpen = ref(false);
@@ -5177,6 +5179,88 @@ async function removePostAsset(assetId: string): Promise<void> {
   }
 }
 
+async function persistPostAssetOrder(
+  nextAssetIds: string[],
+  activeAssetId: string,
+  successMessage: string,
+): Promise<void> {
+  if (!activeBusinessId.value || !persistedPostId.value || nextAssetIds.length === 0) {
+    return;
+  }
+
+  reorderingPostAssetId.value = activeAssetId;
+  mediaFeedback.value = "";
+
+  try {
+    const response = await requestReorderPostAssets({
+      businessId: activeBusinessId.value,
+      postId: persistedPostId.value,
+      assetIds: nextAssetIds,
+    });
+    postAssets.value = response.assets;
+    mediaFeedback.value = successMessage;
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to update media order.";
+  } finally {
+    reorderingPostAssetId.value = "";
+  }
+}
+
+function canMovePostAsset(assetId: string, direction: -1 | 1): boolean {
+  if (reorderingPostAssetId.value !== "" || removingPostAssetId.value !== "") {
+    return false;
+  }
+
+  const currentIndex = postAssets.value.findIndex((asset) => asset.id === assetId);
+  const nextIndex = currentIndex + direction;
+
+  return currentIndex >= 0 && nextIndex >= 0 && nextIndex < postAssets.value.length;
+}
+
+async function movePostAsset(assetId: string, direction: -1 | 1): Promise<void> {
+  const currentIndex = postAssets.value.findIndex((asset) => asset.id === assetId);
+  const nextIndex = currentIndex + direction;
+
+  if (currentIndex < 0 || nextIndex < 0 || nextIndex >= postAssets.value.length) {
+    return;
+  }
+
+  const nextAssetIds = postAssets.value.map((asset) => asset.id);
+  const [movedAssetId] = nextAssetIds.splice(currentIndex, 1);
+
+  if (!movedAssetId) {
+    return;
+  }
+
+  nextAssetIds.splice(nextIndex, 0, movedAssetId);
+
+  await persistPostAssetOrder(nextAssetIds, assetId, "Media order updated for this draft.");
+}
+
+async function movePostAssetToFront(assetId: string): Promise<void> {
+  const currentIndex = postAssets.value.findIndex((asset) => asset.id === assetId);
+
+  if (currentIndex <= 0) {
+    return;
+  }
+
+  const nextAssetIds = postAssets.value.map((asset) => asset.id);
+  const [movedAssetId] = nextAssetIds.splice(currentIndex, 1);
+
+  if (!movedAssetId) {
+    return;
+  }
+
+  nextAssetIds.unshift(movedAssetId);
+
+  await persistPostAssetOrder(
+    nextAssetIds,
+    assetId,
+    "Media order updated. The selected image now leads the draft.",
+  );
+}
+
 function syncScheduleFormFromSlot(scheduledAt: string, timezone: string): void {
   scheduleDateKey.value = toDateKeyInTimezone(scheduledAt, timezone);
   scheduleTime.value = toTimeValueInTimezone(scheduledAt, timezone);
@@ -7724,6 +7808,9 @@ onBeforeUnmount(() => {
 
               <p v-if="mediaFeedback" class="result-feedback">{{ mediaFeedback }}</p>
               <p v-else-if="isLoadingPostAssets" class="result-feedback">Loading attached media...</p>
+              <p v-else-if="postAssets.length > 1" class="result-feedback subtle">
+                The first image becomes the lead frame. Use the controls below to move a visual to the front.
+              </p>
 
               <div v-if="postAssets.length > 0" class="media-grid">
                 <article v-for="asset in postAssets" :key="asset.id" class="media-card">
@@ -7742,6 +7829,11 @@ onBeforeUnmount(() => {
                     :alt="`Attached media ${asset.orderIndex + 1}`"
                     class="media-preview"
                   />
+                  <div class="media-order-row">
+                    <span class="media-order-chip">
+                      {{ asset.orderIndex === 0 ? "First in post" : `Position ${asset.orderIndex + 1}` }}
+                    </span>
+                  </div>
                   <div class="media-meta">
                     <span>{{ asset.mimeType }}</span>
                     <strong>{{ Math.max(1, Math.round(asset.sizeBytes / 1024)) }} KB</strong>
@@ -7749,10 +7841,37 @@ onBeforeUnmount(() => {
                   <span v-if="getMediaAssetRoleLabel(asset)" class="media-role-chip">
                     {{ getMediaAssetRoleLabel(asset) }}
                   </span>
+                  <div v-if="postAssets.length > 1" class="media-order-actions">
+                    <button
+                      v-if="asset.orderIndex > 0"
+                      type="button"
+                      class="secondary-action media-order-button"
+                      :disabled="reorderingPostAssetId === asset.id || removingPostAssetId === asset.id"
+                      @click="void movePostAssetToFront(asset.id)"
+                    >
+                      {{ reorderingPostAssetId === asset.id ? "Saving..." : "Make first" }}
+                    </button>
+                    <button
+                      type="button"
+                      class="secondary-action media-order-button"
+                      :disabled="!canMovePostAsset(asset.id, -1)"
+                      @click="void movePostAsset(asset.id, -1)"
+                    >
+                      Move left
+                    </button>
+                    <button
+                      type="button"
+                      class="secondary-action media-order-button"
+                      :disabled="!canMovePostAsset(asset.id, 1)"
+                      @click="void movePostAsset(asset.id, 1)"
+                    >
+                      Move right
+                    </button>
+                  </div>
                   <button
                     type="button"
                     class="secondary-action media-remove-button"
-                    :disabled="removingPostAssetId === asset.id"
+                    :disabled="removingPostAssetId === asset.id || reorderingPostAssetId === asset.id"
                     @click="void removePostAsset(asset.id)"
                   >
                     {{ removingPostAssetId === asset.id ? "Removing..." : "Remove" }}
@@ -9839,6 +9958,24 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in srgb, var(--fc-border) 90%, transparent);
 }
 
+.media-order-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.media-order-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-accent-soft) 18%, white 82%);
+  color: var(--fc-text);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .media-meta {
   display: flex;
   align-items: center;
@@ -9846,6 +9983,17 @@ onBeforeUnmount(() => {
   gap: 8px;
   font-size: 0.84rem;
   color: var(--fc-text-muted);
+}
+
+.media-order-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.media-order-button {
+  min-height: 36px;
+  padding-inline: 12px;
 }
 
 .media-remove-button {

@@ -38,13 +38,15 @@ import type {
   PostAssetStatus,
   PostAssetType,
   PromoVisualLayoutId,
+  ReorderPostAssetsRequest,
+  ReorderPostAssetsResponse,
   VideoPostAssetMetadata,
 } from "../../../../packages/shared-types/index.ts";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { requireBusinessMembership } from "./authBusinessService.ts";
-import { queryDb } from "./db/client.ts";
+import { queryDb, withDbTransaction } from "./db/client.ts";
 import {
   enforceWorkspaceReadAccess,
   enforceWorkspaceWriteAccess,
@@ -1435,6 +1437,38 @@ async function loadPostAssetRow(
   return result.rows[0] ?? null;
 }
 
+async function loadPostAssetRowsForPost(
+  businessId: string,
+  postId: string,
+): Promise<PostAssetRow[]> {
+  const result = await queryDb<PostAssetRow>(
+    `
+      select
+        id,
+        post_id,
+        business_id,
+        type,
+        source,
+        storage_key,
+        storage_url,
+        mime_type,
+        size_bytes,
+        order_index,
+        status,
+        metadata_json,
+        created_at,
+        updated_at
+      from post_assets
+      where business_id = $1
+        and post_id = $2
+      order by order_index asc, created_at asc
+    `,
+    [businessId, postId],
+  );
+
+  return result.rows;
+}
+
 export async function createMediaUploadUrl(
   principal: AuthenticatedPrincipal,
   input: CreateMediaUploadUrlRequest,
@@ -1881,6 +1915,103 @@ export async function listPostAssets(
 
   return {
     assets: result.rows.map((row) => mapPostAsset(row, true)),
+  };
+}
+
+export async function reorderPostAssets(
+  principal: AuthenticatedPrincipal,
+  input: ReorderPostAssetsRequest,
+): Promise<ReorderPostAssetsResponse> {
+  const businessId = input.businessId.trim();
+  const postId = input.postId.trim();
+  const assetIds = input.assetIds
+    .map((assetId) => assetId.trim())
+    .filter((assetId) => assetId !== "");
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "control_dashboard",
+  });
+  await requireBusinessMembership(principal, businessId);
+  await ensureContentPostOwnership(businessId, postId);
+
+  if (assetIds.length === 0) {
+    throw new HttpError(400, "bad_request", "assetIds are required.");
+  }
+
+  if (new Set(assetIds).size !== assetIds.length) {
+    throw new HttpError(400, "bad_request", "assetIds must be unique.");
+  }
+
+  const existingAssets = await loadPostAssetRowsForPost(businessId, postId);
+
+  if (existingAssets.length !== assetIds.length) {
+    throw new HttpError(
+      400,
+      "bad_request",
+      "assetIds must include every media item currently attached to this draft.",
+    );
+  }
+
+  const existingAssetIds = new Set(existingAssets.map((asset) => asset.id));
+
+  if (assetIds.some((assetId) => !existingAssetIds.has(assetId))) {
+    throw new HttpError(
+      400,
+      "bad_request",
+      "assetIds must reference only media already attached to this draft.",
+    );
+  }
+
+  const rows = await withDbTransaction(async (client) => {
+    await client.query(
+      `
+        update post_assets as pa
+        set
+          order_index = ordering.order_index,
+          updated_at = now()
+        from (
+          select asset_id, ordinality - 1 as order_index
+          from unnest($3::uuid[]) with ordinality as ordered(asset_id, ordinality)
+        ) as ordering
+        where pa.id = ordering.asset_id
+          and pa.business_id = $1
+          and pa.post_id = $2
+      `,
+      [businessId, postId, assetIds],
+    );
+
+    const result = await client.query<PostAssetRow>(
+      `
+        select
+          id,
+          post_id,
+          business_id,
+          type,
+          source,
+          storage_key,
+          storage_url,
+          mime_type,
+          size_bytes,
+          order_index,
+          status,
+          metadata_json,
+          created_at,
+          updated_at
+        from post_assets
+        where business_id = $1
+          and post_id = $2
+        order by order_index asc, created_at asc
+      `,
+      [businessId, postId],
+    );
+
+    return result.rows;
+  });
+
+  return {
+    assets: rows.map((row) => mapPostAsset(row, true)),
   };
 }
 

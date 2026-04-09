@@ -581,3 +581,13 @@ export interface DeletePostAssetRequest {
 export interface DeletePostAssetResponse {
   deletedAssetId: string;
 }
+
+export interface ReorderPostAssetsRequest {
+  businessId: string;
+  postId: string;
+  assetIds: string[];
+}
+
+export interface ReorderPostAssetsResponse {
+  assets: PostAsset[];
+}
