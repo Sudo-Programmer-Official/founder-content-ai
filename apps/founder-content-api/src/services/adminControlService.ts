@@ -187,7 +187,9 @@ function resolvePlanDefaults(planCode: BusinessPlanCode) {
 }
 
 export function resolveScheduledQueueLimit(planCode: BusinessPlanCode): number | null {
-  return PLAN_SCHEDULED_QUEUE_LIMITS[planCode] ?? PLAN_SCHEDULED_QUEUE_LIMITS.free;
+  return Object.prototype.hasOwnProperty.call(PLAN_SCHEDULED_QUEUE_LIMITS, planCode)
+    ? PLAN_SCHEDULED_QUEUE_LIMITS[planCode]
+    : PLAN_SCHEDULED_QUEUE_LIMITS.free;
 }
 
 async function executeQuery<TRow extends QueryResultRow>(
