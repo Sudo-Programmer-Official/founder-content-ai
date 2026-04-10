@@ -9888,12 +9888,13 @@ onBeforeUnmount(() => {
 .channel-selector-grid {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
 }
 
 .channel-selector-option {
   display: grid;
   gap: 10px;
+  min-width: 0;
   padding: 14px 16px;
   border-radius: 18px;
   border: 1px solid color-mix(in srgb, var(--fc-border) 82%, white 18%);
@@ -9928,7 +9929,8 @@ onBeforeUnmount(() => {
 
 .channel-selector-option-topline {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
 }
@@ -9936,12 +9938,20 @@ onBeforeUnmount(() => {
 .channel-selector-checkbox {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
   gap: 10px;
   font-weight: 800;
   cursor: pointer;
 }
 
+.channel-selector-checkbox span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .channel-selector-checkbox input {
+  flex: 0 0 auto;
   width: 16px;
   height: 16px;
   accent-color: var(--fc-accent);
@@ -9959,6 +9969,11 @@ onBeforeUnmount(() => {
   color: var(--fc-text-muted);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.channel-selector-option p {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .channel-selector-option[data-selected="true"] .channel-selector-state {

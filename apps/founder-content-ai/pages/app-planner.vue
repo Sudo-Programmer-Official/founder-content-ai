@@ -473,49 +473,26 @@ const weekRangeLabel = computed(() => {
     : `${firstMonth} ${firstDay} - ${lastMonth} ${lastDay}`;
 });
 
-const plannerWeeklyFocus = computed(() => {
-  if (gapDays.value.length > 0) {
-    return `You have ${gapDays.value.length} open ${gapDays.value.length === 1 ? "slot" : "slots"} this week. Fill them before consistency breaks.`;
-  }
-
-  if (bestSlot.value) {
-    return `Your week has coverage. Tighten it around the strongest window: ${bestSlot.value.localLabel}.`;
-  }
-
-  return "Use this week view as the control center for every post that should go live.";
-});
-
-const plannerCards = computed(() => {
-  const scheduledCount = weekDays.value.reduce(
-    (total, day) => total + day.posts.filter((post) => post.status === "scheduled").length,
-    0,
-  );
-  const postedCount = weekDays.value.reduce(
-    (total, day) => total + day.posts.filter((post) => post.status === "published").length,
-    0,
-  );
-  const streakDays = dashboard.value?.today.streakDays ?? 0;
-
-  return [
-    { label: "Open days", value: String(gapDays.value.length), tone: gapDays.value.length > 2 ? "warning" : "default" },
-    { label: "Queued this week", value: String(scheduledCount), tone: "default" },
-    { label: "Published this week", value: String(postedCount), tone: postedCount > 0 ? "success" : "default" },
-    { label: "Current streak", value: streakDays > 0 ? `${streakDays}d` : "0d", tone: streakDays > 0 ? "success" : "default" },
-  ] as const;
-});
-
 const bestSlot = computed(() => recommendedSlots.value[0] ?? null);
 
-const selectedDayFocusMessage = computed(() => {
-  if (!selectedDay.value) {
-    return "Choose a day to review execution slots and close gaps before momentum fades.";
+const plannerHeaderTitle = computed(() => {
+  if (gapDays.value.length > 0) {
+    return `This week: ${gapDays.value.length} gap${gapDays.value.length === 1 ? "" : "s"} to fill`;
   }
 
-  if (selectedDay.value.isGap) {
-    return "This day is empty. Pull a draft from the backlog and close the gap before the week loses momentum.";
+  return "This week is covered";
+});
+
+const plannerGridHint = computed(() => {
+  if (bestSlot.value) {
+    return `Tip: ${bestSlot.value.localLabel} is your strongest engagement window in ${recommendedTimezone.value}.`;
   }
 
-  return "This day already has coverage. Open a post, adjust timing, or queue another one only if it clearly earns the space.";
+  if (queueLimitReached.value) {
+    return queueLimitPrompt.value;
+  }
+
+  return "Empty days show one action. Filled days stay focused on the post itself.";
 });
 
 const backlogTitle = computed(() => {
@@ -1498,8 +1475,16 @@ async function rescheduleSelectedPost(): Promise<void> {
   }
 }
 
-function openNewPostFlow(): void {
-  void router.push({ path: appRoutes.dashboard });
+function openNewPostFlow(dayKey?: string): void {
+  void router.push({
+    path: appRoutes.appCreate,
+    query: {
+      from: "planner",
+      day: dayKey || selectedGridDateKey.value || "",
+      platform: selectedSchedulingPlatform.value,
+      platforms: selectedSchedulingPlatforms.value.join(","),
+    },
+  });
 }
 
 function openDraftEditor(assetId?: string): void {
@@ -1522,12 +1507,22 @@ function focusFirstGap(): void {
     return;
   }
 
-  selectDay(gap.key);
+  if (unscheduledBacklog.value.length === 0) {
+    openNewPostFlow(gap.key);
+    return;
+  }
+
+  focusBacklog(gap.key);
 }
 
 function focusBacklog(dayKey?: string): void {
   if (dayKey) {
     selectDay(dayKey);
+  }
+
+  if (unscheduledBacklog.value.length === 0) {
+    openNewPostFlow(dayKey);
+    return;
   }
 
   if (typeof document !== "undefined") {
@@ -1668,13 +1663,10 @@ onMounted(() => {
 
 <template>
   <main class="planner-shell">
-    <section class="workspace-hero">
+    <section class="workspace-hero planner-hero-compact">
       <div>
-        <p class="workspace-eyebrow">/app/planner</p>
-        <h1>Execution planner</h1>
-        <p class="workspace-description">
-          See the week, fill content gaps, and move saved drafts into real publishing slots without leaving the workspace loop.
-        </p>
+        <p class="workspace-eyebrow">{{ weekRangeLabel }}</p>
+        <h1>{{ plannerHeaderTitle }}</h1>
       </div>
 
       <div class="planner-top-actions">
@@ -1696,7 +1688,11 @@ onMounted(() => {
             </small>
           </span>
         </button>
-        <button type="button" class="workspace-primary-button planner-header-button planner-header-button-primary" @click="openNewPostFlow">
+        <button
+          type="button"
+          class="workspace-primary-button planner-header-button planner-header-button-primary"
+          @click="() => openNewPostFlow()"
+        >
           <span class="planner-header-button-icon" aria-hidden="true">+</span>
           <span class="planner-header-button-copy">
             <strong>New post</strong>
@@ -1709,42 +1705,6 @@ onMounted(() => {
     <PlannerSkeleton v-if="isLoading" />
 
     <template v-else>
-      <section class="workspace-card planner-command-bar">
-        <div class="planner-command-bar-copy">
-          <p class="workspace-eyebrow">Content command center</p>
-          <h2>{{ weekRangeLabel }}</h2>
-          <p class="workspace-description compact">
-            {{ plannerWeeklyFocus }}
-          </p>
-        </div>
-
-        <div class="planner-command-bar-actions">
-          <div class="planner-week-nav">
-            <button type="button" class="workspace-secondary-button compact planner-nav-button" @click="goToPreviousWeek">
-              &larr;
-            </button>
-            <button type="button" class="workspace-secondary-button compact planner-nav-button planner-nav-button-active" @click="goToCurrentWeek">
-              This week
-            </button>
-            <button type="button" class="workspace-secondary-button compact planner-nav-button" @click="goToNextWeek">
-              &rarr;
-            </button>
-          </div>
-
-          <div class="planner-command-summary">
-            <article
-              v-for="card in plannerCards"
-              :key="card.label"
-              class="planner-overview-card"
-              :data-tone="card.tone"
-            >
-              <span>{{ card.label }}</span>
-              <strong>{{ card.value }}</strong>
-            </article>
-          </div>
-        </div>
-      </section>
-
       <section v-if="loadErrorMessage" class="workspace-card empty-state">
         <h2>Planner unavailable</h2>
         <p>{{ loadErrorMessage }}</p>
@@ -1762,151 +1722,96 @@ onMounted(() => {
 
       <template v-else>
         <section class="planner-main-grid">
-      <article class="workspace-card planner-grid-panel">
-        <div class="planner-grid-header">
-          <div class="planner-grid-header-copy">
-            <p class="workspace-chip planner-chip">
-              Grid: {{ userTimezone }} · Audience default: {{ audienceTimezone || workspaceDefaultAudienceTimezone }}
-            </p>
-            <h2>{{ selectedDay?.longLabel || weekRangeLabel }}</h2>
-            <p class="workspace-description compact">
-              {{ selectedDayFocusMessage }}
-            </p>
-          </div>
-
-          <div class="planner-grid-header-actions">
-            <button
-              type="button"
-              class="workspace-secondary-button compact planner-inline-action-button"
-              :disabled="gapDays.length === 0"
-              @click="focusFirstGap"
-            >
-              <span class="planner-inline-action-icon" aria-hidden="true">↘</span>
-              Fill next gap
-            </button>
-            <button type="button" class="workspace-primary-button compact planner-inline-action-button" @click="openNewPostFlow">
-              <span class="planner-inline-action-icon" aria-hidden="true">+</span>
-              New post
-            </button>
-          </div>
-        </div>
-
-        <div class="planner-insight-row">
-          <div class="planner-insight-card">
-            <span class="planner-insight-label">Coverage</span>
-            <strong v-if="gapDays.length > 0">{{ gapDays.length }} growth gap{{ gapDays.length === 1 ? "" : "s" }}</strong>
-            <strong v-else>Every day has coverage</strong>
-            <p>
-              {{
-                gapDays.length > 0
-                  ? "Empty days are where momentum drops. Use the backlog to lock a real slot in."
-                  : "The week is protected. Review quality, not just quantity."
-              }}
-            </p>
-          </div>
-
-          <div class="planner-insight-card" v-if="bestSlot">
-            <span class="planner-insight-label">Best window</span>
-            <strong>{{ bestSlot.localLabel }}</strong>
-            <p>{{ recommendedTimezone }} is the strongest recommendation right now.</p>
-            <button type="button" class="workspace-secondary-button compact" @click="applyRecommendedSlot(bestSlot)">
-              Use this slot
-            </button>
-          </div>
-
-          <div class="planner-insight-card" v-if="hasScheduledQueuePreview">
-            <span class="planner-insight-label">Queue preview</span>
-            <strong>{{ queuePreviewHeadline }}</strong>
-            <p>{{ queuePreviewCopy }}</p>
-            <a
-              v-if="queueLimitReached"
-              class="workspace-secondary-button compact link-button"
-              href="/#pricing"
-            >
-              See pricing
-            </a>
-          </div>
-        </div>
-
-        <div class="planner-week-grid">
-          <button
-            v-for="day in weekDays"
-            :key="day.key"
-            type="button"
-            class="planner-day-card"
-            :class="{
-              selected: day.key === selectedGridDateKey,
-              today: day.isToday,
-              gap: day.isGap,
-            }"
-            @click="selectDay(day.key)"
-          >
-            <div class="planner-day-header">
-              <div>
-                <span class="planner-day-weekday">{{ day.weekdayLabel }}</span>
-                <strong>{{ day.dayLabel }}</strong>
+          <article class="workspace-card planner-grid-panel">
+            <div class="planner-grid-header planner-grid-header-simple">
+              <div class="planner-grid-header-copy">
+                <p class="workspace-chip planner-chip">
+                  {{ userTimezone }} grid · {{ audienceTimezone || workspaceDefaultAudienceTimezone }} audience
+                </p>
+                <p class="planner-inline-tip">{{ plannerGridHint }}</p>
               </div>
-              <span v-if="day.isGap" class="planner-day-badge gap">
-                {{ day.posts.length === 0 ? "Growth gap" : "Needs coverage" }}
-              </span>
-              <span v-else class="planner-day-badge">{{ day.posts.length }}</span>
+
+              <div class="planner-week-nav">
+                <button type="button" class="workspace-secondary-button compact planner-nav-button" @click="goToPreviousWeek">
+                  &larr;
+                </button>
+                <button type="button" class="workspace-secondary-button compact planner-nav-button planner-nav-button-active" @click="goToCurrentWeek">
+                  This week
+                </button>
+                <button type="button" class="workspace-secondary-button compact planner-nav-button" @click="goToNextWeek">
+                  &rarr;
+                </button>
+              </div>
             </div>
 
-            <p class="planner-day-label">{{ day.longLabel }}</p>
-
-            <div v-if="day.posts.length === 0" class="planner-gap-state">
-              <strong>{{ day.isToday ? "Today is quiet." : "Open slot." }}</strong>
-              <span>
-                {{
-                  day.isGap
-                    ? "Fill it before the week loses momentum."
-                    : "Only use it if another post clearly earns the space."
-                }}
-              </span>
-            </div>
-
-            <ul v-if="day.posts.length > 0" class="planner-day-posts">
-              <li
-                v-for="post in day.posts"
-                :key="post.id"
-                class="planner-post-pill"
-                :data-tone="resolveStatusTone(post.status)"
-                @click.stop="selectScheduledPost(post.id, day.key)"
+            <div class="planner-week-grid">
+              <article
+                v-for="day in weekDays"
+                :key="day.key"
+                class="planner-day-card"
+                :class="{
+                  selected: day.key === selectedGridDateKey,
+                  today: day.isToday,
+                  gap: day.isGap,
+                }"
+                @click="selectDay(day.key)"
               >
-                <div class="planner-post-pill-header">
-                  <div class="planner-pill-stack">
-                    <span class="planner-platform-pill">{{ resolveSocialPlatformLabel(post.platform) }}</span>
-                    <span v-if="getMediaCount(post) > 0" class="planner-status-pill subtle">
-                      📎 {{ getMediaCount(post) }}
-                    </span>
+                <div class="planner-day-header">
+                  <div class="planner-day-title">
+                    <span class="planner-day-weekday">{{ day.weekdayLabel }}</span>
+                    <strong>{{ day.dayLabel }}</strong>
                   </div>
-                  <span class="planner-status-pill">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
+                  <span v-if="day.posts.length > 0" class="planner-day-count">
+                    {{ day.posts.length }}
+                  </span>
                 </div>
-                <strong>{{ buildExcerpt(post.contentText, 180) }}</strong>
-                <span class="planner-post-time">
-                  {{ formatTimeWithZone(post.scheduledAt, post.audienceTimezone) }}
-                </span>
-                <span
-                  v-if="post.audienceTimezone !== userTimezone"
-                  class="planner-post-time secondary"
-                >
-                  Your time: {{ formatTimeWithZone(post.scheduledAt, userTimezone) }}
-                </span>
-              </li>
-            </ul>
 
-            <div class="planner-day-footer">
-              <button
-                type="button"
-                class="planner-day-add-button"
-                @click.stop="focusBacklog(day.key)"
-              >
-                {{ day.posts.length === 0 ? "Fill this day" : "+ Add post" }}
-              </button>
+                <div v-if="day.posts.length === 0" class="planner-day-empty-state">
+                  <strong>(empty)</strong>
+                  <button
+                    type="button"
+                    class="planner-day-add-button"
+                    @click.stop="focusBacklog(day.key)"
+                  >
+                    + Add post
+                  </button>
+                </div>
+
+                <ul v-else class="planner-day-posts">
+                  <li
+                    v-for="post in day.posts"
+                    :key="post.id"
+                    class="planner-post-pill"
+                    :data-tone="resolveStatusTone(post.status)"
+                    @click.stop="selectScheduledPost(post.id, day.key)"
+                  >
+                    <div class="planner-post-pill-header">
+                      <div class="planner-pill-stack">
+                        <span class="planner-platform-pill">{{ resolveSocialPlatformLabel(post.platform) }}</span>
+                        <span v-if="getMediaCount(post) > 0" class="planner-status-pill subtle">
+                          {{ getMediaCount(post) }} media
+                        </span>
+                      </div>
+                      <span class="planner-post-time">
+                        {{ formatTimeWithZone(post.scheduledAt, post.audienceTimezone) }}
+                      </span>
+                    </div>
+                    <strong>{{ buildExcerpt(post.contentText, 120) }}</strong>
+                    <div class="planner-post-pill-actions">
+                      <span class="planner-status-pill">{{ resolveScheduledPostStatusLabel(post.status) }}</span>
+                      <button
+                        type="button"
+                        class="workspace-secondary-button compact planner-post-inline-button"
+                        @click.stop="selectScheduledPost(post.id, day.key)"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </li>
+                </ul>
+              </article>
             </div>
-          </button>
-        </div>
-      </article>
+          </article>
         </section>
 
         <section id="planner-backlog-panel" class="workspace-card planner-backlog-panel">
@@ -2611,10 +2516,28 @@ onMounted(() => {
   font-size: 0.95rem;
 }
 
+.planner-hero-compact {
+  align-items: flex-end;
+}
+
+.planner-hero-compact h1 {
+  margin: 0;
+  font-size: clamp(1.95rem, 3vw, 2.7rem);
+  line-height: 1.02;
+}
+
+.planner-top-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
 .planner-header-button {
-  min-width: 14.5rem;
+  min-width: 13rem;
   justify-content: flex-start;
-  padding: 0.88rem 1rem;
+  padding: 0.82rem 0.98rem;
   border-radius: 1.2rem;
   text-align: left;
 }
@@ -2683,7 +2606,7 @@ onMounted(() => {
 }
 
 .planner-grid-header-copy {
-  max-width: 34rem;
+  max-width: 30rem;
 }
 
 .planner-grid-header-copy h2 {
@@ -2692,8 +2615,19 @@ onMounted(() => {
   line-height: 1.1;
 }
 
+.planner-grid-header-simple {
+  margin-bottom: 1.15rem;
+  align-items: flex-end;
+}
+
 .planner-chip {
   width: fit-content;
+}
+
+.planner-inline-tip {
+  margin: 0;
+  color: rgba(64, 42, 28, 0.72);
+  line-height: 1.55;
 }
 
 .planner-week-nav {
@@ -2809,12 +2743,12 @@ onMounted(() => {
   align-items: center;
 }
 
-.planner-day-footer {
-  margin-top: auto;
-}
-
 .planner-day-add-button {
-  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  min-width: 9rem;
   border: 1px dashed rgba(204, 102, 45, 0.28);
   border-radius: 0.95rem;
   background: linear-gradient(180deg, rgba(255, 247, 239, 0.98), rgba(255, 241, 228, 0.92));
@@ -2873,11 +2807,11 @@ onMounted(() => {
 }
 
 .planner-week-grid {
-  grid-template-columns: repeat(7, minmax(17rem, 18.5rem));
+  grid-template-columns: repeat(7, minmax(14.5rem, 15.75rem));
   gap: 1rem;
   overflow-x: auto;
   padding: 0.25rem 0.1rem 0.7rem;
-  min-height: clamp(24rem, 58vh, 40rem);
+  min-height: clamp(14rem, 36vh, 20rem);
   align-items: stretch;
   justify-content: start;
   scrollbar-width: thin;
@@ -2888,10 +2822,10 @@ onMounted(() => {
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
-  gap: 0.72rem;
+  grid-template-rows: auto 1fr;
+  gap: 0.82rem;
   align-content: start;
-  min-height: clamp(18rem, 52vh, 34rem);
+  min-height: clamp(11rem, 33vh, 18rem);
   border: 1px solid rgba(60, 41, 30, 0.1);
   border-radius: 1.35rem;
   background:
@@ -2899,6 +2833,7 @@ onMounted(() => {
   padding: 0.95rem 0.95rem 0.9rem;
   text-align: left;
   color: inherit;
+  cursor: pointer;
   box-shadow:
     0 18px 34px rgba(145, 84, 39, 0.08),
     0 2px 0 rgba(255, 255, 255, 0.8) inset;
@@ -2932,7 +2867,7 @@ onMounted(() => {
 
 .planner-day-card:hover {
   border-color: rgba(204, 102, 45, 0.34);
-  transform: translateY(-5px) scale(1.01);
+  transform: translateY(-3px);
   box-shadow:
     0 28px 48px rgba(145, 84, 39, 0.14),
     0 2px 0 rgba(255, 255, 255, 0.82) inset;
@@ -2969,21 +2904,33 @@ onMounted(() => {
 
 .planner-day-weekday {
   display: block;
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
+.planner-day-title {
+  display: grid;
+  gap: 0.2rem;
+}
+
 .planner-day-header strong {
-  font-size: 1.9rem;
+  font-size: 1.65rem;
   line-height: 0.9;
 }
 
-.planner-day-label {
-  margin: 0;
-  font-size: 0.92rem;
-  font-weight: 600;
-  color: rgba(64, 42, 28, 0.82);
+.planner-day-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.8rem;
+  height: 1.8rem;
+  border-radius: 999px;
+  padding: 0 0.55rem;
+  background: rgba(255, 244, 232, 0.96);
+  color: #c76528;
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
 .planner-day-badge,
@@ -3013,27 +2960,28 @@ onMounted(() => {
   color: #c76528;
 }
 
-.planner-gap-state {
-  margin-top: auto;
-  border: 1px dashed rgba(204, 102, 45, 0.22);
-  border-radius: 1rem;
-  padding: 0.85rem 0.9rem;
-  background: rgba(255, 244, 232, 0.84);
-  min-height: 5rem;
+.planner-day-empty-state {
   display: grid;
-  align-content: start;
-  gap: 0.28rem;
+  align-content: center;
+  justify-items: start;
+  gap: 0.85rem;
+  min-height: 100%;
 }
 
-.planner-gap-state strong {
+.planner-day-empty-state strong {
   display: block;
+  color: rgba(64, 42, 28, 0.56);
+  font-size: 1rem;
+  font-weight: 700;
 }
 
 .planner-day-posts {
   display: grid;
   gap: 0.7rem;
   align-content: start;
-  margin-top: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .planner-post-pill {
@@ -3069,11 +3017,25 @@ onMounted(() => {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 6;
+  -webkit-line-clamp: 3;
 }
 
 .planner-post-time.secondary {
   font-size: 0.82rem;
+}
+
+.planner-post-pill-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.planner-post-inline-button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 0.84rem;
 }
 
 .planner-post-pill[data-tone="success"] {
@@ -3478,6 +3440,7 @@ onMounted(() => {
   }
 
   .planner-top-actions {
+    display: grid;
     width: 100%;
     justify-items: stretch;
   }
