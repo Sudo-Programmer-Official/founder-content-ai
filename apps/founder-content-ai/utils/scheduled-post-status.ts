@@ -18,11 +18,30 @@ export function resolveScheduledPostStatusLabel(status: ScheduledPostStatus): st
   }
 }
 
+export function formatDispatchWindowRange(
+  earliestDispatchAt: string,
+  latestDispatchAt: string,
+  timezone: string,
+): string {
+  const startLabel = formatTimeWithZone(earliestDispatchAt, timezone);
+  const endLabel = formatTimeWithZone(latestDispatchAt, timezone);
+
+  if (startLabel === endLabel) {
+    const spreadSeconds = Math.max(
+      0,
+      Math.round((new Date(latestDispatchAt).getTime() - new Date(earliestDispatchAt).getTime()) / 1000),
+    );
+
+    return spreadSeconds > 0
+      ? `around ${startLabel}, spread across ~${spreadSeconds} sec`
+      : `around ${startLabel}`;
+  }
+
+  return `${startLabel} - ${endLabel}`;
+}
+
 export function formatScheduledPostDispatchWindow(post: ScheduledPost): string {
-  return `${formatTimeWithZone(post.earliestDispatchAt, post.audienceTimezone)} - ${formatTimeWithZone(
-    post.latestDispatchAt,
-    post.audienceTimezone,
-  )}`;
+  return formatDispatchWindowRange(post.earliestDispatchAt, post.latestDispatchAt, post.audienceTimezone);
 }
 
 export function resolveScheduledPostStatusSummary(post: ScheduledPost): string {

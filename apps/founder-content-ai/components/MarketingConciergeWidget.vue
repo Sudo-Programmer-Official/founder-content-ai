@@ -190,23 +190,32 @@ onMounted(() => {
         </div>
 
         <div class="marketing-concierge-body">
+          <div class="marketing-concierge-signal-row">
+            <span>Founder Content team</span>
+            <span>Email-first reply</span>
+            <span>No login required</span>
+          </div>
+
           <div class="marketing-concierge-thread">
-            <article class="marketing-bubble marketing-bubble-assistant">
+            <article class="marketing-bubble marketing-bubble-assistant intro">
               I’m the Founder Content Growth Concierge. Tell me what is slowing down your social
               pipeline or founder-led content system, and I’ll help route it to the right next step.
             </article>
 
-            <article v-if="selectedPrompt" class="marketing-bubble marketing-bubble-user">
-              {{ selectedPrompt.label }}
-            </article>
-
-            <article v-if="selectedPrompt" class="marketing-bubble marketing-bubble-assistant secondary">
-              {{ selectedPrompt.response }}
+            <article v-if="selectedPrompt" class="marketing-concierge-context-card">
+              <p class="marketing-concierge-context-label">Selected question</p>
+              <strong>{{ selectedPrompt.label }}</strong>
+              <p>{{ selectedPrompt.response }}</p>
             </article>
 
             <article v-if="successMessage" class="marketing-bubble marketing-bubble-assistant success">
               {{ successMessage }}
             </article>
+          </div>
+
+          <div class="marketing-concierge-prompt-header">
+            <strong>Start with a common question</strong>
+            <span>or skip this and type your own note below.</span>
           </div>
 
           <div class="marketing-concierge-prompts">
@@ -269,13 +278,13 @@ onMounted(() => {
             />
 
             <p class="marketing-concierge-note">
-              Straight to the Founder Content team. If it is a fit, we will reply by email.
+              Straight to the Founder Content team. If it is a fit, we will reply by email with the cleanest next step.
             </p>
 
             <p v-if="submissionError" class="marketing-concierge-error">{{ submissionError }}</p>
 
             <div class="marketing-concierge-actions">
-              <span>Usually answered by email after review.</span>
+              <span>Usually answered by email after review, not routed into a generic sales queue.</span>
               <button type="submit" class="marketing-concierge-submit" :disabled="isSubmitting">
                 {{ isSubmitting ? "Sending..." : "Send question" }}
               </button>
@@ -294,6 +303,15 @@ onMounted(() => {
 
 <style scoped>
 .marketing-concierge {
+  --marketing-concierge-accent: #d76634;
+  --marketing-concierge-accent-strong: #b94b24;
+  --marketing-concierge-accent-soft: rgba(215, 102, 52, 0.1);
+  --marketing-concierge-ink: #1f1814;
+  --marketing-concierge-muted: #5b4f47;
+  --marketing-concierge-muted-soft: #78685d;
+  --marketing-concierge-teal: #24474d;
+  --marketing-concierge-surface: rgba(255, 251, 247, 0.98);
+  --marketing-concierge-surface-strong: rgba(255, 245, 236, 0.96);
   position: fixed;
   right: 22px;
   bottom: calc(22px + env(safe-area-inset-bottom));
@@ -311,14 +329,14 @@ onMounted(() => {
 
 .marketing-concierge-panel {
   width: min(420px, calc(100vw - 28px));
-  max-height: min(78vh, 760px);
+  max-height: min(74vh, 740px);
   display: grid;
   overflow: hidden;
   border: 1px solid rgba(123, 90, 64, 0.14);
   border-radius: 28px;
   background:
-    radial-gradient(circle at 12% 10%, rgba(223, 126, 69, 0.14) 0%, rgba(223, 126, 69, 0) 34%),
-    linear-gradient(180deg, rgba(255, 252, 248, 0.98) 0%, rgba(248, 251, 247, 0.96) 100%);
+    radial-gradient(circle at 14% 10%, rgba(215, 102, 52, 0.14) 0%, rgba(215, 102, 52, 0) 34%),
+    linear-gradient(180deg, rgba(255, 252, 248, 0.98) 0%, rgba(255, 248, 241, 0.96) 100%);
   box-shadow: 0 30px 90px rgba(59, 39, 20, 0.18);
   backdrop-filter: blur(18px);
 }
@@ -328,27 +346,27 @@ onMounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  padding: 22px 22px 18px;
+  padding: 20px 20px 16px;
   border-bottom: 1px solid rgba(123, 90, 64, 0.08);
 }
 
 .marketing-concierge-header-copy h2 {
   margin: 8px 0 10px;
-  color: #1d382f;
+  color: var(--marketing-concierge-ink);
   font-size: clamp(1.7rem, 3vw, 2.15rem);
   line-height: 1.06;
 }
 
 .marketing-concierge-header-copy p:last-child {
   margin: 0;
-  color: #5d6f67;
-  font-size: 1rem;
-  line-height: 1.65;
+  color: var(--marketing-concierge-muted);
+  font-size: 0.98rem;
+  line-height: 1.62;
 }
 
 .marketing-concierge-eyebrow {
   margin: 0;
-  color: #567064;
+  color: var(--marketing-concierge-teal);
   font-size: 0.82rem;
   font-weight: 800;
   letter-spacing: 0.12em;
@@ -360,66 +378,127 @@ onMounted(() => {
   height: 42px;
   border: 0;
   border-radius: 14px;
-  background: rgba(31, 56, 47, 0.08);
-  color: #1d382f;
-  font-size: 1.7rem;
+  background: rgba(36, 71, 77, 0.08);
+  color: var(--marketing-concierge-teal);
+  font-size: 1.45rem;
   line-height: 1;
   cursor: pointer;
 }
 
 .marketing-concierge-body {
   overflow-y: auto;
-  padding: 18px 22px 20px;
+  padding: 16px 20px 20px;
+}
+
+.marketing-concierge-signal-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.marketing-concierge-signal-row span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(36, 71, 77, 0.08);
+  color: var(--marketing-concierge-teal);
+  font-size: 0.8rem;
+  font-weight: 700;
 }
 
 .marketing-concierge-thread {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .marketing-bubble {
   width: fit-content;
-  max-width: min(100%, 320px);
+  max-width: min(100%, 336px);
   padding: 14px 16px;
   border-radius: 20px;
-  font-size: 1rem;
-  line-height: 1.6;
+  font-size: 0.98rem;
+  line-height: 1.62;
 }
 
 .marketing-bubble-assistant {
-  background: linear-gradient(180deg, rgba(228, 238, 232, 0.92) 0%, rgba(221, 233, 226, 0.96) 100%);
-  color: #1f382f;
+  background: linear-gradient(180deg, rgba(255, 244, 235, 0.98) 0%, rgba(255, 239, 227, 0.96) 100%);
+  color: var(--marketing-concierge-ink);
 }
 
-.marketing-bubble-assistant.secondary {
-  background: rgba(255, 252, 248, 0.94);
-  border: 1px solid rgba(123, 90, 64, 0.1);
+.marketing-bubble-assistant.intro {
+  border-top-left-radius: 12px;
 }
 
 .marketing-bubble-assistant.success {
-  background: linear-gradient(180deg, rgba(236, 246, 236, 0.98) 0%, rgba(230, 242, 230, 0.96) 100%);
+  background: linear-gradient(180deg, rgba(241, 250, 246, 0.98) 0%, rgba(233, 246, 240, 0.96) 100%);
+  color: var(--marketing-concierge-teal);
 }
 
-.marketing-bubble-user {
-  justify-self: end;
-  background: linear-gradient(135deg, rgba(215, 102, 52, 0.94) 0%, rgba(198, 83, 34, 0.96) 100%);
-  color: #fff8f3;
+.marketing-concierge-context-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid rgba(215, 102, 52, 0.16);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.marketing-concierge-context-card strong {
+  color: var(--marketing-concierge-ink);
+  font-size: 0.98rem;
+  line-height: 1.45;
+}
+
+.marketing-concierge-context-card p:last-child {
+  margin: 0;
+  color: var(--marketing-concierge-muted);
+  font-size: 0.93rem;
+  line-height: 1.58;
+}
+
+.marketing-concierge-context-label {
+  margin: 0;
+  color: var(--marketing-concierge-accent-strong);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.marketing-concierge-prompt-header {
+  display: grid;
+  gap: 4px;
+  margin-top: 16px;
+}
+
+.marketing-concierge-prompt-header strong {
+  color: var(--marketing-concierge-ink);
+  font-size: 0.96rem;
+}
+
+.marketing-concierge-prompt-header span {
+  color: var(--marketing-concierge-muted);
+  font-size: 0.88rem;
 }
 
 .marketing-concierge-prompts {
   display: grid;
-  gap: 12px;
-  margin-top: 16px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .marketing-prompt {
   width: 100%;
-  padding: 16px 18px;
+  padding: 14px 16px;
   border: 1px solid rgba(123, 90, 64, 0.12);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.84);
-  color: #233d34;
-  font-size: 1rem;
+  color: var(--marketing-concierge-ink);
+  font-size: 0.98rem;
   line-height: 1.45;
   text-align: left;
   cursor: pointer;
@@ -432,6 +511,7 @@ onMounted(() => {
 .marketing-prompt:hover,
 .marketing-prompt.active {
   border-color: rgba(215, 102, 52, 0.34);
+  background: rgba(255, 247, 241, 0.96);
   box-shadow: 0 16px 34px rgba(73, 50, 26, 0.08);
   transform: translateY(-1px);
 }
@@ -456,7 +536,7 @@ onMounted(() => {
 }
 
 .marketing-field span {
-  color: #567064;
+  color: var(--marketing-concierge-teal);
   font-size: 0.88rem;
   font-weight: 700;
 }
@@ -467,8 +547,8 @@ onMounted(() => {
   padding: 14px 16px;
   border: 1px solid rgba(123, 90, 64, 0.14);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.82);
-  color: #223a31;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--marketing-concierge-ink);
   font: inherit;
   box-sizing: border-box;
   outline: none;
@@ -490,7 +570,7 @@ onMounted(() => {
 
 .marketing-concierge-note {
   margin: 0;
-  color: #5d6f67;
+  color: var(--marketing-concierge-muted);
   font-size: 0.94rem;
   line-height: 1.6;
 }
@@ -510,7 +590,7 @@ onMounted(() => {
 }
 
 .marketing-concierge-actions span {
-  color: #5d6f67;
+  color: var(--marketing-concierge-muted-soft);
   font-size: 0.86rem;
   line-height: 1.5;
 }
@@ -521,12 +601,12 @@ onMounted(() => {
   padding: 0 20px;
   border: 0;
   border-radius: 18px;
-  background: linear-gradient(135deg, #2f4f45 0%, #3f685b 100%);
-  color: #f5f7f4;
+  background: linear-gradient(135deg, var(--marketing-concierge-accent) 0%, var(--marketing-concierge-accent-strong) 100%);
+  color: #fff8f3;
   font: inherit;
   font-weight: 800;
   cursor: pointer;
-  box-shadow: 0 18px 36px rgba(47, 79, 69, 0.24);
+  box-shadow: 0 18px 36px rgba(185, 75, 36, 0.24);
 }
 
 .marketing-concierge-submit:disabled {
@@ -549,13 +629,13 @@ onMounted(() => {
   padding: 0 20px 0 14px;
   border: 0;
   border-radius: 999px;
-  background: linear-gradient(135deg, rgba(46, 79, 69, 0.96) 0%, rgba(57, 93, 81, 0.98) 100%);
-  color: #f5f7f4;
+  background: linear-gradient(135deg, rgba(215, 102, 52, 0.96) 0%, rgba(185, 75, 36, 0.98) 100%);
+  color: #fff8f3;
   font: inherit;
   font-weight: 800;
   letter-spacing: 0.01em;
   cursor: pointer;
-  box-shadow: 0 20px 44px rgba(42, 63, 54, 0.28);
+  box-shadow: 0 20px 44px rgba(185, 75, 36, 0.26);
 }
 
 .marketing-concierge-toggle-mark {
@@ -565,7 +645,7 @@ onMounted(() => {
   width: 34px;
   height: 34px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.18);
   font-size: 0.88rem;
   font-weight: 900;
   letter-spacing: 0.08em;

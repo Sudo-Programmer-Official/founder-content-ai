@@ -161,6 +161,62 @@ Development note:
 
 - local stub mode can also elevate a request with `X-Dev-Super-Admin: true`
 
+### `STRIPE_SECRET_KEY`
+
+Purpose:
+
+- authenticates backend requests to Stripe for checkout sessions, subscription lookup, and billing portal sessions
+
+Setup rule:
+
+- use a Stripe test secret key first
+- switch to a live secret key only after billing has been verified end to end
+
+### `STRIPE_WEBHOOK_SECRET`
+
+Purpose:
+
+- verifies the signature on incoming Stripe webhook events
+
+Setup rule:
+
+- for local development, use the signing secret from `stripe listen`
+- for production, use the signing secret from the live Stripe webhook endpoint
+
+### `STRIPE_STARTER_PRICE_ID`
+
+Purpose:
+
+- Stripe monthly recurring price id for the internal `pro` workspace tier shown in-product as `Starter`
+
+### `STRIPE_PRO_PRICE_ID`
+
+Purpose:
+
+- Stripe monthly recurring price id for the internal `growth` workspace tier shown in-product as `Pro`
+
+### `STRIPE_EMAIL_STARTER_PRICE_ID`
+
+Purpose:
+
+- optional Stripe price id for the Starter Email add-on
+
+### `STRIPE_EMAIL_GROWTH_PRICE_ID`
+
+Purpose:
+
+- optional Stripe price id for the Growth Email add-on
+
+### `STRIPE_EMAIL_SCALE_PRICE_ID`
+
+Purpose:
+
+- optional Stripe price id for the Scale Email add-on
+
+Operational note:
+
+- use `docs/payment-billing.md` for the canonical payment setup, current test price ids, webhook verification flow, Stripe portal behavior, and production cutover checklist
+
 ### `META_APP_ID`
 
 Purpose:

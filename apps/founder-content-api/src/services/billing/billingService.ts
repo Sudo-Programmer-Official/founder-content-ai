@@ -1146,9 +1146,13 @@ export async function handleStripeWebhook(payload: Buffer, signatureHeader: stri
     case "checkout.session.completed":
       await handleCheckoutCompleted(event as StripeEvent<StripeCheckoutSession>);
       return;
+    case "invoice.paid":
     case "invoice.payment_succeeded":
       await handleInvoicePaymentSucceeded(event as StripeEvent<StripeInvoice>);
       return;
+    case "customer.subscription.created":
+    case "customer.subscription.paused":
+    case "customer.subscription.resumed":
     case "customer.subscription.updated":
     case "customer.subscription.deleted":
       await handleSubscriptionEvent(event as StripeEvent<StripeSubscription>);

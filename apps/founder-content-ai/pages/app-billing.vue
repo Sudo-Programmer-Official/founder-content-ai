@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import type {
   BillingEmailPlanOption,
   BillingOverviewResponse,
@@ -16,6 +16,7 @@ import {
 import { appRoutes } from "../utils/routes";
 
 const route = useRoute();
+const router = useRouter();
 const { bootstrap, activeBusinessId, refreshProductAccess } = useProductAccessContext();
 
 const overview = ref<BillingOverviewResponse | null>(null);
@@ -27,6 +28,18 @@ const activeEmailPlanAction = ref("");
 const isOpeningPortal = ref(false);
 const showPromotionCodeField = ref(false);
 const promotionCode = ref("");
+
+const BILLING_SYNC_RETRY_DELAYS_MS = [0, 800, 1200, 1800, 2600, 3600] as const;
+
+type BillingCheckoutTarget = "workspace_plan" | "email_addon";
+
+type LoadOverviewOptions = {
+  refreshAccess?: boolean;
+  awaitCheckoutSync?: boolean;
+  checkoutTarget?: BillingCheckoutTarget;
+};
+
+let latestOverviewRequestId = 0;
 
 const resolvedBusinessId = computed(
   () => bootstrap.value?.activeBusinessId?.trim() || activeBusinessId.value?.trim() || "",
@@ -198,6 +211,9 @@ const normalizedPromotionCode = computed(() => {
   const normalized = promotionCode.value.trim();
   return normalized ? normalized : undefined;
 });
+const hasTransientBillingRouteState = computed(
+  () => Boolean(readQueryString(route.query.checkout) || readQueryString(route.query.portal)),
+);
 
 function readQueryString(value: unknown): string | undefined {
   if (Array.isArray(value)) {
@@ -205,6 +221,70 @@ function readQueryString(value: unknown): string | undefined {
   }
 
   return typeof value === "string" ? value : undefined;
+}
+
+function normalizeCheckoutTarget(value: string | undefined): BillingCheckoutTarget | undefined {
+  if (value === "workspace_plan" || value === "email_addon") {
+    return value;
+  }
+
+  return undefined;
+}
+
+function waitForDelay(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delayMs);
+  });
+}
+
+function isWorkspaceCheckoutSynced(nextOverview: BillingOverviewResponse): boolean {
+  return nextOverview.currentPlanCode !== "free";
+}
+
+function isEmailAddonCheckoutSynced(nextOverview: BillingOverviewResponse): boolean {
+  return nextOverview.emailAddon?.source === "addon";
+}
+
+function isCheckoutSyncComplete(
+  nextOverview: BillingOverviewResponse,
+  checkoutTarget: BillingCheckoutTarget | undefined,
+): boolean {
+  if (checkoutTarget === "email_addon") {
+    return isEmailAddonCheckoutSynced(nextOverview);
+  }
+
+  return isWorkspaceCheckoutSynced(nextOverview);
+}
+
+async function loadOverviewWithCheckoutSync(
+  businessId: string,
+  checkoutTarget: BillingCheckoutTarget | undefined,
+): Promise<{ overview: BillingOverviewResponse; synced: boolean }> {
+  let latestOverview: BillingOverviewResponse | null = null;
+
+  for (const delayMs of BILLING_SYNC_RETRY_DELAYS_MS) {
+    if (delayMs > 0) {
+      await waitForDelay(delayMs);
+    }
+
+    latestOverview = await requestBillingOverview(businessId);
+
+    if (isCheckoutSyncComplete(latestOverview, checkoutTarget)) {
+      return {
+        overview: latestOverview,
+        synced: true,
+      };
+    }
+  }
+
+  if (!latestOverview) {
+    latestOverview = await requestBillingOverview(businessId);
+  }
+
+  return {
+    overview: latestOverview,
+    synced: false,
+  };
 }
 
 function formatLimit(value: number | null | undefined): string {
@@ -297,13 +377,11 @@ function applyRouteFeedback(): {
   const portalState = readQueryString(route.query.portal);
   const checkoutTarget = readQueryString(route.query.checkoutTarget);
 
-  feedbackMessage.value = "";
-
   if (checkoutState === "success") {
     feedbackMessage.value =
       checkoutTarget === "email_addon"
-        ? "Email billing updated. Refreshing workspace billing now."
-        : "Billing updated. Refreshing workspace access now.";
+        ? "Stripe checkout completed. Waiting for the email add-on to sync."
+        : "Stripe checkout completed. Waiting for workspace billing to sync.";
     return { checkoutState, portalState, checkoutTarget };
   }
 
@@ -323,9 +401,7 @@ function applyRouteFeedback(): {
   return { checkoutState, portalState, checkoutTarget };
 }
 
-async function loadOverview(options?: {
-  refreshAccess?: boolean;
-}): Promise<void> {
+async function loadOverview(options?: LoadOverviewOptions): Promise<void> {
   const businessId = resolvedBusinessId.value;
 
   if (!businessId) {
@@ -333,38 +409,71 @@ async function loadOverview(options?: {
     return;
   }
 
+  const requestId = ++latestOverviewRequestId;
   isLoading.value = true;
   errorMessage.value = "";
 
   try {
-    const [nextOverview] = await Promise.all([
-      requestBillingOverview(businessId),
-      options?.refreshAccess ? refreshProductAccess(businessId) : Promise.resolve(null),
-    ]);
-    overview.value = nextOverview;
+    const overviewResult = options?.awaitCheckoutSync
+      ? await loadOverviewWithCheckoutSync(businessId, options.checkoutTarget)
+      : {
+          overview: await requestBillingOverview(businessId),
+          synced: true,
+        };
+
+    if (requestId !== latestOverviewRequestId) {
+      return;
+    }
+
+    overview.value = overviewResult.overview;
 
     if (options?.refreshAccess) {
-      const checkoutState = readQueryString(route.query.checkout);
-      const portalState = readQueryString(route.query.portal);
-      const checkoutTarget = readQueryString(route.query.checkoutTarget);
+      await refreshProductAccess(businessId);
+    }
 
-      if (checkoutState === "success") {
-        feedbackMessage.value = checkoutTarget === "email_addon"
-          ? nextOverview.emailAddon
-            ? `${nextOverview.emailAddon.label} is now active for this workspace.`
-            : "Email billing updated. Workspace access has been refreshed."
-          : nextOverview.currentPlanCode !== "free"
-            ? `You're now on ${nextOverview.currentPlanLabel}. Workspace access has been refreshed.`
-            : "Billing updated. Workspace access has been refreshed.";
-      } else if (portalState === "return") {
-        feedbackMessage.value = "Returned from billing management. Workspace access has been refreshed.";
+    if (requestId !== latestOverviewRequestId) {
+      return;
+    }
+
+    const checkoutState = readQueryString(route.query.checkout);
+    const portalState = readQueryString(route.query.portal);
+
+    if (options?.awaitCheckoutSync && checkoutState === "success") {
+      if (options.checkoutTarget === "email_addon") {
+        feedbackMessage.value = overviewResult.synced && overviewResult.overview.emailAddon
+          ? `${overviewResult.overview.emailAddon.label} is now active for this workspace.`
+          : "Stripe checkout succeeded, but the email add-on is still syncing. Refresh again in a few seconds if it has not appeared yet.";
+      } else {
+        feedbackMessage.value = overviewResult.synced
+          ? `You're now on ${overviewResult.overview.currentPlanLabel}. Workspace access has been refreshed.`
+          : "Stripe checkout succeeded, but workspace billing is still syncing. Refresh again in a few seconds if the plan has not updated yet.";
       }
+    } else if (options?.refreshAccess && portalState === "return") {
+      feedbackMessage.value = "Returned from billing management. Workspace access has been refreshed.";
     }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to load billing.";
   } finally {
-    isLoading.value = false;
+    if (requestId === latestOverviewRequestId) {
+      isLoading.value = false;
+    }
   }
+}
+
+async function clearBillingRouteState(): Promise<void> {
+  const nextQuery = {
+    ...route.query,
+  };
+
+  delete nextQuery.checkout;
+  delete nextQuery.portal;
+  delete nextQuery.checkoutTarget;
+
+  await router.replace({
+    path: route.path,
+    query: nextQuery,
+    hash: route.hash,
+  });
 }
 
 function getPlanActionLabel(plan: BillingPlanOption): string {
@@ -566,6 +675,10 @@ async function handleOverviewPrimaryAction(): Promise<void> {
 watch(
   () => resolvedBusinessId.value,
   () => {
+    if (hasTransientBillingRouteState.value) {
+      return;
+    }
+
     void loadOverview();
   },
   { immediate: true },
@@ -577,18 +690,28 @@ watch(
     readQueryString(route.query.portal),
     readQueryString(route.query.checkoutTarget),
   ] as const,
-  ([checkoutState, portalState]) => {
+  ([checkoutState, portalState, checkoutTarget]) => {
     const handledState =
-      checkoutState === "success" || portalState === "return"
+      checkoutState === "success"
         ? {
             refreshAccess: true,
+            awaitCheckoutSync: true,
+            checkoutTarget: normalizeCheckoutTarget(checkoutTarget),
           }
-        : undefined;
+        : portalState === "return"
+          ? {
+              refreshAccess: true,
+            }
+          : undefined;
 
     applyRouteFeedback();
 
     if (checkoutState || portalState) {
-      void loadOverview(handledState);
+      void (async () => {
+        await loadOverview(handledState);
+        await clearBillingRouteState();
+      })();
+      return;
     }
   },
   { immediate: true },

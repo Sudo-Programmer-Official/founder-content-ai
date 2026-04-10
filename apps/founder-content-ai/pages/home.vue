@@ -1004,13 +1004,15 @@ onMounted(() => {
 }
 
 .hero-section {
+  --hero-space: clamp(44px, 5vw, 78px);
+  --hero-gap: clamp(18px, 2.2vw, 34px);
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 540px) minmax(0, 1fr);
-  align-items: center;
-  gap: clamp(18px, 2.2vw, 34px);
+  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
+  align-items: stretch;
+  gap: var(--hero-gap);
   min-height: clamp(620px, 52vw, 780px);
-  padding: clamp(44px, 5vw, 78px);
+  padding: var(--hero-space) 0 var(--hero-space) var(--hero-space);
   margin-bottom: 36px;
   border: 1px solid rgba(112, 84, 62, 0.12);
   border-radius: 40px;
@@ -1037,6 +1039,8 @@ onMounted(() => {
   z-index: 2;
   width: 100%;
   max-width: 540px;
+  align-self: center;
+  padding-right: clamp(8px, 1.4vw, 18px);
 }
 
 .site-footer {
@@ -1100,18 +1104,22 @@ onMounted(() => {
 .hero-visual {
   position: relative;
   z-index: 1;
-  min-height: clamp(390px, 42vw, 620px);
+  align-self: stretch;
+  min-height: auto;
+  margin: calc(var(--hero-space) * -1) calc(var(--hero-space) * -1) calc(var(--hero-space) * -1) 0;
   background:
-    linear-gradient(90deg, rgba(255, 249, 244, 0.08) 0%, rgba(255, 249, 244, 0.02) 18%, rgba(255, 249, 244, 0) 38%),
-    url("/images/landing-page/founder-content-hero-background.png") 74% center / contain no-repeat;
-  filter: saturate(1.02);
+    linear-gradient(90deg, rgba(255, 249, 244, 0.18) 0%, rgba(255, 249, 244, 0.08) 18%, rgba(255, 249, 244, 0) 38%),
+    url("/images/landing-page/founder-content-hero-background.png") 56% center / cover no-repeat;
+  filter: saturate(1.04);
 }
 
 .hero-visual::after {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at 84% 82%, rgba(231, 158, 103, 0.14) 0%, rgba(231, 158, 103, 0) 24%);
+  background:
+    radial-gradient(circle at 84% 82%, rgba(231, 158, 103, 0.14) 0%, rgba(231, 158, 103, 0) 24%),
+    linear-gradient(180deg, rgba(255, 251, 247, 0.06) 0%, rgba(255, 251, 247, 0.18) 100%);
   pointer-events: none;
 }
 
@@ -2585,12 +2593,14 @@ h1 {
 
   .hero-copy {
     max-width: 620px;
+    padding-right: 0;
   }
 
   .hero-visual {
     min-height: clamp(320px, 46vw, 480px);
-    background-position: 72% center;
-    background-size: min(920px, 112%) auto;
+    margin: 0;
+    background-position: 58% center;
+    background-size: cover;
   }
 
   .hero-visual::after {
@@ -2750,8 +2760,10 @@ h1 {
 
   .hero-visual {
     min-height: 280px;
-    background-position: 74% center;
+    margin: 0;
+    background-position: 60% center;
     background-size: cover;
+    border-radius: 22px;
   }
 
   .content-section,

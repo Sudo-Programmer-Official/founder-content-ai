@@ -101,6 +101,7 @@ import {
   type PublishableSocialPlatform,
 } from "../utils/social-platforms";
 import { toFriendlySocialAuthMessage } from "../utils/social-auth-errors";
+import { formatDispatchWindowRange } from "../utils/scheduled-post-status";
 
 const route = useRoute();
 const router = useRouter();
@@ -162,6 +163,23 @@ type CustomImageTemplateType = Exclude<VisualTemplateType, "carousel">;
 const CONTENT_AUTOSAVE_DELAY_MS = 900;
 const CTA_AUTOSAVE_DELAY_MS = 700;
 const PROMO_VIDEO_VISUALS_ENABLED = false;
+const SCHEDULED_DISPATCH_DELAYS_BY_PLATFORM: Record<
+  PublishableSocialPlatform,
+  { minDelaySeconds: number; maxDelaySeconds: number }
+> = {
+  linkedin: {
+    minDelaySeconds: 0,
+    maxDelaySeconds: 8,
+  },
+  facebook: {
+    minDelaySeconds: 6,
+    maxDelaySeconds: 18,
+  },
+  instagram: {
+    minDelaySeconds: 14,
+    maxDelaySeconds: 30,
+  },
+};
 
 const draft = ref<ActivationDraftRecord | null>(null);
 const selectedCreatorVariantId = ref("");
@@ -3271,13 +3289,23 @@ const selectedDispatchWindowLabel = computed(() => {
     return "";
   }
 
-  const end = new Date(selectedScheduledAtIso.value);
-  end.setMinutes(end.getMinutes() + 20);
+  const selectedPlatformRanges = selectedPublishingPlatforms.value
+    .map((platform) => SCHEDULED_DISPATCH_DELAYS_BY_PLATFORM[platform]);
 
-  const startLabel = formatTimeWithZone(selectedScheduledAtIso.value, audienceTimezone.value);
-  const endLabel = formatTimeWithZone(end.toISOString(), audienceTimezone.value);
+  if (selectedPlatformRanges.length === 0) {
+    return "";
+  }
 
-  return `${startLabel}–${endLabel}`;
+  const start = new Date(
+    new Date(selectedScheduledAtIso.value).getTime()
+    + Math.min(...selectedPlatformRanges.map((range) => range.minDelaySeconds)) * 1000,
+  );
+  const end = new Date(
+    new Date(selectedScheduledAtIso.value).getTime()
+    + Math.max(...selectedPlatformRanges.map((range) => range.maxDelaySeconds)) * 1000,
+  );
+
+  return formatDispatchWindowRange(start.toISOString(), end.toISOString(), audienceTimezone.value);
 });
 
 const signalPills = computed(() => [

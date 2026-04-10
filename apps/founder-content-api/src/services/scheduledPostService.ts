@@ -1045,9 +1045,76 @@ function resolveMinGapMinutes(): number {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 240;
 }
 
-function resolveJitterMinutes(): number {
-  const parsed = Number(process.env.POST_SAFETY_JITTER_MINUTES ?? 20);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 20;
+function resolveDispatchDelaySeconds(
+  platform: SocialPlatform,
+  bound: "min" | "max",
+): number {
+  const envName =
+    platform === "linkedin"
+      ? bound === "min"
+        ? "POST_DISPATCH_LINKEDIN_MIN_DELAY_SECONDS"
+        : "POST_DISPATCH_LINKEDIN_MAX_DELAY_SECONDS"
+      : platform === "facebook"
+        ? bound === "min"
+          ? "POST_DISPATCH_FACEBOOK_MIN_DELAY_SECONDS"
+          : "POST_DISPATCH_FACEBOOK_MAX_DELAY_SECONDS"
+        : bound === "min"
+          ? "POST_DISPATCH_INSTAGRAM_MIN_DELAY_SECONDS"
+          : "POST_DISPATCH_INSTAGRAM_MAX_DELAY_SECONDS";
+  const fallback =
+    platform === "linkedin"
+      ? bound === "min"
+        ? 0
+        : 8
+      : platform === "facebook"
+        ? bound === "min"
+          ? 6
+          : 18
+        : bound === "min"
+          ? 14
+          : 30;
+  const parsed = Number(process.env[envName]?.trim() ?? fallback);
+
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+function resolveDispatchDelayRange(platform: SocialPlatform): {
+  minDelaySeconds: number;
+  maxDelaySeconds: number;
+} {
+  const minDelaySeconds = resolveDispatchDelaySeconds(platform, "min");
+  const maxDelaySeconds = Math.max(minDelaySeconds, resolveDispatchDelaySeconds(platform, "max"));
+
+  return {
+    minDelaySeconds,
+    maxDelaySeconds,
+  };
+}
+
+function resolveConflictRetryDelaySeconds(platform: SocialPlatform, attemptCount: number): number {
+  const baseFloor =
+    platform === "instagram"
+      ? 8
+      : platform === "facebook"
+        ? 6
+        : 4;
+  const baseCeiling =
+    platform === "instagram"
+      ? 16
+      : platform === "facebook"
+        ? 12
+        : 10;
+  const configuredMax = Number(process.env.POST_PUBLISH_CONFLICT_RETRY_MAX_SECONDS?.trim() ?? 20);
+  const maxDelaySeconds =
+    Number.isFinite(configuredMax) && configuredMax > 0
+      ? Math.max(baseCeiling, Math.floor(configuredMax))
+      : 20;
+  const attemptBump = Math.min(Math.max(attemptCount - 1, 0) * 2, 6);
+  const randomizedFloor = baseFloor + attemptBump;
+  const randomizedCeiling = Math.min(maxDelaySeconds, baseCeiling + attemptBump);
+  const span = Math.max(0, randomizedCeiling - randomizedFloor);
+
+  return randomizedFloor + (span > 0 ? Math.floor(Math.random() * (span + 1)) : 0);
 }
 
 function resolveMaxRetryCount(): number {
@@ -1144,19 +1211,18 @@ function selectDispatchRunAfter(start: Date, end: Date): Date {
   return new Date(start.getTime() + Math.floor(Math.random() * (spanMs + 1)));
 }
 
-function buildDispatchWindow(scheduledAt: Date): {
+function buildDispatchWindow(scheduledAt: Date, platform: SocialPlatform): {
   earliestDispatchAt: Date;
   latestDispatchAt: Date;
   runAfter: Date;
 } {
-  const jitterMinutes = resolveJitterMinutes();
-  const earlyMinutes = Math.floor(jitterMinutes * 0.4);
-  const nowFloor = new Date(Date.now() + 60 * 1000);
+  const delayRange = resolveDispatchDelayRange(platform);
+  const nowFloor = new Date();
   const earliestDispatchAt = new Date(
-    Math.max(scheduledAt.getTime() - earlyMinutes * 60 * 1000, nowFloor.getTime()),
+    Math.max(scheduledAt.getTime() + delayRange.minDelaySeconds * 1000, nowFloor.getTime()),
   );
   const latestDispatchAt = new Date(
-    Math.max(scheduledAt.getTime() + jitterMinutes * 60 * 1000, earliestDispatchAt.getTime()),
+    Math.max(scheduledAt.getTime() + delayRange.maxDelaySeconds * 1000, earliestDispatchAt.getTime()),
   );
 
   return {
@@ -1625,7 +1691,10 @@ async function hasActivePublishingConflict(row: ScheduledPostRow): Promise<boole
       where id <> $1::uuid
         and status = 'processing'
         and (
-          business_id = $2::uuid
+          (
+            $2::uuid is not null
+            and social_account_id = $2::uuid
+          )
           or (
             $3::uuid is not null
             and social_account_identity_id = $3::uuid
@@ -1633,7 +1702,7 @@ async function hasActivePublishingConflict(row: ScheduledPostRow): Promise<boole
         )
       limit 1
     `,
-    [row.id, row.business_id, row.social_account_identity_id ?? null],
+    [row.id, row.social_account_id ?? null, row.social_account_identity_id ?? null],
   );
 
   return Boolean(result.rows[0]?.id);
@@ -1644,6 +1713,7 @@ async function updateScheduledPostDispatchState(
     scheduledPostId: string;
     scheduledAt: Date;
     businessId: string;
+    platform: SocialPlatform;
     contentText: string;
     previousDispatchJobId?: string | null;
     dispatchMode?: "scheduled" | "immediate";
@@ -1662,7 +1732,7 @@ async function updateScheduledPostDispatchState(
   const dispatchWindow =
     input.dispatchMode === "immediate"
       ? buildImmediateDispatchWindow(input.scheduledAt)
-      : buildDispatchWindow(input.scheduledAt);
+      : buildDispatchWindow(input.scheduledAt, input.platform);
   const fingerprint = buildContentFingerprint(input.contentText);
   const queuedJob = await createJob<ScheduledPostPublishJobPayload>({
     businessId: input.businessId,
@@ -2746,6 +2816,7 @@ async function backfillScheduledPostDispatchJobs(limit: number): Promise<number>
           scheduledPostId: row.id,
           scheduledAt: new Date(row.scheduled_at),
           businessId: row.business_id,
+          platform: row.platform,
           contentText: row.content_text,
           previousDispatchJobId: row.dispatch_job_id,
         },
@@ -2870,6 +2941,7 @@ export async function updateScheduledPost(
           scheduledPostId: existing.id,
           scheduledAt: new Date(existing.scheduled_at),
           businessId,
+          platform: existing.platform,
           contentText: existing.content_text,
           previousDispatchJobId: existing.dispatch_job_id,
         },
@@ -2977,6 +3049,7 @@ export async function updateScheduledPost(
           scheduledPostId: existing.id,
           scheduledAt: new Date(existing.scheduled_at),
           businessId,
+          platform: existing.platform,
           contentText: existing.content_text,
           previousDispatchJobId: existing.dispatch_job_id,
         },
@@ -3048,6 +3121,7 @@ export async function updateScheduledPost(
           scheduledPostId: existing.id,
           scheduledAt: immediateDispatchAt,
           businessId,
+          platform: existing.platform,
           contentText: existing.content_text,
           previousDispatchJobId: existing.dispatch_job_id,
           dispatchMode: "immediate",
@@ -3171,7 +3245,7 @@ export async function updateScheduledPost(
       await pauseJob(existing.dispatch_job_id, client);
     }
 
-    const dispatchWindow = buildDispatchWindow(nextScheduledAt);
+    const dispatchWindow = buildDispatchWindow(nextScheduledAt, existing.platform);
 
     const updateResult = await executeQuery(
       `
@@ -3212,6 +3286,7 @@ export async function updateScheduledPost(
           scheduledPostId: existing.id,
           scheduledAt: nextScheduledAt,
           businessId,
+          platform: existing.platform,
           contentText: existing.content_text,
           previousDispatchJobId: existing.dispatch_job_id,
         },
@@ -3266,7 +3341,7 @@ export async function createScheduledPostInTransaction(input: {
     input.platform,
     input.client,
   );
-  const dispatchWindow = buildDispatchWindow(input.scheduledAt);
+  const dispatchWindow = buildDispatchWindow(input.scheduledAt, input.platform);
   const fingerprint = buildContentFingerprint(input.contentText);
   const linkedAssetId = input.assetGroupId?.trim() || null;
   const insertResult = await executeQuery<{ id: string }>(
@@ -3338,6 +3413,7 @@ export async function createScheduledPostInTransaction(input: {
       scheduledPostId,
       scheduledAt: input.scheduledAt,
       businessId: input.businessId,
+      platform: input.platform,
       contentText: input.contentText,
     },
     input.client,
@@ -4132,11 +4208,13 @@ export async function processDueScheduledPosts(limit: number): Promise<{
     }
 
     if (await hasActivePublishingConflict(duePost)) {
+      const conflictRetryDelaySeconds = resolveConflictRetryDelaySeconds(duePost.platform, job.attempts);
       await releaseJob(
         job.id,
         {
-          runAfter: new Date(Date.now() + 60 * 1000).toISOString(),
-          errorMessage: "Delayed briefly to keep platform publishing safely serialized for this workspace.",
+          runAfter: new Date(Date.now() + conflictRetryDelaySeconds * 1000).toISOString(),
+          errorMessage: `Delayed briefly to keep ${resolveSocialPlatformLabel(duePost.platform)} publishing safely coordinated.`,
+          refundAttempt: true,
         },
       );
       continue;

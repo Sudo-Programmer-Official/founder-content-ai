@@ -326,6 +326,7 @@ export async function releaseJob(
   input?: {
     runAfter?: string;
     errorMessage?: string;
+    refundAttempt?: boolean;
   },
   client?: PoolClient,
 ): Promise<void> {
@@ -334,6 +335,10 @@ export async function releaseJob(
       update jobs
       set
         status = 'queued',
+        attempts = case
+          when coalesce($4::boolean, false) then greatest(attempts - 1, 0)
+          else attempts
+        end,
         locked_at = null,
         locked_by = null,
         error_message = $2,
@@ -342,7 +347,7 @@ export async function releaseJob(
       where id = $1::uuid
         and status = 'processing'
     `,
-    [jobId, input?.errorMessage ?? null, input?.runAfter ?? null],
+    [jobId, input?.errorMessage ?? null, input?.runAfter ?? null, input?.refundAttempt ?? false],
     client,
   );
 }

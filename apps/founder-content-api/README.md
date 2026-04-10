@@ -55,6 +55,19 @@ These routes are designed around public or manually imported sources only and ke
 
 Admin routes require a super admin principal. Workspace analytics routes require auth and business membership.
 
+## Billing Endpoints
+
+- `GET /api/billing/overview`
+- `POST /api/billing/create-checkout-session`
+- `POST /api/billing/portal`
+- `POST /api/webhooks/stripe`
+
+Billing setup notes:
+
+- configure Stripe in test mode first
+- verify checkout, webhook sync, and the billing portal before switching to live mode
+- follow `../../docs/payment-billing.md` for the exact plan mapping, current test price ids, env vars, webhook events, local CLI flow, Stripe portal behavior, and production cutover checklist
+
 ## Structure
 
 ```text
@@ -126,7 +139,13 @@ Shared worker runtime envs:
 - `SCHEDULED_POST_MAX_RETRIES` default `2`
 - `POST_SAFETY_DAILY_LIMIT` default `2`
 - `POST_SAFETY_MIN_GAP_MINUTES` default `240`
-- `POST_SAFETY_JITTER_MINUTES` default `20`
+- `POST_DISPATCH_LINKEDIN_MIN_DELAY_SECONDS` default `0`
+- `POST_DISPATCH_LINKEDIN_MAX_DELAY_SECONDS` default `8`
+- `POST_DISPATCH_FACEBOOK_MIN_DELAY_SECONDS` default `6`
+- `POST_DISPATCH_FACEBOOK_MAX_DELAY_SECONDS` default `18`
+- `POST_DISPATCH_INSTAGRAM_MIN_DELAY_SECONDS` default `14`
+- `POST_DISPATCH_INSTAGRAM_MAX_DELAY_SECONDS` default `30`
+- `POST_PUBLISH_CONFLICT_RETRY_MAX_SECONDS` default `20`
 - `EMAIL_CAMPAIGN_WORKER_BATCH_SIZE` default `100`
 - `EMAIL_CONTACT_IMPORT_WORKER_BATCH_SIZE` default `2`
 - `GROWTH_AUTOMATION_WORKER_BATCH_SIZE` default `25`
