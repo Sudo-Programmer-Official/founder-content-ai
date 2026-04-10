@@ -1680,14 +1680,28 @@ onMounted(() => {
       <div class="planner-top-actions">
         <button
           type="button"
-          class="workspace-secondary-button"
+          class="workspace-secondary-button planner-header-button planner-header-button-secondary"
           :disabled="gapDays.length === 0"
           @click="focusFirstGap"
         >
-          Fill next gap
+          <span class="planner-header-button-icon" aria-hidden="true">↘</span>
+          <span class="planner-header-button-copy">
+            <strong>Fill next gap</strong>
+            <small>
+              {{
+                gapDays.length === 0
+                  ? "Week already covered"
+                  : `${gapDays.length} open slot${gapDays.length === 1 ? "" : "s"} this week`
+              }}
+            </small>
+          </span>
         </button>
-        <button type="button" class="workspace-primary-button" @click="openNewPostFlow">
-          New post
+        <button type="button" class="workspace-primary-button planner-header-button planner-header-button-primary" @click="openNewPostFlow">
+          <span class="planner-header-button-icon" aria-hidden="true">+</span>
+          <span class="planner-header-button-copy">
+            <strong>New post</strong>
+            <small>Open composer</small>
+          </span>
         </button>
       </div>
     </section>
@@ -1763,13 +1777,15 @@ onMounted(() => {
           <div class="planner-grid-header-actions">
             <button
               type="button"
-              class="workspace-secondary-button compact"
+              class="workspace-secondary-button compact planner-inline-action-button"
               :disabled="gapDays.length === 0"
               @click="focusFirstGap"
             >
+              <span class="planner-inline-action-icon" aria-hidden="true">↘</span>
               Fill next gap
             </button>
-            <button type="button" class="workspace-primary-button compact" @click="openNewPostFlow">
+            <button type="button" class="workspace-primary-button compact planner-inline-action-button" @click="openNewPostFlow">
+              <span class="planner-inline-action-icon" aria-hidden="true">+</span>
               New post
             </button>
           </div>
@@ -2542,9 +2558,122 @@ onMounted(() => {
   padding: 1.45rem;
 }
 
+.workspace-primary-button,
+.workspace-secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.72rem;
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.workspace-primary-button {
+  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+  color: var(--fc-accent-contrast);
+  box-shadow: 0 20px 36px rgba(221, 128, 56, 0.25);
+}
+
+.workspace-secondary-button {
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--fc-text);
+  border-color: color-mix(in srgb, var(--fc-border) 85%, rgba(221, 128, 56, 0.18));
+  box-shadow: 0 12px 24px rgba(70, 42, 24, 0.05);
+}
+
+.workspace-primary-button:hover,
+.workspace-secondary-button:hover {
+  transform: translateY(-1px);
+}
+
+.workspace-primary-button:disabled,
+.workspace-secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+  transform: none;
+  box-shadow: none;
+}
+
 .workspace-description.compact {
   margin: 0;
   font-size: 0.95rem;
+}
+
+.planner-header-button {
+  min-width: 14.5rem;
+  justify-content: flex-start;
+  padding: 0.88rem 1rem;
+  border-radius: 1.2rem;
+  text-align: left;
+}
+
+.planner-header-button-primary {
+  box-shadow:
+    0 22px 38px rgba(221, 128, 56, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.planner-header-button-secondary {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 246, 237, 0.92));
+  border-color: rgba(204, 102, 45, 0.16);
+}
+
+.planner-header-button-icon,
+.planner-inline-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 999px;
+  font-size: 1rem;
+  font-weight: 800;
+}
+
+.planner-header-button-primary .planner-header-button-icon {
+  background: rgba(255, 255, 255, 0.2);
+  color: currentColor;
+}
+
+.planner-header-button-secondary .planner-header-button-icon,
+.planner-inline-action-icon {
+  background: rgba(245, 232, 219, 0.92);
+  color: #c76528;
+}
+
+.planner-header-button-copy {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.planner-header-button-copy strong {
+  font-size: 0.98rem;
+  line-height: 1.1;
+}
+
+.planner-header-button-copy small {
+  color: inherit;
+  opacity: 0.72;
+  font-size: 0.82rem;
+  line-height: 1.2;
+}
+
+.planner-inline-action-button {
+  gap: 0.55rem;
 }
 
 .planner-grid-header {
@@ -2706,8 +2835,9 @@ onMounted(() => {
 
 .workspace-secondary-button.compact,
 .workspace-primary-button.compact {
-  min-height: auto;
+  min-height: 40px;
   padding: 0.7rem 1rem;
+  font-size: 0.9rem;
 }
 
 .planner-insight-row {
@@ -3345,6 +3475,16 @@ onMounted(() => {
   .planner-backlog-grid,
   .planner-platform-selector {
     grid-template-columns: 1fr;
+  }
+
+  .planner-top-actions {
+    width: 100%;
+    justify-items: stretch;
+  }
+
+  .planner-header-button {
+    width: 100%;
+    min-width: 0;
   }
 
   .planner-day-card {

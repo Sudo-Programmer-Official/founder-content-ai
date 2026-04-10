@@ -6921,18 +6921,18 @@ onBeforeUnmount(() => {
                 <div class="result-platform-card-actions">
                   <button
                     type="button"
-                    class="secondary-action"
+                    class="secondary-action result-platform-card-button"
                     @click.stop="setResultPreviewSurface(card.surface)"
                   >
-                    {{ selectedResultPreviewSurface === card.surface ? "Editing this version" : "Edit this version" }}
+                    {{ selectedResultPreviewSurface === card.surface ? "Editing" : "Edit" }}
                   </button>
                   <button
                     v-if="card.surface === 'email'"
                     type="button"
-                    class="secondary-action"
+                    class="secondary-action result-platform-card-button"
                     @click.stop="goToEmail"
                   >
-                    Open in Email
+                    Open Email
                   </button>
                 </div>
               </article>
@@ -6960,7 +6960,7 @@ onBeforeUnmount(() => {
                   <p class="panel-meta">Subject</p>
                   <strong>{{ selectedPreviewCard.subject || "Add a subject to preview the inbox line." }}</strong>
                 </div>
-                <button type="button" class="secondary-action" @click="goToEmail">
+                <button type="button" class="secondary-action compact-action" @click="goToEmail">
                   Edit in Email
                 </button>
               </div>
@@ -9088,16 +9088,18 @@ onBeforeUnmount(() => {
 
 .result-platform-card-grid {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 232px));
+  justify-content: start;
   margin-top: 18px;
 }
 
 .result-platform-card {
   display: grid;
-  gap: 12px;
-  padding: 14px;
-  border-radius: 22px;
+  align-content: start;
+  gap: 9px;
+  padding: 11px;
+  border-radius: 20px;
   border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
   background: rgba(255, 255, 255, 0.8);
   cursor: pointer;
@@ -9151,7 +9153,7 @@ onBeforeUnmount(() => {
 .result-publish-warning-stack {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
 }
 
 .result-platform-card-header,
@@ -9172,7 +9174,7 @@ onBeforeUnmount(() => {
 .result-social-preview-identity p {
   margin: 4px 0 0;
   color: var(--fc-text-muted);
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   line-height: 1.4;
 }
 
@@ -9181,8 +9183,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
   border: 1px solid color-mix(in srgb, var(--fc-accent) 18%, var(--fc-border));
   background: linear-gradient(135deg, var(--fc-accent-soft) 0%, color-mix(in srgb, var(--fc-accent-soft) 55%, white 45%) 100%);
@@ -9199,18 +9201,18 @@ onBeforeUnmount(() => {
 
 .result-platform-card-media {
   overflow: hidden;
-  border-radius: 18px;
+  border-radius: 16px;
   border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
   background: color-mix(in srgb, var(--fc-accent-soft) 14%, white 86%);
 }
 
 .result-platform-card-media[data-platform="instagram"] {
-  aspect-ratio: 4 / 5;
+  aspect-ratio: 1 / 1;
 }
 
 .result-platform-card-media[data-platform="facebook"],
 .result-platform-card-media[data-platform="linkedin"] {
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 16 / 10;
 }
 
 .result-platform-card-media-inner,
@@ -9225,13 +9227,37 @@ onBeforeUnmount(() => {
   margin: 0;
   font-weight: 700;
   line-height: 1.4;
+  font-size: 0.9rem;
 }
 
 .result-platform-card-excerpt {
   margin: 0;
   color: var(--fc-text);
   line-height: 1.55;
-  font-size: 0.96rem;
+  font-size: 0.88rem;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.result-platform-card-button,
+.compact-action {
+  min-height: 36px;
+  padding: 0 12px;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.result-platform-card-actions {
+  margin-top: auto;
+  align-items: center;
+}
+
+.result-platform-card-topline .workspace-chip,
+.result-platform-card-metrics .workspace-chip {
+  padding: 5px 9px;
+  font-size: 0.72rem;
 }
 
 .result-preview-notice-row {
