@@ -337,31 +337,31 @@ export async function listPublicSocialProof(limit?: number): Promise<PublicSocia
   const result = await queryDb<MarketingSocialProofRow>(
     `
       select
-        id,
-        business_id,
-        source_scheduled_post_id,
+        marketing_social_proof_feed.id,
+        marketing_social_proof_feed.business_id,
+        marketing_social_proof_feed.source_scheduled_post_id,
         source_post.asset_group_id as source_asset_group_id,
-        platform,
-        external_post_id,
-        external_post_url,
-        author_display_name,
-        author_avatar_url,
-        workspace_brand_name,
-        workspace_website_url,
-        caption_preview,
-        media_type,
-        thumbnail_url,
-        is_featured,
-        published_at
+        marketing_social_proof_feed.platform,
+        marketing_social_proof_feed.external_post_id,
+        marketing_social_proof_feed.external_post_url,
+        marketing_social_proof_feed.author_display_name,
+        marketing_social_proof_feed.author_avatar_url,
+        marketing_social_proof_feed.workspace_brand_name,
+        marketing_social_proof_feed.workspace_website_url,
+        marketing_social_proof_feed.caption_preview,
+        marketing_social_proof_feed.media_type,
+        marketing_social_proof_feed.thumbnail_url,
+        marketing_social_proof_feed.is_featured,
+        marketing_social_proof_feed.published_at
       from marketing_social_proof_feed
       left join scheduled_posts source_post
         on source_post.id = marketing_social_proof_feed.source_scheduled_post_id
-      where is_public_marketing_safe = true
-        and business_id = any($1::uuid[])
+      where marketing_social_proof_feed.is_public_marketing_safe = true
+        and marketing_social_proof_feed.business_id = any($1::uuid[])
       order by
-        is_featured desc,
-        featured_rank asc nulls last,
-        published_at desc
+        marketing_social_proof_feed.is_featured desc,
+        marketing_social_proof_feed.featured_rank asc nulls last,
+        marketing_social_proof_feed.published_at desc
       limit $2
     `,
     [allowedBusinessIds, clampSocialProofLimit(limit)],
