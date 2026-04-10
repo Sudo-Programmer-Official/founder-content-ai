@@ -154,6 +154,10 @@ interface DraftMediaPreferences {
 }
 
 type ResultPreviewSurface = PublishableSocialPlatform | "email";
+type ComposerAutosaveState = "idle" | "queued" | "saving" | "saved" | "error";
+
+const CONTENT_AUTOSAVE_DELAY_MS = 900;
+const CTA_AUTOSAVE_DELAY_MS = 700;
 
 const draft = ref<ActivationDraftRecord | null>(null);
 const selectedCreatorVariantId = ref("");
@@ -199,8 +203,15 @@ const editableEmailSubject = ref("");
 const editableEmailBody = ref("");
 const editableCtaLabel = ref("");
 const editableCtaUrl = ref("");
-const isSavingPublishingSetup = ref(false);
 const publishingSetupFeedback = ref("");
+const contentAutosaveState = ref<ComposerAutosaveState>("idle");
+const contentAutosaveError = ref("");
+const ctaAutosaveState = ref<ComposerAutosaveState>("idle");
+const ctaAutosaveError = ref("");
+let contentAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
+let ctaAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
+let activeContentAutosavePromise: Promise<boolean> | null = null;
+let activeCtaAutosavePromise: Promise<boolean> | null = null;
 const PROMO_VISUAL_LAYOUT_OPTIONS: Array<{ value: PromoVisualLayoutId; label: string; description: string }> = [
   {
     value: "logo_headline",
@@ -300,6 +311,9 @@ const hashtagFeedback = ref("");
 const isGeneratingHashtags = ref(false);
 const generatedHashtags = ref<string[]>([]);
 const captionWithHashtags = ref("");
+const isMediaDrawerOpen = ref(false);
+const isHashtagDrawerOpen = ref(false);
+const isPublishDrawerOpen = ref(false);
 const isSchedulePanelOpen = ref(false);
 const isLoadingRecommendedSlots = ref(false);
 const isSchedulingDraft = ref(false);
@@ -1639,6 +1653,12 @@ const isCtaDirty = computed(() =>
   editableCtaLabel.value.trim() !== (businessOutput.value?.cta.label ?? "").trim()
   || editableCtaUrl.value.trim() !== (businessOutput.value?.cta.url ?? "").trim(),
 );
+const hasPendingContentAutosaveChanges = computed(() =>
+  isManualEditDirty.value
+  || isInstagramEditDirty.value
+  || isFacebookEditDirty.value
+  || isEmailEditDirty.value,
+);
 const isSelectedSurfaceDirty = computed(() => {
   if (selectedResultPreviewSurface.value === "email") {
     return isEmailEditDirty.value;
@@ -1654,11 +1674,48 @@ const isSelectedSurfaceDirty = computed(() => {
 
   return isManualEditDirty.value;
 });
-const hasPendingSocialPublishChanges = computed(() =>
-  isManualEditDirty.value
-  || isInstagramEditDirty.value
-  || isFacebookEditDirty.value,
-);
+const contentAutosaveLabel = computed(() => {
+  if (contentAutosaveState.value === "error") {
+    return "Autosave failed";
+  }
+
+  if (contentAutosaveState.value === "saving" || contentAutosaveState.value === "queued") {
+    return "Saving automatically";
+  }
+
+  return "Saved automatically";
+});
+const ctaAutosaveLabel = computed(() => {
+  if (ctaAutosaveState.value === "error") {
+    return "Autosave failed";
+  }
+
+  if (ctaAutosaveState.value === "saving" || ctaAutosaveState.value === "queued") {
+    return "Saving automatically";
+  }
+
+  return "Saved automatically";
+});
+const composerAutosaveSummary = computed(() => {
+  if (contentAutosaveState.value === "error") {
+    return contentAutosaveError.value || "Autosave failed for the latest draft edits.";
+  }
+
+  if (ctaAutosaveState.value === "error") {
+    return ctaAutosaveError.value || "Autosave failed for the CTA changes.";
+  }
+
+  if (
+    contentAutosaveState.value === "saving"
+    || contentAutosaveState.value === "queued"
+    || ctaAutosaveState.value === "saving"
+    || ctaAutosaveState.value === "queued"
+  ) {
+    return "Saving your latest edits automatically.";
+  }
+
+  return "Everything autosaves. Publish and schedule use the latest saved draft.";
+});
 const selectedSurfaceEditorCopy = computed(() => {
   if (selectedResultPreviewSurface.value === "email") {
     return {
@@ -1793,10 +1850,10 @@ const editorHelperCopy = computed(() => {
     isBusinessMode.value &&
     (selectedResultPreviewSurface.value === "instagram" || selectedResultPreviewSurface.value === "facebook")
   ) {
-    return `${resolveSocialPlatformLabel(selectedResultPreviewSurface.value)} can ship a tighter variant than LinkedIn. Save the channel-specific copy here to keep the preview and publish flow aligned.`;
+    return `${resolveSocialPlatformLabel(selectedResultPreviewSurface.value)} can ship a tighter variant than LinkedIn. Changes autosave here so the preview and publish flow stay aligned.`;
   }
 
-  return "Edit the final draft here, save it, then publish, schedule, or convert it without bouncing between helper cards.";
+  return "Edit the final draft here. Changes autosave, so publish, schedule, and conversion stay in one flow.";
 });
 const postParagraphs = computed(() => splitPostParagraphs(postContent.value));
 const previewLeadLines = computed(() => extractPreviewLead(postParagraphs.value));
@@ -3153,6 +3210,35 @@ const selectedPublishingMediaSummary = computed(() => {
 
   return "No media attached yet";
 });
+const mediaDrawerActionLabel = computed(() => (
+  postAssets.value.length > 0 ? "Open media drawer" : "Add media"
+));
+const composerHashtagSuggestions = computed(() => {
+  if (generatedHashtags.value.length > 0) {
+    return generatedHashtags.value;
+  }
+
+  return businessOutput.value?.hashtags ?? [];
+});
+const composerHashtagPreview = computed(() =>
+  composerHashtagSuggestions.value.slice(0, 5),
+);
+const hashtagDrawerSummary = computed(() => {
+  const count = composerHashtagSuggestions.value.length;
+
+  if (generatedHashtags.value.length > 0) {
+    return `${count} generated hashtag${count === 1 ? "" : "s"}`;
+  }
+
+  if (count > 0) {
+    return `${count} saved hashtag${count === 1 ? "" : "s"}`;
+  }
+
+  return "No hashtags prepared yet";
+});
+const hashtagDrawerActionLabel = computed(() => (
+  composerHashtagSuggestions.value.length > 0 ? "Open hashtag drawer" : "Add hashtags"
+));
 const selectedPublishingCtaLabel = computed(() =>
   businessOutput.value?.cta.label?.trim() || "No CTA attached",
 );
@@ -3400,6 +3486,24 @@ const executionPanelFacts = computed(() => [
   {
     label: "Attention",
     value: attentionSignal.value.label,
+  },
+]);
+const publishLauncherFacts = computed(() => [
+  {
+    label: "Destinations",
+    value: selectedPublishingPlatforms.value.length > 0 ? selectedPublishingPlatformsLabel.value : "Choose destinations",
+  },
+  {
+    label: "Status",
+    value: executionStatus.value.label,
+  },
+  {
+    label: "Publish as",
+    value: selectedConnectedAccountDescriptor.value,
+  },
+  {
+    label: "Next step",
+    value: actionPriorityLabel.value,
   },
 ]);
 
@@ -3861,26 +3965,6 @@ function resetManualPostEdit(): void {
   manualEditFeedback.value = "";
 }
 
-async function saveManualPostEdit(): Promise<void> {
-  if (!isManualEditDirty.value) {
-    manualEditFeedback.value = "The draft is already up to date.";
-    return;
-  }
-
-  isSavingManualEdit.value = true;
-  manualEditFeedback.value = "";
-
-  try {
-    await updateDraftPostContent(editablePostContent.value, "Draft updated and saved.");
-    manualEditFeedback.value = "Draft updated and saved.";
-  } catch (error) {
-    manualEditFeedback.value =
-      error instanceof Error ? error.message : "Unable to save this draft right now.";
-  } finally {
-    isSavingManualEdit.value = false;
-  }
-}
-
 function resetSelectedSurfaceEdit(): void {
   manualEditFeedback.value = "";
 
@@ -3935,32 +4019,58 @@ async function persistBusinessOutputChanges(
   });
   feedbackMessage.value = successMessage;
 }
+function resetPublishingSetup(): void {
+  editableCtaLabel.value = businessOutput.value?.cta.label ?? "";
+  editableCtaUrl.value = businessOutput.value?.cta.url ?? "";
+  publishingSetupFeedback.value = "";
+}
 
-async function saveSelectedSurfaceEdit(): Promise<void> {
-  if (selectedResultPreviewSurface.value === "linkedin") {
-    await saveManualPostEdit();
+function clearContentAutosaveTimer(): void {
+  if (!contentAutosaveTimer) {
     return;
+  }
+
+  clearTimeout(contentAutosaveTimer);
+  contentAutosaveTimer = null;
+}
+
+function clearCtaAutosaveTimer(): void {
+  if (!ctaAutosaveTimer) {
+    return;
+  }
+
+  clearTimeout(ctaAutosaveTimer);
+  ctaAutosaveTimer = null;
+}
+
+function markContentAutosaveSettled(): void {
+  contentAutosaveError.value = "";
+  contentAutosaveState.value = draft.value ? "saved" : "idle";
+}
+
+function markCtaAutosaveSettled(): void {
+  ctaAutosaveError.value = "";
+  ctaAutosaveState.value = businessOutput.value ? "saved" : "idle";
+}
+
+function buildPendingVariantBusinessOutput(): BusinessContentOutput | null {
+  if (!isInstagramEditDirty.value && !isFacebookEditDirty.value && !isEmailEditDirty.value) {
+    return null;
   }
 
   const nextBusinessOutput = businessOutput.value
     ? cloneBusinessOutput(businessOutput.value)
     : resolveDraftBusinessOutputSeed();
 
-  if (selectedResultPreviewSurface.value === "instagram") {
-    if (!isInstagramEditDirty.value) {
-      manualEditFeedback.value = "Instagram copy is already up to date.";
-      return;
-    }
-
+  if (isInstagramEditDirty.value) {
     nextBusinessOutput.captions.instagram = editableInstagramContent.value.trim();
-  } else if (selectedResultPreviewSurface.value === "facebook") {
-    if (!isFacebookEditDirty.value) {
-      manualEditFeedback.value = "Facebook copy is already up to date.";
-      return;
-    }
+  }
 
+  if (isFacebookEditDirty.value) {
     nextBusinessOutput.captions.facebook = editableFacebookContent.value.trim();
-  } else if (selectedResultPreviewSurface.value === "email") {
+  }
+
+  if (isEmailEditDirty.value) {
     if (!nextBusinessOutput.email) {
       nextBusinessOutput.email = {
         subject: "",
@@ -3968,64 +4078,180 @@ async function saveSelectedSurfaceEdit(): Promise<void> {
       };
     }
 
-    if (!isEmailEditDirty.value) {
-      manualEditFeedback.value = "Email copy is already up to date.";
-      return;
-    }
-
     nextBusinessOutput.email.subject = editableEmailSubject.value.trim();
     nextBusinessOutput.email.body = editableEmailBody.value.trim();
   }
 
-  isSavingManualEdit.value = true;
-  manualEditFeedback.value = "";
-
-  try {
-    await persistBusinessOutputChanges(
-      nextBusinessOutput,
-      `${resultPreviewSurfaceOptions.value.find((option) => option.value === selectedResultPreviewSurface.value)?.label || "Variant"} saved to this draft.`,
-    );
-    manualEditFeedback.value = "Saved and synced with preview.";
-  } catch (error) {
-    manualEditFeedback.value =
-      error instanceof Error ? error.message : "Unable to save this channel variant right now.";
-  } finally {
-    isSavingManualEdit.value = false;
-  }
+  return nextBusinessOutput;
 }
 
-function resetPublishingSetup(): void {
-  editableCtaLabel.value = businessOutput.value?.cta.label ?? "";
-  editableCtaUrl.value = businessOutput.value?.cta.url ?? "";
-  publishingSetupFeedback.value = "";
-}
-
-async function savePublishingSetup(): Promise<void> {
-  if (!businessOutput.value) {
-    publishingSetupFeedback.value = "Structured CTA editing is available on business campaign drafts.";
-    return;
-  }
-
-  if (!isCtaDirty.value) {
-    publishingSetupFeedback.value = "CTA is already up to date.";
-    return;
+function buildPendingCtaBusinessOutput(): BusinessContentOutput | null {
+  if (!businessOutput.value || !isCtaDirty.value) {
+    return null;
   }
 
   const nextBusinessOutput = cloneBusinessOutput(businessOutput.value);
   nextBusinessOutput.cta.label = editableCtaLabel.value.trim();
   nextBusinessOutput.cta.url = editableCtaUrl.value.trim();
-  isSavingPublishingSetup.value = true;
+  return nextBusinessOutput;
+}
+
+function scheduleContentAutosave(): void {
+  clearContentAutosaveTimer();
+
+  if (!draft.value) {
+    contentAutosaveState.value = "idle";
+    return;
+  }
+
+  if (!hasPendingContentAutosaveChanges.value) {
+    markContentAutosaveSettled();
+    return;
+  }
+
+  contentAutosaveError.value = "";
+  manualEditFeedback.value = "";
+  contentAutosaveState.value = "queued";
+  contentAutosaveTimer = setTimeout(() => {
+    contentAutosaveTimer = null;
+    void runContentAutosave();
+  }, CONTENT_AUTOSAVE_DELAY_MS);
+}
+
+function scheduleCtaAutosave(): void {
+  clearCtaAutosaveTimer();
+
+  if (!businessOutput.value) {
+    ctaAutosaveState.value = "idle";
+    return;
+  }
+
+  if (!isCtaDirty.value) {
+    markCtaAutosaveSettled();
+    return;
+  }
+
+  ctaAutosaveError.value = "";
+  publishingSetupFeedback.value = "";
+  ctaAutosaveState.value = "queued";
+  ctaAutosaveTimer = setTimeout(() => {
+    ctaAutosaveTimer = null;
+    void runCtaAutosave();
+  }, CTA_AUTOSAVE_DELAY_MS);
+}
+
+async function runContentAutosave(): Promise<boolean> {
+  if (activeContentAutosavePromise) {
+    return activeContentAutosavePromise;
+  }
+
+  activeContentAutosavePromise = (async () => {
+  clearContentAutosaveTimer();
+
+  if (!hasPendingContentAutosaveChanges.value) {
+    markContentAutosaveSettled();
+    return true;
+  }
+
+  contentAutosaveState.value = "saving";
+  contentAutosaveError.value = "";
+  manualEditFeedback.value = "";
+  isSavingManualEdit.value = true;
+
+  try {
+    if (isManualEditDirty.value) {
+      await updateDraftPostContent(editablePostContent.value, "");
+    }
+
+    const nextBusinessOutput = buildPendingVariantBusinessOutput();
+
+    if (nextBusinessOutput) {
+      await persistBusinessOutputChanges(nextBusinessOutput, "");
+    }
+
+    contentAutosaveState.value = "saved";
+
+    if (hasPendingContentAutosaveChanges.value) {
+      scheduleContentAutosave();
+    }
+
+    return true;
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unable to save your latest draft changes.";
+    contentAutosaveState.value = "error";
+    contentAutosaveError.value = message;
+    manualEditFeedback.value = message;
+    return false;
+  } finally {
+    isSavingManualEdit.value = false;
+  }
+  })();
+
+  try {
+    return await activeContentAutosavePromise;
+  } finally {
+    activeContentAutosavePromise = null;
+  }
+}
+
+async function runCtaAutosave(): Promise<boolean> {
+  if (activeCtaAutosavePromise) {
+    return activeCtaAutosavePromise;
+  }
+
+  activeCtaAutosavePromise = (async () => {
+  clearCtaAutosaveTimer();
+
+  if (!isCtaDirty.value) {
+    markCtaAutosaveSettled();
+    return true;
+  }
+
+  const nextBusinessOutput = buildPendingCtaBusinessOutput();
+
+  if (!nextBusinessOutput) {
+    markCtaAutosaveSettled();
+    return true;
+  }
+
+  ctaAutosaveState.value = "saving";
+  ctaAutosaveError.value = "";
   publishingSetupFeedback.value = "";
 
   try {
-    await persistBusinessOutputChanges(nextBusinessOutput, "CTA updated for this draft.");
-    publishingSetupFeedback.value = "CTA saved and ready for preview, publish, and email handoff.";
+    await persistBusinessOutputChanges(nextBusinessOutput, "");
+    ctaAutosaveState.value = "saved";
+
+    if (isCtaDirty.value) {
+      scheduleCtaAutosave();
+    }
+
+    return true;
   } catch (error) {
-    publishingSetupFeedback.value =
-      error instanceof Error ? error.message : "Unable to save this CTA right now.";
-  } finally {
-    isSavingPublishingSetup.value = false;
+    const message =
+      error instanceof Error ? error.message : "Unable to save the CTA changes right now.";
+    ctaAutosaveState.value = "error";
+    ctaAutosaveError.value = message;
+    publishingSetupFeedback.value = message;
+    return false;
   }
+  })();
+
+  try {
+    return await activeCtaAutosavePromise;
+  } finally {
+    activeCtaAutosavePromise = null;
+  }
+}
+
+async function flushComposerAutosaves(): Promise<boolean> {
+  clearContentAutosaveTimer();
+  clearCtaAutosaveTimer();
+
+  const contentSaved = await runContentAutosave();
+  const ctaSaved = await runCtaAutosave();
+  return contentSaved && ctaSaved;
 }
 
 async function setPrimaryAssetPreference(assetId: string): Promise<void> {
@@ -4629,6 +4855,7 @@ async function loadMediaRecommendations(): Promise<void> {
 }
 
 async function openGenerateMediaOptions(): Promise<void> {
+  openMediaDrawer();
   await nextTick();
   mediaRecommendationPanelRef.value?.scrollIntoView({
     behavior: "smooth",
@@ -5317,8 +5544,8 @@ async function openSchedulePanel(): Promise<void> {
     return;
   }
 
-  if (hasPendingSocialPublishChanges.value) {
-    feedbackMessage.value = "Save the inline edits first so the scheduled post matches the current preview.";
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits. Fix the autosave error first.";
     return;
   }
 
@@ -5344,6 +5571,7 @@ async function openSchedulePanel(): Promise<void> {
     return;
   }
 
+  isPublishDrawerOpen.value = true;
   isSchedulePanelOpen.value = true;
   scheduleFeedback.value = "";
 
@@ -5357,6 +5585,37 @@ async function openSchedulePanel(): Promise<void> {
 function closeSchedulePanel(): void {
   isSchedulePanelOpen.value = false;
   scheduleFeedback.value = "";
+}
+
+function openPublishDrawer(): void {
+  isMediaDrawerOpen.value = false;
+  isHashtagDrawerOpen.value = false;
+  isPublishDrawerOpen.value = true;
+}
+
+function closePublishDrawer(): void {
+  isPublishDrawerOpen.value = false;
+  closeSchedulePanel();
+}
+
+function openMediaDrawer(): void {
+  isPublishDrawerOpen.value = false;
+  isHashtagDrawerOpen.value = false;
+  isMediaDrawerOpen.value = true;
+}
+
+function closeMediaDrawer(): void {
+  isMediaDrawerOpen.value = false;
+}
+
+function openHashtagDrawer(): void {
+  isPublishDrawerOpen.value = false;
+  isMediaDrawerOpen.value = false;
+  isHashtagDrawerOpen.value = true;
+}
+
+function closeHashtagDrawer(): void {
+  isHashtagDrawerOpen.value = false;
 }
 
 function applyRecommendedSchedule(): void {
@@ -5397,6 +5656,11 @@ async function scheduleDraft(): Promise<void> {
 
   if (selectedSchedulingCapacityGuardrail.value) {
     scheduleFeedback.value = selectedSchedulingCapacityGuardrail.value;
+    return;
+  }
+
+  if (!(await flushComposerAutosaves())) {
+    scheduleFeedback.value = "We could not save the latest edits. Fix the autosave error first.";
     return;
   }
 
@@ -5496,6 +5760,11 @@ async function goToImprove(): Promise<void> {
     return;
   }
 
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits before opening improve mode.";
+    return;
+  }
+
   await router.push({
     path: appRoutes.appGenerate,
     query: {
@@ -5509,6 +5778,11 @@ async function goToOutreach(): Promise<void> {
     return;
   }
 
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits before opening outreach.";
+    return;
+  }
+
   await router.push({
     path: appRoutes.appOutreach,
     query: {
@@ -5519,6 +5793,11 @@ async function goToOutreach(): Promise<void> {
 }
 
 async function goToPlanner(): Promise<void> {
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits before opening planner.";
+    return;
+  }
+
   try {
     const ensuredPostId = await ensurePersistedDraft();
 
@@ -5543,6 +5822,11 @@ async function goToPlanner(): Promise<void> {
 
 async function goToEmail(): Promise<void> {
   if (!draft.value) {
+    return;
+  }
+
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits before opening email.";
     return;
   }
 
@@ -5592,6 +5876,11 @@ async function goToEmail(): Promise<void> {
 
 async function goToGrowth(): Promise<void> {
   if (!draft.value) {
+    return;
+  }
+
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits before opening growth.";
     return;
   }
 
@@ -5822,8 +6111,8 @@ async function publishToSelectedPlatforms(): Promise<void> {
 }
 
 async function triggerPrimaryPublishAction(): Promise<void> {
-  if (hasPendingSocialPublishChanges.value) {
-    feedbackMessage.value = "Save the inline edits first so the published version matches the preview.";
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits. Fix the autosave error first.";
     return;
   }
 
@@ -5865,6 +6154,11 @@ async function publishToPlatforms(
 
   if (platforms.length === 0) {
     feedbackMessage.value = "Select at least one publishable platform before posting.";
+    return;
+  }
+
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits. Fix the autosave error first.";
     return;
   }
 
@@ -5955,6 +6249,28 @@ async function publishToPlatforms(
 }
 
 function handleKeydown(event: KeyboardEvent): void {
+  if (isMetaSelectionModalOpen.value || isWorkspaceAssetPickerOpen.value) {
+    return;
+  }
+
+  if (event.key === "Escape" && isMediaDrawerOpen.value) {
+    closeMediaDrawer();
+    return;
+  }
+
+  if (event.key === "Escape" && isHashtagDrawerOpen.value) {
+    closeHashtagDrawer();
+    return;
+  }
+
+  if (
+    event.key === "Escape"
+    && isPublishDrawerOpen.value
+  ) {
+    closePublishDrawer();
+    return;
+  }
+
   if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || !draft.value) {
     return;
   }
@@ -6083,8 +6399,14 @@ watch(
 
 watch(
   () => postContent.value,
-  (nextValue) => {
-    editablePostContent.value = nextValue;
+  (nextValue, previousValue = "") => {
+    if (
+      editablePostContent.value.trim() === ""
+      || editablePostContent.value === previousValue
+    ) {
+      editablePostContent.value = nextValue;
+    }
+
     manualEditFeedback.value = "";
   },
   { immediate: true },
@@ -6105,6 +6427,10 @@ watch(
       previousPost = "",
       previousInstagram = "",
       previousFacebook = "",
+      previousEmailSubject = "",
+      previousEmailBody = "",
+      previousCtaLabel = "",
+      previousCtaUrl = "",
     ] = previousValues ?? [];
 
     const previousInstagramBaseline = previousInstagram.trim() !== "" ? previousInstagram : previousPost;
@@ -6126,14 +6452,59 @@ watch(
       editableFacebookContent.value = nextFacebookBaseline;
     }
 
-    editableEmailSubject.value = nextEmailSubject;
-    editableEmailBody.value = nextEmailBody;
-    editableCtaLabel.value = nextCtaLabel;
-    editableCtaUrl.value = nextCtaUrl;
+    if (
+      editableEmailSubject.value.trim() === ""
+      || editableEmailSubject.value === previousEmailSubject
+    ) {
+      editableEmailSubject.value = nextEmailSubject;
+    }
+
+    if (
+      editableEmailBody.value.trim() === ""
+      || editableEmailBody.value === previousEmailBody
+    ) {
+      editableEmailBody.value = nextEmailBody;
+    }
+
+    if (
+      editableCtaLabel.value.trim() === ""
+      || editableCtaLabel.value === previousCtaLabel
+    ) {
+      editableCtaLabel.value = nextCtaLabel;
+    }
+
+    if (
+      editableCtaUrl.value.trim() === ""
+      || editableCtaUrl.value === previousCtaUrl
+    ) {
+      editableCtaUrl.value = nextCtaUrl;
+    }
+
     manualEditFeedback.value = "";
     publishingSetupFeedback.value = "";
   },
   { immediate: true },
+);
+
+watch(
+  () => [
+    editablePostContent.value,
+    editableInstagramContent.value,
+    editableFacebookContent.value,
+    editableEmailSubject.value,
+    editableEmailBody.value,
+    draft.value?.id ?? "",
+  ] as const,
+  () => {
+    scheduleContentAutosave();
+  },
+);
+
+watch(
+  () => [editableCtaLabel.value, editableCtaUrl.value, draft.value?.id ?? ""] as const,
+  () => {
+    scheduleCtaAutosave();
+  },
 );
 
 watch(
@@ -6314,6 +6685,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("keydown", handleKeydown);
   window.removeEventListener("focus", handleWindowFocus);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
+  clearContentAutosaveTimer();
+  clearCtaAutosaveTimer();
 });
 </script>
 
@@ -6373,8 +6746,8 @@ onBeforeUnmount(() => {
                 <p class="panel-meta">Editable final draft</p>
                 <h2>{{ selectedSurfaceEditorCopy.title }}</h2>
               </div>
-              <span class="workspace-chip" :data-tone="isSelectedSurfaceDirty ? 'warning' : 'default'">
-                {{ isSelectedSurfaceDirty ? "Unsaved changes" : "Saved draft" }}
+              <span class="workspace-chip" :data-tone="contentAutosaveState === 'error' ? 'warning' : 'default'">
+                {{ contentAutosaveLabel }}
               </span>
             </div>
 
@@ -6443,13 +6816,17 @@ onBeforeUnmount(() => {
             </p>
 
             <div class="result-editor-actions">
+              <span class="workspace-chip" :data-tone="contentAutosaveState === 'error' ? 'warning' : 'default'">
+                {{ contentAutosaveLabel }}
+              </span>
               <button
+                v-if="contentAutosaveState === 'error'"
                 type="button"
-                class="primary-action"
-                :disabled="isSavingManualEdit || !isSelectedSurfaceDirty"
-                @click="void saveSelectedSurfaceEdit()"
+                class="secondary-action"
+                :disabled="isSavingManualEdit"
+                @click="void flushComposerAutosaves()"
               >
-                {{ isSavingManualEdit ? "Saving..." : "Save changes" }}
+                Retry save
               </button>
               <button
                 type="button"
@@ -6473,7 +6850,7 @@ onBeforeUnmount(() => {
                 <h2>{{ selectedPreviewCard?.label || "Preview" }}</h2>
               </div>
               <span class="workspace-chip" :data-tone="selectedPreviewCard?.isDirty ? 'warning' : 'default'">
-                {{ selectedPreviewCard?.isDirty ? "Unsaved preview" : "Preview synced" }}
+                {{ selectedPreviewCard?.isDirty ? "Syncing preview" : "Preview synced" }}
               </span>
             </div>
 
@@ -6488,7 +6865,7 @@ onBeforeUnmount(() => {
               >
                 <div class="result-platform-card-topline">
                   <span class="workspace-chip">{{ card.label }}</span>
-                  <span v-if="card.isDirty" class="workspace-chip" data-tone="warning">Unsaved</span>
+                  <span v-if="card.isDirty" class="workspace-chip" data-tone="warning">Syncing</span>
                 </div>
 
                 <div class="result-platform-card-header">
@@ -6821,18 +7198,21 @@ onBeforeUnmount(() => {
                   </div>
 
                   <div class="result-inline-card-actions">
+                    <span class="workspace-chip" :data-tone="ctaAutosaveState === 'error' ? 'warning' : 'default'">
+                      {{ ctaAutosaveLabel }}
+                    </span>
                     <button
+                      v-if="ctaAutosaveState === 'error'"
                       type="button"
-                      class="primary-action"
-                      :disabled="isSavingPublishingSetup || !isCtaDirty"
-                      @click="void savePublishingSetup()"
+                      class="secondary-action"
+                      @click="void flushComposerAutosaves()"
                     >
-                      {{ isSavingPublishingSetup ? "Saving..." : "Save CTA" }}
+                      Retry save
                     </button>
                     <button
                       type="button"
                       class="secondary-action"
-                      :disabled="isSavingPublishingSetup || !isCtaDirty"
+                      :disabled="ctaAutosaveState === 'saving' || !isCtaDirty"
                       @click="resetPublishingSetup"
                     >
                       Reset
@@ -6854,330 +7234,125 @@ onBeforeUnmount(() => {
                     <p class="panel-meta">Media</p>
                     <strong>{{ selectedPublishingMediaSummary }}</strong>
                   </div>
+                  <span class="workspace-chip">{{ postAssets.length }} attached</span>
                 </div>
 
-                <p class="shortcut-note">
-                  Choose the media that should lead the preview. Primary media drives Instagram and Facebook. LinkedIn can keep a separate image fallback.
+                <p class="shortcut-note result-inline-launcher-copy">
+                  Generation, motion-lite, upload, and asset order now live in one focused drawer instead of stretching the editor.
                 </p>
 
-                <div class="result-inline-media-actions">
+                <div class="result-inline-card-actions">
                   <button
                     type="button"
                     class="secondary-action"
-                    :disabled="isUploadingPostAssets"
-                    @click="isWorkspaceAssetPickerOpen = true"
+                    @click="openMediaDrawer"
                   >
-                    Use existing
+                    {{ mediaDrawerActionLabel }}
                   </button>
-                  <label class="media-upload-button result-inline-upload">
-                    <input
-                      type="file"
-                      accept="image/png,image/jpeg,image/gif,video/mp4"
-                      multiple
-                      :disabled="isUploadingPostAssets"
-                      @change="void handleMediaSelection($event)"
-                    />
-                    {{ isUploadingPostAssets ? "Uploading..." : "Upload media" }}
-                  </label>
                 </div>
 
                 <p class="result-feedback subtle">
-                  {{ primaryAssetSelectionSummary }}
+                  {{
+                    mediaFeedback
+                      || (postAssets.length > 0
+                        ? `${primaryAssetSelectionSummary} · ${posterAssetSelectionSummary}`
+                        : "No ready media yet. Open the drawer to generate, upload, or reuse an asset.")
+                  }}
+                </p>
+              </article>
+
+              <article class="result-inline-setup-card result-inline-launcher-card">
+                <div class="result-inline-card-header">
+                  <div>
+                    <p class="panel-meta">Hashtags</p>
+                    <strong>{{ hashtagDrawerSummary }}</strong>
+                  </div>
+                  <span class="workspace-chip">
+                    {{ composerHashtagPreview.length > 0 ? `${composerHashtagPreview.length} ready` : "Optional" }}
+                  </span>
+                </div>
+
+                <p class="shortcut-note result-inline-launcher-copy">
+                  Keep discoverability focused. Generate three to five tags without bloating the main editor or helper rail.
                 </p>
 
-                <div v-if="readyPostAssets.length > 0" class="result-asset-choice-grid">
+                <div v-if="composerHashtagPreview.length > 0" class="hashtag-chip-row result-inline-launcher-chip-row">
+                  <span v-for="tag in composerHashtagPreview" :key="tag">{{ tag }}</span>
+                </div>
+
+                <div class="result-inline-card-actions">
                   <button
-                    v-for="asset in readyPostAssets"
-                    :key="`primary-${asset.id}`"
                     type="button"
-                    class="result-asset-choice-card"
-                    :data-active="currentPrimaryAssetSelectionId === asset.id"
-                    @click="void setPrimaryAssetPreference(asset.id)"
+                    class="secondary-action"
+                    @click="openHashtagDrawer"
                   >
-                    <video
-                      v-if="asset.type === 'video' && asset.previewUrl"
-                      :src="asset.previewUrl"
-                      class="result-asset-choice-preview"
-                      muted
-                      playsinline
-                      preload="metadata"
-                    />
-                    <img
-                      v-else-if="asset.previewUrl"
-                      :src="asset.previewUrl"
-                      alt="Ready media preview"
-                      class="result-asset-choice-preview"
-                    />
-                    <span>{{ formatPostAssetChoiceLabel(asset) }}</span>
-                    <small>{{ currentPrimaryAssetSelectionId === asset.id ? "Primary" : "Use as primary" }}</small>
+                    {{ hashtagDrawerActionLabel }}
                   </button>
                 </div>
-                <p v-else class="shortcut-note">
-                  No ready media yet. Upload or reuse an asset, or keep this post text-first.
-                </p>
 
-                <template v-if="readyImageAssets.length > 0">
-                  <p class="panel-meta result-inline-submeta">LinkedIn fallback image</p>
-                  <p class="shortcut-note result-inline-poster-copy">
-                    {{ posterAssetSelectionSummary }}
-                  </p>
-
-                  <div class="result-poster-choice-row">
-                    <button
-                      v-for="asset in readyImageAssets"
-                      :key="`poster-${asset.id}`"
-                      type="button"
-                      class="result-poster-choice"
-                      :data-active="currentPosterAssetSelectionId === asset.id"
-                      @click="void setPosterAssetPreference(asset.id)"
-                    >
-                      {{ asset.orderIndex + 1 }}
-                    </button>
-                  </div>
-                </template>
-
-                <p v-if="mediaFeedback" class="result-feedback subtle">
-                  {{ mediaFeedback }}
+                <p v-if="hashtagFeedback" class="result-feedback subtle">
+                  {{ hashtagFeedback }}
                 </p>
               </article>
             </div>
           </article>
         </div>
 
-        <div class="result-action-grid">
-          <section class="channel-selector-card result-compact-card">
+        <section class="result-post-card publish-launch-card">
+          <div class="result-card-header">
             <div>
-              <p class="panel-meta">Destination</p>
-              <strong>Select platforms for this post</strong>
-              <p class="shortcut-note">
-                Pick the platforms that should receive this draft. The focused one drives the preview and publish status.
+              <p class="panel-meta">Publish flow</p>
+              <h2>Publish, schedule, or route when you’re ready.</h2>
+              <p class="shortcut-note publish-launch-copy">
+                Keep editing on the main canvas. Destinations, scheduling, and dispatch live in one focused drawer.
               </p>
             </div>
+            <span class="workspace-chip">{{ actionPriorityLabel }}</span>
+          </div>
 
-            <div class="channel-selector-grid">
-              <article
-                v-for="platform in PUBLISHABLE_SOCIAL_PLATFORMS"
-                :key="platform"
-                class="channel-selector-option"
-                :data-focused="selectedPublishingPlatform === platform"
-                :data-selected="isPublishingPlatformSelected(platform)"
-                :data-disabled="Boolean(resolvePublishingGuardrail(platform))"
-                @click="selectedPublishingPlatform = platform"
-              >
-                <div class="channel-selector-option-topline">
-                  <label class="channel-selector-checkbox">
-                    <input
-                      type="checkbox"
-                      :checked="isPublishingPlatformSelected(platform)"
-                      :disabled="Boolean(resolvePublishingGuardrail(platform))"
-                      @click.stop="togglePublishingPlatform(platform)"
-                    />
-                    <span>{{ resolveSocialPlatformLabel(platform) }}</span>
-                  </label>
-                  <span class="channel-selector-state">
-                    {{
-                      isPublishingPlatformSelected(platform)
-                        ? "Selected"
-                        : resolvePublishingGuardrail(platform)
-                          ? "Unavailable"
-                          : "Ready"
-                    }}
-                  </span>
-                </div>
-                <p>{{ resolvePublishingPlatformHint(platform) }}</p>
-              </article>
-            </div>
+          <div class="publish-launch-grid">
+            <article v-for="fact in publishLauncherFacts" :key="fact.label" class="execution-fact-card">
+              <span>{{ fact.label }}</span>
+              <strong>{{ fact.value }}</strong>
+            </article>
+          </div>
 
-            <p v-if="selectedSchedulingCapacityGuardrail" class="result-feedback subtle">
-              {{ selectedSchedulingCapacityGuardrail }}
-            </p>
-            <p v-else-if="selectedPublishingGuardrail" class="result-feedback subtle">
-              {{ selectedPublishingGuardrail }}
-            </p>
-          </section>
-
-          <section class="result-post-card result-action-card">
-            <div class="result-card-header">
-              <div>
-                <p class="panel-meta">Actions</p>
-                <h2>Publish, schedule, or route this draft.</h2>
-              </div>
-              <span class="workspace-chip">{{ actionPriorityLabel }}</span>
-            </div>
-
-            <div class="execution-fact-grid result-action-facts">
-              <article v-for="fact in executionPanelFacts.slice(0, 4)" :key="fact.label" class="execution-fact-card">
-                <span>{{ fact.label }}</span>
-                <strong>{{ fact.value }}</strong>
-              </article>
-            </div>
-
-            <div v-if="selectedPublishingOverflowWarnings.length > 0" class="result-publish-warning-stack">
-              <article
-                v-for="warning in selectedPublishingOverflowWarnings"
-                :key="`${warning.platform}-${warning.label}`"
-                class="result-signal-card"
-                data-tone="warning"
-              >
-                <p class="panel-meta">{{ resolveSocialPlatformLabel(warning.platform) }}</p>
-                <strong>{{ warning.label }}</strong>
-                <span>{{ warning.detail }}</span>
-              </article>
-            </div>
-
-            <div class="result-primary-actions result-primary-actions-compact">
-              <button
-                type="button"
-                class="primary-action"
-                :disabled="
-                  isPublishingToLinkedIn ||
-                  isConnectingLinkedIn ||
-                  isConnectingMeta ||
-                  isUploadingPostAssets ||
-                  hasPendingSocialPublishChanges ||
-                  !activeBusinessId ||
-                  !canRunPublishingAction
-                "
-                @click="void triggerPrimaryPublishAction()"
-              >
-                {{ primaryPublishActionLabel }}
-              </button>
-
-              <button
-                v-if="canScheduleDraft"
-                type="button"
-                class="secondary-action"
-                :disabled="
-                  isSchedulingDraft ||
-                  isUploadingPostAssets ||
-                  hasPendingSocialPublishChanges ||
-                  !canPublishSelectedPlatforms ||
-                  Boolean(selectedSchedulingCapacityGuardrail)
-                "
-                @click="void openSchedulePanel()"
-              >
-                {{ primaryScheduleActionLabel }}
-              </button>
-
-              <button type="button" class="secondary-action" @click="goToEmail">
-                Convert to Email
-              </button>
-              <button type="button" class="secondary-action" @click="goToOutreach">
-                Send via Outreach
-              </button>
-            </div>
-
-            <p
-              v-if="feedbackMessage && feedbackTone === 'warning'"
-              class="result-feedback"
+          <div v-if="selectedPublishingOverflowWarnings.length > 0" class="result-publish-warning-stack">
+            <article
+              v-for="warning in selectedPublishingOverflowWarnings"
+              :key="`${warning.platform}-${warning.label}`"
+              class="result-signal-card"
               data-tone="warning"
             >
-              {{ feedbackMessage }}
-            </p>
-            <p v-else-if="hasPendingSocialPublishChanges" class="result-feedback subtle">
-              Save the LinkedIn, Instagram, or Facebook edits above before publishing or scheduling so the live post matches this workspace preview.
-            </p>
-          </section>
-        </div>
+              <p class="panel-meta">{{ resolveSocialPlatformLabel(warning.platform) }}</p>
+              <strong>{{ warning.label }}</strong>
+              <span>{{ warning.detail }}</span>
+            </article>
+          </div>
 
-        <section v-if="isSchedulePanelOpen && canScheduleDraft" class="schedule-panel">
-          <div class="schedule-panel-header">
-            <div>
-              <p class="panel-meta">Choose a delivery window</p>
-              <strong>Lock the post into a real publishing slot</strong>
-              <p class="ai-command-copy">
-                Pick the audience time once, then let planner and the worker handle execution.
-              </p>
-            </div>
-            <button type="button" class="secondary-action schedule-close-button" @click="closeSchedulePanel">
-              Close
+          <div class="result-primary-actions publish-launch-actions">
+            <button type="button" class="primary-action" @click="openPublishDrawer">
+              Open publish drawer
             </button>
           </div>
 
-          <div v-if="bestRecommendedSlot" class="schedule-best-slot">
-            <div>
-              <p class="panel-meta">Best time</p>
-              <strong>{{ bestRecommendedSlot.localLabel }} in {{ recommendedTimezone }}</strong>
-              <p class="ai-command-copy">{{ bestRecommendedSlot.reason }}</p>
-            </div>
-            <button
-              type="button"
-              class="secondary-action"
-              :disabled="isLoadingRecommendedSlots || isSchedulingDraft"
-              @click="applyRecommendedSchedule"
-            >
-              Use best time
-            </button>
-          </div>
-
-          <div
-            v-if="hasScheduledQueuePreview"
-            class="schedule-best-slot"
-            :data-tone="queueLimitReached ? 'warning' : 'default'"
+          <p
+            v-if="feedbackMessage && feedbackTone === 'warning'"
+            class="result-feedback"
+            data-tone="warning"
           >
-            <div>
-              <p class="panel-meta">Queue preview</p>
-              <strong>{{ queuePreviewHeadline }}</strong>
-              <p class="ai-command-copy">{{ queueLimitReached ? queueLimitPrompt : queuePreviewCopy }}</p>
-            </div>
-          </div>
-
-          <div class="schedule-form-grid">
-            <label>
-              <span>Date</span>
-              <input v-model="scheduleDateKey" type="date" />
-            </label>
-            <label>
-              <span>Time</span>
-              <input v-model="scheduleTime" type="time" />
-            </label>
-            <label>
-              <span>Audience timezone</span>
-              <select v-model="audienceTimezone">
-                <option
-                  v-for="option in audienceTimezoneOptions"
-                  :key="option.value"
-                  :value="option.value"
-                >
-                  {{ option.label }}
-                </option>
-              </select>
-            </label>
-          </div>
-
-          <p class="schedule-helper-copy">
-            Audience time: {{ selectedAudienceDateLabel }} at {{ selectedAudienceTimeLabel }}
-            <span v-if="selectedLocalTimeLabel"> · Your time: {{ selectedLocalTimeLabel }}</span>
+            {{ feedbackMessage }}
           </p>
-
-          <p v-if="selectedPublishingGuardrail" class="result-feedback subtle">
-            {{ selectedPublishingGuardrail }}
+          <p
+            v-else-if="feedbackMessage && feedbackTone === 'success'"
+            class="result-feedback"
+            data-tone="success"
+          >
+            {{ feedbackMessage }}
           </p>
-
-          <p v-if="isLoadingRecommendedSlots" class="result-feedback subtle">
-            Loading best posting windows...
+          <p v-else class="result-feedback subtle">
+            {{ composerAutosaveSummary }}
           </p>
-          <p v-if="scheduleFeedback" class="result-feedback">{{ scheduleFeedback }}</p>
-
-          <div class="schedule-panel-actions">
-            <button
-              type="button"
-              class="primary-action"
-              :disabled="isSchedulingDraft || queueLimitReached"
-              @click="void scheduleDraft()"
-            >
-              {{
-                queueLimitReached
-                  ? "Queue full"
-                  : isSchedulingDraft
-                    ? "Adding to queue..."
-                    : "Add to queue"
-              }}
-            </button>
-            <button type="button" class="secondary-action" @click="goToPlanner">
-              Open planner
-            </button>
-          </div>
         </section>
       </section>
 
@@ -7466,7 +7641,319 @@ onBeforeUnmount(() => {
           </summary>
 
           <div class="result-helper-content">
-            <section v-if="draft" class="media-panel">
+            <article class="side-card drawer-callout-card">
+              <div class="result-inline-card-header">
+                <div>
+                  <p class="panel-meta">Media drawer</p>
+                  <strong>Open one focused space for visuals, uploads, motion, and ordering.</strong>
+                  <p class="shortcut-note drawer-callout-copy">
+                    The editor stays text-first. Media generation, carousel blueprints, motion-lite, and asset management now live off-canvas.
+                  </p>
+                </div>
+                <span class="workspace-chip">{{ selectedPublishingMediaSummary }}</span>
+              </div>
+
+              <div class="execution-fact-grid drawer-callout-grid">
+                <article class="execution-fact-card">
+                  <span>Attached</span>
+                  <strong>{{ postAssets.length === 0 ? "None yet" : `${postAssets.length} attached` }}</strong>
+                </article>
+                <article class="execution-fact-card">
+                  <span>Lead asset</span>
+                  <strong>{{ primaryAssetSelectionSummary }}</strong>
+                </article>
+                <article class="execution-fact-card">
+                  <span>Motion</span>
+                  <strong>{{ motionLiteDerivedVideoAsset ? "Video ready" : shouldShowAdvancedMotionControls ? "Image-first" : "Not active" }}</strong>
+                </article>
+                <article class="execution-fact-card">
+                  <span>Recommendations</span>
+                  <strong>{{ isLoadingMediaRecommendations ? "Loading..." : mediaRecommendationStatusLabel }}</strong>
+                </article>
+              </div>
+
+              <div class="result-primary-actions">
+                <button type="button" class="primary-action" @click="openMediaDrawer">
+                  {{ mediaDrawerActionLabel }}
+                </button>
+              </div>
+
+              <p v-if="mediaFeedback" class="result-feedback subtle">
+                {{ mediaFeedback }}
+              </p>
+            </article>
+          </div>
+        </details>
+
+        <details class="result-helper-section">
+          <summary>
+            <span>AI helpers</span>
+            <span>Improvement prompts, hooks, comments, and hashtags</span>
+          </summary>
+
+          <div class="result-helper-content helper-two-column">
+            <section class="ai-command-panel">
+              <div class="ai-command-header">
+                <div>
+                  <p class="panel-meta">AI editor</p>
+                  <strong>Ask AI to improve this draft</strong>
+                  <p class="ai-command-copy">
+                    Preview the change first. Nothing overwrites the post until you apply it.
+                  </p>
+                </div>
+              </div>
+
+              <div class="ai-suggestion-callout">
+                <p class="panel-meta">Suggested improvements</p>
+                <p class="ai-command-copy">
+                  Start with a stronger hook, a tighter ending, or a more specific founder example.
+                </p>
+              </div>
+
+              <div class="result-secondary-actions">
+                <button type="button" class="secondary-action" @click="goToImprove">
+                  Improve
+                </button>
+                <button type="button" class="secondary-action" @click="void goToContinueWriting()">
+                  Continue writing
+                </button>
+                <button
+                  v-for="option in FOLLOW_UP_STRATEGY_OPTIONS"
+                  :key="option.value"
+                  type="button"
+                  class="secondary-action result-strategy-button"
+                  @click="void goToContinueWriting(option.value)"
+                >
+                  {{ option.shortLabel }}
+                </button>
+              </div>
+
+              <div class="ai-command-row">
+                <input
+                  v-model="aiEditInstruction"
+                  type="text"
+                  class="ai-command-input"
+                  placeholder="Try: make this sharper, remove emojis, or shorten the ending"
+                  @keydown.enter.prevent="void previewAiEdit()"
+                />
+                <button
+                  type="button"
+                  class="secondary-action ai-command-submit"
+                  :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                  @click="void previewAiEdit()"
+                >
+                  {{ isPreviewingAiEdit ? "Thinking..." : "Preview change" }}
+                </button>
+              </div>
+
+              <div class="ai-command-chips">
+                <button
+                  v-for="command in AI_QUICK_COMMANDS"
+                  :key="command.value"
+                  type="button"
+                  class="ai-command-chip"
+                  :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                  @click="void previewAiEdit(command.value)"
+                >
+                  {{ command.label }}
+                </button>
+              </div>
+
+              <p v-if="aiEditFeedback" class="result-feedback">{{ aiEditFeedback }}</p>
+
+              <div v-if="isPreviewingAiEdit" class="ai-edit-preview-card loading">
+                Generating a scoped suggestion...
+              </div>
+
+              <div v-else-if="aiEditPreview" class="ai-edit-preview-card">
+                <div class="ai-edit-preview-header">
+                  <div>
+                    <p class="panel-meta">Change preview</p>
+                    <p class="ai-edit-summary">{{ aiEditPreview.summary }}</p>
+                    <p class="ai-edit-scope">{{ aiEditPreview.scopeHint }}</p>
+                  </div>
+                  <div v-if="aiPreviewActions.length > 0" class="ai-edit-action-pills">
+                    <span v-for="action in aiPreviewActions" :key="action">{{ action }}</span>
+                  </div>
+                </div>
+
+                <div class="ai-edit-diff">
+                  <article class="ai-edit-diff-card">
+                    <p class="panel-meta">Before</p>
+                    <pre>{{ aiEditPreview.beforeExcerpt }}</pre>
+                  </article>
+                  <article class="ai-edit-diff-card updated">
+                    <p class="panel-meta">After</p>
+                    <pre>{{ aiEditPreview.afterExcerpt }}</pre>
+                  </article>
+                </div>
+
+                <div class="ai-edit-actions">
+                  <button
+                    type="button"
+                    class="primary-action"
+                    :disabled="isApplyingAiEdit"
+                    @click="void applyAiEditPreview()"
+                  >
+                    {{ isApplyingAiEdit ? "Applying..." : "Apply changes" }}
+                  </button>
+                  <button type="button" class="secondary-action" @click="clearAiEditPreview">
+                    Keep original
+                  </button>
+                </div>
+              </div>
+            </section>
+
+            <div class="result-helper-rail">
+              <article class="side-card">
+                <p class="panel-meta">Growth mechanics</p>
+                <h3>Make this easier to react to</h3>
+                <p class="shortcut-note side-intro-copy">
+                  Use these moves to sharpen hook tension, improve retention, and create a cleaner reason to comment.
+                </p>
+
+                <div class="growth-mechanics-grid">
+                  <article
+                    v-for="mechanic in growthMechanics"
+                    :key="mechanic.id"
+                    class="growth-mechanic-card"
+                  >
+                    <div>
+                      <p class="panel-meta">{{ mechanic.label }}</p>
+                      <strong>{{ mechanic.title }}</strong>
+                      <p>{{ mechanic.copy }}</p>
+                    </div>
+                    <button
+                      type="button"
+                      class="secondary-action side-action-button"
+                      :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
+                      @click="void previewAiEdit(mechanic.command)"
+                    >
+                      {{ mechanic.actionLabel }}
+                    </button>
+                  </article>
+                </div>
+
+                <div class="growth-callout">
+                  <p class="panel-meta">Comment prompts</p>
+                  <strong>Give people a reason to respond</strong>
+                  <p class="shortcut-note">
+                    Add one direct question to the post, then use a stronger first comment to boost early conversation.
+                  </p>
+                </div>
+
+                <div class="prompt-stack">
+                  <article
+                    v-for="prompt in conversationPrompts"
+                    :key="prompt"
+                    class="prompt-card"
+                  >
+                    <p>{{ prompt }}</p>
+                    <button
+                      type="button"
+                      class="secondary-action side-action-button"
+                      @click="void copyConversationPrompt(prompt)"
+                    >
+                      Copy prompt
+                    </button>
+                  </article>
+                </div>
+
+                <article v-if="suggestedFirstComment" class="first-comment-card">
+                  <p class="panel-meta">First comment</p>
+                  <strong>Use this as comment bait</strong>
+                  <pre>{{ suggestedFirstComment }}</pre>
+                  <button
+                    type="button"
+                    class="secondary-action side-action-button"
+                    @click="void copyConversationPrompt(suggestedFirstComment)"
+                  >
+                    Copy first comment
+                  </button>
+                </article>
+
+                <article class="drawer-callout-card drawer-callout-inline">
+                  <div class="hashtag-card-header">
+                    <div>
+                      <p class="panel-meta">Discoverability</p>
+                      <strong>Hashtags now live in a focused drawer</strong>
+                    </div>
+                    <button
+                      type="button"
+                      class="secondary-action"
+                      @click="openHashtagDrawer"
+                    >
+                      {{ hashtagDrawerActionLabel }}
+                    </button>
+                  </div>
+
+                  <p class="shortcut-note">
+                    Generate, review, and apply 3-5 tags without stretching this helper rail.
+                  </p>
+
+                  <div v-if="composerHashtagPreview.length > 0" class="hashtag-chip-row">
+                    <span v-for="tag in composerHashtagPreview" :key="tag">{{ tag }}</span>
+                  </div>
+
+                  <p v-if="hashtagFeedback" class="result-feedback subtle hashtag-feedback">
+                    {{ hashtagFeedback }}
+                  </p>
+                </article>
+
+                <p v-if="growthMechanicsFeedback" class="result-feedback subtle growth-feedback">
+                  {{ growthMechanicsFeedback }}
+                </p>
+              </article>
+
+              <article class="side-card">
+                <p class="panel-meta">Hook bank</p>
+                <h3>Backup openings</h3>
+                <ul class="hook-list">
+                  <li v-for="hook in hooks" :key="hook">{{ hook }}</li>
+                </ul>
+              </article>
+
+              <article class="side-card">
+                <p class="panel-meta">Use this draft elsewhere</p>
+                <h3>Route the same work into the rest of the product.</h3>
+                <div class="side-action-stack">
+                  <button type="button" class="secondary-action side-action-button" @click="void copyPost()">
+                    Copy for {{ selectedPublishingPlatformLabel }}
+                  </button>
+                  <button type="button" class="secondary-action side-action-button" @click="goToOutreach">
+                    Send via Outreach
+                  </button>
+                  <button type="button" class="secondary-action side-action-button" @click="goToEmail">
+                    Convert to Email
+                  </button>
+                  <button type="button" class="secondary-action side-action-button" @click="goToGrowth">
+                    Capture engaged lead
+                  </button>
+                </div>
+                <p class="shortcut-note">Shortcuts: Cmd/Ctrl + Shift + O for outreach, + E for email.</p>
+              </article>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <div v-if="isMediaDrawerOpen" class="publish-drawer-overlay utility-drawer-overlay" @click.self="closeMediaDrawer">
+        <article class="publish-drawer utility-drawer" role="dialog" aria-modal="true" aria-label="Media and visuals">
+          <div class="publish-drawer-header utility-drawer-header">
+            <div>
+              <p class="panel-meta">Media drawer</p>
+              <h2>Generate, attach, and order visuals without leaving the composer.</h2>
+              <p class="shortcut-note publish-drawer-copy">
+                Keep the draft text-first on the canvas. Use this drawer when the post is ready for visuals or motion.
+              </p>
+            </div>
+            <button type="button" class="secondary-action publish-drawer-close" @click="closeMediaDrawer">
+              Close
+            </button>
+          </div>
+
+          <div class="publish-drawer-content utility-drawer-content">
+            <section class="media-panel utility-drawer-panel">
               <div class="media-panel-header">
                 <div>
                   <p class="panel-meta">Media</p>
@@ -7888,269 +8375,73 @@ onBeforeUnmount(() => {
               </p>
             </section>
           </div>
-        </details>
+        </article>
+      </div>
 
-        <details class="result-helper-section">
-          <summary>
-            <span>AI helpers</span>
-            <span>Improvement prompts, hooks, comments, and hashtags</span>
-          </summary>
-
-          <div class="result-helper-content helper-two-column">
-            <section class="ai-command-panel">
-              <div class="ai-command-header">
-                <div>
-                  <p class="panel-meta">AI editor</p>
-                  <strong>Ask AI to improve this draft</strong>
-                  <p class="ai-command-copy">
-                    Preview the change first. Nothing overwrites the post until you apply it.
-                  </p>
-                </div>
-              </div>
-
-              <div class="ai-suggestion-callout">
-                <p class="panel-meta">Suggested improvements</p>
-                <p class="ai-command-copy">
-                  Start with a stronger hook, a tighter ending, or a more specific founder example.
-                </p>
-              </div>
-
-              <div class="result-secondary-actions">
-                <button type="button" class="secondary-action" @click="goToImprove">
-                  Improve
-                </button>
-                <button type="button" class="secondary-action" @click="void goToContinueWriting()">
-                  Continue writing
-                </button>
-                <button
-                  v-for="option in FOLLOW_UP_STRATEGY_OPTIONS"
-                  :key="option.value"
-                  type="button"
-                  class="secondary-action result-strategy-button"
-                  @click="void goToContinueWriting(option.value)"
-                >
-                  {{ option.shortLabel }}
-                </button>
-              </div>
-
-              <div class="ai-command-row">
-                <input
-                  v-model="aiEditInstruction"
-                  type="text"
-                  class="ai-command-input"
-                  placeholder="Try: make this sharper, remove emojis, or shorten the ending"
-                  @keydown.enter.prevent="void previewAiEdit()"
-                />
-                <button
-                  type="button"
-                  class="secondary-action ai-command-submit"
-                  :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
-                  @click="void previewAiEdit()"
-                >
-                  {{ isPreviewingAiEdit ? "Thinking..." : "Preview change" }}
-                </button>
-              </div>
-
-              <div class="ai-command-chips">
-                <button
-                  v-for="command in AI_QUICK_COMMANDS"
-                  :key="command.value"
-                  type="button"
-                  class="ai-command-chip"
-                  :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
-                  @click="void previewAiEdit(command.value)"
-                >
-                  {{ command.label }}
-                </button>
-              </div>
-
-              <p v-if="aiEditFeedback" class="result-feedback">{{ aiEditFeedback }}</p>
-
-              <div v-if="isPreviewingAiEdit" class="ai-edit-preview-card loading">
-                Generating a scoped suggestion...
-              </div>
-
-              <div v-else-if="aiEditPreview" class="ai-edit-preview-card">
-                <div class="ai-edit-preview-header">
-                  <div>
-                    <p class="panel-meta">Change preview</p>
-                    <p class="ai-edit-summary">{{ aiEditPreview.summary }}</p>
-                    <p class="ai-edit-scope">{{ aiEditPreview.scopeHint }}</p>
-                  </div>
-                  <div v-if="aiPreviewActions.length > 0" class="ai-edit-action-pills">
-                    <span v-for="action in aiPreviewActions" :key="action">{{ action }}</span>
-                  </div>
-                </div>
-
-                <div class="ai-edit-diff">
-                  <article class="ai-edit-diff-card">
-                    <p class="panel-meta">Before</p>
-                    <pre>{{ aiEditPreview.beforeExcerpt }}</pre>
-                  </article>
-                  <article class="ai-edit-diff-card updated">
-                    <p class="panel-meta">After</p>
-                    <pre>{{ aiEditPreview.afterExcerpt }}</pre>
-                  </article>
-                </div>
-
-                <div class="ai-edit-actions">
-                  <button
-                    type="button"
-                    class="primary-action"
-                    :disabled="isApplyingAiEdit"
-                    @click="void applyAiEditPreview()"
-                  >
-                    {{ isApplyingAiEdit ? "Applying..." : "Apply changes" }}
-                  </button>
-                  <button type="button" class="secondary-action" @click="clearAiEditPreview">
-                    Keep original
-                  </button>
-                </div>
-              </div>
-            </section>
-
-            <div class="result-helper-rail">
-              <article class="side-card">
-                <p class="panel-meta">Growth mechanics</p>
-                <h3>Make this easier to react to</h3>
-                <p class="shortcut-note side-intro-copy">
-                  Use these moves to sharpen hook tension, improve retention, and create a cleaner reason to comment.
-                </p>
-
-                <div class="growth-mechanics-grid">
-                  <article
-                    v-for="mechanic in growthMechanics"
-                    :key="mechanic.id"
-                    class="growth-mechanic-card"
-                  >
-                    <div>
-                      <p class="panel-meta">{{ mechanic.label }}</p>
-                      <strong>{{ mechanic.title }}</strong>
-                      <p>{{ mechanic.copy }}</p>
-                    </div>
-                    <button
-                      type="button"
-                      class="secondary-action side-action-button"
-                      :disabled="isPreviewingAiEdit || isApplyingAiEdit || !activeBusinessId"
-                      @click="void previewAiEdit(mechanic.command)"
-                    >
-                      {{ mechanic.actionLabel }}
-                    </button>
-                  </article>
-                </div>
-
-                <div class="growth-callout">
-                  <p class="panel-meta">Comment prompts</p>
-                  <strong>Give people a reason to respond</strong>
-                  <p class="shortcut-note">
-                    Add one direct question to the post, then use a stronger first comment to boost early conversation.
-                  </p>
-                </div>
-
-                <div class="prompt-stack">
-                  <article
-                    v-for="prompt in conversationPrompts"
-                    :key="prompt"
-                    class="prompt-card"
-                  >
-                    <p>{{ prompt }}</p>
-                    <button
-                      type="button"
-                      class="secondary-action side-action-button"
-                      @click="void copyConversationPrompt(prompt)"
-                    >
-                      Copy prompt
-                    </button>
-                  </article>
-                </div>
-
-                <article v-if="suggestedFirstComment" class="first-comment-card">
-                  <p class="panel-meta">First comment</p>
-                  <strong>Use this as comment bait</strong>
-                  <pre>{{ suggestedFirstComment }}</pre>
-                  <button
-                    type="button"
-                    class="secondary-action side-action-button"
-                    @click="void copyConversationPrompt(suggestedFirstComment)"
-                  >
-                    Copy first comment
-                  </button>
-                </article>
-
-                <article class="hashtag-card">
-                  <div class="hashtag-card-header">
-                    <div>
-                      <p class="panel-meta">Discoverability</p>
-                      <strong>Add focused hashtags</strong>
-                    </div>
-                    <button
-                      type="button"
-                      class="secondary-action"
-                      :disabled="isGeneratingHashtags"
-                      @click="void generateHashtags()"
-                    >
-                      {{ isGeneratingHashtags ? "Generating..." : "Generate hashtags" }}
-                    </button>
-                  </div>
-
-                  <p class="shortcut-note">
-                    Keep it tight. Three to five relevant tags is better than a stuffed footer.
-                  </p>
-
-                  <div v-if="generatedHashtags.length > 0" class="hashtag-chip-row">
-                    <span v-for="tag in generatedHashtags" :key="tag">{{ tag }}</span>
-                  </div>
-
-                  <div v-if="generatedHashtags.length > 0" class="hashtag-actions">
-                    <button type="button" class="primary-action hashtag-action" @click="void applyGeneratedHashtags()">
-                      Apply to post
-                    </button>
-                    <button type="button" class="secondary-action hashtag-action" @click="void copyHashtagCaption()">
-                      Copy caption
-                    </button>
-                  </div>
-
-                  <p v-if="hashtagFeedback" class="result-feedback subtle hashtag-feedback">
-                    {{ hashtagFeedback }}
-                  </p>
-                </article>
-
-                <p v-if="growthMechanicsFeedback" class="result-feedback subtle growth-feedback">
-                  {{ growthMechanicsFeedback }}
-                </p>
-              </article>
-
-              <article class="side-card">
-                <p class="panel-meta">Hook bank</p>
-                <h3>Backup openings</h3>
-                <ul class="hook-list">
-                  <li v-for="hook in hooks" :key="hook">{{ hook }}</li>
-                </ul>
-              </article>
-
-              <article class="side-card">
-                <p class="panel-meta">Use this draft elsewhere</p>
-                <h3>Route the same work into the rest of the product.</h3>
-                <div class="side-action-stack">
-                  <button type="button" class="secondary-action side-action-button" @click="void copyPost()">
-                    Copy for {{ selectedPublishingPlatformLabel }}
-                  </button>
-                  <button type="button" class="secondary-action side-action-button" @click="goToOutreach">
-                    Send via Outreach
-                  </button>
-                  <button type="button" class="secondary-action side-action-button" @click="goToEmail">
-                    Convert to Email
-                  </button>
-                  <button type="button" class="secondary-action side-action-button" @click="goToGrowth">
-                    Capture engaged lead
-                  </button>
-                </div>
-                <p class="shortcut-note">Shortcuts: Cmd/Ctrl + Shift + O for outreach, + E for email.</p>
-              </article>
+      <div v-if="isHashtagDrawerOpen" class="publish-drawer-overlay utility-drawer-overlay" @click.self="closeHashtagDrawer">
+        <article class="publish-drawer utility-drawer utility-drawer-narrow" role="dialog" aria-modal="true" aria-label="Hashtag tools">
+          <div class="publish-drawer-header utility-drawer-header">
+            <div>
+              <p class="panel-meta">Hashtag drawer</p>
+              <h2>Keep discoverability tight and intentional.</h2>
+              <p class="shortcut-note publish-drawer-copy">
+                Generate a small tag set, review it, and apply it without stretching the helper rail.
+              </p>
             </div>
+            <button type="button" class="secondary-action publish-drawer-close" @click="closeHashtagDrawer">
+              Close
+            </button>
           </div>
-        </details>
-      </section>
+
+          <div class="publish-drawer-content utility-drawer-content">
+            <article class="hashtag-card utility-drawer-panel">
+              <div class="hashtag-card-header">
+                <div>
+                  <p class="panel-meta">Discoverability</p>
+                  <strong>Add focused hashtags</strong>
+                </div>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="isGeneratingHashtags"
+                  @click="void generateHashtags()"
+                >
+                  {{ isGeneratingHashtags ? "Generating..." : "Generate hashtags" }}
+                </button>
+              </div>
+
+              <p class="shortcut-note">
+                Keep it tight. Three to five relevant tags is better than a stuffed footer.
+              </p>
+
+              <div v-if="businessOutput?.hashtags?.length" class="drawer-callout-card drawer-callout-inline">
+                <p class="panel-meta">Saved with this draft</p>
+                <strong>{{ businessOutput.hashtags.length }} brand-aligned hashtags available</strong>
+                <div class="hashtag-chip-row result-inline-launcher-chip-row">
+                  <span v-for="tag in businessOutput.hashtags.slice(0, 5)" :key="`saved-${tag}`">{{ tag }}</span>
+                </div>
+              </div>
+
+              <div v-if="generatedHashtags.length > 0" class="hashtag-chip-row">
+                <span v-for="tag in generatedHashtags" :key="tag">{{ tag }}</span>
+              </div>
+
+              <div v-if="generatedHashtags.length > 0" class="hashtag-actions">
+                <button type="button" class="primary-action hashtag-action" @click="void applyGeneratedHashtags()">
+                  Apply to post
+                </button>
+                <button type="button" class="secondary-action hashtag-action" @click="void copyHashtagCaption()">
+                  Copy caption
+                </button>
+              </div>
+
+              <p v-if="hashtagFeedback" class="result-feedback subtle hashtag-feedback">
+                {{ hashtagFeedback }}
+              </p>
+            </article>
+          </div>
+        </article>
+      </div>
 
       <WorkspaceAssetPickerModal
         :open="isWorkspaceAssetPickerOpen"
@@ -8161,6 +8452,264 @@ onBeforeUnmount(() => {
         @close="isWorkspaceAssetPickerOpen = false"
         @select="void attachWorkspaceAssets($event)"
       />
+
+      <div v-if="isPublishDrawerOpen" class="publish-drawer-overlay" @click.self="closePublishDrawer">
+        <article class="publish-drawer" role="dialog" aria-modal="true" aria-label="Publish and schedule this draft">
+          <div class="publish-drawer-header">
+            <div>
+              <p class="panel-meta">Publish flow</p>
+              <h2>Choose destinations, then publish or schedule.</h2>
+              <p class="shortcut-note publish-drawer-copy">
+                Editing stays on the main canvas. This drawer handles channels, timing, and dispatch.
+              </p>
+            </div>
+            <button type="button" class="secondary-action publish-drawer-close" @click="closePublishDrawer">
+              Close
+            </button>
+          </div>
+
+          <div class="publish-drawer-content">
+            <section class="channel-selector-card result-compact-card">
+              <div>
+                <p class="panel-meta">Destination</p>
+                <strong>Select platforms for this post</strong>
+                <p class="shortcut-note">
+                  Pick the platforms that should receive this draft. The focused one drives the preview and publish status.
+                </p>
+              </div>
+
+              <div class="channel-selector-grid">
+                <article
+                  v-for="platform in PUBLISHABLE_SOCIAL_PLATFORMS"
+                  :key="platform"
+                  class="channel-selector-option"
+                  :data-focused="selectedPublishingPlatform === platform"
+                  :data-selected="isPublishingPlatformSelected(platform)"
+                  :data-disabled="Boolean(resolvePublishingGuardrail(platform))"
+                  @click="selectedPublishingPlatform = platform"
+                >
+                  <div class="channel-selector-option-topline">
+                    <label class="channel-selector-checkbox">
+                      <input
+                        type="checkbox"
+                        :checked="isPublishingPlatformSelected(platform)"
+                        :disabled="Boolean(resolvePublishingGuardrail(platform))"
+                        @click.stop="togglePublishingPlatform(platform)"
+                      />
+                      <span>{{ resolveSocialPlatformLabel(platform) }}</span>
+                    </label>
+                    <span class="channel-selector-state">
+                      {{
+                        isPublishingPlatformSelected(platform)
+                          ? "Selected"
+                          : resolvePublishingGuardrail(platform)
+                            ? "Unavailable"
+                            : "Ready"
+                      }}
+                    </span>
+                  </div>
+                  <p>{{ resolvePublishingPlatformHint(platform) }}</p>
+                </article>
+              </div>
+
+              <p v-if="selectedSchedulingCapacityGuardrail" class="result-feedback subtle">
+                {{ selectedSchedulingCapacityGuardrail }}
+              </p>
+              <p v-else-if="selectedPublishingGuardrail" class="result-feedback subtle">
+                {{ selectedPublishingGuardrail }}
+              </p>
+            </section>
+
+            <section class="result-post-card result-action-card">
+              <div class="result-card-header">
+                <div>
+                  <p class="panel-meta">Actions</p>
+                  <h2>Publish, schedule, or route this draft.</h2>
+                </div>
+                <span class="workspace-chip">{{ actionPriorityLabel }}</span>
+              </div>
+
+              <div class="execution-fact-grid result-action-facts">
+                <article v-for="fact in executionPanelFacts.slice(0, 4)" :key="fact.label" class="execution-fact-card">
+                  <span>{{ fact.label }}</span>
+                  <strong>{{ fact.value }}</strong>
+                </article>
+              </div>
+
+              <div v-if="selectedPublishingOverflowWarnings.length > 0" class="result-publish-warning-stack">
+                <article
+                  v-for="warning in selectedPublishingOverflowWarnings"
+                  :key="`${warning.platform}-${warning.label}`"
+                  class="result-signal-card"
+                  data-tone="warning"
+                >
+                  <p class="panel-meta">{{ resolveSocialPlatformLabel(warning.platform) }}</p>
+                  <strong>{{ warning.label }}</strong>
+                  <span>{{ warning.detail }}</span>
+                </article>
+              </div>
+
+              <div class="result-primary-actions result-primary-actions-compact">
+                <button
+                  type="button"
+                  class="primary-action"
+                  :disabled="
+                    isPublishingToLinkedIn ||
+                    isConnectingLinkedIn ||
+                    isConnectingMeta ||
+                    isUploadingPostAssets ||
+                    !activeBusinessId ||
+                    !canRunPublishingAction
+                  "
+                  @click="void triggerPrimaryPublishAction()"
+                >
+                  {{ primaryPublishActionLabel }}
+                </button>
+
+                <button
+                  v-if="canScheduleDraft"
+                  type="button"
+                  class="secondary-action"
+                  :disabled="
+                    isSchedulingDraft ||
+                    isUploadingPostAssets ||
+                    !canPublishSelectedPlatforms ||
+                    Boolean(selectedSchedulingCapacityGuardrail)
+                  "
+                  @click="void openSchedulePanel()"
+                >
+                  {{ primaryScheduleActionLabel }}
+                </button>
+
+                <button type="button" class="secondary-action" @click="goToEmail">
+                  Convert to Email
+                </button>
+                <button type="button" class="secondary-action" @click="goToOutreach">
+                  Send via Outreach
+                </button>
+              </div>
+
+              <p
+                v-if="feedbackMessage && feedbackTone === 'warning'"
+                class="result-feedback"
+                data-tone="warning"
+              >
+                {{ feedbackMessage }}
+              </p>
+              <p
+                v-else-if="feedbackMessage && feedbackTone === 'success'"
+                class="result-feedback"
+                data-tone="success"
+              >
+                {{ feedbackMessage }}
+              </p>
+              <p v-else class="result-feedback subtle">
+                {{ composerAutosaveSummary }}
+              </p>
+            </section>
+
+            <section v-if="isSchedulePanelOpen && canScheduleDraft" class="schedule-panel">
+              <div class="schedule-panel-header">
+                <div>
+                  <p class="panel-meta">Choose a delivery window</p>
+                  <strong>Lock the post into a real publishing slot</strong>
+                  <p class="ai-command-copy">
+                    Pick the audience time once, then let planner and the worker handle execution.
+                  </p>
+                </div>
+                <button type="button" class="secondary-action schedule-close-button" @click="closeSchedulePanel">
+                  Close
+                </button>
+              </div>
+
+              <div v-if="bestRecommendedSlot" class="schedule-best-slot">
+                <div>
+                  <p class="panel-meta">Best time</p>
+                  <strong>{{ bestRecommendedSlot.localLabel }} in {{ recommendedTimezone }}</strong>
+                  <p class="ai-command-copy">{{ bestRecommendedSlot.reason }}</p>
+                </div>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="isLoadingRecommendedSlots || isSchedulingDraft"
+                  @click="applyRecommendedSchedule"
+                >
+                  Use best time
+                </button>
+              </div>
+
+              <div
+                v-if="hasScheduledQueuePreview"
+                class="schedule-best-slot"
+                :data-tone="queueLimitReached ? 'warning' : 'default'"
+              >
+                <div>
+                  <p class="panel-meta">Queue preview</p>
+                  <strong>{{ queuePreviewHeadline }}</strong>
+                  <p class="ai-command-copy">{{ queueLimitReached ? queueLimitPrompt : queuePreviewCopy }}</p>
+                </div>
+              </div>
+
+              <div class="schedule-form-grid">
+                <label>
+                  <span>Date</span>
+                  <input v-model="scheduleDateKey" type="date" />
+                </label>
+                <label>
+                  <span>Time</span>
+                  <input v-model="scheduleTime" type="time" />
+                </label>
+                <label>
+                  <span>Audience timezone</span>
+                  <select v-model="audienceTimezone">
+                    <option
+                      v-for="option in audienceTimezoneOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+
+              <p class="schedule-helper-copy">
+                Audience time: {{ selectedAudienceDateLabel }} at {{ selectedAudienceTimeLabel }}
+                <span v-if="selectedLocalTimeLabel"> · Your time: {{ selectedLocalTimeLabel }}</span>
+              </p>
+
+              <p v-if="selectedPublishingGuardrail" class="result-feedback subtle">
+                {{ selectedPublishingGuardrail }}
+              </p>
+
+              <p v-if="isLoadingRecommendedSlots" class="result-feedback subtle">
+                Loading best posting windows...
+              </p>
+              <p v-if="scheduleFeedback" class="result-feedback">{{ scheduleFeedback }}</p>
+
+              <div class="schedule-panel-actions">
+                <button
+                  type="button"
+                  class="primary-action"
+                  :disabled="isSchedulingDraft || queueLimitReached"
+                  @click="void scheduleDraft()"
+                >
+                  {{
+                    queueLimitReached
+                      ? "Queue full"
+                      : isSchedulingDraft
+                        ? "Adding to queue..."
+                        : "Add to queue"
+                  }}
+                </button>
+                <button type="button" class="secondary-action" @click="goToPlanner">
+                  Open planner
+                </button>
+              </div>
+            </section>
+          </div>
+        </article>
+      </div>
 
       <MetaPageSelectionModal
         :open="isMetaSelectionModalOpen"
@@ -8400,10 +8949,117 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--fc-accent-soft) 16%, white 84%);
 }
 
-.result-action-grid {
+.publish-launch-card {
+  margin-top: 20px;
+}
+
+.publish-launch-copy,
+.publish-drawer-copy {
+  max-width: 56ch;
+}
+
+.publish-launch-grid {
   display: grid;
-  gap: 20px;
-  grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr);
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.publish-launch-actions {
+  margin-top: 20px;
+}
+
+.publish-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+  padding: 24px;
+  background: rgba(25, 14, 9, 0.2);
+  backdrop-filter: blur(10px);
+}
+
+.publish-drawer {
+  width: min(100%, 700px);
+  max-height: calc(100vh - 48px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border-radius: 30px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 90%, transparent);
+  background:
+    radial-gradient(circle at top left, color-mix(in srgb, var(--fc-accent-soft) 28%, transparent) 0%, transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(255, 250, 246, 0.94) 100%);
+  box-shadow: 0 34px 64px rgba(35, 21, 13, 0.18);
+  overflow: hidden;
+}
+
+.utility-drawer {
+  width: min(100%, 860px);
+}
+
+.utility-drawer.utility-drawer-narrow {
+  width: min(100%, 560px);
+}
+
+.publish-drawer-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 20px;
+  border-bottom: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+}
+
+.publish-drawer-header h2 {
+  margin: 0;
+  line-height: 1.12;
+}
+
+.publish-drawer-close {
+  min-width: 96px;
+}
+
+.publish-drawer-content {
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+  overflow: auto;
+}
+
+.publish-drawer-content .schedule-panel,
+.publish-drawer-content .channel-selector-card {
+  margin-top: 0;
+}
+
+.utility-drawer-content .media-panel,
+.utility-drawer-content .hashtag-card {
+  margin-top: 0;
+}
+
+.utility-drawer-panel {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.drawer-callout-card {
+  display: grid;
+  gap: 14px;
+}
+
+.drawer-callout-inline {
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.drawer-callout-copy {
+  max-width: 58ch;
+}
+
+.drawer-callout-grid .execution-fact-card strong {
+  font-size: 0.98rem;
 }
 
 .result-compact-card.channel-selector-card {
@@ -8685,7 +9341,7 @@ onBeforeUnmount(() => {
 .result-inline-setup-grid {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   align-items: start;
   margin-top: 18px;
 }
@@ -8724,6 +9380,14 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.result-inline-launcher-copy {
+  margin-top: 0;
+}
+
+.result-inline-launcher-chip-row {
+  margin-top: 2px;
 }
 
 .result-inline-upload {
@@ -10357,12 +11021,12 @@ onBeforeUnmount(() => {
 
 @media (max-width: 900px) {
   .result-operator-grid,
-  .result-action-grid,
   .result-grid {
     grid-template-columns: 1fr;
   }
 
   .helper-two-column,
+  .publish-launch-grid,
   .result-signal-grid,
   .result-preview-summary-grid,
   .result-inline-setup-grid,
@@ -10383,6 +11047,15 @@ onBeforeUnmount(() => {
   .result-helper-section summary {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .publish-drawer-overlay {
+    padding: 16px;
+  }
+
+  .publish-drawer {
+    width: 100%;
+    max-height: calc(100vh - 32px);
   }
 }
 
@@ -10408,6 +11081,20 @@ onBeforeUnmount(() => {
   .result-preview-asset-media,
   .motion-lite-preview {
     border-radius: 18px;
+  }
+
+  .publish-drawer-overlay {
+    padding: 0;
+  }
+
+  .publish-drawer {
+    max-height: 100vh;
+    border-radius: 0;
+  }
+
+  .publish-drawer-header,
+  .publish-drawer-content {
+    padding-inline: 18px;
   }
 }
 </style>

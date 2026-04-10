@@ -632,6 +632,7 @@ const generationStatusPhaseIndex = ref(0);
 const generationElapsedSeconds = ref(0);
 const isHydratingBusinessCampaignSetup = ref(false);
 const businessCampaignSetupSaveState = ref<"idle" | "saving" | "saved" | "error">("idle");
+const showAdvancedComposerControls = ref(false);
 let businessLocationSyncTimer: ReturnType<typeof setTimeout> | null = null;
 let businessCampaignSetupFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 let generationStatusPhaseTimer: ReturnType<typeof setInterval> | null = null;
@@ -668,6 +669,19 @@ const showSuggestionPanel = computed(
     hasActiveWorkspace.value &&
     input.value.trim() === "",
 );
+const shouldShowAdvancedComposerControls = computed(
+  () =>
+    isEditMode.value
+    || showAdvancedComposerControls.value
+    || sourceMode.value === "feed",
+);
+const advancedComposerSummary = computed(() => {
+  if (isBusinessWorkspace.value) {
+    return "Using workspace defaults for tone, brand context, and delivery channels. Open advanced controls only when this draft needs a different setup.";
+  }
+
+  return "Quick mode keeps this focused on idea, intent, and generation. Open advanced controls when you want repurpose, format, style, or tone overrides.";
+});
 const activeStrategyOption = computed(() => getRepurposeStrategyOption(generationStrategy.value));
 const recommendedGenerationSuggestion = computed(
   () => generationSuggestions.value.find((suggestion) => suggestion.recommended) ?? generationSuggestions.value[0] ?? null,
@@ -2457,7 +2471,18 @@ onBeforeUnmount(() => {
           {{ isEditMode ? "Cmd/Ctrl + Enter to save" : "Cmd/Ctrl + Enter to generate" }}
         </span>
       </div>
+      <div v-if="!isEditMode" class="composer-toggle-row">
+        <p class="activation-helper">{{ advancedComposerSummary }}</p>
+        <button
+          type="button"
+          class="secondary-action"
+          @click="showAdvancedComposerControls = !showAdvancedComposerControls"
+        >
+          {{ showAdvancedComposerControls ? "Hide advanced controls" : "Adjust strategy, tone, and channels" }}
+        </button>
+      </div>
       <div
+        v-if="shouldShowAdvancedComposerControls"
         class="channel-context-panel"
         :class="{ connected: connectedPublishingPlatforms.length > 0 }"
       >
@@ -2538,7 +2563,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="!improvementSourceId && hasActiveWorkspace"
+        v-if="shouldShowAdvancedComposerControls && !improvementSourceId && hasActiveWorkspace"
         class="brand-context-panel"
       >
         <div class="brand-context-header">
@@ -2619,7 +2644,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="showSuggestionPanel" class="suggestion-launch-panel">
+      <div v-if="shouldShowAdvancedComposerControls && showSuggestionPanel" class="suggestion-launch-panel">
         <div class="suggestion-launch-header">
           <div class="suggestion-launch-copy">
             <p class="panel-meta">Generate for me</p>
@@ -2701,7 +2726,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="!improvementSourceId && !isBusinessWorkspace" class="source-mode-row create-mode-row">
+      <div
+        v-if="!improvementSourceId && !isBusinessWorkspace && shouldShowAdvancedComposerControls"
+        class="source-mode-row create-mode-row"
+      >
         <button
           type="button"
           class="tone-chip"
@@ -2743,7 +2771,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="!improvementSourceId && !isBusinessWorkspace" class="strategy-panel">
+      <div
+        v-if="!improvementSourceId && !isBusinessWorkspace && shouldShowAdvancedComposerControls"
+        class="strategy-panel"
+      >
         <div class="strategy-panel-copy">
           <p class="panel-meta">Format</p>
           <h3>Choose what you want to create</h3>
@@ -2765,7 +2796,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="!improvementSourceId && !isBusinessWorkspace" class="strategy-panel">
+      <div
+        v-if="!improvementSourceId && !isBusinessWorkspace && shouldShowAdvancedComposerControls"
+        class="strategy-panel"
+      >
         <div class="strategy-panel-copy">
           <p class="panel-meta">Visual style</p>
           <h3>Choose how this should look</h3>
@@ -2792,7 +2826,7 @@ onBeforeUnmount(() => {
           <p class="panel-meta">{{ inputPanelMeta }}</p>
           <h2>{{ sourceInputLabel }}</h2>
         </div>
-        <div v-if="!isEditMode" class="tone-selector">
+        <div v-if="!isEditMode && shouldShowAdvancedComposerControls" class="tone-selector">
           <template v-if="isBusinessWorkspace">
             <button
               v-for="option in businessToneOptions"
@@ -2820,7 +2854,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="!isEditMode && isBusinessWorkspace" class="strategy-panel">
+      <div
+        v-if="!isEditMode && isBusinessWorkspace && shouldShowAdvancedComposerControls"
+        class="strategy-panel"
+      >
         <div class="strategy-panel-copy">
           <p class="panel-meta">Campaign setup</p>
           <h3>Give the engine the local context</h3>
@@ -2871,7 +2908,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div v-if="isStrategyFlow" class="strategy-panel">
+      <div v-if="isStrategyFlow && shouldShowAdvancedComposerControls" class="strategy-panel">
         <div class="strategy-panel-copy">
           <p class="panel-meta">Next move</p>
           <h3>Pick how this follow-up should evolve</h3>
@@ -2894,7 +2931,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="!improvementSourceId && (hasSavedSources || isLoadingSavedSources)"
+        v-if="shouldShowAdvancedComposerControls && !improvementSourceId && (hasSavedSources || isLoadingSavedSources)"
         class="saved-sources-panel"
       >
         <div class="saved-sources-header">
@@ -3001,7 +3038,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="!improvementSourceId && !isBusinessWorkspace && sourceMode === 'feed'"
+        v-if="!improvementSourceId && !isBusinessWorkspace && sourceMode === 'feed' && shouldShowAdvancedComposerControls"
         id="repurpose-panel"
         class="feed-ingest-panel"
       >
@@ -3279,6 +3316,23 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 22px;
+}
+
+.composer-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, var(--fc-accent) 12%);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-surface-subtle) 80%, var(--fc-surface));
+}
+
+.composer-toggle-row .activation-helper {
+  margin: 0;
 }
 
 .channel-context-panel {
