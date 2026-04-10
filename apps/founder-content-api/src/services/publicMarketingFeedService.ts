@@ -5,7 +5,7 @@ import type {
   PublicSocialProofPost,
   PublicSocialProofResponse,
 } from "../../../../packages/shared-types/index.ts";
-import { loadPostAssetsByPostIds } from "./postAssetService.ts";
+import { createPostAssetPublicUrl, loadPostAssetsByPostIds } from "./postAssetService.ts";
 import { isDatabaseConfigured, queryDb } from "./db/client.ts";
 import { logInfo, logWarn } from "../utils/logger.ts";
 
@@ -107,12 +107,11 @@ function inferMediaType(source: PublishedSocialProofSourceRow, assets: PostAsset
 function pickThumbnailUrl(assets: PostAsset[]): string | undefined {
   const imageAsset = assets.find((asset) => asset.type === "image");
 
-  if (imageAsset?.storageUrl) {
-    return imageAsset.storageUrl;
+  if (imageAsset) {
+    return createPostAssetPublicUrl(imageAsset);
   }
 
-  const videoAsset = assets.find((asset) => asset.type === "video");
-  return videoAsset?.previewUrl ?? undefined;
+  return undefined;
 }
 
 function normalizeCaptionPreview(value: string, maxLength = 240): string {

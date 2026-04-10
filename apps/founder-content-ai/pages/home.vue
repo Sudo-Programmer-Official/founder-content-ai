@@ -194,6 +194,15 @@ const finalTrustPills = [
   "Built for founder consistency",
 ];
 
+type TrustedBrand = {
+  initials: string;
+  latestPublishedAt: string;
+  name: string;
+  platforms: SocialPlatform[];
+  postCount: number;
+  websiteLabel?: string;
+};
+
 const pricingPlans = [
   {
     name: "Free",
@@ -258,6 +267,72 @@ const socialProofSecondaryRow = computed(() => {
   const secondaryPosts = socialProofPosts.value.slice(midpoint);
   const fallbackPosts = secondaryPosts.length > 0 ? secondaryPosts : [...socialProofPosts.value].reverse();
   return buildSocialProofRail(fallbackPosts);
+});
+
+const trustedBrands = computed<TrustedBrand[]>(() => {
+  const brands = new Map<string, TrustedBrand>();
+
+  for (const post of socialProofPosts.value) {
+    const websiteLabel = readWebsiteLabel(post.workspaceWebsiteUrl);
+    const brandName = post.workspaceBrandName.trim() || "Founder Content";
+    const key = `${brandName.toLowerCase()}::${websiteLabel ?? ""}`;
+    const existing = brands.get(key);
+
+    if (!existing) {
+      brands.set(key, {
+        initials: buildAvatarInitials(brandName),
+        latestPublishedAt: post.publishedAt,
+        name: brandName,
+        platforms: [post.platform],
+        postCount: 1,
+        websiteLabel,
+      });
+      continue;
+    }
+
+    existing.postCount += 1;
+
+    if (!existing.platforms.includes(post.platform)) {
+      existing.platforms.push(post.platform);
+    }
+
+    if (new Date(post.publishedAt).getTime() > new Date(existing.latestPublishedAt).getTime()) {
+      existing.latestPublishedAt = post.publishedAt;
+    }
+  }
+
+  return [...brands.values()]
+    .sort((left, right) => {
+      if (right.postCount !== left.postCount) {
+        return right.postCount - left.postCount;
+      }
+
+      if (right.platforms.length !== left.platforms.length) {
+        return right.platforms.length - left.platforms.length;
+      }
+
+      return left.name.localeCompare(right.name);
+    })
+    .slice(0, 6);
+});
+
+const trustedByStats = computed(() => {
+  const platformCount = new Set(socialProofPosts.value.map((post) => post.platform)).size;
+
+  return [
+    {
+      label: "Active brands",
+      value: `${trustedBrands.value.length}+`,
+    },
+    {
+      label: "Live showcase posts",
+      value: `${socialProofPosts.value.length}+`,
+    },
+    {
+      label: "Core platforms",
+      value: `${platformCount || 3}`,
+    },
+  ];
 });
 
 function formatPlatformLabel(platform: SocialPlatform): string {
@@ -350,6 +425,49 @@ onMounted(() => {
           <router-link class="primary-cta" :to="appRoutes.signup">Get started, it's free</router-link>
           <a class="secondary-cta" href="/#how-it-works">See how it works</a>
         </div>
+      </div>
+    </section>
+
+    <section v-if="trustedBrands.length > 0" class="content-section trusted-by-section">
+      <div class="trusted-by-top">
+        <div class="section-header trusted-by-copy">
+          <p class="eyebrow">Trusted By Founders</p>
+          <h2>Current brands already publishing with Founder Content.</h2>
+          <p class="section-description">
+            This section is powered by the current public showcase feed, so founders can see which
+            brands are actively using Founder Content right now.
+          </p>
+        </div>
+
+        <div class="trusted-by-stats" aria-label="Founder Content trust metrics">
+          <article v-for="stat in trustedByStats" :key="stat.label" class="trusted-stat-card">
+            <strong>{{ stat.value }}</strong>
+            <span>{{ stat.label }}</span>
+          </article>
+        </div>
+      </div>
+
+      <div class="trusted-brand-grid">
+        <article v-for="brand in trustedBrands" :key="brand.name" class="trusted-brand-card">
+          <div class="trusted-brand-head">
+            <span class="trusted-brand-avatar">{{ brand.initials }}</span>
+            <div class="trusted-brand-meta">
+              <strong>{{ brand.name }}</strong>
+              <span>{{ brand.websiteLabel ?? "Showcase workspace" }}</span>
+            </div>
+          </div>
+
+          <div class="trusted-brand-platforms">
+            <span v-for="platform in brand.platforms" :key="`${brand.name}-${platform}`">
+              {{ formatPlatformLabel(platform) }}
+            </span>
+          </div>
+
+          <div class="trusted-brand-footer">
+            <span>{{ brand.postCount }} live {{ brand.postCount === 1 ? "post" : "posts" }}</span>
+            <span>Latest {{ formatPublishedAt(brand.latestPublishedAt) }}</span>
+          </div>
+        </article>
       </div>
     </section>
 
@@ -914,7 +1032,7 @@ onMounted(() => {
 }
 
 .site-footer {
-  width: min(1180px, 100%);
+  width: 100%;
   margin: 28px auto 0;
   padding: 24px 28px;
   display: flex;
@@ -973,6 +1091,139 @@ onMounted(() => {
     radial-gradient(circle at 84% 82%, rgba(231, 158, 103, 0.18) 0%, rgba(231, 158, 103, 0) 24%);
   z-index: 1;
   pointer-events: none;
+}
+
+.trusted-by-section {
+  display: grid;
+  gap: 28px;
+  background:
+    radial-gradient(circle at 10% 18%, rgba(36, 71, 77, 0.08) 0%, rgba(36, 71, 77, 0) 24%),
+    radial-gradient(circle at 86% 74%, rgba(223, 126, 69, 0.12) 0%, rgba(223, 126, 69, 0) 22%),
+    linear-gradient(180deg, rgba(255, 250, 246, 0.96) 0%, rgba(255, 247, 242, 0.92) 100%);
+}
+
+.trusted-by-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.trusted-by-copy {
+  max-width: 820px;
+}
+
+.trusted-by-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.trusted-stat-card,
+.trusted-brand-card {
+  border: 1px solid rgba(128, 94, 69, 0.14);
+  background: rgba(255, 252, 248, 0.88);
+  box-shadow: 0 18px 42px rgba(80, 51, 28, 0.08);
+}
+
+.trusted-stat-card {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  border-radius: 24px;
+  text-align: center;
+}
+
+.trusted-stat-card strong {
+  color: #1f1814;
+  font-size: clamp(1.5rem, 2.2vw, 2.2rem);
+  line-height: 1;
+}
+
+.trusted-stat-card span {
+  color: #6d5b50;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.trusted-brand-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.trusted-brand-card {
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+  border-radius: 30px;
+  overflow: hidden;
+}
+
+.trusted-brand-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.trusted-brand-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(215, 102, 52, 0.18) 0%, rgba(36, 71, 77, 0.16) 100%);
+  color: #1f1814;
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.trusted-brand-meta {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.trusted-brand-meta strong {
+  color: #1f1814;
+  font-size: 1.1rem;
+  line-height: 1.2;
+}
+
+.trusted-brand-meta span {
+  color: #74655b;
+  font-size: 0.92rem;
+  line-height: 1.4;
+}
+
+.trusted-brand-platforms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.trusted-brand-platforms span,
+.trusted-brand-footer span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(128, 94, 69, 0.1);
+  color: #3b3029;
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.trusted-brand-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: auto;
 }
 
 .social-proof-section {
@@ -1195,7 +1446,7 @@ onMounted(() => {
 }
 
 .social-links-section {
-  width: min(1180px, 100%);
+  width: 100%;
   display: grid;
   gap: 24px;
   background:
@@ -1337,7 +1588,7 @@ onMounted(() => {
 
 .testimonials-section {
   position: relative;
-  width: min(1320px, 100%);
+  width: 100%;
   padding: clamp(34px, 4vw, 56px);
   text-align: center;
   overflow: hidden;
@@ -1717,7 +1968,7 @@ h1 {
 
 .content-section,
 .final-cta {
-  width: min(1180px, 100%);
+  width: 100%;
   padding: 34px;
   margin: 24px auto 0;
 }
@@ -2246,6 +2497,15 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .trusted-by-top {
+    grid-template-columns: 1fr;
+  }
+
+  .trusted-by-stats,
+  .trusted-brand-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .publish-bridge-top,
   .demo-section-top,
   .workflow-section-top,
@@ -2340,6 +2600,21 @@ h1 {
 @media (max-width: 720px) {
   .landing-shell {
     padding: 18px 12px 64px;
+  }
+
+  .trusted-by-stats,
+  .trusted-brand-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trusted-stat-card,
+  .trusted-brand-card {
+    padding: 18px;
+    border-radius: 24px;
+  }
+
+  .trusted-brand-head {
+    align-items: flex-start;
   }
 
   .publish-bridge-visual,
