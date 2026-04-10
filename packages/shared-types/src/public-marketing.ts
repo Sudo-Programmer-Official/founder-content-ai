@@ -25,3 +25,26 @@ export interface PublicSocialProofQuery {
 export interface PublicSocialProofResponse {
   posts: PublicSocialProofPost[];
 }
+
+export type PublicMarketingAssistantTopic =
+  | "social_media_automation"
+  | "founder_brand_system"
+  | "growth_automation"
+  | "service_fit"
+  | "other";
+
+export interface CreatePublicMarketingInquiryRequest {
+  name: string;
+  email: string;
+  companyName?: string;
+  message: string;
+  topic?: PublicMarketingAssistantTopic;
+  selectedPrompt?: string;
+  pageUrl?: string;
+  honeypot?: string;
+}
+
+export interface CreatePublicMarketingInquiryResponse {
+  inquiryId: string;
+  receivedAt: string;
+}
