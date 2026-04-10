@@ -28,3 +28,4 @@ export * from "./src/growth.ts";
 export * from "./src/workspace-assets.ts";
 export * from "./src/media-intelligence.ts";
 export * from "./src/workspace-insights.ts";
+export * from "./src/public-marketing.ts";

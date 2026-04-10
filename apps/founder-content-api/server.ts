@@ -22,6 +22,7 @@ import { mediaIntelligenceRoute } from "./src/routes/mediaIntelligence.ts";
 import { onboardingRoute } from "./src/routes/onboarding.ts";
 import { outreachAdminRoute, outreachRoute } from "./src/routes/outreach.ts";
 import { postAssetsRoute } from "./src/routes/postAssets.ts";
+import { publicMarketingRoute } from "./src/routes/publicMarketing.ts";
 import { remixRoute } from "./src/routes/remix.ts";
 import { repurposeRoute } from "./src/routes/repurpose.ts";
 import { scheduledPostsRoute } from "./src/routes/scheduledPosts.ts";
@@ -128,6 +129,7 @@ export function createServerApp(): Express {
   app.use(businessGenerationRoute);
   app.use(transcribeRoute);
   app.use(generateVisualRoute);
+  app.use(publicMarketingRoute);
   app.use(growthRoute);
   app.use(growthIntelligenceRoute);
   app.use(ingestionRoute);

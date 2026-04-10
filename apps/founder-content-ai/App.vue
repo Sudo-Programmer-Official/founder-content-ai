@@ -346,13 +346,14 @@ async function goToAdmin(): Promise<void> {
         <div class="header-controls" :class="{ 'public-controls': isPublicShell }">
           <template v-if="isPublicShell">
             <template v-if="auth.isAuthenticated.value">
-              <router-link class="header-link" :to="appRoutes.appGenerate">Open App</router-link>
-              <button class="header-secondary-button" type="button" @click="handleLogout">
-                Logout
+              <router-link class="header-link public-header-link" :to="appRoutes.appGenerate">Open App</router-link>
+              <button class="header-secondary-button public-account-button" type="button" @click="handleLogout">
+                <span>Logout</span>
+                <span class="public-account-button-chevron" aria-hidden="true">›</span>
               </button>
             </template>
             <template v-else>
-              <router-link class="header-link" :to="appRoutes.login">Login</router-link>
+              <router-link class="header-link public-header-link" :to="appRoutes.login">Login</router-link>
               <router-link class="header-cta" :to="appRoutes.signup">Get Started</router-link>
             </template>
           </template>
@@ -742,7 +743,12 @@ async function goToAdmin(): Promise<void> {
 }
 
 .site-header.public-shell {
-  border-bottom-color: rgba(112, 84, 62, 0.1);
+  gap: 28px;
+  padding: 18px clamp(22px, 3.5vw, 52px);
+  border-bottom-color: rgba(112, 84, 62, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 248, 242, 0.9) 0%, rgba(255, 248, 242, 0.82) 100%);
+  box-shadow: 0 8px 22px rgba(73, 46, 23, 0.03);
 }
 
 .brand,
@@ -811,12 +817,19 @@ async function goToAdmin(): Promise<void> {
 
 .site-nav.public-nav {
   margin-left: auto;
+  gap: clamp(20px, 2.8vw, 48px);
 }
 
 .site-nav a {
   color: var(--fc-text-muted);
   font-weight: 600;
   text-decoration: none;
+}
+
+.site-header.public-shell .site-nav a {
+  color: #2a201b;
+  font-size: 1.02rem;
+  font-weight: 500;
 }
 
 .site-nav a.router-link-active {
@@ -845,12 +858,18 @@ async function goToAdmin(): Promise<void> {
 
 .header-controls.public-controls {
   margin-left: 8px;
+  gap: 16px;
 }
 
 .header-link {
   color: var(--fc-text);
   font-weight: 700;
   text-decoration: none;
+}
+
+.public-header-link {
+  color: #2a201b;
+  font-weight: 500;
 }
 
 .header-secondary-button,
@@ -868,6 +887,30 @@ async function goToAdmin(): Promise<void> {
   font: inherit;
   font-weight: 700;
   cursor: pointer;
+}
+
+.public-account-button {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border-color: rgba(112, 84, 62, 0.1);
+  background: rgba(255, 251, 247, 0.92);
+  box-shadow: 0 14px 32px rgba(76, 49, 26, 0.06);
+}
+
+.public-account-button > span:first-child {
+  padding: 0 22px 0 24px;
+}
+
+.public-account-button-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  min-height: 44px;
+  border-left: 1px solid rgba(112, 84, 62, 0.1);
+  font-size: 1.35rem;
+  line-height: 1;
 }
 
 .sidebar-footer-action {
