@@ -361,6 +361,20 @@ function resolveContentBlock(
     .join(" ");
 }
 
+function resolveCustomStyleBlock(content: VisualPromptContent): string | undefined {
+  const customStylePrompt = sanitizePhrase(content.customStylePrompt, 160);
+
+  if (!customStylePrompt) {
+    return undefined;
+  }
+
+  return [
+    `Honor this extra visual direction: "${customStylePrompt}"`,
+    "Treat it as art direction and composition guidance, not as extra text that must be rendered verbatim.",
+    "Keep the output branded, readable, and suitable for a polished social post.",
+  ].join(" ");
+}
+
 function resolveBrandBlock(
   brandKit: BrandKitInput,
   options?: {
@@ -490,10 +504,12 @@ export function buildVisualPrompt(input: {
   };
 }): string {
   const resolvedBrandKit = resolveBrandKit(input.brandKit);
+  const customStyleBlock = resolveCustomStyleBlock(input.content);
 
   return [
     "STYLE:",
     resolveStyleBlock(resolvedBrandKit),
+    customStyleBlock ? `Additional direction: ${customStyleBlock}` : undefined,
     "",
     "LAYOUT:",
     resolveLayoutBlock(input.templateType, resolvedBrandKit, input.renderContext),
@@ -511,5 +527,7 @@ export function buildVisualPrompt(input: {
     input.templateType === "carousel"
       ? `ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding, subtle branding on every slide, maximum one accent phrase per slide${input.renderContext?.highlightMode === "none" ? ", do not add a highlight treatment on this slide" : ""}`
       : "ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding",
-  ].join("\n");
+  ]
+    .filter((section): section is string => Boolean(section))
+    .join("\n");
 }

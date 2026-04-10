@@ -42,6 +42,38 @@ function normalizeOptionalString(value: string | undefined | null): string | und
   return normalized ? normalized : undefined;
 }
 
+function isDirectBusinessTone(tone: BusinessGenerationRequest["tone"] | undefined): boolean {
+  return tone === "direct";
+}
+
+function normalizeSourceIdeaSegments(
+  value: string | undefined | null,
+  maxItems: number,
+): string[] {
+  const normalized = normalizeOptionalString(value);
+
+  if (!normalized) {
+    return [];
+  }
+
+  return normalized
+    .split(/\n+/)
+    .flatMap((line) => line.split(/(?<=[.!?])\s+/))
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== "")
+    .slice(0, maxItems);
+}
+
+function extractPrimarySourceLine(value: string | undefined | null): string | undefined {
+  const primary = normalizeSourceIdeaSegments(value, 1)[0];
+
+  if (!primary) {
+    return undefined;
+  }
+
+  return primary.length > 88 ? `${primary.slice(0, 85).trimEnd()}...` : primary;
+}
+
 function stripCodeFences(value: string): string {
   return value
     .trim()
@@ -134,10 +166,18 @@ function buildCampaignPrompt(input: {
   audienceSummary?: string;
   positioningSummary?: string;
 }): string {
+  const preserveSourceWording = isDirectBusinessTone(input.request.tone);
+
   return [
-    "You are a direct-response marketing operator for local businesses.",
-    "Create campaign-ready content, not founder storytelling and not carousel slides.",
-    "Keep the output practical, clear, and conversion-oriented.",
+    preserveSourceWording
+      ? "You are a practical copy editor for local businesses."
+      : "You are a direct-response marketing operator for local businesses.",
+    preserveSourceWording
+      ? "Tighten the source idea into channel-ready business copy while keeping the original wording and message as intact as possible."
+      : "Create campaign-ready content, not founder storytelling and not carousel slides.",
+    preserveSourceWording
+      ? "Keep the output practical, clear, and recognizably close to the user's language."
+      : "Keep the output practical, clear, and conversion-oriented.",
     "Return only one valid JSON object.",
     "",
     "OUTPUT JSON SHAPE",
@@ -178,13 +218,23 @@ function buildCampaignPrompt(input: {
     "- Return 3 to 5 hooks that could lead this campaign.",
     "- Use the requested channels only; omit email when email is not requested.",
     "- Keep captions platform-native: Instagram shorter, Facebook slightly fuller.",
+    "- Keep hashtags out of captions; put them only in the hashtags array.",
     "- Make the CTA concrete and aligned to the offer.",
     "- Make the visual direction specific enough to generate a usable image.",
     "- For daycare, prefer realistic, trustworthy local-business imagery over founder quote cards.",
+    preserveSourceWording
+      ? "- Preserve the core phrasing and structure from sourceIdea whenever it is already usable."
+      : "",
+    preserveSourceWording
+      ? "- Tighten, clarify, and lightly adapt for channels; do not invent a completely new campaign angle."
+      : "",
+    preserveSourceWording
+      ? "- Avoid hype, heavy ad language, and new claims that are not already supported by sourceIdea or the offer."
+      : "",
     "",
     "REQUEST",
     buildPromptRequestContext(input),
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 function buildFallbackHooks(
@@ -192,6 +242,16 @@ function buildFallbackHooks(
   headline: string,
   subheadline: string,
 ): string[] {
+  const directSourceSegments = isDirectBusinessTone(request.tone)
+    ? normalizeSourceIdeaSegments(request.sourceIdea, 3)
+    : [];
+
+  if (directSourceSegments.length > 0) {
+    return [...directSourceSegments, headline, subheadline].filter(
+      (value, index, list) => value && list.indexOf(value) === index,
+    );
+  }
+
   if (request.businessType === "daycare") {
     return [
       "Struggling to fill your daycare spots?",
@@ -344,6 +404,13 @@ function buildWeeklyPlanPrompt(input: {
 function buildFallbackHeadline(input: BusinessGenerationRequest): string {
   const locationPrefix = normalizeOptionalString(input.location);
   const offer = normalizeOptionalString(input.offer);
+  const directHeadline = isDirectBusinessTone(input.tone)
+    ? extractPrimarySourceLine(input.sourceIdea)
+    : undefined;
+
+  if (directHeadline) {
+    return directHeadline;
+  }
 
   if (input.businessType === "daycare" && input.goal === "leads") {
     return locationPrefix
@@ -373,10 +440,18 @@ function buildFallbackCampaignContent(
   websiteUrl?: string,
 ): BusinessContentOutput {
   const headline = buildFallbackHeadline(request);
+  const sourceIdea = normalizeOptionalString(request.sourceIdea);
+  const directSourceSegments = normalizeSourceIdeaSegments(request.sourceIdea, 3);
   const subheadline =
-    request.businessType === "daycare"
-      ? "Parents are already searching nearby. Make sure your business shows up with a clear offer."
-      : "Put a simple offer in front of the right local audience with clear next steps.";
+    isDirectBusinessTone(request.tone)
+      ? directSourceSegments[1]
+        ?? normalizeOptionalString(request.offer)
+        ?? (request.businessType === "daycare"
+          ? "Keep the message grounded in trust, clarity, and local parent demand."
+          : "Keep the message clear, useful, and easy to act on.")
+      : request.businessType === "daycare"
+        ? "Parents are already searching nearby. Make sure your business shows up with a clear offer."
+        : "Put a simple offer in front of the right local audience with clear next steps.";
   const ctaLabel =
     request.businessType === "daycare"
       ? "Claim your listing"
@@ -385,23 +460,29 @@ function buildFallbackCampaignContent(
         : "Learn more";
   const ctaUrl = websiteUrl ?? "https://foundercontent.ai";
   const imageBrief = buildFallbackBusinessImagePrompt(request, headline, subheadline);
-  const instagramCaption = [
-    headline,
-    subheadline,
-    request.offer ? `Offer: ${request.offer}` : "",
-    `CTA: ${ctaLabel}`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  const facebookCaption = [
-    headline,
-    subheadline,
-    request.location ? `Local focus: ${request.location}` : "",
-    request.offer ? `Offer: ${request.offer}` : "",
-    `Tap to ${ctaLabel.toLowerCase()}.`,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const instagramCaption =
+    isDirectBusinessTone(request.tone) && sourceIdea
+      ? sourceIdea
+      : [
+          headline,
+          subheadline,
+          request.offer ? `Offer: ${request.offer}` : "",
+          `CTA: ${ctaLabel}`,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
+  const facebookCaption =
+    isDirectBusinessTone(request.tone) && sourceIdea
+      ? sourceIdea
+      : [
+          headline,
+          subheadline,
+          request.location ? `Local focus: ${request.location}` : "",
+          request.offer ? `Offer: ${request.offer}` : "",
+          `Tap to ${ctaLabel.toLowerCase()}.`,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
 
   return {
     hooks: buildFallbackHooks(request, headline, subheadline),
@@ -425,7 +506,16 @@ function buildFallbackCampaignContent(
       ? {
           email: {
             subject: headline,
-            body: `${headline}\n\n${subheadline}\n\n${request.offer ? `${request.offer}\n\n` : ""}${ctaLabel}: ${ctaUrl}`,
+            body:
+              isDirectBusinessTone(request.tone) && sourceIdea
+                ? [
+                    sourceIdea,
+                    request.offer && !sourceIdea.includes(request.offer) ? request.offer : "",
+                    `${ctaLabel}: ${ctaUrl}`,
+                  ]
+                    .filter(Boolean)
+                    .join("\n\n")
+                : `${headline}\n\n${subheadline}\n\n${request.offer ? `${request.offer}\n\n` : ""}${ctaLabel}: ${ctaUrl}`,
           },
         }
       : {}),

@@ -85,6 +85,7 @@ const businessToneOptions = [
   { label: "Friendly", value: "friendly" },
   { label: "Premium", value: "premium" },
   { label: "Urgent", value: "urgent" },
+  { label: "Direct", value: "direct" },
 ] as const;
 
 const businessChannelOptions = [
@@ -107,6 +108,7 @@ const BUSINESS_TONE_VALUES: readonly BusinessGenerationTone[] = [
   "friendly",
   "premium",
   "urgent",
+  "direct",
 ];
 const BUSINESS_CHANNEL_VALUES: readonly BusinessGenerationChannel[] = [
   "instagram",
@@ -2015,16 +2017,41 @@ function inferBusinessTypeFromBrandProfile(
   return "general";
 }
 
+function resolvePreferredBusinessDraftPost(
+  output: BusinessContentOutput | undefined,
+): string {
+  if (!output) {
+    return "";
+  }
+
+  for (const channel of businessChannels.value) {
+    if (channel === "instagram" && output.captions.instagram?.trim()) {
+      return output.captions.instagram.trim();
+    }
+
+    if (channel === "facebook" && output.captions.facebook?.trim()) {
+      return output.captions.facebook.trim();
+    }
+
+    if (channel === "email" && output.email?.body?.trim()) {
+      return output.email.body.trim();
+    }
+  }
+
+  return output.captions.instagram?.trim()
+    || output.captions.facebook?.trim()
+    || output.email?.body?.trim()
+    || "";
+}
+
 function buildBusinessDraftResult(
   response: BusinessGenerationResponse,
   sourceText: string,
 ): RepurposeContentResponse {
   const campaignOutput = response.kind === "business_campaign" ? response.content : undefined;
   const fallbackCaption =
-    campaignOutput?.captions.instagram
-    ?? campaignOutput?.captions.facebook
-    ?? campaignOutput?.email?.body
-    ?? (response.kind === "weekly_plan"
+    resolvePreferredBusinessDraftPost(campaignOutput)
+    || (response.kind === "weekly_plan"
       ? response.days.map((day) => `Day ${day.dayNumber}: ${day.headline}\n${day.summary}`).join("\n\n")
       : [campaignOutput?.visual.headline, campaignOutput?.visual.subheadline].filter(Boolean).join("\n\n"));
   const channelList = businessChannels.value.map((channel) => channel.charAt(0).toUpperCase() + channel.slice(1));
@@ -2826,7 +2853,10 @@ onBeforeUnmount(() => {
           <p class="panel-meta">{{ inputPanelMeta }}</p>
           <h2>{{ sourceInputLabel }}</h2>
         </div>
-        <div v-if="!isEditMode && shouldShowAdvancedComposerControls" class="tone-selector">
+        <div
+          v-if="!isEditMode && (shouldShowAdvancedComposerControls || isBusinessWorkspace)"
+          class="tone-selector"
+        >
           <template v-if="isBusinessWorkspace">
             <button
               v-for="option in businessToneOptions"

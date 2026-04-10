@@ -21,7 +21,7 @@ function isValidBusinessType(value: unknown): value is BusinessGenerationRequest
 }
 
 function isValidTone(value: unknown): value is NonNullable<BusinessGenerationRequest["tone"]> {
-  return value === "friendly" || value === "premium" || value === "urgent";
+  return value === "friendly" || value === "premium" || value === "urgent" || value === "direct";
 }
 
 function isValidGenerationIntent(

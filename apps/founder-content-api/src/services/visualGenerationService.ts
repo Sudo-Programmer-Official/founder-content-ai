@@ -297,6 +297,7 @@ function normalizeContent(
       sanitizePhrase(defaults?.footerText, 42) ||
       undefined,
     sceneDescription: content.sceneDescription?.trim() || undefined,
+    customStylePrompt: sanitizePhrase(content.customStylePrompt, 160) || undefined,
     closingText: sanitizePhrase(content.closingText, 72) || undefined,
   };
 }

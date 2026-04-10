@@ -974,6 +974,12 @@ function parseScheduledAt(value: string): Date {
   return scheduledAt;
 }
 
+function assertScheduledAtIsFuture(scheduledAt: Date): void {
+  if (scheduledAt.getTime() <= Date.now()) {
+    throw new HttpError(400, "scheduled_time_in_past", "scheduledAt must be in the future.");
+  }
+}
+
 function normalizeSlides(
   platform: SchedulePostRequest["platform"],
   slides: SchedulePostRequest["slides"],
@@ -3142,6 +3148,7 @@ export async function updateScheduledPost(
     existing.audience_timezone ??
     (await resolveBusinessTimezone(businessId));
   const nextScheduledAt = parseScheduledAt(input.scheduledAt.trim());
+  assertScheduledAtIsFuture(nextScheduledAt);
   const safetyWarnings = await collectSchedulingSafetyWarnings({
     businessId,
     scheduledAt: nextScheduledAt,
@@ -3388,6 +3395,7 @@ export async function createScheduledPost(
   }
 
   const scheduledAt = parseScheduledAt(input.scheduledAt);
+  assertScheduledAtIsFuture(scheduledAt);
   const slides = normalizeSlides(input.platform, input.slides);
   const audienceTimezone =
     normalizeTimezone(input.audienceTimezone) ?? (await resolveBusinessTimezone(businessId));

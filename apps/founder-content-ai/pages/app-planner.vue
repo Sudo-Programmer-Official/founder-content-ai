@@ -71,6 +71,7 @@ interface PlannerDayModel {
   dayLabel: string;
   longLabel: string;
   isToday: boolean;
+  isPast: boolean;
   isGap: boolean;
   posts: ScheduledPost[];
 }
@@ -256,6 +257,32 @@ const selectedSchedulingPlatformLabel = computed(() => resolveSocialPlatformLabe
 const selectedSchedulingPlatformsLabel = computed(() =>
   formatSelectedPlatformsLabel(selectedSchedulingPlatforms.value),
 );
+const todayGridDateKey = computed(() => toDateKeyInTimezone(new Date(), userTimezone));
+const minimumAudienceDateKey = computed(() =>
+  toDateKeyInTimezone(new Date(), audienceTimezone.value || workspaceDefaultAudienceTimezone.value),
+);
+const selectedScheduledAtIso = computed(() => {
+  const timezone = audienceTimezone.value || workspaceDefaultAudienceTimezone.value;
+
+  if (!selectedAudienceDateKey.value || !scheduleTime.value || !timezone) {
+    return "";
+  }
+
+  return convertZonedDateTimeToUtcIso(
+    selectedAudienceDateKey.value,
+    scheduleTime.value,
+    timezone,
+  );
+});
+const selectedSchedulingTimeGuardrail = computed(() => {
+  if (!selectedScheduledAtIso.value) {
+    return "";
+  }
+
+  return new Date(selectedScheduledAtIso.value).getTime() <= Date.now()
+    ? "Pick a future audience time. Past days and expired time slots cannot be queued."
+    : "";
+});
 
 function resolveSchedulingGuardrail(platform: PublishableSocialPlatform): string {
   const readyImageCount = selectedBacklogPostAssets.value.filter((asset) => asset.type === "image").length;
@@ -425,11 +452,14 @@ const weekDays = computed<PlannerDayModel[]>(() => {
     return [];
   }
 
+  const todayKey = todayGridDateKey.value;
+
   return Array.from({ length: 7 }, (_, index) => {
     const dateKey = addDaysToDateKey(selectedWeekStartKey.value, index);
     const displayDate = new Date(`${dateKey}T12:00:00.000Z`);
     const posts = postsByDayKey.value.get(dateKey) ?? [];
-    const isGap = !posts.some((post) =>
+    const isPast = dateKey < todayKey;
+    const isGap = !isPast && !posts.some((post) =>
       post.status === "scheduled" || post.status === "processing" || post.status === "published",
     );
 
@@ -442,7 +472,8 @@ const weekDays = computed<PlannerDayModel[]>(() => {
         month: "short",
         day: "numeric",
       }),
-      isToday: dateKey === toDateKeyInTimezone(new Date(), userTimezone),
+      isToday: dateKey === todayKey,
+      isPast,
       isGap,
       posts,
     };
@@ -903,7 +934,7 @@ function buildLinkedInPreview(value: string, visibleLimit = 230): LinkedInPrevie
 }
 
 function initializeWeekState(): void {
-  const todayKey = toDateKeyInTimezone(new Date(), userTimezone);
+  const todayKey = todayGridDateKey.value;
 
   if (!selectedWeekStartKey.value) {
     selectedWeekStartKey.value = startOfWeekDateKey(todayKey);
@@ -914,8 +945,16 @@ function initializeWeekState(): void {
   }
 
   if (!selectedAudienceDateKey.value) {
-    selectedAudienceDateKey.value = todayKey;
+    selectedAudienceDateKey.value = minimumAudienceDateKey.value;
   }
+}
+
+function clampAudienceDateKey(dateKey: string): string {
+  if (!dateKey) {
+    return minimumAudienceDateKey.value;
+  }
+
+  return dateKey < minimumAudienceDateKey.value ? minimumAudienceDateKey.value : dateKey;
 }
 
 function syncSelection(): void {
@@ -974,8 +1013,19 @@ async function consumeIncomingDraftSelection(): Promise<void> {
     return;
   }
 
-  if (scheduledPosts.value.some((post) => post.assetGroupId === incomingDraftId)) {
-    feedbackMessage.value = "That draft is already scheduled. Update the existing slot from here.";
+  const matchingScheduledPost = scheduledPosts.value.find((post) => post.assetGroupId === incomingDraftId);
+
+  if (matchingScheduledPost) {
+    const anchor = matchingScheduledPost.status === "published"
+      ? matchingScheduledPost.publishedAt || matchingScheduledPost.scheduledAt
+      : matchingScheduledPost.scheduledAt;
+    const nextDayKey = toDateKeyInTimezone(anchor, userTimezone);
+    selectedGridDateKey.value = nextDayKey;
+    selectedAudienceDateKey.value = nextDayKey;
+    feedbackMessage.value =
+      matchingScheduledPost.status === "published"
+        ? "This post has already gone out. Review it from the week view."
+        : "This draft is already in the planner. Review the scheduled slot here.";
     await router.replace({ query: nextQuery });
     return;
   }
@@ -1119,17 +1169,17 @@ function goToNextWeek(): void {
 }
 
 function goToCurrentWeek(): void {
-  const todayKey = toDateKeyInTimezone(new Date(), userTimezone);
+  const todayKey = todayGridDateKey.value;
   selectedWeekStartKey.value = startOfWeekDateKey(todayKey);
   selectedGridDateKey.value = todayKey;
-  selectedAudienceDateKey.value = todayKey;
+  selectedAudienceDateKey.value = minimumAudienceDateKey.value;
   selectedScheduledPostId.value = "";
   selectedBacklogAssetId.value = "";
 }
 
 function selectDay(dayKey: string): void {
   selectedGridDateKey.value = dayKey;
-  selectedAudienceDateKey.value = dayKey;
+  selectedAudienceDateKey.value = clampAudienceDateKey(dayKey);
   selectedScheduledPostId.value = "";
   selectedBacklogAssetId.value = "";
   feedbackMessage.value = "";
@@ -1156,7 +1206,9 @@ function selectBacklogAsset(assetId: string, dayKey?: string): void {
 
   if (dayKey) {
     selectedGridDateKey.value = dayKey;
-    selectedAudienceDateKey.value = dayKey;
+    selectedAudienceDateKey.value = clampAudienceDateKey(dayKey);
+  } else {
+    selectedAudienceDateKey.value = clampAudienceDateKey(selectedAudienceDateKey.value);
   }
 
   feedbackMessage.value = "";
@@ -1209,6 +1261,11 @@ async function scheduleSelectedAsset(): Promise<void> {
 
   if (selectedSchedulingCapacityGuardrail.value) {
     errorMessage.value = selectedSchedulingCapacityGuardrail.value;
+    return;
+  }
+
+  if (selectedSchedulingTimeGuardrail.value) {
+    errorMessage.value = selectedSchedulingTimeGuardrail.value;
     return;
   }
 
@@ -1438,6 +1495,12 @@ async function rescheduleSelectedPost(): Promise<void> {
     audienceTimezone: audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
   };
 
+  if (selectedSchedulingTimeGuardrail.value) {
+    errorMessage.value = selectedSchedulingTimeGuardrail.value;
+    isUpdatingScheduledPost.value = false;
+    return;
+  }
+
   try {
     let response;
 
@@ -1561,7 +1624,7 @@ watch(
       audienceTimezone.value = timezone;
     }
 
-    const todayKey = toDateKeyInTimezone(new Date(), userTimezone);
+    const todayKey = todayGridDateKey.value;
 
     if (!selectedWeekStartKey.value) {
       selectedWeekStartKey.value = startOfWeekDateKey(todayKey);
@@ -1572,7 +1635,20 @@ watch(
     }
 
     if (!selectedAudienceDateKey.value) {
-      selectedAudienceDateKey.value = todayKey;
+      selectedAudienceDateKey.value = minimumAudienceDateKey.value;
+    }
+  },
+  { immediate: true },
+);
+
+watch(
+  minimumAudienceDateKey,
+  (nextMinimumDateKey) => {
+    if (
+      !selectedScheduledPost.value
+      && (!selectedAudienceDateKey.value || selectedAudienceDateKey.value < nextMinimumDateKey)
+    ) {
+      selectedAudienceDateKey.value = nextMinimumDateKey;
     }
   },
   { immediate: true },
@@ -1752,6 +1828,7 @@ onMounted(() => {
                 :class="{
                   selected: day.key === selectedGridDateKey,
                   today: day.isToday,
+                  past: day.isPast,
                   gap: day.isGap,
                 }"
                 @click="selectDay(day.key)"
@@ -1767,14 +1844,18 @@ onMounted(() => {
                 </div>
 
                 <div v-if="day.posts.length === 0" class="planner-day-empty-state">
-                  <strong>(empty)</strong>
+                  <strong>{{ day.isPast ? "Past day" : "(empty)" }}</strong>
                   <button
+                    v-if="!day.isPast"
                     type="button"
                     class="planner-day-add-button"
                     @click.stop="focusBacklog(day.key)"
                   >
                     + Add post
                   </button>
+                  <p v-else class="planner-day-empty-copy">
+                    This day is closed for new scheduling.
+                  </p>
                 </div>
 
                 <ul v-else class="planner-day-posts">
@@ -2048,7 +2129,7 @@ onMounted(() => {
                   </label>
                   <label>
                     <span>Audience date</span>
-                    <input v-model="selectedAudienceDateKey" type="date" />
+                    <input v-model="selectedAudienceDateKey" :min="minimumAudienceDateKey" type="date" />
                   </label>
                   <label>
                     <span>Time</span>
@@ -2058,6 +2139,9 @@ onMounted(() => {
 
                 <p class="workspace-description compact">
                   Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
+                </p>
+                <p v-if="selectedSchedulingTimeGuardrail" class="planner-feedback danger">
+                  {{ selectedSchedulingTimeGuardrail }}
                 </p>
               </div>
 
@@ -2124,7 +2208,7 @@ onMounted(() => {
                   v-if="selectedScheduledPostCanReschedule"
                   type="button"
                   class="workspace-primary-button"
-                  :disabled="isUpdatingScheduledPost"
+                  :disabled="isUpdatingScheduledPost || Boolean(selectedSchedulingTimeGuardrail)"
                   @click="rescheduleSelectedPost"
                 >
                   {{ isUpdatingScheduledPost ? "Updating..." : "Reschedule" }}
@@ -2229,7 +2313,7 @@ onMounted(() => {
                   </label>
                   <label>
                     <span>Audience date</span>
-                    <input v-model="selectedAudienceDateKey" type="date" />
+                    <input v-model="selectedAudienceDateKey" :min="minimumAudienceDateKey" type="date" />
                   </label>
                   <label>
                     <span>Time</span>
@@ -2239,6 +2323,9 @@ onMounted(() => {
 
                 <p class="workspace-description compact">
                   Audience time: {{ selectedAudienceTimeLabel }} · Your time: {{ selectedLocalTimeLabel }}
+                </p>
+                <p v-if="selectedSchedulingTimeGuardrail" class="planner-feedback danger">
+                  {{ selectedSchedulingTimeGuardrail }}
                 </p>
                 <p
                   v-if="hasScheduledQueuePreview"
@@ -2285,7 +2372,8 @@ onMounted(() => {
                     isScheduling ||
                     !canQueueSelectedAsset ||
                     !canScheduleSelectedPlatforms ||
-                    Boolean(selectedSchedulingCapacityGuardrail)
+                    Boolean(selectedSchedulingCapacityGuardrail) ||
+                    Boolean(selectedSchedulingTimeGuardrail)
                   "
                   @click="scheduleSelectedAsset"
                 >
@@ -2826,6 +2914,7 @@ onMounted(() => {
   gap: 0.82rem;
   align-content: start;
   min-height: clamp(11rem, 33vh, 18rem);
+  max-height: clamp(24rem, 62vh, 34rem);
   border: 1px solid rgba(60, 41, 30, 0.1);
   border-radius: 1.35rem;
   background:
@@ -2883,6 +2972,11 @@ onMounted(() => {
 .planner-day-card.today {
   background:
     linear-gradient(165deg, rgba(255, 242, 226, 0.98), rgba(255, 248, 240, 0.94) 58%, rgba(255, 233, 207, 0.9));
+}
+
+.planner-day-card.past {
+  background:
+    linear-gradient(165deg, rgba(252, 249, 245, 0.98), rgba(249, 244, 238, 0.94) 62%, rgba(245, 236, 227, 0.9));
 }
 
 .planner-day-card.gap {
@@ -2975,13 +3069,25 @@ onMounted(() => {
   font-weight: 700;
 }
 
+.planner-day-empty-copy {
+  margin: 0;
+  color: rgba(64, 42, 28, 0.62);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
 .planner-day-posts {
   display: grid;
   gap: 0.7rem;
   align-content: start;
+  min-height: 0;
   margin: 0;
   padding: 0;
+  padding-right: 0.2rem;
   list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .planner-post-pill {

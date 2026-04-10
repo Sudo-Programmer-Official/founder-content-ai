@@ -4,7 +4,7 @@ export type WorkspaceMode = "founder" | "business";
 
 export type BusinessGenerationGoal = "leads" | "bookings" | "traffic" | "awareness";
 export type BusinessGenerationType = "daycare" | "salon" | "fitness" | "general";
-export type BusinessGenerationTone = "friendly" | "premium" | "urgent";
+export type BusinessGenerationTone = "friendly" | "premium" | "urgent" | "direct";
 export type BusinessGenerationChannel = "instagram" | "facebook" | "email";
 export type BusinessCampaignGenerationIntent = Exclude<BusinessGenerationIntent, "weekly_plan">;
 

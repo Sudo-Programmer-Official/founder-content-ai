@@ -29,6 +29,8 @@ import type {
   RepurposeStrategy,
   SchedulingSafetyWarning,
   SocialAccount,
+  VisualPromptContent,
+  VisualTemplateType,
   WorkspaceAsset,
 } from "../../../packages/shared-types";
 import MetaPageSelectionModal from "../components/MetaPageSelectionModal.vue";
@@ -155,9 +157,11 @@ interface DraftMediaPreferences {
 
 type ResultPreviewSurface = PublishableSocialPlatform | "email";
 type ComposerAutosaveState = "idle" | "queued" | "saving" | "saved" | "error";
+type CustomImageTemplateType = Exclude<VisualTemplateType, "carousel">;
 
 const CONTENT_AUTOSAVE_DELAY_MS = 900;
 const CTA_AUTOSAVE_DELAY_MS = 700;
+const PROMO_VIDEO_VISUALS_ENABLED = false;
 
 const draft = ref<ActivationDraftRecord | null>(null);
 const selectedCreatorVariantId = ref("");
@@ -185,6 +189,7 @@ const isLoadingPostAssets = ref(false);
 const isUploadingPostAssets = ref(false);
 const isGeneratingMotionLite = ref(false);
 const isCreatingPromoVisual = ref(false);
+const isGeneratingCustomImage = ref(false);
 const removingPostAssetId = ref("");
 const reorderingPostAssetId = ref("");
 const mediaFeedback = ref("");
@@ -194,6 +199,8 @@ const selectedMotionTemplateId = ref<MotionTemplateId>("subtle_zoom");
 const selectedMotionAudioEnabled = ref(true);
 const selectedMotionAudioPreset = ref<MotionAudioPreset>("clean_modern");
 const selectedPromoVisualLayout = ref<PromoVisualLayoutId>("logo_headline");
+const selectedCustomImageTemplateType = ref<CustomImageTemplateType>("insight");
+const customImageStylePrompt = ref("");
 const editablePostContent = ref("");
 const isSavingManualEdit = ref(false);
 const manualEditFeedback = ref("");
@@ -227,6 +234,27 @@ const PROMO_VISUAL_LAYOUT_OPTIONS: Array<{ value: PromoVisualLayoutId; label: st
     value: "headline_only",
     label: "Headline only",
     description: "Minimal promo visual with centered copy and brand styling only.",
+  },
+];
+const CUSTOM_IMAGE_TEMPLATE_OPTIONS: Array<{
+  value: CustomImageTemplateType;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "insight",
+    label: "Insight card",
+    description: "Best for frameworks, flow diagrams, and structured founder lessons.",
+  },
+  {
+    value: "contrarian",
+    label: "Contrarian card",
+    description: "Best for tension-led statements, sharp before/after framing, and hot takes.",
+  },
+  {
+    value: "quote",
+    label: "Quote card",
+    description: "Best for one strong line with a simple supporting close.",
   },
 ];
 const MOTION_TEMPLATE_OPTIONS: Array<{ value: MotionTemplateId; label: string; description: string }> = [
@@ -293,6 +321,10 @@ const MOTION_AUDIO_OPTIONS: Array<{ value: MotionAudioPreset; label: string; des
     description: "Slow, softer sound for story-led, wellness, and less aggressive brand motion.",
   },
 ];
+
+function isSupportedComposerMediaMimeType(mimeType: string): boolean {
+  return mimeType.startsWith("image/") || (PROMO_VIDEO_VISUALS_ENABLED && mimeType === "video/mp4");
+}
 const draftMediaPrimaryAssetId = ref("");
 const draftMediaPosterAssetId = ref("");
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
@@ -315,6 +347,8 @@ const isMediaDrawerOpen = ref(false);
 const isHashtagDrawerOpen = ref(false);
 const isPublishDrawerOpen = ref(false);
 const isSchedulePanelOpen = ref(false);
+const publishDrawerContentRef = ref<HTMLElement | null>(null);
+const schedulePanelRef = ref<HTMLElement | null>(null);
 const isLoadingRecommendedSlots = ref(false);
 const isSchedulingDraft = ref(false);
 const scheduleFeedback = ref("");
@@ -1339,17 +1373,47 @@ function buildCreatorPhotoSuggestion(): MediaRecommendationSuggestion {
   };
 }
 
+function buildMagazineCoverSuggestion(): MediaRecommendationSuggestion {
+  return {
+    id: "creative-magazine-cover",
+    actionType: "generate_visual",
+    title: "Generate magazine cover",
+    description: "Create a sharper editorial cover-style visual with bold hierarchy, cleaner framing, and a more designed first impression.",
+    reason: "Useful when the post should feel more premium, modern, and scroll-stopping than a default promo or quote card.",
+    suggestedMediaType: "photo_overlay",
+    visualTemplateType: "contrarian",
+    recommendedAssetIds: [],
+  };
+}
+
+function buildTechnologyExplainerSuggestion(): MediaRecommendationSuggestion {
+  return {
+    id: "creative-tech-explainer",
+    actionType: "generate_visual",
+    title: "Generate AI explainer visual",
+    description: "Turn the idea into a clean technology explainer card for AI, automation, agents, workflows, or product education.",
+    reason: "Best when the post is teaching a system or technical idea and needs a creator-style explainer instead of a generic social card.",
+    suggestedMediaType: "framework_card",
+    visualTemplateType: "insight",
+    recommendedAssetIds: [],
+  };
+}
+
+function isCreativeMediaSuggestion(suggestion: MediaRecommendationSuggestion): boolean {
+  return suggestion.id === "creative-magazine-cover" || suggestion.id === "creative-tech-explainer";
+}
+
 function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): string {
+  if (isCreativeMediaSuggestion(suggestion)) {
+    return suggestion.title;
+  }
+
   if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
     return "Generate brand image";
   }
 
   if (!isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
     return creatorContentType.value === "promo_post" ? "Generate promo image" : "Generate image post";
-  }
-
-  if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
-    return "Generate post visual";
   }
 
   if (suggestion.visualTemplateType === "carousel") {
@@ -1360,12 +1424,12 @@ function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): str
 }
 
 function getMediaSuggestionDescription(suggestion: MediaRecommendationSuggestion): string {
-  if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
-    return "Create a realistic, brand-led image that matches the campaign hook, CTA, and local audience.";
+  if (isCreativeMediaSuggestion(suggestion)) {
+    return suggestion.description;
   }
 
-  if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
-    return "Create a single promotional visual that matches the generated CTA and platform captions.";
+  if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
+    return "Create a realistic, brand-led image that matches the campaign hook, CTA, and local audience.";
   }
 
   if (!isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
@@ -1382,12 +1446,12 @@ function getMediaSuggestionDescription(suggestion: MediaRecommendationSuggestion
 }
 
 function getMediaSuggestionReason(suggestion: MediaRecommendationSuggestion): string {
-  if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
-    return "Business mode works better with trust-building lifestyle creative than founder-style quote cards.";
+  if (isCreativeMediaSuggestion(suggestion)) {
+    return suggestion.reason;
   }
 
-  if (isBusinessDraft() && suggestion.visualTemplateType === "carousel") {
-    return "Business mode stays visual-first and CTA-first, so single-post creative beats slide storytelling.";
+  if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
+    return "Business mode works better with trust-building lifestyle creative than founder-style quote cards.";
   }
 
   if (!isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
@@ -2345,7 +2409,7 @@ const motionLiteUnavailableReason = computed(() => {
 });
 const canGenerateMotionLite = computed(() => motionLiteUnavailableReason.value === "");
 const shouldShowAdvancedMotionControls = computed(() =>
-  readyImageCount.value > 0 || Boolean(motionLiteDerivedVideoAsset.value),
+  PROMO_VIDEO_VISUALS_ENABLED && (readyImageCount.value > 0 || Boolean(motionLiteDerivedVideoAsset.value)),
 );
 
 function getMotionTemplateLabel(templateId: MotionTemplateId): string {
@@ -2853,6 +2917,20 @@ const actionPriorityLabel = computed(() => {
 const recommendedContentType = computed(() => (
   postAssets.value.length > 0 || creatorWantsImageFirst.value ? "image" : "text"
 ));
+const looksLikeTechnologyDraft = computed(() => {
+  const sourceText = [
+    draft.value?.result.idea.title,
+    draft.value?.result.idea.angle,
+    postContent.value,
+    businessOutput.value?.visual.headline,
+    businessOutput.value?.visual.subheadline,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim() !== "")
+    .join(" ")
+    .toLowerCase();
+
+  return /\b(ai|agent|agents|automation|automate|workflow|system|technology|tech|software|saas|platform|tool|tools|product|api|apis|integration|integrations|machine learning|llm|llms)\b/.test(sourceText);
+});
 const visibleMediaRecommendations = computed(() =>
   mediaRecommendations.value.filter((suggestion) => suggestion.actionType !== "skip"),
 );
@@ -2869,11 +2947,7 @@ const augmentedMediaRecommendations = computed(() => {
 
   return [buildCreatorPhotoSuggestion(), ...baseSuggestions];
 });
-const eligibleMediaRecommendations = computed(() =>
-  augmentedMediaRecommendations.value.filter(
-    (suggestion) => !(isBusinessMode.value && suggestion.visualTemplateType === "carousel"),
-  ),
-);
+const eligibleMediaRecommendations = computed(() => augmentedMediaRecommendations.value);
 const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>(() => [
   ...(isBusinessMode.value
     ? [
@@ -2887,22 +2961,22 @@ const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>((
           visualTemplateType: "insight" as const,
           recommendedAssetIds: [],
         },
+        buildMagazineCoverSuggestion(),
       ]
     : [
         buildCreatorPhotoSuggestion(),
+        buildMagazineCoverSuggestion(),
       ]),
   {
     id: "fallback-carousel",
-    actionType: "generate_visual",
-    title: isBusinessMode.value ? "Generate post visual" : "Generate carousel",
-    description: isBusinessMode.value
-      ? "Create a clean promotional visual matched to the campaign headline and CTA."
-      : "Turn the post into a 3-5 slide narrative deck with matching visuals.",
+    actionType: "generate_visual" as const,
+    title: "Generate carousel",
+    description: "Turn the post into a 3-5 slide narrative deck with matching visuals.",
     reason: isBusinessMode.value
-      ? "Business mode favors single-post creative over slide storytelling."
+      ? "Use carousel when the business post has enough structure to teach, prove, or explain instead of staying single-image only."
       : "Best default when the post has enough tension or structure to earn a multi-slide story.",
     suggestedMediaType: "framework_card",
-    visualTemplateType: isBusinessMode.value ? "insight" : "carousel",
+    visualTemplateType: "carousel",
     recommendedAssetIds: [],
   },
   {
@@ -2925,8 +2999,22 @@ const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>((
     visualTemplateType: "insight",
     recommendedAssetIds: [],
   },
+  ...(looksLikeTechnologyDraft.value
+    ? [
+        buildTechnologyExplainerSuggestion(),
+      ]
+    : []),
 ]);
 function buildMediaRecommendationMergeKey(suggestion: MediaRecommendationSuggestion): string {
+  if (isCreativeMediaSuggestion(suggestion)) {
+    return [
+      suggestion.actionType,
+      suggestion.suggestedMediaType ?? "",
+      suggestion.visualTemplateType ?? "",
+      suggestion.title,
+    ].join(":");
+  }
+
   return [
     suggestion.actionType,
     suggestion.suggestedMediaType ?? "",
@@ -3165,6 +3253,18 @@ const selectedScheduledAtIso = computed(() => {
     scheduleTime.value,
     audienceTimezone.value,
   );
+});
+const minimumScheduleDateKey = computed(() =>
+  toDateKeyInTimezone(new Date(), audienceTimezone.value || userTimezone),
+);
+const selectedScheduleTimingGuardrail = computed(() => {
+  if (!selectedScheduledAtIso.value) {
+    return "";
+  }
+
+  return new Date(selectedScheduledAtIso.value).getTime() <= Date.now()
+    ? "Pick a future audience time. Past days and expired time slots cannot be queued."
+    : "";
 });
 const selectedDispatchWindowLabel = computed(() => {
   if (!selectedScheduledAtIso.value || !audienceTimezone.value) {
@@ -4758,6 +4858,37 @@ function buildVisualBulletPoints(): string[] {
     );
 }
 
+function normalizeCustomImageStylePrompt(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function buildSingleImageVisualContent(options?: {
+  customStylePrompt?: string;
+}): VisualPromptContent {
+  const currentVisualNarrative = visualNarrative.value
+    ?? normalizeContentNarrative(undefined, {
+      title: draft.value?.result.idea.title || "Founder insight",
+      subtitle: draft.value?.result.idea.angle || "Turn this idea into a stronger narrative.",
+    });
+  const coverSlide = currentVisualNarrative.slides[0];
+
+  return {
+    headline:
+      coverSlide?.headline ||
+      previewLeadLines.value[0] ||
+      draft.value?.result.idea.title ||
+      "Founder insight",
+    supportingText:
+      coverSlide?.supportingText ||
+      businessOutput.value?.visual.subheadline ||
+      previewLeadLines.value[1] ||
+      previewBodyParagraphs.value[0]?.replace(/\s+/g, " ").trim().slice(0, 140) ||
+      undefined,
+    bulletPoints: buildVisualBulletPoints(),
+    customStylePrompt: normalizeCustomImageStylePrompt(options?.customStylePrompt ?? "") || undefined,
+  };
+}
+
 function buildGeneratedMediaFileName(
   suggestion: MediaRecommendationSuggestion,
   options?: { slideIndex?: number },
@@ -4772,6 +4903,22 @@ function buildGeneratedMediaFileName(
     typeof options?.slideIndex === "number" ? `-slide-${options.slideIndex + 1}` : "";
 
   return `${base}-${suffix}${slideSuffix}.png`;
+}
+
+function buildCustomStyledMediaFileName(stylePrompt: string): string {
+  const base =
+    (draft.value?.result.idea.title || "generated-visual")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "generated-visual";
+  const styleSlug =
+    normalizeCustomImageStylePrompt(stylePrompt)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "custom-style";
+
+  return `${base}-${styleSlug}.png`;
 }
 
 function buildVisualAttachmentFeedback(
@@ -4942,7 +5089,82 @@ async function createPromoVisualFromBrand(): Promise<void> {
   }
 }
 
+async function generateCustomStyledImage(): Promise<void> {
+  const normalizedStylePrompt = normalizeCustomImageStylePrompt(customImageStylePrompt.value);
+
+  if (!activeBusinessId.value) {
+    mediaFeedback.value = "Select a workspace before generating a custom image.";
+    return;
+  }
+
+  if (!draft.value) {
+    mediaFeedback.value = "Generate a post first, then create a custom image.";
+    return;
+  }
+
+  if (!normalizedStylePrompt) {
+    mediaFeedback.value = "Describe the image style first.";
+    return;
+  }
+
+  isGeneratingCustomImage.value = true;
+  mediaFeedback.value = "";
+
+  try {
+    const persistedId = await ensurePersistedDraft();
+
+    if (!persistedId) {
+      mediaFeedback.value = "Save this draft first, then generate a custom image.";
+      return;
+    }
+
+    const generatedVisual = await requestVisualGeneration({
+      businessId: activeBusinessId.value,
+      templateType: selectedCustomImageTemplateType.value,
+      content: buildSingleImageVisualContent({
+        customStylePrompt: normalizedStylePrompt,
+      }),
+      contentAssetId: persistedId,
+    });
+
+    if (!isUploadableGeneratedMimeType(generatedVisual.mimeType)) {
+      throw new Error("This image came back as a preview-only SVG. Re-run once PNG or JPG generation is available to attach it.");
+    }
+
+    const blob = await fetch(generatedVisual.imageDataUrl).then(async (response) => {
+      if (!response.ok) {
+        throw new Error("Unable to convert the generated custom image into an uploadable file.");
+      }
+
+      return response.blob();
+    });
+
+    await uploadGeneratedBlobToPost({
+      persistedId,
+      fileName: buildCustomStyledMediaFileName(normalizedStylePrompt),
+      mimeType: generatedVisual.mimeType,
+      blob,
+    });
+
+    await loadPostAssets();
+    mediaFeedback.value = buildVisualAttachmentFeedback(
+      `Custom image attached to this draft. Style direction: ${normalizedStylePrompt}.`,
+      generatedVisual,
+    );
+  } catch (error) {
+    mediaFeedback.value =
+      error instanceof Error ? error.message : "Unable to generate a custom image right now.";
+  } finally {
+    isGeneratingCustomImage.value = false;
+  }
+}
+
 async function generateMotionLiteFromCurrentVisual(): Promise<void> {
+  if (!PROMO_VIDEO_VISUALS_ENABLED) {
+    mediaFeedback.value = "Video visuals are disabled right now. Use image generation instead.";
+    return;
+  }
+
   if (!activeBusinessId.value) {
     mediaFeedback.value = "Select a workspace before generating motion.";
     return;
@@ -5080,8 +5302,16 @@ async function preferMotionVideoForDraft(): Promise<void> {
 async function handleMediaSelection(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement;
   const files = Array.from(input.files ?? []);
+  const supportedFiles = files.filter((file) => isSupportedComposerMediaMimeType(file.type));
+  const skippedFileCount = files.length - supportedFiles.length;
 
   if (!files.length) {
+    return;
+  }
+
+  if (!supportedFiles.length) {
+    mediaFeedback.value = "Only image uploads are enabled here right now.";
+    input.value = "";
     return;
   }
 
@@ -5098,11 +5328,11 @@ async function handleMediaSelection(event: Event): Promise<void> {
     const persistedId = await ensurePersistedDraft();
 
     if (!persistedId) {
-      mediaFeedback.value = "Save this draft first, then attach media.";
+      mediaFeedback.value = "Save this draft first, then attach images.";
       return;
     }
 
-    for (const file of files) {
+    for (const file of supportedFiles) {
       const uploadTarget = await requestMediaUploadUrl({
         businessId: activeBusinessId.value,
         postId: persistedId,
@@ -5135,7 +5365,11 @@ async function handleMediaSelection(event: Event): Promise<void> {
     }
 
     await loadPostAssets();
-    mediaFeedback.value = `${files.length} media asset${files.length === 1 ? "" : "s"} attached to this draft.`;
+    mediaFeedback.value = `${supportedFiles.length} media asset${supportedFiles.length === 1 ? "" : "s"} attached to this draft.`;
+
+    if (skippedFileCount > 0) {
+      mediaFeedback.value += " Video uploads are disabled right now.";
+    }
   } catch (error) {
     mediaFeedback.value =
       error instanceof Error ? error.message : "Unable to attach media right now.";
@@ -5157,6 +5391,7 @@ async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
   try {
     const persistedId = await ensurePersistedDraft();
     let attachedCount = 0;
+    let skippedCount = 0;
 
     if (!persistedId) {
       mediaFeedback.value = "Save this draft first, then attach workspace assets.";
@@ -5164,7 +5399,8 @@ async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
     }
 
     for (const asset of assets) {
-      if (!asset.storageKey || (!asset.mimeType.startsWith("image/") && asset.mimeType !== "video/mp4")) {
+      if (!asset.storageKey || !isSupportedComposerMediaMimeType(asset.mimeType)) {
+        skippedCount += 1;
         continue;
       }
 
@@ -5181,12 +5417,17 @@ async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
     }
 
     if (attachedCount === 0) {
-      mediaFeedback.value = "Only image and MP4 workspace assets can be attached to post drafts right now.";
+      mediaFeedback.value = "Only image workspace assets can be attached to post drafts right now.";
       return;
     }
 
     await loadPostAssets();
     mediaFeedback.value = `${attachedCount} workspace asset${attachedCount === 1 ? "" : "s"} attached to this draft.`;
+
+    if (skippedCount > 0) {
+      mediaFeedback.value += " Video workspace assets were skipped because this flow is image-only right now.";
+    }
+
     isWorkspaceAssetPickerOpen.value = false;
   } catch (error) {
     mediaFeedback.value =
@@ -5503,6 +5744,36 @@ function seedScheduleForm(): void {
   scheduleTime.value = toTimeValueInTimezone(next, timezone);
 }
 
+async function scrollSchedulePanelIntoView(): Promise<void> {
+  await nextTick();
+
+  const schedulePanel = schedulePanelRef.value;
+
+  if (!schedulePanel) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+
+  const drawerContent = publishDrawerContentRef.value;
+
+  if (!drawerContent) {
+    schedulePanel.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+
+  const drawerBounds = drawerContent.getBoundingClientRect();
+  const panelBounds = schedulePanel.getBoundingClientRect();
+  const nextScrollTop = drawerContent.scrollTop + (panelBounds.top - drawerBounds.top) - 12;
+
+  drawerContent.scrollTo({
+    top: Math.max(0, nextScrollTop),
+    behavior: "smooth",
+  });
+}
+
 async function loadRecommendedScheduleSlots(preferredTimezone?: string): Promise<void> {
   if (!auth.isReady.value || !auth.isAuthenticated.value || !activeBusinessId.value) {
     recommendedSlots.value = [];
@@ -5579,7 +5850,10 @@ async function openSchedulePanel(): Promise<void> {
     seedScheduleForm();
   }
 
+  await scrollSchedulePanelIntoView();
+
   await loadRecommendedScheduleSlots(audienceTimezone.value || undefined);
+  await scrollSchedulePanelIntoView();
 }
 
 function closeSchedulePanel(): void {
@@ -5628,6 +5902,27 @@ function applyRecommendedSchedule(): void {
   scheduleFeedback.value = `Best time applied for ${timezone}.`;
 }
 
+async function leaveEditableResultAfterCompletion(
+  destination: "create" | "planner",
+  postId: string,
+): Promise<void> {
+  if (destination === "planner") {
+    await router.replace({
+      path: appRoutes.appPlanner,
+      query: {
+        draftId: postId,
+        platform: selectedPublishingPlatform.value,
+        platforms: selectedPublishingPlatforms.value.join(","),
+      },
+    });
+    return;
+  }
+
+  await router.replace({
+    path: appRoutes.appCreate,
+  });
+}
+
 async function scheduleDraft(): Promise<void> {
   if (!draft.value) {
     scheduleFeedback.value = "Generate a post first.";
@@ -5656,6 +5951,11 @@ async function scheduleDraft(): Promise<void> {
 
   if (selectedSchedulingCapacityGuardrail.value) {
     scheduleFeedback.value = selectedSchedulingCapacityGuardrail.value;
+    return;
+  }
+
+  if (selectedScheduleTimingGuardrail.value) {
+    scheduleFeedback.value = selectedScheduleTimingGuardrail.value;
     return;
   }
 
@@ -5745,7 +6045,10 @@ async function scheduleDraft(): Promise<void> {
 
     if (failures.length > 0) {
       feedbackMessage.value = `${feedbackMessage.value} Failed: ${failures.join(" · ")}`;
+      return;
     }
+
+    await leaveEditableResultAfterCompletion("planner", ensuredPostId);
   } catch (error) {
     scheduleFeedback.value =
       extractScheduledQueueLimitMessage(error)
@@ -6235,7 +6538,10 @@ async function publishToPlatforms(
 
     if (failures.length > 0) {
       feedbackMessage.value = `${feedbackMessage.value} Failed: ${failures.join(" · ")}`;
+      return;
     }
+
+    await leaveEditableResultAfterCompletion("create", ensuredPostId);
   } catch (error) {
     const copied = await copyPost({ silent: true });
     const baseMessage = getPublishFailureMessage(error, selectedPublishingPlatform.value);
@@ -6815,6 +7121,23 @@ onBeforeUnmount(() => {
               {{ selectedSurfaceEditorCopy.hint }}
             </p>
 
+            <div class="result-editor-quick-actions">
+              <button
+                type="button"
+                class="secondary-action compact-action"
+                @click="openMediaDrawer"
+              >
+                {{ mediaDrawerActionLabel }}
+              </button>
+              <button
+                type="button"
+                class="secondary-action compact-action"
+                @click="openPublishDrawer"
+              >
+                Open publish drawer
+              </button>
+            </div>
+
             <div class="result-editor-actions">
               <span class="workspace-chip" :data-tone="contentAutosaveState === 'error' ? 'warning' : 'default'">
                 {{ contentAutosaveLabel }}
@@ -7238,7 +7561,7 @@ onBeforeUnmount(() => {
                 </div>
 
                 <p class="shortcut-note result-inline-launcher-copy">
-                  Generation, motion-lite, upload, and asset order now live in one focused drawer instead of stretching the editor.
+                  Generation, upload, and asset order now live in one focused drawer instead of stretching the editor.
                 </p>
 
                 <div class="result-inline-card-actions">
@@ -7645,9 +7968,9 @@ onBeforeUnmount(() => {
               <div class="result-inline-card-header">
                 <div>
                   <p class="panel-meta">Media drawer</p>
-                  <strong>Open one focused space for visuals, uploads, motion, and ordering.</strong>
+                  <strong>Open one focused space for visuals, uploads, and ordering.</strong>
                   <p class="shortcut-note drawer-callout-copy">
-                    The editor stays text-first. Media generation, carousel blueprints, motion-lite, and asset management now live off-canvas.
+                    The editor stays text-first. Media generation, carousel blueprints, and asset management now live off-canvas.
                   </p>
                 </div>
                 <span class="workspace-chip">{{ selectedPublishingMediaSummary }}</span>
@@ -7663,8 +7986,8 @@ onBeforeUnmount(() => {
                   <strong>{{ primaryAssetSelectionSummary }}</strong>
                 </article>
                 <article class="execution-fact-card">
-                  <span>Motion</span>
-                  <strong>{{ motionLiteDerivedVideoAsset ? "Video ready" : shouldShowAdvancedMotionControls ? "Image-first" : "Not active" }}</strong>
+                  <span>New media</span>
+                  <strong>Images only</strong>
                 </article>
                 <article class="execution-fact-card">
                   <span>Recommendations</span>
@@ -7944,7 +8267,7 @@ onBeforeUnmount(() => {
               <p class="panel-meta">Media drawer</p>
               <h2>Generate, attach, and order visuals without leaving the composer.</h2>
               <p class="shortcut-note publish-drawer-copy">
-                Keep the draft text-first on the canvas. Use this drawer when the post is ready for visuals or motion.
+                Keep the draft text-first on the canvas. Use this drawer when the post is ready for visuals.
               </p>
             </div>
             <button type="button" class="secondary-action publish-drawer-close" @click="closeMediaDrawer">
@@ -7961,7 +8284,7 @@ onBeforeUnmount(() => {
                   <p class="ai-command-copy">
                     {{
                       isBusinessMode
-                        ? "Generate a launch image here, or upload a short MP4 promo if you already have motion ready."
+                        ? "Generate a launch image here, or upload supporting brand images you already have."
                         : "Keep the workflow text-first. When the post earns visuals, generate a narrative deck before you add or upload anything manually."
                     }}
                   </p>
@@ -7998,7 +8321,7 @@ onBeforeUnmount(() => {
                   <label class="media-upload-button">
                     <input
                       type="file"
-                      accept="image/png,image/jpeg,image/gif,video/mp4"
+                      accept="image/png,image/jpeg,image/gif,image/webp"
                       multiple
                       :disabled="isUploadingPostAssets"
                       @change="void handleMediaSelection($event)"
@@ -8021,7 +8344,7 @@ onBeforeUnmount(() => {
                         ? promoVisualSourceAsset
                           ? "Screenshot + headline will frame the uploaded image already attached to this draft."
                           : "Screenshot + headline needs one ready uploaded image. If none is attached, it falls back to Logo + headline."
-                        : "Best when you want a fresh, polished promo still before you animate anything."
+                        : "Best when you want a fresh, polished promo still that stays image-first."
                     }}
                   </p>
                 </div>
@@ -8059,6 +8382,57 @@ onBeforeUnmount(() => {
                     @click="void createPromoVisualFromBrand()"
                   >
                     {{ isCreatingPromoVisual ? "Creating..." : "Create promo visual" }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="promo-visual-panel media-custom-panel">
+                <div>
+                  <p class="panel-meta">Custom image</p>
+                  <strong>Describe the visual style you want and generate from the post</strong>
+                  <p class="ai-command-copy">
+                    The generator uses the current post, your workspace brand, and your custom style direction together.
+                  </p>
+                  <p class="motion-lite-status">
+                    Try directions like “Meme-style flow diagram”, “clean SaaS explainer card”, or “editorial startup poster”.
+                  </p>
+                </div>
+                <div class="motion-lite-actions media-custom-actions">
+                  <label class="media-style-select-wrap">
+                    <span class="panel-meta media-style-select-label">Base layout</span>
+                    <select v-model="selectedCustomImageTemplateType" class="media-style-select">
+                      <option
+                        v-for="option in CUSTOM_IMAGE_TEMPLATE_OPTIONS"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <small class="ai-command-copy media-style-select-help">
+                      {{ CUSTOM_IMAGE_TEMPLATE_OPTIONS.find((option) => option.value === selectedCustomImageTemplateType)?.description }}
+                    </small>
+                  </label>
+                  <label class="media-style-select-wrap media-custom-input-wrap">
+                    <span class="panel-meta media-style-select-label">Style direction</span>
+                    <textarea
+                      v-model="customImageStylePrompt"
+                      class="media-custom-style-input"
+                      rows="3"
+                      maxlength="180"
+                      placeholder="Meme-style flow diagram"
+                    />
+                    <small class="ai-command-copy media-style-select-help">
+                      Describe the look, structure, or reference feel you want. The post content still drives the message.
+                    </small>
+                  </label>
+                  <button
+                    type="button"
+                    class="secondary-action media-generate-button"
+                    :disabled="isGeneratingCustomImage || isUploadingPostAssets || customImageStylePrompt.trim() === ''"
+                    @click="void generateCustomStyledImage()"
+                  >
+                    {{ isGeneratingCustomImage ? "Generating..." : "Generate custom image" }}
                   </button>
                 </div>
               </div>
@@ -8279,6 +8653,10 @@ onBeforeUnmount(() => {
                         suggestion.actionType === "generate_visual"
                           ? isGeneratingRecommendationId === suggestion.id
                             ? "Generating..."
+                            : suggestion.id === "creative-magazine-cover"
+                              ? "Generate cover"
+                            : suggestion.id === "creative-tech-explainer"
+                              ? "Generate explainer"
                             : suggestion.suggestedMediaType === "photo_overlay"
                               ? "Generate image"
                             : suggestion.visualTemplateType === "carousel"
@@ -8447,8 +8825,9 @@ onBeforeUnmount(() => {
         :open="isWorkspaceAssetPickerOpen"
         :business-id="activeBusinessId"
         asset-type="all"
+        :accepted-mime-prefixes="['image/']"
         multiple
-        title="Attach existing workspace media"
+        title="Attach existing workspace images"
         @close="isWorkspaceAssetPickerOpen = false"
         @select="void attachWorkspaceAssets($event)"
       />
@@ -8468,7 +8847,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <div class="publish-drawer-content">
+          <div ref="publishDrawerContentRef" class="publish-drawer-content">
             <section class="channel-selector-card result-compact-card">
               <div>
                 <p class="panel-meta">Destination</p>
@@ -8608,7 +8987,11 @@ onBeforeUnmount(() => {
               </p>
             </section>
 
-            <section v-if="isSchedulePanelOpen && canScheduleDraft" class="schedule-panel">
+            <section
+              v-if="isSchedulePanelOpen && canScheduleDraft"
+              ref="schedulePanelRef"
+              class="schedule-panel"
+            >
               <div class="schedule-panel-header">
                 <div>
                   <p class="panel-meta">Choose a delivery window</p>
@@ -8653,7 +9036,7 @@ onBeforeUnmount(() => {
               <div class="schedule-form-grid">
                 <label>
                   <span>Date</span>
-                  <input v-model="scheduleDateKey" type="date" />
+                  <input v-model="scheduleDateKey" :min="minimumScheduleDateKey" type="date" />
                 </label>
                 <label>
                   <span>Time</span>
@@ -8678,6 +9061,10 @@ onBeforeUnmount(() => {
                 <span v-if="selectedLocalTimeLabel"> · Your time: {{ selectedLocalTimeLabel }}</span>
               </p>
 
+              <p v-if="selectedScheduleTimingGuardrail" class="result-feedback subtle">
+                {{ selectedScheduleTimingGuardrail }}
+              </p>
+
               <p v-if="selectedPublishingGuardrail" class="result-feedback subtle">
                 {{ selectedPublishingGuardrail }}
               </p>
@@ -8691,7 +9078,7 @@ onBeforeUnmount(() => {
                 <button
                   type="button"
                   class="primary-action"
-                  :disabled="isSchedulingDraft || queueLimitReached"
+                  :disabled="isSchedulingDraft || queueLimitReached || Boolean(selectedScheduleTimingGuardrail)"
                   @click="void scheduleDraft()"
                 >
                   {{
@@ -9362,6 +9749,14 @@ onBeforeUnmount(() => {
 
 .result-editor-guidance {
   margin-top: 12px;
+}
+
+.result-editor-quick-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .result-inline-setup-grid {
@@ -10440,6 +10835,32 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.media-custom-panel {
+  margin-bottom: 14px;
+}
+
+.media-custom-actions {
+  width: 100%;
+}
+
+.media-custom-input-wrap {
+  flex: 1 1 320px;
+  min-width: min(100%, 320px);
+}
+
+.media-custom-style-input {
+  min-height: 94px;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--fc-border);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--fc-text);
+  font: inherit;
+  line-height: 1.5;
+  resize: vertical;
+}
+
 .motion-audio-controls {
   display: grid;
   gap: 8px;
@@ -11117,6 +11538,10 @@ onBeforeUnmount(() => {
     min-height: 220px;
     max-height: 300px;
     padding: 16px;
+  }
+
+  .result-editor-quick-actions {
+    justify-content: flex-start;
   }
 
   .result-preview-asset-media,

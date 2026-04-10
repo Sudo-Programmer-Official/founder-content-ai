@@ -10,6 +10,7 @@ const props = withDefaults(
     title?: string;
     assetType?: WorkspaceAssetType | "all";
     multiple?: boolean;
+    acceptedMimePrefixes?: string[];
   }>(),
   {
     title: "Choose workspace assets",
@@ -29,9 +30,31 @@ const isLoading = ref(false);
 const feedback = ref("");
 const selectedIds = ref<string[]>([]);
 
+const filteredAssets = computed(() => {
+  if (!props.acceptedMimePrefixes || props.acceptedMimePrefixes.length === 0) {
+    return assets.value;
+  }
+
+  return assets.value.filter((asset) =>
+    props.acceptedMimePrefixes?.some((prefix) => asset.mimeType.startsWith(prefix)),
+  );
+});
+
 const selectedAssets = computed(() =>
-  assets.value.filter((asset) => selectedIds.value.includes(asset.id)),
+  filteredAssets.value.filter((asset) => selectedIds.value.includes(asset.id)),
 );
+
+const emptyStateFeedback = computed(() => {
+  if (search.value.trim()) {
+    return "No assets matched this search.";
+  }
+
+  if (props.acceptedMimePrefixes?.length) {
+    return "No reusable image assets yet. Upload one from the Assets page first.";
+  }
+
+  return "No reusable assets yet. Upload one from the Assets page first.";
+});
 
 async function loadAssets(): Promise<void> {
   if (!props.open || !props.businessId) {
@@ -128,10 +151,11 @@ watch(search, () => {
 
         <p v-if="feedback" class="picker-feedback">{{ feedback }}</p>
         <p v-else-if="isLoading" class="picker-feedback">Loading workspace assets...</p>
+        <p v-else-if="filteredAssets.length === 0" class="picker-feedback">{{ emptyStateFeedback }}</p>
 
-        <div v-if="assets.length > 0" class="picker-grid">
+        <div v-if="filteredAssets.length > 0" class="picker-grid">
           <button
-            v-for="asset in assets"
+            v-for="asset in filteredAssets"
             :key="asset.id"
             type="button"
             class="picker-asset-card"
