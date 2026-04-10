@@ -5,7 +5,7 @@ import type {
   PublicSocialProofPost,
   PublicSocialProofResponse,
 } from "../../../../packages/shared-types/index.ts";
-import { createPostAssetPublicUrl, loadPostAssetsByPostIds } from "./postAssetService.ts";
+import { loadPostAssetsByPostIds } from "./postAssetService.ts";
 import { isDatabaseConfigured, queryDb } from "./db/client.ts";
 import { logInfo, logWarn } from "../utils/logger.ts";
 
@@ -38,6 +38,8 @@ interface PublishedSocialProofSourceRow extends QueryResultRow {
 interface MarketingSocialProofRow extends QueryResultRow {
   id: string;
   business_id: string;
+  source_scheduled_post_id: string | null;
+  source_asset_group_id: string | null;
   platform: "linkedin" | "facebook" | "instagram";
   external_post_id: string | null;
   external_post_url: string;
@@ -105,13 +107,12 @@ function inferMediaType(source: PublishedSocialProofSourceRow, assets: PostAsset
 }
 
 function pickThumbnailUrl(assets: PostAsset[]): string | undefined {
-  const imageAsset = assets.find((asset) => asset.type === "image");
-
-  if (imageAsset) {
-    return createPostAssetPublicUrl(imageAsset);
-  }
-
   return undefined;
+}
+
+function pickSignedPreviewUrl(assets: PostAsset[]): string | undefined {
+  const imageAsset = assets.find((asset) => asset.type === "image" && asset.previewUrl);
+  return imageAsset?.previewUrl ?? undefined;
 }
 
 function normalizeCaptionPreview(value: string, maxLength = 240): string {
@@ -338,6 +339,8 @@ export async function listPublicSocialProof(limit?: number): Promise<PublicSocia
       select
         id,
         business_id,
+        source_scheduled_post_id,
+        source_post.asset_group_id as source_asset_group_id,
         platform,
         external_post_id,
         external_post_url,
@@ -351,6 +354,8 @@ export async function listPublicSocialProof(limit?: number): Promise<PublicSocia
         is_featured,
         published_at
       from marketing_social_proof_feed
+      left join scheduled_posts source_post
+        on source_post.id = marketing_social_proof_feed.source_scheduled_post_id
       where is_public_marketing_safe = true
         and business_id = any($1::uuid[])
       order by
@@ -362,7 +367,26 @@ export async function listPublicSocialProof(limit?: number): Promise<PublicSocia
     [allowedBusinessIds, clampSocialProofLimit(limit)],
   );
 
+  const sourceAssetGroupIds = Array.from(
+    new Set(
+      result.rows
+        .map((row) => row.source_asset_group_id)
+        .filter((value): value is string => typeof value === "string" && value.length > 0),
+    ),
+  );
+  const previewAssetsByGroupId = await loadPostAssetsByPostIds(sourceAssetGroupIds, { includePreviewUrls: true });
+
   return {
-    posts: result.rows.map(mapMarketingSocialProofRow),
+    posts: result.rows.map((row) => {
+      const previewAssets = row.source_asset_group_id
+        ? previewAssetsByGroupId.get(row.source_asset_group_id) ?? []
+        : [];
+      const signedPreviewUrl = pickSignedPreviewUrl(previewAssets);
+
+      return mapMarketingSocialProofRow({
+        ...row,
+        thumbnail_url: signedPreviewUrl ?? row.thumbnail_url,
+      });
+    }),
   };
 }
