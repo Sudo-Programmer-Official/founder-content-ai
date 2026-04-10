@@ -1826,7 +1826,7 @@ onBeforeUnmount(() => {
               <div class="action-row">
                 <button
                   type="button"
-                  class="dashboard-button"
+                  class="dashboard-button small-button"
                   :disabled="!canSaveIdeaCapture"
                   @click="addIdeaInboxItem"
                 >
