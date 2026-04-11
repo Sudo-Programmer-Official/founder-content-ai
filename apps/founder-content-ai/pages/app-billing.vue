@@ -110,10 +110,17 @@ const usageCards = computed(() => {
 });
 const canOpenPortal = computed(() => Boolean(subscription.value?.portalAvailable || emailAddon.value?.portalAvailable));
 const paidWorkspace = computed(() => currentPlanCode.value !== "free");
+const workspaceCancellationScheduled = computed(
+  () => Boolean(paidWorkspace.value && subscription.value?.cancelAtPeriodEnd && subscription.value?.currentPeriodEnd),
+);
 const shouldManageBilling = computed(
   () => canOpenPortal.value && (paidWorkspace.value || emailAddon.value?.source === "addon"),
 );
 const overviewStatusLabel = computed(() => {
+  if (workspaceCancellationScheduled.value) {
+    return "Canceling at period end";
+  }
+
   if (subscription.value?.status) {
     return formatSubscriptionStatus(subscription.value.status);
   }
@@ -159,6 +166,10 @@ const overviewActionTitle = computed(() => {
     return "Select a workspace to load billing.";
   }
 
+  if (workspaceCancellationScheduled.value) {
+    return `${currentPlanLabel.value} is scheduled to end soon.`;
+  }
+
   if (shouldManageBilling.value) {
     return "Manage this workspace in Stripe.";
   }
@@ -172,6 +183,10 @@ const overviewActionTitle = computed(() => {
 const overviewActionCopy = computed(() => {
   if (!resolvedBusinessId.value) {
     return "Billing actions appear once a workspace is selected.";
+  }
+
+  if (workspaceCancellationScheduled.value) {
+    return `Open Stripe billing before ${renewalDateLabel.value} to keep this workspace active and avoid an automatic downgrade to Free.`;
   }
 
   if (shouldManageBilling.value) {
@@ -189,6 +204,10 @@ const overviewActionLabel = computed(() => {
     return "Select workspace";
   }
 
+  if (workspaceCancellationScheduled.value) {
+    return isOpeningPortal.value ? "Opening billing..." : "Keep subscription active";
+  }
+
   if (shouldManageBilling.value) {
     return isOpeningPortal.value ? "Opening billing..." : "Manage subscription";
   }
@@ -204,6 +223,10 @@ const overviewActionLabel = computed(() => {
 const overviewActionDisabled = computed(() => {
   if (!resolvedBusinessId.value) {
     return true;
+  }
+
+  if (workspaceCancellationScheduled.value) {
+    return isOpeningPortal.value || !canOpenPortal.value;
   }
 
   if (shouldManageBilling.value) {
@@ -745,6 +768,9 @@ watch(
 
     <p v-if="feedbackMessage" class="billing-feedback success">{{ feedbackMessage }}</p>
     <p v-if="errorMessage" class="billing-feedback error">{{ errorMessage }}</p>
+    <p v-if="workspaceCancellationScheduled" class="billing-feedback warning">
+      {{ currentPlanLabel }} is scheduled to end on {{ renewalDateLabel }}. Open Stripe billing to reactivate it before access downgrades.
+    </p>
 
     <section class="billing-panel">
       <div class="billing-section-heading">
@@ -1195,6 +1221,11 @@ watch(
 .billing-feedback.error {
   background: rgba(255, 238, 232, 0.95);
   color: #9f351f;
+}
+
+.billing-feedback.warning {
+  background: rgba(255, 245, 230, 0.95);
+  color: #8a5321;
 }
 
 .billing-section-heading {
