@@ -41,8 +41,13 @@ type LoadOverviewOptions = {
 
 let latestOverviewRequestId = 0;
 
+const routeBusinessId = computed(() => readQueryString(route.query.businessId)?.trim() || "");
 const resolvedBusinessId = computed(
-  () => bootstrap.value?.activeBusinessId?.trim() || activeBusinessId.value?.trim() || "",
+  () =>
+    routeBusinessId.value ||
+    bootstrap.value?.activeBusinessId?.trim() ||
+    activeBusinessId.value?.trim() ||
+    "",
 );
 
 const currentPlanLabel = computed(() => overview.value?.currentPlanLabel ?? "Free");
@@ -126,6 +131,10 @@ const overviewStatusLabel = computed(() => {
 const renewalLabel = computed(() => {
   if (subscription.value?.currentPeriodEnd) {
     return subscription.value.cancelAtPeriodEnd ? "Ends on" : "Renews on";
+  }
+
+  if (paidWorkspace.value && emailAddon.value?.billingPeriodEnd) {
+    return subscription.value?.cancelAtPeriodEnd ? "Ends on" : "Renews on";
   }
 
   if (emailAddon.value?.billingPeriodEnd) {
@@ -212,7 +221,12 @@ const normalizedPromotionCode = computed(() => {
   return normalized ? normalized : undefined;
 });
 const hasTransientBillingRouteState = computed(
-  () => Boolean(readQueryString(route.query.checkout) || readQueryString(route.query.portal)),
+  () =>
+    Boolean(
+      readQueryString(route.query.checkout) ||
+      readQueryString(route.query.portal) ||
+      readQueryString(route.query.businessId),
+    ),
 );
 
 function readQueryString(value: unknown): string | undefined {
@@ -468,6 +482,7 @@ async function clearBillingRouteState(): Promise<void> {
   delete nextQuery.checkout;
   delete nextQuery.portal;
   delete nextQuery.checkoutTarget;
+  delete nextQuery.businessId;
 
   await router.replace({
     path: route.path,

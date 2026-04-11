@@ -172,6 +172,7 @@ Current sync behavior:
 - `checkout.session.completed` fetches the Stripe subscription and syncs it
 - `invoice.paid` and `invoice.payment_succeeded` refresh active subscription state
 - `customer.subscription.created`, `updated`, `deleted`, `paused`, and `resumed` sync subscription lifecycle changes
+- Stripe webhook deliveries are recorded in `billing_webhook_events` so already-processed events are ignored and failed events can be retried safely
 
 Database tables involved:
 
@@ -179,6 +180,7 @@ Database tables involved:
 - `subscriptions`
 - `plans`
 - `email_billing_configs` for email add-ons
+- `billing_webhook_events` for Stripe webhook idempotency
 
 Current workspace plan persistence:
 

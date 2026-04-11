@@ -64,6 +64,13 @@ interface BillingBusinessRow extends QueryResultRow {
   plan_code: BusinessPlanCode;
 }
 
+type BillingWebhookProcessingState = "processing" | "processed" | "failed";
+
+interface BillingWebhookEventRow extends QueryResultRow {
+  id: string;
+  processing_state: BillingWebhookProcessingState;
+}
+
 interface StripeSubscriptionLookupRow extends QueryResultRow {
   business_id: string;
   provider_price_id: string | null;
@@ -252,6 +259,7 @@ function buildReturnUrl(
   returnPath: string | undefined,
   state: "success" | "canceled" | "portal",
   checkoutTarget?: "workspace_plan" | "email_addon",
+  businessId?: string,
 ): string {
   const url = new URL(resolveFrontendOrigin());
   url.pathname = normalizeReturnPath(returnPath);
@@ -266,6 +274,10 @@ function buildReturnUrl(
 
   if (checkoutTarget) {
     url.searchParams.set("checkoutTarget", checkoutTarget);
+  }
+
+  if (businessId?.trim()) {
+    url.searchParams.set("businessId", businessId.trim());
   }
 
   return url.toString();
@@ -367,6 +379,124 @@ function normalizePromotionCode(value: string | undefined): string | undefined {
 
 function isStripeSubscriptionEntitled(status: string): boolean {
   return ["active", "trialing", "past_due"].includes(status);
+}
+
+function describeBillingProcessingError(error: unknown): string {
+  if (error instanceof HttpError) {
+    return `${error.code}: ${error.message}`;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return typeof error === "string" ? error : "Unknown billing processing error.";
+}
+
+async function claimStripeWebhookEvent(event: StripeEvent): Promise<"claimed" | "processed" | "processing"> {
+  return withDbTransaction(async (client) => {
+    const insertResult = await client.query<{ id: string }>(
+      `
+        insert into billing_webhook_events (
+          provider,
+          provider_event_id,
+          event_type,
+          processing_state,
+          payload_json,
+          created_at,
+          updated_at
+        ) values (
+          'stripe',
+          $1,
+          $2,
+          'processing',
+          $3::jsonb,
+          now(),
+          now()
+        )
+        on conflict (provider, provider_event_id) do nothing
+        returning id
+      `,
+      [event.id, event.type, JSON.stringify(event)],
+    );
+
+    if (insertResult.rows[0]?.id) {
+      return "claimed";
+    }
+
+    const existingResult = await client.query<BillingWebhookEventRow>(
+      `
+        select id, processing_state
+        from billing_webhook_events
+        where provider = 'stripe'
+          and provider_event_id = $1
+        limit 1
+        for update
+      `,
+      [event.id],
+    );
+    const existing = existingResult.rows[0];
+
+    if (!existing) {
+      return "processing";
+    }
+
+    if (existing.processing_state === "processed") {
+      return "processed";
+    }
+
+    if (existing.processing_state === "processing") {
+      return "processing";
+    }
+
+    await client.query(
+      `
+        update billing_webhook_events
+        set
+          event_type = $2,
+          processing_state = 'processing',
+          payload_json = $3::jsonb,
+          processed_at = null,
+          last_error = null,
+          updated_at = now()
+        where id = $1
+      `,
+      [existing.id, event.type, JSON.stringify(event)],
+    );
+
+    return "claimed";
+  });
+}
+
+async function markStripeWebhookEventProcessed(event: StripeEvent): Promise<void> {
+  await queryDb(
+    `
+      update billing_webhook_events
+      set
+        processing_state = 'processed',
+        processed_at = now(),
+        last_error = null,
+        updated_at = now()
+      where provider = 'stripe'
+        and provider_event_id = $1
+    `,
+    [event.id],
+  );
+}
+
+async function markStripeWebhookEventFailed(event: StripeEvent, error: unknown): Promise<void> {
+  await queryDb(
+    `
+      update billing_webhook_events
+      set
+        processing_state = 'failed',
+        last_error = $2,
+        updated_at = now()
+      where provider = 'stripe'
+        and provider_event_id = $1
+    `,
+    [event.id, describeBillingProcessingError(error)],
+  );
 }
 
 function requireBillingManagerRole(membership: BusinessMembership): void {
@@ -935,8 +1065,8 @@ export async function createBillingCheckoutSession(
               allow_promotion_codes: true,
             }),
         client_reference_id: businessId,
-        success_url: buildReturnUrl(input.returnPath, "success", "workspace_plan"),
-        cancel_url: buildReturnUrl(input.returnPath, "canceled", "workspace_plan"),
+        success_url: buildReturnUrl(input.returnPath, "success", "workspace_plan", businessId),
+        cancel_url: buildReturnUrl(input.returnPath, "canceled", "workspace_plan", businessId),
         "line_items[0][price]": requestedPriceId,
         "line_items[0][quantity]": 1,
         ...(subscription?.provider_customer_id || fallbackCustomerId
@@ -1021,8 +1151,8 @@ export async function createBillingCheckoutSession(
               allow_promotion_codes: true,
             }),
         client_reference_id: businessId,
-        success_url: buildReturnUrl(input.returnPath, "success", "email_addon"),
-        cancel_url: buildReturnUrl(input.returnPath, "canceled", "email_addon"),
+        success_url: buildReturnUrl(input.returnPath, "success", "email_addon", businessId),
+        cancel_url: buildReturnUrl(input.returnPath, "canceled", "email_addon", businessId),
         "line_items[0][price]": requestedPriceId,
         "line_items[0][quantity]": 1,
         ...(existingCustomerId
@@ -1088,7 +1218,7 @@ export async function createBillingPortalSession(
   const portalSession = await stripeApiRequest<{ url?: string | null }>("/billing_portal/sessions", {
     body: {
       customer: billingCustomerId,
-      return_url: buildReturnUrl(input.returnPath, "portal"),
+      return_url: buildReturnUrl(input.returnPath, "portal", undefined, businessId),
     },
   });
 
@@ -1141,25 +1271,59 @@ async function handleInvoicePaymentSucceeded(event: StripeEvent<StripeInvoice>):
 
 export async function handleStripeWebhook(payload: Buffer, signatureHeader: string | undefined): Promise<void> {
   const event = verifyStripeWebhookEvent(payload, signatureHeader);
+  const claimResult = await claimStripeWebhookEvent(event);
 
-  switch (event.type) {
-    case "checkout.session.completed":
-      await handleCheckoutCompleted(event as StripeEvent<StripeCheckoutSession>);
-      return;
-    case "invoice.paid":
-    case "invoice.payment_succeeded":
-      await handleInvoicePaymentSucceeded(event as StripeEvent<StripeInvoice>);
-      return;
-    case "customer.subscription.created":
-    case "customer.subscription.paused":
-    case "customer.subscription.resumed":
-    case "customer.subscription.updated":
-    case "customer.subscription.deleted":
-      await handleSubscriptionEvent(event as StripeEvent<StripeSubscription>);
-      return;
-    default:
-      logWarn("Ignored Stripe webhook event.", {
-        type: event.type,
-      });
+  if (claimResult === "processed") {
+    logInfo("Ignored already-processed Stripe webhook event.", {
+      stripeEventId: event.id,
+      type: event.type,
+    });
+    return;
+  }
+
+  if (claimResult === "processing") {
+    logWarn("Ignored in-flight Stripe webhook event.", {
+      stripeEventId: event.id,
+      type: event.type,
+    });
+    return;
+  }
+
+  try {
+    switch (event.type) {
+      case "checkout.session.completed":
+        await handleCheckoutCompleted(event as StripeEvent<StripeCheckoutSession>);
+        break;
+      case "invoice.paid":
+      case "invoice.payment_succeeded":
+        await handleInvoicePaymentSucceeded(event as StripeEvent<StripeInvoice>);
+        break;
+      case "customer.subscription.created":
+      case "customer.subscription.paused":
+      case "customer.subscription.resumed":
+      case "customer.subscription.updated":
+      case "customer.subscription.deleted":
+        await handleSubscriptionEvent(event as StripeEvent<StripeSubscription>);
+        break;
+      default:
+        logWarn("Ignored Stripe webhook event.", {
+          stripeEventId: event.id,
+          type: event.type,
+        });
+    }
+
+    await markStripeWebhookEventProcessed(event);
+    logInfo("Processed Stripe webhook event.", {
+      stripeEventId: event.id,
+      type: event.type,
+    });
+  } catch (error) {
+    await markStripeWebhookEventFailed(event, error);
+    logWarn("Stripe webhook event processing failed.", {
+      stripeEventId: event.id,
+      type: event.type,
+      error: describeBillingProcessingError(error),
+    });
+    throw error;
   }
 }
