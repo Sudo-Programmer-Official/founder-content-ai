@@ -2761,7 +2761,7 @@ h1 {
   .hero-visual {
     min-height: 280px;
     margin: 0;
-    background-position: 60% center;
+    background-position: center center;
     background-size: cover;
     border-radius: 22px;
   }
