@@ -7367,8 +7367,15 @@ Daycare Spots"
   gap: 14px;
 }
 
+.contact-preview-table {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+}
+
 .contact-import-stack {
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  grid-template-columns: minmax(0, 1fr);
   margin-top: 16px;
   align-items: start;
 }
@@ -7423,6 +7430,7 @@ Daycare Spots"
   border: 1px solid var(--fc-border);
   border-radius: 22px;
   background: color-mix(in srgb, var(--fc-surface) 92%, white 8%);
+  overflow: hidden;
 }
 
 .contact-preview-summary {
@@ -7507,6 +7515,7 @@ Daycare Spots"
   border: 1px solid var(--fc-border);
   border-radius: 16px;
   background: var(--fc-surface);
+  min-width: 1140px;
 }
 
 .contact-preview-row span {
@@ -7599,6 +7608,10 @@ Daycare Spots"
 .contact-directory-table {
   display: grid;
   gap: 10px;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
 }
 
 .contact-editor-card {
@@ -7645,6 +7658,7 @@ Daycare Spots"
   border: 1px solid var(--fc-border);
   border-radius: 16px;
   background: var(--fc-surface);
+  min-width: 1120px;
 }
 
 .contact-directory-row > * {
@@ -8248,6 +8262,7 @@ Daycare Spots"
   .contact-preview-row,
   .contact-directory-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
   }
 }
 
@@ -8284,6 +8299,7 @@ Daycare Spots"
   .contact-directory-row,
   .email-block-field-grid.two-up {
     grid-template-columns: 1fr;
+    min-width: 0;
   }
 }
 </style>
