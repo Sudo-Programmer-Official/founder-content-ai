@@ -38,6 +38,7 @@ import type {
   EmailContactImportPreviewRow,
   EmailContactImportPreviewSummary,
   EmailSpfValidationState,
+  EmailSubscriptionStatusResponse,
   ImportEmailContactsRequest,
   ImportEmailContactsPreviewResponse,
   ImportEmailContactsResponse,
@@ -47,6 +48,7 @@ import type {
   QueueEmailContactsImportResponse,
   PreviewEmailCampaignRequest,
   PreviewEmailCampaignResponse,
+  ResubscribeEmailResponse,
   SendEmailCampaignResponse,
   SendTestEmailCampaignRequest,
   SendTestEmailCampaignResponse,
@@ -1484,6 +1486,32 @@ async function isEmailUnsubscribed(
   return toNumber(result.rows[0]?.total) > 0;
 }
 
+async function findEmailContactByUnsubscribeToken(
+  token: string,
+  client?: PoolClient,
+): Promise<EmailContactRow> {
+  const projection = await buildEmailContactSelectProjection("");
+  const contactResult = await executeQuery<EmailContactRow>(
+    `
+      select
+        ${projection}
+      from email_contacts
+      where unsubscribe_token = $1
+      limit 1
+    `,
+    [token],
+    client,
+  );
+
+  const row = contactResult.rows[0];
+
+  if (!row) {
+    throw new HttpError(404, "unsubscribe_token_not_found", "Unsubscribe token not found.");
+  }
+
+  return row;
+}
+
 async function recordBusinessUnsubscribe(input: {
   businessId: string;
   email: string;
@@ -1542,6 +1570,11 @@ function stripHtml(html: string): string {
     .replace(/<[^>]+>/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function normalizeUnsubscribeReason(value: string | undefined, maxLength = 280): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  return normalized.length > maxLength ? normalized.slice(0, maxLength).trim() : normalized;
 }
 
 function escapeHtml(value: string): string {
@@ -5844,26 +5877,26 @@ export async function verifyEmailDomain(
   };
 }
 
-export async function unsubscribeEmail(token: string): Promise<UnsubscribeEmailResponse> {
+export async function getEmailSubscriptionStatus(token: string): Promise<EmailSubscriptionStatusResponse> {
   return withDbTransaction(async (client) => {
-    const projection = await buildEmailContactSelectProjection("");
-    const contactResult = await executeQuery<EmailContactRow>(
-      `
-        select
-          ${projection}
-      from email_contacts
-        where unsubscribe_token = $1
-        limit 1
-      `,
-      [token],
-      client,
-    );
+    const row = await findEmailContactByUnsubscribeToken(token, client);
+    const isUnsubscribed =
+      row.status === "unsubscribed"
+      || await isEmailUnsubscribed(row.business_id, row.email, client);
 
-    const row = contactResult.rows[0];
+    return {
+      email: row.email,
+      status: isUnsubscribed ? "unsubscribed" : "active",
+    };
+  });
+}
 
-    if (!row) {
-      throw new HttpError(404, "unsubscribe_token_not_found", "Unsubscribe token not found.");
-    }
+export async function unsubscribeEmail(
+  token: string,
+  reason?: string,
+): Promise<UnsubscribeEmailResponse> {
+  return withDbTransaction(async (client) => {
+    const row = await findEmailContactByUnsubscribeToken(token, client);
 
     const sourceCampaignResult = await executeQuery<{ campaign_id: string | null }>(
       `
@@ -5881,7 +5914,7 @@ export async function unsubscribeEmail(token: string): Promise<UnsubscribeEmailR
       {
         businessId: row.business_id,
         email: row.email,
-        reason: "Recipient clicked the unsubscribe link.",
+        reason: normalizeUnsubscribeReason(reason) || "Recipient clicked the unsubscribe link.",
         source: "campaign",
         sourceCampaignId: sourceCampaignResult.rows[0]?.campaign_id ?? null,
       },
@@ -5939,6 +5972,38 @@ export async function unsubscribeEmail(token: string): Promise<UnsubscribeEmailR
         client,
       );
     }
+
+    return {
+      success: true,
+      email: row.email,
+    };
+  });
+}
+
+export async function resubscribeEmail(token: string): Promise<ResubscribeEmailResponse> {
+  return withDbTransaction(async (client) => {
+    const row = await findEmailContactByUnsubscribeToken(token, client);
+
+    await removeBusinessUnsubscribe(row.business_id, row.email, client);
+
+    await executeQuery(
+      `
+        update email_contacts
+        set
+          status = case
+            when status = 'unsubscribed' then 'active'
+            else status
+          end,
+          unsubscribed_at = case
+            when status = 'unsubscribed' then null
+            else unsubscribed_at
+          end,
+          updated_at = now()
+        where id = $1::uuid
+      `,
+      [row.id],
+      client,
+    );
 
     return {
       success: true,

@@ -22,9 +22,12 @@ import type {
   PreviewEmailCampaignResponse,
   QueueEmailContactsImportRequest,
   QueueEmailContactsImportResponse,
+  ResubscribeEmailResponse,
   SendEmailCampaignResponse,
   SendTestEmailCampaignRequest,
   SendTestEmailCampaignResponse,
+  UnsubscribeEmailRequest,
+  EmailSubscriptionStatusResponse,
   UnsubscribeEmailResponse,
   UpdateEmailContactRequest,
   UpdateEmailContactResponse,
@@ -51,8 +54,10 @@ import {
   previewEmailContactsImport,
   previewEmailCampaign,
   queueEmailContactsImport,
+  resubscribeEmail,
   sendEmailCampaign,
   sendTestEmailCampaign,
+  getEmailSubscriptionStatus,
   unsubscribeEmail,
   updateEmailContact,
   updateEmailCampaign,
@@ -107,9 +112,36 @@ function readEmailContactAttributeFilters(query: Request["query"]): Record<strin
   return Object.keys(filters).length > 0 ? filters : undefined;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll("\"", "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function prefersHtml(request: Request): boolean {
+  return request.accepts(["html", "json"]) === "html";
+}
+
+function readOptionalFormText(value: unknown, maxLength = 280): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  return normalized.length > maxLength ? normalized.slice(0, maxLength).trim() : normalized;
+}
+
 function buildUnsubscribeHtml(input: {
   title: string;
   description: string;
+  bodyHtml?: string;
 }): string {
   return `<!doctype html>
 <html lang="en">
@@ -157,18 +189,132 @@ function buildUnsubscribeHtml(input: {
         color: #6d5d53;
         line-height: 1.7;
       }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin-top: 26px;
+      }
+      .stack {
+        display: grid;
+        gap: 14px;
+        margin-top: 26px;
+      }
+      label {
+        display: grid;
+        gap: 10px;
+        font-size: 14px;
+        color: #70543e;
+        font-weight: 600;
+      }
+      textarea {
+        min-height: 112px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(112, 84, 62, 0.18);
+        background: #ffffff;
+        color: #241813;
+        font: inherit;
+        resize: vertical;
+      }
+      button,
+      .button-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 48px;
+        padding: 0 20px;
+        border-radius: 999px;
+        border: 1px solid rgba(112, 84, 62, 0.16);
+        background: #fffaf5;
+        color: #241813;
+        font: inherit;
+        font-weight: 700;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      button.primary,
+      .button-link.primary {
+        border-color: #cc5b23;
+        background: #cc5b23;
+        color: #fffaf5;
+      }
+      p.note {
+        margin: 0;
+        color: #8a776b;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      @media (max-width: 640px) {
+        section {
+          padding: 26px 22px;
+          border-radius: 22px;
+        }
+        h1 {
+          font-size: 28px;
+        }
+        .actions,
+        .stack {
+          gap: 12px;
+        }
+        button,
+        .button-link {
+          width: 100%;
+        }
+      }
     </style>
   </head>
   <body>
     <main>
       <section>
         <p class="eyebrow">FounderContent AI</p>
-        <h1>${input.title}</h1>
-        <p class="description">${input.description}</p>
+        <h1>${escapeHtml(input.title)}</h1>
+        <p class="description">${escapeHtml(input.description)}</p>
+        ${input.bodyHtml ?? ""}
       </section>
     </main>
   </body>
 </html>`;
+}
+
+function buildUnsubscribeConfirmationBody(token: string, status: EmailSubscriptionStatusResponse): string {
+  return `
+    <form class="stack" method="post" action="/api/email/unsubscribe/${encodeURIComponent(token)}">
+      <label>
+        Optional: tell us why you're unsubscribing
+        <textarea
+          name="reason"
+          maxlength="280"
+          placeholder="Too many emails, not relevant right now, signed up by mistake, or anything else."
+        ></textarea>
+      </label>
+      <div class="actions">
+        <button type="submit" class="primary">Unsubscribe ${escapeHtml(status.email)}</button>
+      </div>
+      <p class="note">You can re-subscribe later from the confirmation page if you change your mind.</p>
+    </form>
+  `.trim();
+}
+
+function buildUnsubscribedBody(token: string): string {
+  return `
+    <div class="stack">
+      <div class="actions">
+        <form method="post" action="/api/email/resubscribe/${encodeURIComponent(token)}">
+          <button type="submit" class="primary">Re-subscribe</button>
+        </form>
+      </div>
+      <p class="note">Changed your mind? This adds the address back for future campaigns from this workspace.</p>
+    </div>
+  `.trim();
+}
+
+function buildResubscribedBody(): string {
+  return `
+    <div class="stack">
+      <p class="note">You're opted back in. Future campaigns from this workspace can reach you again.</p>
+    </div>
+  `.trim();
 }
 
 function applyTrackingResponseHeaders(response: Response): void {
@@ -393,11 +539,7 @@ export async function postEmailCampaignPreview(
   }
 
   try {
-    await enforceWorkspaceReadAccess({
-      principal: request.auth,
-      businessId,
-      featureKey: "email_campaigns",
-    });
+    await enforceWorkspaceReadAccess(request.auth, businessId, "email_campaigns");
     const result = await previewEmailCampaign(businessId, request.body);
     response.json(result);
   } catch (error) {
@@ -961,22 +1103,27 @@ export async function getEmailUnsubscribe(
   response: Response<UnsubscribeEmailResponse | ApiError | string>,
 ): Promise<void> {
   try {
-    const result = await unsubscribeEmail(request.params.token);
-    const acceptsHtml = request.accepts(["html", "json"]) === "html";
-
-    if (acceptsHtml) {
+    if (prefersHtml(request)) {
+      const status = await getEmailSubscriptionStatus(request.params.token);
+      applyTrackingResponseHeaders(response);
       response
         .status(200)
         .type("html")
         .send(
           buildUnsubscribeHtml({
-            title: "You've been unsubscribed.",
-            description: `${result.email} will not receive future campaigns from this workspace unless they opt in again.`,
+            title: status.status === "unsubscribed" ? "You're already unsubscribed." : "Unsubscribe from these emails?",
+            description: status.status === "unsubscribed"
+              ? `${status.email} will not receive future campaigns from this workspace unless they opt in again.`
+              : `We'll stop sending campaign emails from this workspace to ${status.email}.`,
+            bodyHtml: status.status === "unsubscribed"
+              ? buildUnsubscribedBody(request.params.token)
+              : buildUnsubscribeConfirmationBody(request.params.token, status),
           }),
         );
       return;
     }
 
+    const result = await unsubscribeEmail(request.params.token);
     response.json(result);
   } catch (error) {
     void safeCreateSystemErrorLog({
@@ -984,7 +1131,8 @@ export async function getEmailUnsubscribe(
       code: "email_unsubscribe_failed",
       message: "Unable to unsubscribe contact.",
     });
-    if (request.accepts(["html", "json"]) === "html") {
+    if (prefersHtml(request)) {
+      applyTrackingResponseHeaders(response);
       response
         .status(500)
         .type("html")
@@ -1002,6 +1150,110 @@ export async function getEmailUnsubscribe(
       code: "email_unsubscribe_failed",
       message: "Unable to unsubscribe this contact.",
       logMessage: "Failed to unsubscribe email contact.",
+    });
+  }
+}
+
+export async function postEmailUnsubscribe(
+  request: Request<{ token: string }, UnsubscribeEmailResponse | ApiError | string, UnsubscribeEmailRequest>,
+  response: Response<UnsubscribeEmailResponse | ApiError | string>,
+): Promise<void> {
+  try {
+    const result = await unsubscribeEmail(request.params.token, readOptionalFormText(request.body?.reason));
+
+    if (prefersHtml(request)) {
+      applyTrackingResponseHeaders(response);
+      response
+        .status(200)
+        .type("html")
+        .send(
+          buildUnsubscribeHtml({
+            title: "You've been unsubscribed.",
+            description: `${result.email} will not receive future campaigns from this workspace unless they opt in again.`,
+            bodyHtml: buildUnsubscribedBody(request.params.token),
+          }),
+        );
+      return;
+    }
+
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "email_unsubscribe_failed",
+      message: "Unable to unsubscribe contact.",
+    });
+    if (prefersHtml(request)) {
+      applyTrackingResponseHeaders(response);
+      response
+        .status(500)
+        .type("html")
+        .send(
+          buildUnsubscribeHtml({
+            title: "We couldn't complete that unsubscribe.",
+            description: "Try again from the latest email or contact support if this keeps happening.",
+          }),
+        );
+      return;
+    }
+
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_unsubscribe_failed",
+      message: "Unable to unsubscribe this contact.",
+      logMessage: "Failed to unsubscribe email contact.",
+    });
+  }
+}
+
+export async function postEmailResubscribe(
+  request: Request<{ token: string }>,
+  response: Response<ResubscribeEmailResponse | ApiError | string>,
+): Promise<void> {
+  try {
+    const result = await resubscribeEmail(request.params.token);
+
+    if (prefersHtml(request)) {
+      applyTrackingResponseHeaders(response);
+      response
+        .status(200)
+        .type("html")
+        .send(
+          buildUnsubscribeHtml({
+            title: "You're subscribed again.",
+            description: `${result.email} can receive future campaigns from this workspace again.`,
+            bodyHtml: buildResubscribedBody(),
+          }),
+        );
+      return;
+    }
+
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "email_resubscribe_failed",
+      message: "Unable to re-subscribe contact.",
+    });
+    if (prefersHtml(request)) {
+      applyTrackingResponseHeaders(response);
+      response
+        .status(500)
+        .type("html")
+        .send(
+          buildUnsubscribeHtml({
+            title: "We couldn't restore that subscription.",
+            description: "Try again from the latest email or contact support if this keeps happening.",
+          }),
+        );
+      return;
+    }
+
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_resubscribe_failed",
+      message: "Unable to re-subscribe this contact.",
+      logMessage: "Failed to re-subscribe email contact.",
     });
   }
 }

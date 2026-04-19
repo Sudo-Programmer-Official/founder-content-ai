@@ -311,6 +311,57 @@ function escapeSvg(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+async function loadRemoteBrandLogoBytes(logoUrl: string | undefined): Promise<Buffer | null> {
+  if (!logoUrl) {
+    return null;
+  }
+
+  try {
+    const response = await fetch(logoUrl);
+    if (!response.ok) {
+      return null;
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.startsWith("image/")) {
+      return null;
+    }
+
+    return Buffer.from(await response.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
+async function preparePhotoOverlayLogoDataUrl(logoUrl: string | undefined): Promise<string | undefined> {
+  const logoBytes = await loadRemoteBrandLogoBytes(logoUrl);
+
+  if (!logoBytes) {
+    return undefined;
+  }
+
+  try {
+    const preparedLogo = await sharp(logoBytes)
+      .trim()
+      .resize(240, 92, {
+        fit: "contain",
+        background: {
+          r: 0,
+          g: 0,
+          b: 0,
+          alpha: 0,
+        },
+        withoutEnlargement: true,
+      })
+      .png()
+      .toBuffer();
+
+    return `data:image/png;base64,${preparedLogo.toString("base64")}`;
+  } catch {
+    return undefined;
+  }
+}
+
 function wrapSvgText(text: string, maxLineLength: number, maxLines = 4): string[] {
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
@@ -1660,6 +1711,7 @@ function buildPhotoOverlayCompositeSvg(input: {
   brandKit: GenerateVisualResponse["brandKit"];
   businessContext: BusinessVisualContext | null;
   brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
+  logoDataUrl?: string;
 }): string {
   const headline = collapseWhitespace(input.content.headline) || "Founder insight";
   const ctaText = sanitizePhrase(input.content.closingText, 28) || "";
@@ -1688,6 +1740,8 @@ function buildPhotoOverlayCompositeSvg(input: {
   const brandLabelUpper = escapeSvg(brandLabel.toUpperCase());
   const brandPillWidth = Math.max(240, estimateTextWidth(brandLabelUpper, 18, 0.52) + 116);
   const ctaWidth = ctaText ? Math.max(176, estimateTextWidth(ctaText, 24, 0.5) + 58) : 0;
+  const logoBadgeWidth = 220;
+  const logoBadgeX = 1024 - 72 - logoBadgeWidth;
 
   return `
     <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
@@ -1702,12 +1756,28 @@ function buildPhotoOverlayCompositeSvg(input: {
         </filter>
       </defs>
       <rect width="1024" height="1024" fill="url(#photoOverlayShade)" />
-      <g filter="url(#photoOverlayShadow)">
-        <rect x="72" y="72" width="${brandPillWidth}" height="58" rx="22" fill="${brandPillColor}" />
-        <rect x="88" y="87" width="30" height="30" rx="11" fill="${surfaceColor}" />
-        <text x="103" y="109" text-anchor="middle" font-size="16" font-weight="760" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${brandPillTextColor}">${escapeSvg(brandMarkLabel)}</text>
-        <text x="136" y="109" font-size="18" font-weight="650" letter-spacing="1.4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${brandPillTextColor}">${brandLabelUpper}</text>
-      </g>
+      ${input.logoDataUrl
+        ? `
+          <g filter="url(#photoOverlayShadow)">
+            <rect x="${logoBadgeX}" y="72" width="${logoBadgeWidth}" height="72" rx="24" fill="${brandPillColor}" />
+            <image
+              x="${logoBadgeX + 18}"
+              y="90"
+              width="${logoBadgeWidth - 36}"
+              height="36"
+              href="${input.logoDataUrl}"
+              preserveAspectRatio="xMidYMid meet"
+            />
+          </g>
+        `
+        : `
+          <g filter="url(#photoOverlayShadow)">
+            <rect x="72" y="72" width="${brandPillWidth}" height="58" rx="22" fill="${brandPillColor}" />
+            <rect x="88" y="87" width="30" height="30" rx="11" fill="${surfaceColor}" />
+            <text x="103" y="109" text-anchor="middle" font-size="16" font-weight="760" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${brandPillTextColor}">${escapeSvg(brandMarkLabel)}</text>
+            <text x="136" y="109" font-size="18" font-weight="650" letter-spacing="1.4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="${brandPillTextColor}">${brandLabelUpper}</text>
+          </g>
+        `}
       ${eyebrowText && eyebrowText.toLowerCase() !== brandLabel.toLowerCase()
         ? `<text x="${boxX + 8}" y="${boxY - 22}" font-size="20" letter-spacing="3.4" font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif" fill="#FFFFFF" opacity="0.9">${escapeSvg(eyebrowText.toUpperCase())}</text>`
         : ""}
@@ -1748,11 +1818,13 @@ async function applyPhotoOverlayTreatment(input: {
     })
     .png()
     .toBuffer();
+  const logoDataUrl = await preparePhotoOverlayLogoDataUrl(input.brandKit.logoUrl);
   const overlaySvg = buildPhotoOverlayCompositeSvg({
     content: input.content,
     brandKit: input.brandKit,
     businessContext: input.businessContext,
     brandingPolicy: input.brandingPolicy,
+    logoDataUrl,
   });
   const composed = await sharp(resizedBackground)
     .composite([

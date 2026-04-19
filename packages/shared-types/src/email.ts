@@ -564,7 +564,21 @@ export interface VerifyEmailDomainResponse {
   settings: BusinessEmailSettings;
 }
 
+export interface UnsubscribeEmailRequest {
+  reason?: string;
+}
+
 export interface UnsubscribeEmailResponse {
+  success: true;
+  email: string;
+}
+
+export interface EmailSubscriptionStatusResponse {
+  email: string;
+  status: "active" | "unsubscribed";
+}
+
+export interface ResubscribeEmailResponse {
   success: true;
   email: string;
 }

@@ -16,6 +16,7 @@ import {
   patchEmailContactController,
   postEmailCampaign,
   postEmailCampaignPreview,
+  postEmailResubscribe,
   postEmailCampaignSend,
   postEmailCampaignTestSend,
   postEmailContactsImport,
@@ -23,6 +24,7 @@ import {
   postEmailContactsImportPreview,
   postEmailDomain,
   postEmailDomainVerify,
+  postEmailUnsubscribe,
   postSesWebhook,
 } from "../controllers/emailController.ts";
 import { requireAuth } from "../middleware/auth.ts";
@@ -53,3 +55,5 @@ emailRoute.post("/api/businesses/:businessId/email/domains/:domainId/verify", re
 emailRoute.get("/api/email/track/open", getEmailOpenTracking);
 emailRoute.get("/api/email/track/click", getEmailClickTracking);
 emailRoute.get("/api/email/unsubscribe/:token", getEmailUnsubscribe);
+emailRoute.post("/api/email/unsubscribe/:token", express.urlencoded({ extended: false }), postEmailUnsubscribe);
+emailRoute.post("/api/email/resubscribe/:token", express.urlencoded({ extended: false }), postEmailResubscribe);
