@@ -19,6 +19,19 @@ build/
 .cache/
 coverage/
 
+# Local transpilation artifacts next to source files
+apps/founder-content-ai/*.js
+apps/founder-content-ai/access/*.js
+apps/founder-content-ai/auth/*.js
+apps/founder-content-ai/components/**/*.js
+apps/founder-content-ai/composables/*.js
+apps/founder-content-ai/pages/*.js
+apps/founder-content-ai/preferences/*.js
+apps/founder-content-ai/services/*.js
+apps/founder-content-ai/utils/*.js
+packages/shared-types/*.js
+packages/shared-types/src/*.js
+
 # Logs
 *.log
 npm-debug.log*

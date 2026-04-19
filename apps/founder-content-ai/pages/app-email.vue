@@ -1216,7 +1216,7 @@ const availableDraftImages = computed(() =>
   })),
 );
 const effectiveSignatureText = computed(() => {
-  const explicit = (domainForm.value.signatureText || domainSettings.value?.signatureText || "").trim();
+  const explicit = domainForm.value.signatureText.trim();
 
   if (explicit) {
     return explicit;
@@ -1226,6 +1226,34 @@ const effectiveSignatureText = computed(() => {
     .map((value) => value?.trim() || "")
     .filter((value) => value !== "")
     .join("\n");
+});
+const footerDetailsPlaceholderText = computed(() => {
+  const business = currentBusinessMembership.value?.business;
+  const brandLabel =
+    business?.brandName?.trim()
+    || business?.name?.trim()
+    || domainForm.value.fromName.trim()
+    || domainSettings.value?.fromName?.trim()
+    || "Your business";
+  const website =
+    normalizeWebsiteUrlForSignature(
+      business?.websiteUrl,
+      normalizedDomainForm.value.domainName || domainSettings.value?.domainName || "",
+    )
+    || "https://yourbrand.com";
+
+  return [brandLabel, "Street address, City, State ZIP", website].join("\n");
+});
+const footerDetailsStatusText = computed(() => {
+  if (!campaignForm.value.includeSignature) {
+    return "Footer is hidden in this email. Turn it back on if you need the logo or legal address in the message.";
+  }
+
+  if (domainForm.value.signatureText.trim()) {
+    return "Footer is included in this email. Save the defaults once and the next email will reuse the same logo and footer details.";
+  }
+
+  return "No custom footer details are saved yet. This email falls back to the sender identity until you add brand or address copy.";
 });
 const effectiveFooterLogoUrl = computed(() => footerBrandKit.value?.logoUrl?.trim() || "");
 const effectiveFooterLogoAltText = computed(() => {
@@ -1342,7 +1370,7 @@ const normalizedDomainForm = computed(() => {
   const fromName = domainForm.value.fromName.trim() || recommended.fromName;
   const fromEmail = normalizeEmailInput(domainForm.value.fromEmail) || buildDefaultSenderEmail(domainName);
   const replyToEmail = normalizeEmailInput(domainForm.value.replyToEmail) || fromEmail;
-  const signatureText = domainForm.value.signatureText.trim() || recommended.signatureText;
+  const signatureText = domainForm.value.signatureText.trim();
 
   return {
     domainName,
@@ -1409,6 +1437,39 @@ const domainValidationMessage = computed(() => domainValidationState.value?.mess
 const canSaveDomainSetup = computed(
   () => Boolean(selectedBusinessId.value) && !domainValidationState.value && !isSavingDomain.value,
 );
+const hasPendingDomainSetupChanges = computed(() => {
+  const recommended = recommendedDomainForm.value;
+  const saved = domainSettings.value
+    ? {
+        domainName: normalizeDomainInput(domainSettings.value.domainName) || "",
+        fromName: domainSettings.value.fromName?.trim() || "",
+        fromEmail: normalizeEmailInput(domainSettings.value.fromEmail) || "",
+        replyToEmail: normalizeEmailInput(domainSettings.value.replyToEmail) || "",
+        signatureText: domainSettings.value.signatureText?.trim() || "",
+      }
+    : {
+        domainName: recommended.domainName,
+        fromName: recommended.fromName.trim(),
+        fromEmail: normalizeEmailInput(recommended.fromEmail) || "",
+        replyToEmail: normalizeEmailInput(recommended.replyToEmail) || "",
+        signatureText: recommended.signatureText.trim(),
+      };
+  const current = {
+    domainName: normalizeDomainInput(domainForm.value.domainName) || "",
+    fromName: domainForm.value.fromName.trim(),
+    fromEmail: normalizeEmailInput(domainForm.value.fromEmail) || "",
+    replyToEmail: normalizeEmailInput(domainForm.value.replyToEmail) || "",
+    signatureText: domainForm.value.signatureText.trim(),
+  };
+
+  return (
+    current.domainName !== saved.domainName ||
+    current.fromName !== saved.fromName ||
+    current.fromEmail !== saved.fromEmail ||
+    current.replyToEmail !== saved.replyToEmail ||
+    current.signatureText !== saved.signatureText
+  );
+});
 const campaignSendBlockReason = computed(() => {
   if (!campaignForm.value.listId) {
     return "Select an audience before sending.";
@@ -2438,7 +2499,7 @@ function applyDomainSettings(
     fromName: settings?.fromName ?? recommended.fromName,
     fromEmail: settings?.fromEmail ?? recommended.fromEmail,
     replyToEmail: settings?.replyToEmail ?? recommended.replyToEmail,
-    signatureText: settings?.signatureText ?? recommended.signatureText,
+    signatureText: settings ? settings.signatureText ?? "" : recommended.signatureText,
   };
 }
 
@@ -2877,15 +2938,24 @@ async function createCampaign(sendNow = false): Promise<void> {
     return;
   }
 
-  if (sendNow && !hasConfiguredDomain.value) {
-    errorMessage.value = "Finish sender setup before sending.";
-    return;
-  }
-
   isCreatingCampaign.value = true;
   errorMessage.value = "";
 
   try {
+    if (hasPendingDomainSetupChanges.value) {
+      const persistedSettings = await persistDomainSetup({ showSuccessFeedback: false });
+
+      if (!persistedSettings) {
+        errorMessage.value = domainSaveErrorMessage.value || "Unable to save sender and footer defaults.";
+        return;
+      }
+    }
+
+    if (sendNow && !hasConfiguredDomain.value) {
+      errorMessage.value = "Finish sender setup before sending.";
+      return;
+    }
+
     const payload = {
       listId: campaignForm.value.listId,
       name:
@@ -3062,17 +3132,23 @@ async function sendCampaign(campaign: EmailCampaign): Promise<void> {
   }
 }
 
-async function saveDomainUpgrade(): Promise<void> {
+async function persistDomainSetup(
+  options: {
+    closeEditor?: boolean;
+    showSuccessFeedback?: boolean;
+    successMessage?: string;
+  } = {},
+): Promise<BusinessEmailSettings | null> {
   const normalizedPayload = normalizedDomainForm.value;
 
   if (!selectedBusinessId.value) {
     domainSaveErrorMessage.value = "Select a workspace before saving the sender setup.";
-    return;
+    return null;
   }
 
   if (domainValidationMessage.value) {
     domainSaveErrorMessage.value = domainValidationMessage.value;
-    return;
+    return null;
   }
 
   isSavingDomain.value = true;
@@ -3081,13 +3157,32 @@ async function saveDomainUpgrade(): Promise<void> {
   try {
     const response = await requestEmailDomainCreate(selectedBusinessId.value, normalizedPayload);
     applyDomainSettings(response.settings, { syncForm: true });
-    isEditingDomainSetup.value = false;
-    feedbackMessage.value = `Domain setup saved for ${response.settings.domainName}.`;
+
+    if (options.closeEditor) {
+      isEditingDomainSetup.value = false;
+    }
+
+    if (options.showSuccessFeedback !== false) {
+      feedbackMessage.value = options.successMessage || `Domain setup saved for ${response.settings.domainName}.`;
+    }
+
+    return response.settings;
   } catch (error) {
     domainSaveErrorMessage.value = error instanceof Error ? error.message : "Unable to save domain settings.";
+    return null;
   } finally {
     isSavingDomain.value = false;
   }
+}
+
+async function saveDomainUpgrade(): Promise<void> {
+  await persistDomainSetup({ closeEditor: true });
+}
+
+async function saveFooterDefaults(): Promise<void> {
+  await persistDomainSetup({
+    successMessage: "Footer defaults saved. Future emails will reuse them automatically.",
+  });
 }
 
 watch(errorMessage, (nextMessage) => {
@@ -3710,6 +3805,84 @@ onBeforeUnmount(() => {
                         <div class="email-preview-frame email-preview-frame-mobile" v-html="previewEmailHtml"></div>
                       </div>
                     </div>
+                  </div>
+                </section>
+
+                <section class="workspace-card email-footer-sidebar-card">
+                  <div class="email-footer-sidebar-copy">
+                    <p class="panel-meta">Footer and legal</p>
+                    <h3>Change the sign-off, logo, and business address</h3>
+                    <p class="panel-note">
+                      Replace personal footer copy like “Jenny / Founder @ Daycare Spots” with the brand logo,
+                      business address, website, and compliance details right from the editor.
+                    </p>
+                  </div>
+
+                  <div class="email-footer-sidebar-actions">
+                    <button
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      @click="toggleSignature"
+                    >
+                      {{ campaignForm.includeSignature ? "Hide footer on this email" : "Include footer on this email" }}
+                    </button>
+                    <button
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      :disabled="isSavingFooterLogo"
+                      @click="isFooterLogoPickerOpen = true"
+                    >
+                      {{ effectiveFooterLogoUrl ? "Replace footer logo" : "Select footer logo" }}
+                    </button>
+                    <button
+                      v-if="effectiveFooterLogoUrl"
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      :disabled="isSavingFooterLogo"
+                      @click="void clearFooterLogo()"
+                    >
+                      {{ isSavingFooterLogo ? "Removing..." : "Remove logo" }}
+                    </button>
+                  </div>
+
+                  <p class="panel-note email-footer-state-note">{{ footerDetailsStatusText }}</p>
+
+                  <div v-if="effectiveFooterLogoUrl" class="signature-logo-preview">
+                    <img :src="effectiveFooterLogoUrl" :alt="effectiveFooterLogoAltText" />
+                  </div>
+
+                  <label class="domain-field footer-details-field email-footer-editor-field">
+                    <span>Footer details</span>
+                    <textarea
+                      v-model="domainForm.signatureText"
+                      class="workspace-textarea compact"
+                      :placeholder="footerDetailsPlaceholderText"
+                    />
+                    <small>
+                      Use the business name, street address, website, support email, or any required compliance copy.
+                      Save once and future emails will auto-fill the same footer.
+                    </small>
+                  </label>
+
+                  <p v-if="domainSaveErrorMessage" class="inline-form-message error">{{ domainSaveErrorMessage }}</p>
+
+                  <div class="email-footer-sidebar-footer">
+                    <button
+                      type="button"
+                      class="primary-action"
+                      :disabled="!canSaveDomainSetup"
+                      :title="domainValidationMessage || undefined"
+                      @click="void saveFooterDefaults()"
+                    >
+                      {{
+                        isSavingDomain
+                          ? "Saving..."
+                          : hasConfiguredDomain
+                            ? "Save footer defaults"
+                            : "Save sender + footer defaults"
+                      }}
+                    </button>
+                    <span v-if="hasPendingDomainSetupChanges" class="workspace-chip">Unsaved footer changes</span>
                   </div>
                 </section>
               </aside>
@@ -4467,7 +4640,7 @@ onBeforeUnmount(() => {
               <div v-if="effectiveFooterLogoUrl" class="signature-logo-preview">
                 <img :src="effectiveFooterLogoUrl" :alt="effectiveFooterLogoAltText" />
               </div>
-              <pre>{{ domainForm.signatureText || "Daycare Spots\n123 Main St, Austin, TX 78701\nhttps://www.daycarespots.com" }}</pre>
+              <pre>{{ domainForm.signatureText || footerDetailsPlaceholderText }}</pre>
             </article>
 
             <label class="domain-field footer-details-field">
@@ -4475,7 +4648,7 @@ onBeforeUnmount(() => {
               <textarea
                 v-model="domainForm.signatureText"
                 class="workspace-textarea compact"
-                placeholder="Daycare Spots&#10;123 Main St, Austin, TX 78701&#10;https://www.daycarespots.com"
+                :placeholder="footerDetailsPlaceholderText"
               />
               <small>Use this for the brand address, website, or any reusable signature copy. It is saved once for the workspace.</small>
             </label>
@@ -4876,6 +5049,38 @@ onBeforeUnmount(() => {
 .email-preview-sidebar-card {
   display: grid;
   gap: 18px;
+}
+
+.email-footer-sidebar-card {
+  display: grid;
+  gap: 16px;
+}
+
+.email-footer-sidebar-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.email-footer-sidebar-copy h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.4;
+}
+
+.email-footer-sidebar-actions,
+.email-footer-sidebar-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.email-footer-state-note {
+  margin: 0;
+}
+
+.email-footer-editor-field {
+  margin-top: 0;
 }
 
 .email-preview-sidebar-header {
