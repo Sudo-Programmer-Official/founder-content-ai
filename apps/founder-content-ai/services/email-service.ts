@@ -84,8 +84,10 @@ export async function requestEmailContacts(
     search?: string;
     status?: EmailContactStatus;
     listId?: string;
+    tag?: string;
     attributeFilters?: Record<string, string>;
     limit?: number;
+    offset?: number;
   } = {},
 ): Promise<EmailContactListResponse> {
   const encodedBusinessId = encodeURIComponent(businessId);
@@ -103,6 +105,10 @@ export async function requestEmailContacts(
     params.set("listId", options.listId);
   }
 
+  if (options.tag?.trim()) {
+    params.set("tag", options.tag.trim());
+  }
+
   if (options.attributeFilters) {
     for (const [key, value] of Object.entries(options.attributeFilters)) {
       const normalizedKey = key.trim();
@@ -118,6 +124,10 @@ export async function requestEmailContacts(
 
   if (typeof options.limit === "number") {
     params.set("limit", String(options.limit));
+  }
+
+  if (typeof options.offset === "number" && options.offset > 0) {
+    params.set("offset", String(options.offset));
   }
 
   const query = params.toString();

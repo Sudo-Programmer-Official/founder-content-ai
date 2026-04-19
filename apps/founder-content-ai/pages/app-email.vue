@@ -28,7 +28,7 @@ import type {
 } from "../../../packages/shared-types";
 import { parseEmailBodyBlocks } from "../../../packages/shared-types";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "../access/product-access-context";
 import { useAuthContext } from "../auth/auth-context";
 import { requestBrandKit, requestUpdateBrandKit } from "../services/brand-kit-service";
@@ -54,7 +54,7 @@ import {
   requestEmailContactImportJobs,
   requestEmailContactUpdate,
   requestEmailContacts,
-  requestEmailContactsImport,
+  requestEmailContactsImportJobCreate,
   requestEmailContactsImportPreview,
   requestEmailDomainCreate,
   requestEmailDomainSettings,
@@ -779,6 +779,7 @@ const EMAIL_TABS: Array<{ key: EmailTabKey; label: string }> = [
   { key: "contacts", label: "Contacts" },
   { key: "settings", label: "Settings" },
 ];
+const CONTACT_DIRECTORY_PAGE_SIZE_OPTIONS = [50, 100, 250];
 const CAMPAIGN_INTENT_OPTIONS: Array<{
   value: CampaignComposerIntent;
   label: string;
@@ -1067,10 +1068,14 @@ const contactImportDuplicateStrategy = ref<EmailContactImportDuplicateStrategy>(
 const contactImportFileName = ref("");
 const isPreviewingContacts = ref(false);
 const contactSearch = ref("");
+const contactListFilter = ref("all");
 const contactStatusFilter = ref<EmailContactStatus | "all">("all");
 const contactStateFilter = ref("all");
 const contactPlanFilter = ref("all");
 const contactTagFilter = ref("all");
+const contactDirectoryPage = ref(1);
+const contactDirectoryPageSize = ref(50);
+const isLoadingContactDirectory = ref(false);
 const latestImportJobId = ref("");
 const editingContactId = ref("");
 const isSavingContact = ref(false);
@@ -1119,6 +1124,7 @@ const isSendingTestEmail = ref(false);
 let isSyncingCampaignBlocksFromBody = false;
 let isSyncingCampaignBodyFromBlocks = false;
 let composerPreviewDebounceHandle: number | null = null;
+let contactDirectorySearchDebounceHandle: number | null = null;
 
 const domainForm = ref({
   domainName: "",
@@ -1455,54 +1461,40 @@ const canImportContacts = computed(
     (contactImport.value.listName.trim().length > 0 || hasMappedImportLists.value) &&
     Boolean(contactImportMapping.value.email || contactImportPreview.value?.suggestedMapping.email),
 );
+function buildContactFilterOptions(values: string[], selectedValue: string): string[] {
+  const options = new Set(
+    values
+      .map((value) => value.trim())
+      .filter((value) => value !== ""),
+  );
+
+  if (selectedValue !== "all") {
+    options.add(selectedValue);
+  }
+
+  return [...options].sort((left, right) => left.localeCompare(right));
+}
+
 const contactStateOptions = computed(() =>
-  [...new Set(emailContacts.value.map((contact) => contact.attributes.state?.trim()).filter((value): value is string => Boolean(value)))]
-    .sort((left, right) => left.localeCompare(right)),
+  buildContactFilterOptions(
+    emailContacts.value
+      .map((contact) => contact.attributes.state?.trim())
+      .filter((value): value is string => Boolean(value)),
+    contactStateFilter.value,
+  ),
 );
 const contactPlanOptions = computed(() =>
-  [...new Set(emailContacts.value.map((contact) => contact.attributes.plan?.trim()).filter((value): value is string => Boolean(value)))]
-    .sort((left, right) => left.localeCompare(right)),
+  buildContactFilterOptions(
+    emailContacts.value
+      .map((contact) => contact.attributes.plan?.trim())
+      .filter((value): value is string => Boolean(value)),
+    contactPlanFilter.value,
+  ),
 );
 const contactTagOptions = computed(() =>
-  [...new Set(emailContacts.value.flatMap((contact) => contact.tags))]
-    .sort((left, right) => left.localeCompare(right)),
+  buildContactFilterOptions(emailContacts.value.flatMap((contact) => contact.tags), contactTagFilter.value),
 );
-const filteredContacts = computed(() => {
-  const searchValue = contactSearch.value.trim().toLowerCase();
-
-  return emailContacts.value.filter((contact) => {
-    if (contactStatusFilter.value !== "all" && contact.status !== contactStatusFilter.value) {
-      return false;
-    }
-
-    if (contactStateFilter.value !== "all" && contact.attributes.state !== contactStateFilter.value) {
-      return false;
-    }
-
-    if (contactPlanFilter.value !== "all" && contact.attributes.plan !== contactPlanFilter.value) {
-      return false;
-    }
-
-    if (contactTagFilter.value !== "all" && !contact.tags.includes(contactTagFilter.value)) {
-      return false;
-    }
-
-    if (!searchValue) {
-      return true;
-    }
-
-    const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(" ").toLowerCase();
-    const attributeValues = Object.values(contact.attributes)
-      .filter((value): value is string => Boolean(value))
-      .map((value) => value.toLowerCase());
-    return (
-      contact.email.toLowerCase().includes(searchValue) ||
-      fullName.includes(searchValue) ||
-      contact.tags.some((tag) => tag.toLowerCase().includes(searchValue)) ||
-      attributeValues.some((value) => value.includes(searchValue))
-    );
-  });
-});
+const filteredContacts = computed(() => emailContacts.value);
 const activeImportJob = computed(() => {
   if (latestImportJobId.value) {
     const matchingJob = contactImportJobs.value.find((job) => job.id === latestImportJobId.value);
@@ -1524,6 +1516,28 @@ const editingContact = computed(
 const hasProcessingImportJobs = computed(() =>
   contactImportJobs.value.some((job) => job.status === "queued" || job.status === "processing"),
 );
+const hasActiveImportWorkflow = computed(() => isImporting.value || hasProcessingImportJobs.value);
+const contactDirectoryOffset = computed(() =>
+  Math.max(0, (contactDirectoryPage.value - 1) * contactDirectoryPageSize.value),
+);
+const contactDirectoryPageCount = computed(() =>
+  Math.max(1, Math.ceil(emailContactsTotal.value / contactDirectoryPageSize.value)),
+);
+const contactDirectoryStart = computed(() =>
+  emailContactsTotal.value === 0 ? 0 : contactDirectoryOffset.value + 1,
+);
+const contactDirectoryEnd = computed(() =>
+  emailContactsTotal.value === 0
+    ? 0
+    : Math.min(contactDirectoryOffset.value + emailContacts.value.length, emailContactsTotal.value),
+);
+const contactDirectorySummary = computed(() => {
+  if (emailContactsTotal.value === 0) {
+    return "No contacts match the current filters yet.";
+  }
+
+  return `Showing ${contactDirectoryStart.value.toLocaleString()}-${contactDirectoryEnd.value.toLocaleString()} of ${emailContactsTotal.value.toLocaleString()} contacts`;
+});
 const contactCoverageSummary = computed(() => {
   return emailContacts.value.reduce(
     (summary, contact) => {
@@ -2856,6 +2870,34 @@ function getImportProgressPercent(job: EmailContactImportJob): number {
   return Math.min(100, Math.round((job.processedRows / job.totalRows) * 100));
 }
 
+function clearContactDirectorySearchDebounce(): void {
+  if (contactDirectorySearchDebounceHandle === null || typeof window === "undefined") {
+    return;
+  }
+
+  window.clearTimeout(contactDirectorySearchDebounceHandle);
+  contactDirectorySearchDebounceHandle = null;
+}
+
+function handleImportLeaveProtection(event: BeforeUnloadEvent): void {
+  if (!hasActiveImportWorkflow.value) {
+    return;
+  }
+
+  event.preventDefault();
+  event.returnValue = "";
+}
+
+function confirmImportNavigation(): boolean {
+  if (!hasActiveImportWorkflow.value || typeof window === "undefined") {
+    return true;
+  }
+
+  return window.confirm(
+    "An import is still running. Leave this page? The import will continue in the background, but you will lose the live progress view.",
+  );
+}
+
 function getProcessedRecipientCount(campaign: EmailCampaign): number {
   return campaign.sentCount + campaign.failedCount + campaign.unsubscribedCount;
 }
@@ -3307,9 +3349,13 @@ async function loadBusinesses(): Promise<void> {
 }
 
 function buildContactDirectoryRequestOptions(): {
+  search?: string;
+  listId?: string;
+  tag?: string;
   status?: EmailContactStatus;
   attributeFilters?: Record<string, string>;
   limit: number;
+  offset: number;
 } {
   const attributeFilters: Record<string, string> = {};
 
@@ -3322,9 +3368,13 @@ function buildContactDirectoryRequestOptions(): {
   }
 
   return {
+    search: contactSearch.value.trim() || undefined,
+    listId: contactListFilter.value !== "all" ? contactListFilter.value : undefined,
+    tag: contactTagFilter.value !== "all" ? contactTagFilter.value : undefined,
     status: contactStatusFilter.value !== "all" ? contactStatusFilter.value : undefined,
     attributeFilters: Object.keys(attributeFilters).length > 0 ? attributeFilters : undefined,
-    limit: 500,
+    limit: contactDirectoryPageSize.value,
+    offset: contactDirectoryOffset.value,
   };
 }
 
@@ -3335,9 +3385,26 @@ async function loadEmailContactsDirectory(): Promise<void> {
     return;
   }
 
-  const contactsResponse = await requestEmailContacts(selectedBusinessId.value, buildContactDirectoryRequestOptions());
-  emailContacts.value = contactsResponse.contacts;
-  emailContactsTotal.value = contactsResponse.total;
+  isLoadingContactDirectory.value = true;
+
+  try {
+    const contactsResponse = await requestEmailContacts(
+      selectedBusinessId.value,
+      buildContactDirectoryRequestOptions(),
+    );
+    emailContactsTotal.value = contactsResponse.total;
+
+    const maxPage = Math.max(1, Math.ceil(contactsResponse.total / contactDirectoryPageSize.value));
+
+    if (contactDirectoryPage.value > maxPage) {
+      contactDirectoryPage.value = maxPage;
+      return;
+    }
+
+    emailContacts.value = contactsResponse.contacts;
+  } finally {
+    isLoadingContactDirectory.value = false;
+  }
 }
 
 async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promise<void> {
@@ -3365,11 +3432,17 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
   ]);
 
   emailLists.value = listsResponse.lists;
-  emailContacts.value = contactsResponse.contacts;
   emailContactsTotal.value = contactsResponse.total;
+  emailContacts.value = contactsResponse.contacts;
   contactImportJobs.value = importJobsResponse.importJobs;
   campaigns.value = campaignsResponse.campaigns;
   applyDomainSettings(domainResponse.settings, { syncForm: options.syncDomainForm });
+
+  const maxPage = Math.max(1, Math.ceil(contactsResponse.total / contactDirectoryPageSize.value));
+
+  if (contactDirectoryPage.value > maxPage) {
+    contactDirectoryPage.value = maxPage;
+  }
 
   if (latestStatsCampaignId.value) {
     const matchingCampaign = campaigns.value.find((campaign) => campaign.id === latestStatsCampaignId.value);
@@ -3468,16 +3541,14 @@ async function importContacts(): Promise<void> {
   errorMessage.value = "";
 
   try {
-    const response = await requestEmailContactsImport(selectedBusinessId.value, {
+    const response = await requestEmailContactsImportJobCreate(selectedBusinessId.value, {
       ...contactImport.value,
+      fileName: contactImportFileName.value || undefined,
       mapping: Object.keys(contactImportMapping.value).length > 0 ? contactImportMapping.value : undefined,
       duplicateStrategy: contactImportDuplicateStrategy.value,
     });
-    latestImportJobId.value = "";
-    feedbackMessage.value = [
-      `Contacts imported into ${response.list.name}.`,
-      `Created ${response.createdCount}, updated ${response.updatedCount}, skipped ${response.skippedCount}.`,
-    ].join(" ");
+    latestImportJobId.value = response.importJob.id;
+    feedbackMessage.value = `Import queued for ${response.importJob.listName}. Keep this tab open to watch live progress.`;
     contactImport.value.csvText = "";
     contactImport.value.listName = "";
     contactImportFileName.value = "";
@@ -3988,10 +4059,15 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
   testRecipientEmail.value = "";
   contactImportFileName.value = "";
   contactSearch.value = "";
+  contactListFilter.value = "all";
   contactStatusFilter.value = "all";
   contactStateFilter.value = "all";
   contactPlanFilter.value = "all";
   contactTagFilter.value = "all";
+  contactDirectoryPage.value = 1;
+  contactDirectoryPageSize.value = CONTACT_DIRECTORY_PAGE_SIZE_OPTIONS[0];
+  latestImportJobId.value = "";
+  clearContactDirectorySearchDebounce();
   resetContactImportPreview();
   campaignRouteSyncKey.value = "";
 
@@ -4077,17 +4153,38 @@ watch(
 );
 
 watch(
-  () => [selectedBusinessId.value, contactStatusFilter.value, contactStateFilter.value, contactPlanFilter.value],
-  ([businessId], [, previousStatus, previousState, previousPlan]) => {
+  () => [
+    selectedBusinessId.value,
+    contactListFilter.value,
+    contactStatusFilter.value,
+    contactStateFilter.value,
+    contactPlanFilter.value,
+    contactTagFilter.value,
+    contactDirectoryPageSize.value,
+  ],
+  ([businessId], [previousBusinessId, previousListId, previousStatus, previousState, previousPlan, previousTag, previousPageSize]) => {
     if (!businessId || !emailFeatureEnabled.value) {
       return;
     }
 
     if (
+      previousBusinessId === undefined &&
+      previousListId === undefined &&
       previousStatus === undefined &&
       previousState === undefined &&
-      previousPlan === undefined
+      previousPlan === undefined &&
+      previousTag === undefined &&
+      previousPageSize === undefined
     ) {
+      return;
+    }
+
+    if (businessId !== previousBusinessId) {
+      return;
+    }
+
+    if (contactDirectoryPage.value !== 1) {
+      contactDirectoryPage.value = 1;
       return;
     }
 
@@ -4098,11 +4195,60 @@ watch(
 );
 
 watch(
-  () => [contactTagOptions.value.join("|"), contactTagFilter.value],
-  ([, selectedTag]) => {
-    if (selectedTag !== "all" && !contactTagOptions.value.includes(selectedTag)) {
-      contactTagFilter.value = "all";
+  () => [selectedBusinessId.value, contactDirectoryPage.value],
+  ([businessId, page], [previousBusinessId, previousPage]) => {
+    if (!businessId || !emailFeatureEnabled.value) {
+      return;
     }
+
+    if (previousBusinessId === undefined && previousPage === undefined) {
+      return;
+    }
+
+    if (businessId !== previousBusinessId || page === previousPage) {
+      return;
+    }
+
+    void loadEmailContactsDirectory().catch((error) => {
+      errorMessage.value = error instanceof Error ? error.message : "Unable to refresh contacts.";
+    });
+  },
+);
+
+watch(
+  () => [selectedBusinessId.value, contactSearch.value],
+  ([businessId, searchValue], [previousBusinessId, previousSearchValue]) => {
+    clearContactDirectorySearchDebounce();
+
+    if (!businessId || !emailFeatureEnabled.value) {
+      return;
+    }
+
+    if (previousBusinessId === undefined && previousSearchValue === undefined) {
+      return;
+    }
+
+    if (businessId !== previousBusinessId || searchValue === previousSearchValue) {
+      return;
+    }
+
+    const runSearch = () => {
+      if (contactDirectoryPage.value !== 1) {
+        contactDirectoryPage.value = 1;
+        return;
+      }
+
+      void loadEmailContactsDirectory().catch((error) => {
+        errorMessage.value = error instanceof Error ? error.message : "Unable to refresh contacts.";
+      });
+    };
+
+    if (typeof window === "undefined") {
+      runSearch();
+      return;
+    }
+
+    contactDirectorySearchDebounceHandle = window.setTimeout(runSearch, 250);
   },
 );
 
@@ -4117,7 +4263,19 @@ watch(
   },
 );
 
+onBeforeRouteLeave(() => {
+  return confirmImportNavigation();
+});
+
+onBeforeRouteUpdate(() => {
+  return confirmImportNavigation();
+});
+
 onMounted(() => {
+  if (typeof window !== "undefined") {
+    window.addEventListener("beforeunload", handleImportLeaveProtection);
+  }
+
   void initializePage();
 });
 
@@ -4126,6 +4284,11 @@ onBeforeUnmount(() => {
   stopImportJobPolling();
   clearEmailToastTimer();
   clearComposerPreviewDebounce();
+  clearContactDirectorySearchDebounce();
+
+  if (typeof window !== "undefined") {
+    window.removeEventListener("beforeunload", handleImportLeaveProtection);
+  }
 });
 </script>
 
@@ -5140,6 +5303,17 @@ Daycare Spots"
 
           <div class="contact-import-stack">
             <div class="contact-import-inputs">
+              <div class="contact-import-section-head">
+                <div>
+                  <p class="panel-meta">Step 1</p>
+                  <h3>Upload or paste a CSV</h3>
+                  <p class="panel-note">
+                    We will detect columns, keep unsafe name values out, and create lists from the CSV when available.
+                  </p>
+                </div>
+                <span class="workspace-chip">{{ contactImportFileName || "CSV import" }}</span>
+              </div>
+
               <input
                 v-model="contactImport.listName"
                 class="workspace-input"
@@ -5166,12 +5340,23 @@ Daycare Spots"
 
               <textarea
                 v-model="contactImport.csvText"
-                class="workspace-textarea compact"
+                class="workspace-textarea compact contact-import-textarea"
                 placeholder="email,name,lists&#10;founder@yourbrand.com, Founder, Launch List; Premium Users"
               />
             </div>
 
             <div v-if="contactImportPreview" class="contact-preview-panel">
+              <div class="contact-import-section-head">
+                <div>
+                  <p class="panel-meta">Step 2</p>
+                  <h3>Review mapping and sample rows</h3>
+                  <p class="panel-note">
+                    Confirm the detected columns before the import job is queued.
+                  </p>
+                </div>
+                <span class="workspace-chip">{{ contactImportPreview.previewRows.length }} preview rows</span>
+              </div>
+
               <div class="contact-preview-summary">
                 <article class="workspace-card contact-preview-stat">
                   <span>Total rows</span>
@@ -5246,7 +5431,7 @@ Daycare Spots"
                   class="contact-preview-row"
                 >
                   <span>{{ row.email || "—" }}</span>
-                  <span>{{ row.name || [row.firstName, row.lastName].filter(Boolean).join(' ') || "—" }}</span>
+                  <span>{{ [row.firstName, row.lastName].filter(Boolean).join(" ") || "—" }}</span>
                   <span>{{ row.lists.join(", ") || contactImport.listName || "—" }}</span>
                   <span>{{ buildContactAttributeSummary(row.attributes) || "—" }}</span>
                   <span>{{ row.tags.join(", ") || "—" }}</span>
@@ -5270,6 +5455,9 @@ Daycare Spots"
               {{ isImporting ? "Importing..." : "Import contacts" }}
             </button>
           </div>
+          <p v-if="hasActiveImportWorkflow" class="import-protection-note">
+            Leave protection is on while this import runs. We will warn before closing the tab or leaving this page so you do not lose the live progress view.
+          </p>
 
           <article v-if="activeImportJob" class="workspace-card contact-job-card">
             <div class="panel-header">
@@ -5318,11 +5506,22 @@ Daycare Spots"
             <div class="panel-header">
               <div>
                 <p class="panel-meta">Contact directory</p>
-                <h3>{{ emailContactsTotal }} matching contacts</h3>
+                <h3>{{ emailContactsTotal.toLocaleString() }} matching contacts</h3>
                 <p class="panel-note">
-                  Active {{ contactCoverageSummary.active }} · Unsubscribed {{ contactCoverageSummary.unsubscribed }} ·
+                  On this page: Active {{ contactCoverageSummary.active }} · Unsubscribed {{ contactCoverageSummary.unsubscribed }} ·
                   Suppressed {{ contactCoverageSummary.suppressed }}
                 </p>
+              </div>
+              <div class="contact-directory-toolbar-meta">
+                <span class="workspace-chip">{{ contactDirectorySummary }}</span>
+                <label class="contact-directory-page-size">
+                  <span>Rows</span>
+                  <select v-model="contactDirectoryPageSize" class="workspace-select toolbar-select">
+                    <option v-for="pageSize in CONTACT_DIRECTORY_PAGE_SIZE_OPTIONS" :key="pageSize" :value="pageSize">
+                      {{ pageSize }}
+                    </option>
+                  </select>
+                </label>
               </div>
             </div>
 
@@ -5381,6 +5580,10 @@ Daycare Spots"
                 class="workspace-input toolbar-input"
                 placeholder="Search contacts"
               />
+              <select v-model="contactListFilter" class="workspace-select toolbar-select">
+                <option value="all">All lists</option>
+                <option v-for="list in emailLists" :key="`list-${list.id}`" :value="list.id">{{ list.name }}</option>
+              </select>
               <select v-model="contactStatusFilter" class="workspace-select toolbar-select">
                 <option value="all">All statuses</option>
                 <option value="active">Active</option>
@@ -5403,7 +5606,11 @@ Daycare Spots"
               </select>
             </div>
 
-            <div v-if="filteredContacts.length > 0" class="contact-directory-table">
+            <p v-if="isLoadingContactDirectory" class="panel-note contact-directory-loading">
+              Loading contacts...
+            </p>
+
+            <div v-else-if="filteredContacts.length > 0" class="contact-directory-table">
               <div class="contact-directory-row contact-directory-head">
                 <span>Email</span>
                 <span>Name</span>
@@ -5442,8 +5649,35 @@ Daycare Spots"
               </div>
             </div>
             <p v-else class="empty-note">
-              {{ emailContacts.length > 0 ? "No contacts match the current filter." : "No contacts yet. Queue an import to populate this workspace." }}
+              {{
+                emailContactsTotal > 0
+                  ? "No contacts are visible on this page yet."
+                  : "No contacts yet. Queue an import to populate this workspace."
+              }}
             </p>
+
+            <div v-if="emailContactsTotal > 0" class="contact-directory-pagination">
+              <span class="panel-note">{{ contactDirectorySummary }}</span>
+              <div class="contact-directory-pagination-actions">
+                <button
+                  type="button"
+                  class="workspace-secondary-button compact"
+                  :disabled="contactDirectoryPage <= 1 || isLoadingContactDirectory"
+                  @click="contactDirectoryPage = Math.max(1, contactDirectoryPage - 1)"
+                >
+                  Previous
+                </button>
+                <span class="workspace-chip">Page {{ contactDirectoryPage }} of {{ contactDirectoryPageCount }}</span>
+                <button
+                  type="button"
+                  class="workspace-secondary-button compact"
+                  :disabled="contactDirectoryPage >= contactDirectoryPageCount || isLoadingContactDirectory"
+                  @click="contactDirectoryPage += 1"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
           </section>
         </section>
 
@@ -7136,6 +7370,32 @@ Daycare Spots"
 .contact-import-stack {
   grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
   margin-top: 16px;
+  align-items: start;
+}
+
+.contact-import-inputs {
+  padding: 18px;
+  border: 1px solid var(--fc-border);
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--fc-surface) 94%, white 6%);
+}
+
+.contact-import-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.contact-import-section-head h3 {
+  margin: 4px 0 0;
+  font-size: 1.1rem;
+}
+
+.contact-import-textarea {
+  min-height: 320px;
+  resize: vertical;
 }
 
 .contact-upload-row,
@@ -7276,6 +7536,12 @@ Daycare Spots"
   margin-top: 18px;
 }
 
+.import-protection-note {
+  margin: 12px 0 0;
+  color: var(--fc-text-muted);
+  font-size: 0.95rem;
+}
+
 .import-progress {
   width: 100%;
   margin-top: 0;
@@ -7294,6 +7560,31 @@ Daycare Spots"
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.contact-directory-toolbar-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+  align-items: center;
+}
+
+.contact-directory-page-size {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--fc-text-muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.contact-directory-page-size .workspace-select {
+  min-width: 96px;
+}
+
+.contact-directory-loading {
+  margin: 0;
 }
 
 .toolbar-input {
@@ -7381,6 +7672,21 @@ Daycare Spots"
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.contact-directory-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.contact-directory-pagination-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
 .workspace-secondary-button.danger {
@@ -7931,6 +8237,11 @@ Daycare Spots"
   }
 
   .email-header-actions {
+    justify-content: flex-start;
+  }
+
+  .contact-directory-toolbar-meta,
+  .contact-directory-pagination {
     justify-content: flex-start;
   }
 

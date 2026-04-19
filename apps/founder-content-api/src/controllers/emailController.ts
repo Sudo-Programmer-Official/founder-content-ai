@@ -773,11 +773,16 @@ export async function getEmailContacts(
     const result = await listEmailContacts(businessId, {
       search: typeof request.query.search === "string" ? request.query.search : undefined,
       listId: typeof request.query.listId === "string" ? request.query.listId : undefined,
+      tag: typeof request.query.tag === "string" ? request.query.tag : undefined,
       status: readEmailContactStatus(request.query.status),
       attributeFilters: readEmailContactAttributeFilters(request.query),
       limit:
         typeof request.query.limit === "string"
           ? Number.parseInt(request.query.limit, 10)
+          : undefined,
+      offset:
+        typeof request.query.offset === "string"
+          ? Number.parseInt(request.query.offset, 10)
           : undefined,
     });
     response.json(result);

@@ -344,7 +344,21 @@ interface ProcessQueuedEmailContactImportJobsResult {
 
 const DOMAIN_STATUS_VERIFIED = "verified";
 const EMAIL_ADDRESS_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/i;
+const CONTACT_NAME_PLACEHOLDER_VALUES = new Set([
+  "n/a",
+  "na",
+  "none",
+  "null",
+  "unknown",
+  "unnamed",
+  "subscriber",
+  "contact",
+  "first name",
+  "last name",
+  "no name",
+]);
 const DEFAULT_EMAIL_CAMPAIGN_WORKER_BATCH_SIZE = 100;
+const DEFAULT_EMAIL_CAMPAIGN_RECIPIENT_INSERT_BATCH_SIZE = 100;
 const DEFAULT_EMAIL_CAMPAIGN_RECIPIENT_LEASE_MINUTES = 30;
 const DEFAULT_EMAIL_CONTACT_IMPORT_WORKER_BATCH_SIZE = 2;
 const MAX_EMAIL_CAMPAIGN_DRAIN_PASSES = 1000;
@@ -373,6 +387,61 @@ const EMAIL_SETTINGS_SELECT_FIELDS = `
   updated_at
 `;
 
+function sanitizeContactNamePart(value: string | null | undefined): string | undefined {
+  const normalized = (value ?? "")
+    .replace(/\badded by you\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  const lowerValue = normalized.toLowerCase();
+
+  if (
+    CONTACT_NAME_PLACEHOLDER_VALUES.has(lowerValue) ||
+    EMAIL_ADDRESS_PATTERN.test(normalized) ||
+    normalized.includes("@") ||
+    /^https?:\/\//i.test(normalized) ||
+    /www\./i.test(normalized) ||
+    /\d/.test(normalized)
+  ) {
+    return undefined;
+  }
+
+  const cleaned = normalized
+    .replace(/[^A-Za-zÀ-ÖØ-öø-ÿ' .-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned || CONTACT_NAME_PLACEHOLDER_VALUES.has(cleaned.toLowerCase()) || cleaned.length > 40) {
+    return undefined;
+  }
+
+  return cleaned;
+}
+
+function sanitizeContactNameParts(input: {
+  firstName?: string | null;
+  lastName?: string | null;
+}): {
+  firstName?: string;
+  lastName?: string;
+} {
+  const firstName = sanitizeContactNamePart(input.firstName);
+  const lastName = sanitizeContactNamePart(input.lastName);
+
+  if (firstName && lastName && firstName.toLowerCase() === lastName.toLowerCase()) {
+    return { firstName, lastName: undefined };
+  }
+
+  return {
+    firstName,
+    lastName,
+  };
+}
+
 function resolvePositiveIntegerEnv(envName: string, fallback: number): number {
   const rawValue = process.env[envName]?.trim();
 
@@ -388,6 +457,13 @@ function resolveEmailCampaignWorkerBatchSize(): number {
   return resolvePositiveIntegerEnv(
     "EMAIL_CAMPAIGN_WORKER_BATCH_SIZE",
     DEFAULT_EMAIL_CAMPAIGN_WORKER_BATCH_SIZE,
+  );
+}
+
+function resolveEmailCampaignRecipientInsertBatchSize(): number {
+  return resolvePositiveIntegerEnv(
+    "EMAIL_CAMPAIGN_RECIPIENT_INSERT_BATCH_SIZE",
+    DEFAULT_EMAIL_CAMPAIGN_RECIPIENT_INSERT_BATCH_SIZE,
   );
 }
 
@@ -1150,12 +1226,17 @@ function mapEmailList(row: EmailListRow): EmailList {
 }
 
 function mapEmailContact(row: EmailContactRow): EmailContact {
+  const sanitizedNames = sanitizeContactNameParts({
+    firstName: row.first_name ?? undefined,
+    lastName: row.last_name ?? undefined,
+  });
+
   return {
     id: row.id,
     businessId: row.business_id,
     email: row.email,
-    firstName: row.first_name ?? undefined,
-    lastName: row.last_name ?? undefined,
+    firstName: sanitizedNames.firstName,
+    lastName: sanitizedNames.lastName,
     tags: parseJsonArray<string>(row.tags_json),
     attributes: normalizeContactAttributes(parseJsonObject<EmailContactAttributes>(row.attributes_json)),
     status: row.status,
@@ -2130,11 +2211,13 @@ function buildEmailCampaignBodies(
 }
 
 function personalizeTemplate(template: string, contact: Pick<EmailContact, "firstName" | "lastName" | "email">): string {
-  const fullName = [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim();
+  const sanitizedNames = sanitizeContactNameParts(contact);
+  const fullName = [sanitizedNames.firstName, sanitizedNames.lastName].filter(Boolean).join(" ").trim();
+  const friendlyFirstName = sanitizedNames.firstName || "there";
   return template
-    .replace(/{{\s*name\s*}}/gi, fullName || contact.firstName || contact.email)
-    .replace(/{{\s*first_name\s*}}/gi, contact.firstName || contact.email)
-    .replace(/{{\s*last_name\s*}}/gi, contact.lastName || "");
+    .replace(/{{\s*name\s*}}/gi, fullName || friendlyFirstName)
+    .replace(/{{\s*first_name\s*}}/gi, friendlyFirstName)
+    .replace(/{{\s*last_name\s*}}/gi, sanitizedNames.lastName || "");
 }
 
 function appendUnsubscribeFooter(html: string, text: string, unsubscribeUrl: string): {
@@ -2784,6 +2867,10 @@ function parseContactImportPayload(
     const emailPermissionStatusValue =
       sanitizedMapping.emailPermissionStatus ? raw[sanitizedMapping.emailPermissionStatus] : "";
     const [fallbackFirstName, ...fallbackRest] = nameValue.split(/\s+/).filter(Boolean);
+    const sanitizedNames = sanitizeContactNameParts({
+      firstName: firstNameValue || fallbackFirstName || undefined,
+      lastName: lastNameValue || (fallbackRest.length > 0 ? fallbackRest.join(" ") : undefined),
+    });
     const issues: string[] = [];
 
     if (!email) {
@@ -2806,8 +2893,8 @@ function parseContactImportPayload(
     });
     const parsedContact: ParsedEmailImportContact = {
       email,
-      firstName: firstNameValue || fallbackFirstName || undefined,
-      lastName: lastNameValue || (fallbackRest.length > 0 ? fallbackRest.join(" ") : undefined),
+      firstName: sanitizedNames.firstName,
+      lastName: sanitizedNames.lastName,
       status: importedStatus,
       lists,
       tags,
@@ -2828,6 +2915,10 @@ function parseContactImportPayload(
 
       if (importedStatus && importedStatus !== "active") {
         previewIssues.push(`Will import as ${resolveImportedContactStatusLabel(importedStatus)}.`);
+      }
+
+      if ((nameValue || firstNameValue || lastNameValue) && !sanitizedNames.firstName && !sanitizedNames.lastName) {
+        previewIssues.push("Name was ignored because it did not look customer-safe.");
       }
 
       previewRows.push({
@@ -3047,6 +3138,7 @@ async function upsertContact(
   client: PoolClient,
 ): Promise<UpsertContactResult> {
   const normalizedEmail = normalizeEmail(input.email);
+  const sanitizedNames = sanitizeContactNameParts(input);
   const isSuppressed = await isEmailUnsubscribed(businessId, normalizedEmail, client);
   const { hasAttributesJson } = await getEmailContactCapabilities();
   const projection = await buildEmailContactSelectProjection("");
@@ -3147,8 +3239,8 @@ async function upsertContact(
       `,
       [
         existingResult.rows[0].id,
-        input.firstName ?? null,
-        input.lastName ?? null,
+        sanitizedNames.firstName ?? null,
+        sanitizedNames.lastName ?? null,
         tagJson,
         nextStatus,
         shouldSetUnsubscribedAt,
@@ -3193,8 +3285,8 @@ async function upsertContact(
     [
       businessId,
       normalizedEmail,
-      input.firstName ?? null,
-      input.lastName ?? null,
+      sanitizedNames.firstName ?? null,
+      sanitizedNames.lastName ?? null,
       tagJson,
       ...(hasAttributesJson ? [attributeJson] : []),
       nextStatus,
@@ -3625,6 +3717,7 @@ async function createCampaignRecipientsForSend(
   client: PoolClient,
 ): Promise<void> {
   const apiBaseUrl = resolveEmailPublicApiBaseUrl();
+  const insertBatchSize = resolveEmailCampaignRecipientInsertBatchSize();
   const trackingContext = await createEmailTrackingContextForSend({
     businessId: campaign.business_id,
     campaignId: campaign.id,
@@ -3633,6 +3726,62 @@ async function createCampaignRecipientsForSend(
     bodyText: campaign.body_text || stripHtml(campaign.body_html),
     client,
   });
+  const queuedRecipients: Array<{
+    recipientId: string;
+    contactId: string;
+    subject: string;
+    html: string;
+    text: string;
+  }> = [];
+
+  const flushQueuedRecipients = async (): Promise<void> => {
+    if (queuedRecipients.length === 0) {
+      return;
+    }
+
+    const values: unknown[] = [];
+    const placeholders = queuedRecipients.map((recipient, index) => {
+      const baseIndex = index * 7;
+      values.push(
+        recipient.recipientId,
+        send.id,
+        campaign.id,
+        recipient.contactId,
+        recipient.subject,
+        recipient.html,
+        recipient.text,
+      );
+      return `(
+        $${baseIndex + 1}::uuid,
+        $${baseIndex + 2}::uuid,
+        $${baseIndex + 3}::uuid,
+        $${baseIndex + 4}::uuid,
+        $${baseIndex + 5},
+        $${baseIndex + 6},
+        $${baseIndex + 7},
+        'queued'
+      )`;
+    }).join(", ");
+
+    await executeQuery(
+      `
+        insert into email_campaign_recipients (
+          id,
+          send_id,
+          campaign_id,
+          contact_id,
+          personalized_subject,
+          personalized_body_html,
+          personalized_body_text,
+          status
+        ) values ${placeholders}
+      `,
+      values,
+      client,
+    );
+
+    queuedRecipients.length = 0;
+  };
 
   for (const contact of contacts) {
     const recipientId = crypto.randomUUID();
@@ -3661,32 +3810,20 @@ async function createCampaignRecipientsForSend(
       html: footer.html,
     });
 
-    await executeQuery(
-      `
-        insert into email_campaign_recipients (
-          id,
-          send_id,
-          campaign_id,
-          contact_id,
-          personalized_subject,
-          personalized_body_html,
-          personalized_body_text,
-          status
-        ) values (
-          $1::uuid,
-          $2::uuid,
-          $3::uuid,
-          $4::uuid,
-          $5,
-          $6,
-          $7,
-          'queued'
-        )
-      `,
-      [recipientId, send.id, campaign.id, contact.id, subject, trackedHtml, footer.text],
-      client,
-    );
+    queuedRecipients.push({
+      recipientId,
+      contactId: contact.id,
+      subject,
+      html: trackedHtml,
+      text: footer.text,
+    });
+
+    if (queuedRecipients.length >= insertBatchSize) {
+      await flushQueuedRecipients();
+    }
   }
+
+  await flushQueuedRecipients();
 }
 
 async function getCampaignStats(
@@ -4178,33 +4315,33 @@ export async function importEmailContacts(
     );
   }
 
-  return withDbTransaction(async (client) => {
-    const listCache = new Map<string, EmailListRow>();
-    const ensureList = async (candidate: string): Promise<EmailListRow> => {
-      const normalizedName = candidate.trim();
-      const cacheKey = normalizeEmailListNameKey(normalizedName);
-      const cached = listCache.get(cacheKey);
+  const listCache = new Map<string, EmailListRow>();
+  const ensureList = async (candidate: string, client?: PoolClient): Promise<EmailListRow> => {
+    const normalizedName = candidate.trim();
+    const cacheKey = normalizeEmailListNameKey(normalizedName);
+    const cached = listCache.get(cacheKey);
 
-      if (cached) {
-        return cached;
-      }
+    if (cached) {
+      return cached;
+    }
 
-      const row = await ensureEmailListByName(businessId, normalizedName, actorUserId, client);
-      listCache.set(cacheKey, row);
-      return row;
-    };
+    const row = await ensureEmailListByName(businessId, normalizedName, actorUserId, client);
+    listCache.set(cacheKey, row);
+    return row;
+  };
 
-    const importedContacts: EmailContact[] = [];
-    let createdCount = 0;
-    let updatedCount = 0;
-    let skippedCount = 0;
+  const importedContacts: EmailContact[] = [];
+  let createdCount = 0;
+  let updatedCount = 0;
+  let skippedCount = 0;
 
-    for (const contact of contacts) {
-      const contactResult = await upsertContact(businessId, contact, duplicateStrategy, client);
+  for (const contact of contacts) {
+    const contactResult = await withDbTransaction(async (client) => {
+      const upsertedContact = await upsertContact(businessId, contact, duplicateStrategy, client);
       const membershipListNames = extractImportedListNames([contact], listName);
 
       for (const membershipListName of membershipListNames) {
-        const targetList = await ensureList(membershipListName);
+        const targetList = await ensureList(membershipListName, client);
         await executeQuery(
           `
             insert into email_list_members (
@@ -4216,38 +4353,39 @@ export async function importEmailContacts(
             )
             on conflict (list_id, contact_id) do nothing
           `,
-          [targetList.id, contactResult.row.id],
+          [targetList.id, upsertedContact.row.id],
           client,
         );
       }
 
-      importedContacts.push(mapEmailContact(contactResult.row));
+      return upsertedContact;
+    });
 
-      if (contactResult.operation === "created") {
-        createdCount += 1;
-      } else if (contactResult.operation === "updated") {
-        updatedCount += 1;
-      } else {
-        skippedCount += 1;
-      }
+    importedContacts.push(mapEmailContact(contactResult.row));
+
+    if (contactResult.operation === "created") {
+      createdCount += 1;
+    } else if (contactResult.operation === "updated") {
+      updatedCount += 1;
+    } else {
+      skippedCount += 1;
     }
+  }
 
-    const representativeListName = listName || importedListNames[0];
-    const hydratedList = await loadEmailListOrThrow(
-      businessId,
-      (await ensureList(representativeListName)).id,
-      client,
-    );
+  const representativeListName = listName || importedListNames[0];
+  const hydratedList = await loadEmailListOrThrow(
+    businessId,
+    (await ensureList(representativeListName)).id,
+  );
 
-    return {
-      list: mapEmailList(hydratedList),
-      contacts: importedContacts,
-      importedCount: importedContacts.length,
-      createdCount,
-      updatedCount,
-      skippedCount,
-    };
-  });
+  return {
+    list: mapEmailList(hydratedList),
+    contacts: importedContacts,
+    importedCount: importedContacts.length,
+    createdCount,
+    updatedCount,
+    skippedCount,
+  };
 }
 
 export async function previewEmailContactsImport(
@@ -4595,20 +4733,39 @@ export async function listEmailContacts(
     search?: string;
     status?: EmailContactStatus;
     listId?: string;
+    tag?: string;
     attributeFilters?: Record<string, string>;
     limit?: number;
+    offset?: number;
   } = {},
 ): Promise<EmailContactListResponse> {
   const normalizedSearch = input.search?.trim().toLowerCase() ?? "";
   const searchPattern = normalizedSearch ? `%${normalizedSearch}%` : "";
-  const limit = Math.max(1, Math.min(input.limit ?? 100, 500));
+  const requestedLimit =
+    typeof input.limit === "number" && Number.isFinite(input.limit)
+      ? input.limit
+      : 100;
+  const requestedOffset =
+    typeof input.offset === "number" && Number.isFinite(input.offset)
+      ? input.offset
+      : 0;
+  const limit = Math.max(1, Math.min(requestedLimit, 500));
+  const offset = Math.max(0, requestedOffset);
+  const normalizedTag = input.tag?.trim().toLowerCase() ?? "";
   const { hasAttributesJson } = await getEmailContactCapabilities();
   const projection = await buildEmailContactSelectProjection("c");
   const listScope = input.listId
     ? await loadEmailListScopeById(businessId, input.listId)
     : null;
   const scopedListIds = listScope?.memberListIds ?? null;
-  const countValues: unknown[] = [businessId, normalizedSearch, searchPattern, scopedListIds, input.status ?? null];
+  const countValues: unknown[] = [
+    businessId,
+    normalizedSearch,
+    searchPattern,
+    scopedListIds,
+    input.status ?? null,
+    normalizedTag || null,
+  ];
   const countAttributeClauses = buildEmailContactAttributeFilterClauses({
     values: countValues,
     attributeFilters: input.attributeFilters,
@@ -4630,18 +4787,33 @@ export async function listEmailContacts(
         ))
         and ($5::text is null or c.status = $5::text)
         and ($4::uuid[] is null or lm.id is not null)
+        and (
+          $6::text is null
+          or exists (
+            select 1
+            from jsonb_array_elements_text(coalesce(c.tags_json, '[]'::jsonb)) as tag(value)
+            where lower(tag.value) = $6::text
+          )
+        )
         ${countAttributeClauses}
     `,
     countValues,
   );
 
-  const resultValues: unknown[] = [businessId, normalizedSearch, searchPattern, scopedListIds, input.status ?? null];
+  const resultValues: unknown[] = [
+    businessId,
+    normalizedSearch,
+    searchPattern,
+    scopedListIds,
+    input.status ?? null,
+    normalizedTag || null,
+  ];
   const resultAttributeClauses = buildEmailContactAttributeFilterClauses({
     values: resultValues,
     attributeFilters: input.attributeFilters,
     hasAttributesJson,
   });
-  resultValues.push(limit);
+  resultValues.push(limit, offset);
   const result = await executeQuery<EmailContactRow>(
     `
       select *
@@ -4660,11 +4832,20 @@ export async function listEmailContacts(
           ))
           and ($5::text is null or c.status = $5::text)
           and ($4::uuid[] is null or lm.id is not null)
+          and (
+            $6::text is null
+            or exists (
+              select 1
+              from jsonb_array_elements_text(coalesce(c.tags_json, '[]'::jsonb)) as tag(value)
+              where lower(tag.value) = $6::text
+            )
+          )
           ${resultAttributeClauses}
         order by c.id, c.updated_at desc, c.created_at desc
       ) contacts
       order by updated_at desc, created_at desc
-      limit $${resultValues.length}::int
+      limit $${resultValues.length - 1}::int
+      offset $${resultValues.length}::int
     `,
     resultValues,
   );
@@ -4686,6 +4867,7 @@ export async function updateEmailContact(
   },
 ): Promise<{ contact: EmailContact }> {
   const normalizedEmail = normalizeEmail(input.email);
+  const sanitizedNames = sanitizeContactNameParts(input);
 
   if (!normalizedEmail) {
     throw new HttpError(400, "email_contact_invalid", "A valid email address is required.");
@@ -4766,8 +4948,8 @@ export async function updateEmailContact(
         [
           businessId,
           normalizedEmail,
-          input.firstName?.trim() || null,
-          input.lastName?.trim() || null,
+          sanitizedNames.firstName ?? null,
+          sanitizedNames.lastName ?? null,
           nextStatus,
           shouldSetUnsubscribedAt,
           shouldClearUnsubscribedAt,
