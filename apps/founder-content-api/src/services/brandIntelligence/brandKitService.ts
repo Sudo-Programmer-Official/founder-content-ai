@@ -13,6 +13,7 @@ import type {
 import type { AuthenticatedPrincipal } from "../../middleware/auth.ts";
 import { requireBusinessMembership } from "../authBusinessService.ts";
 import { queryDb } from "../db/client.ts";
+import { syncWorkspaceBrandKitForBusiness } from "../workspaceAssetService.ts";
 import { HttpError } from "../../utils/http.ts";
 
 interface BrandKitRow extends QueryResultRow {
@@ -374,5 +375,7 @@ export async function updateBrandKitForBusiness(input: {
     ],
   );
 
-  return mapBrandKit(result.rows[0]);
+  const brandKit = mapBrandKit(result.rows[0]);
+  await syncWorkspaceBrandKitForBusiness(input.businessId);
+  return brandKit;
 }

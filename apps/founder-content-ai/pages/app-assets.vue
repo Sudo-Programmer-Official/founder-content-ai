@@ -15,6 +15,7 @@ import type {
   WorkspaceMediaOptimizationSurfaceSummary,
   WorkspaceMediaResolutionResponse,
 } from "../../../packages/shared-types";
+import { requestUpdateBrandKit } from "../services/brand-kit-service";
 import { useProductAccessContext } from "../access/product-access-context";
 import {
   requestUpdateBusinessMediaProfile,
@@ -25,6 +26,7 @@ import {
 import {
   requestCreateWorkspaceAsset,
   requestDeleteWorkspaceAsset,
+  requestRecordWorkspaceAssetUsage,
   requestWorkspaceAssetDownload,
   requestWorkspaceAssetUploadUrl,
   requestWorkspaceAssets,
@@ -51,6 +53,7 @@ const isUploading = ref(false);
 const isSavingMediaProfile = ref(false);
 const isLoadingResolution = ref(false);
 const deletingAssetId = ref("");
+const savingBrandLogoAssetId = ref("");
 const togglingPresetId = ref("");
 const savingPromptOverridePresetId = ref("");
 const resolutionContentType = ref<MediaRecommendationContentType>("post");
@@ -73,6 +76,7 @@ const documentCount = computed(() => assets.value.filter((asset) => asset.assetT
 const totalUsageCount = computed(() =>
   assets.value.reduce((total, asset) => total + asset.usageCount, 0),
 );
+const currentWorkspaceLogoAssetId = computed(() => brandKit.value?.logoAssetId || "");
 
 const enabledPresetCount = computed(
   () => mediaPresets.value.filter((preset) => preset.isEnabledForWorkspace).length,
@@ -316,6 +320,76 @@ async function downloadAsset(asset: WorkspaceAsset): Promise<void> {
     window.open(response.downloadUrl, "_blank", "noopener,noreferrer");
   } catch (error) {
     feedback.value = error instanceof Error ? error.message : "Unable to prepare asset download.";
+  }
+}
+
+function canUseAssetAsWorkspaceLogo(asset: WorkspaceAsset): boolean {
+  return asset.mimeType.startsWith("image/");
+}
+
+function isCurrentWorkspaceLogo(asset: WorkspaceAsset): boolean {
+  return currentWorkspaceLogoAssetId.value === asset.id;
+}
+
+async function setWorkspaceLogo(asset: WorkspaceAsset): Promise<void> {
+  if (!activeBusinessId.value) {
+    return;
+  }
+
+  const logoUrl = asset.storageUrl?.trim() || asset.previewUrl?.trim();
+
+  if (!logoUrl) {
+    feedback.value = "This asset does not have a usable image URL for the workspace logo.";
+    return;
+  }
+
+  savingBrandLogoAssetId.value = asset.id;
+  feedback.value = "";
+
+  try {
+    await requestUpdateBrandKit({
+      businessId: activeBusinessId.value,
+      brandKit: {
+        logoUrl,
+      },
+    });
+    await requestRecordWorkspaceAssetUsage(asset.id, {
+      businessId: activeBusinessId.value,
+      usageSurface: "brand_kit",
+      metadata: {
+        slot: "logo",
+      },
+    }).catch(() => undefined);
+    await loadAssets();
+    feedback.value = `${asset.title || "Selected asset"} is now the workspace logo. Email signatures and generated visuals will reuse it.`;
+  } catch (error) {
+    feedback.value = error instanceof Error ? error.message : "Unable to update the workspace logo.";
+  } finally {
+    savingBrandLogoAssetId.value = "";
+  }
+}
+
+async function clearWorkspaceLogo(): Promise<void> {
+  if (!activeBusinessId.value || !brandKit.value?.logoUrl) {
+    return;
+  }
+
+  savingBrandLogoAssetId.value = "__clear__";
+  feedback.value = "";
+
+  try {
+    await requestUpdateBrandKit({
+      businessId: activeBusinessId.value,
+      brandKit: {
+        logoUrl: "",
+      },
+    });
+    await loadAssets();
+    feedback.value = "Workspace logo removed. Generated visuals and email signatures will stop reusing it until a new logo is selected.";
+  } catch (error) {
+    feedback.value = error instanceof Error ? error.message : "Unable to remove the workspace logo.";
+  } finally {
+    savingBrandLogoAssetId.value = "";
   }
 }
 
@@ -583,6 +657,21 @@ watch(
         <p class="page-eyebrow">Workspace brand kit</p>
         <h2>Colors and logo stay connected to the asset hub</h2>
         <p>Visual generation can reuse the same identity without asking users to upload the same logo again.</p>
+        <p class="panel-note brand-kit-note">
+          Upload a logo into Assets, then click <strong>Set as workspace logo</strong>. The same logo will be reused in
+          image generation, email signatures, and future brand surfaces.
+        </p>
+        <div class="brand-kit-actions">
+          <button
+            v-if="brandKit.logoUrl"
+            type="button"
+            class="asset-link"
+            :disabled="savingBrandLogoAssetId === '__clear__'"
+            @click="void clearWorkspaceLogo()"
+          >
+            {{ savingBrandLogoAssetId === "__clear__" ? "Removing..." : "Remove workspace logo" }}
+          </button>
+        </div>
       </div>
       <div class="brand-kit-swatches">
         <div class="swatch-card">
@@ -598,7 +687,7 @@ watch(
         <div class="swatch-card logo-card">
           <span>Logo asset</span>
           <img v-if="brandKit.logoUrl" :src="brandKit.logoUrl" alt="Workspace logo" />
-          <strong>{{ brandKit.logoAssetId ? "Connected" : "Not set" }}</strong>
+          <strong>{{ brandKit.logoAssetId ? "Connected across the workspace" : "Not set" }}</strong>
         </div>
       </div>
     </section>
@@ -928,10 +1017,27 @@ watch(
           <div class="asset-tags">
             <span>{{ asset.usageCount }} uses</span>
             <span v-if="asset.sourceReferenceId">linked</span>
+            <span v-if="isCurrentWorkspaceLogo(asset)">workspace logo</span>
           </div>
         </div>
 
         <div class="asset-card-actions">
+          <button
+            v-if="canUseAssetAsWorkspaceLogo(asset)"
+            type="button"
+            class="asset-link asset-brand-logo-action"
+            :class="{ active: isCurrentWorkspaceLogo(asset) }"
+            :disabled="Boolean(savingBrandLogoAssetId) || isCurrentWorkspaceLogo(asset)"
+            @click="void setWorkspaceLogo(asset)"
+          >
+            {{
+              isCurrentWorkspaceLogo(asset)
+                ? "Current logo"
+                : savingBrandLogoAssetId === asset.id
+                  ? "Saving..."
+                  : "Set as workspace logo"
+            }}
+          </button>
           <a
             class="asset-link"
             :href="asset.previewUrl || asset.storageUrl"
@@ -950,10 +1056,17 @@ watch(
           <button
             type="button"
             class="asset-remove"
-            :disabled="deletingAssetId === asset.id"
+            :disabled="deletingAssetId === asset.id || isCurrentWorkspaceLogo(asset)"
+            :title="isCurrentWorkspaceLogo(asset) ? 'Remove or replace the workspace logo before archiving this asset.' : undefined"
             @click="void archiveAsset(asset.id)"
           >
-            {{ deletingAssetId === asset.id ? "Archiving..." : "Archive" }}
+            {{
+              isCurrentWorkspaceLogo(asset)
+                ? "In use as logo"
+                : deletingAssetId === asset.id
+                  ? "Archiving..."
+                  : "Archive"
+            }}
           </button>
         </div>
       </article>
@@ -1082,6 +1195,17 @@ watch(
 .brand-kit-summary {
   display: grid;
   gap: 1.25rem;
+}
+
+.brand-kit-note {
+  max-width: 44rem;
+}
+
+.brand-kit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
 }
 
 .media-intelligence-panel,
@@ -1439,6 +1563,12 @@ watch(
   cursor: pointer;
   text-align: center;
   overflow-wrap: anywhere;
+}
+
+.asset-brand-logo-action.active {
+  background: rgba(219, 107, 45, 0.12);
+  border-color: rgba(219, 107, 45, 0.3);
+  color: #8d4218;
 }
 
 @media (max-width: 900px) {

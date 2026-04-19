@@ -773,6 +773,63 @@ const emailLimitText = computed(() => {
   return limits ? `Emails left today: ${limits.emailsRemaining}` : "";
 });
 const hasConfiguredDomain = computed(() => Boolean(domainSettings.value?.domainName));
+const isDkimReady = computed(() => {
+  const settings = domainSettings.value;
+
+  if (!settings?.domainName) {
+    return false;
+  }
+
+  return settings.domainSetupAnalysis?.dkimReady ?? settings.dkimStatus === "verified";
+});
+const isSpfReady = computed(() => {
+  const settings = domainSettings.value;
+
+  if (!settings?.domainName) {
+    return false;
+  }
+
+  return settings.domainSetupAnalysis?.spfReady ?? settings.spfStatus === "verified";
+});
+const isBrandedSendingReady = computed(() => {
+  const settings = domainSettings.value;
+
+  if (!settings?.domainName) {
+    return false;
+  }
+
+  if (settings.deliverability?.sendingBlocked) {
+    return false;
+  }
+
+  return (
+    settings.domainSetupAnalysis?.brandedSendingReady
+    ?? (settings.domainStatus === "verified" && isDkimReady.value && isSpfReady.value)
+  );
+});
+const spfReadinessSummary = computed(() => {
+  const settings = domainSettings.value;
+
+  if (!settings?.domainName) {
+    return "Not configured";
+  }
+
+  if (isSpfReady.value) {
+    return "Ready";
+  }
+
+  const validationState = settings.domainSetupAnalysis?.spfValidationState;
+
+  if (validationState === "multiple_records" || validationState === "malformed") {
+    return "Needs fix";
+  }
+
+  if (settings.domainSetupAnalysis?.existingSpfValue) {
+    return "Needs update";
+  }
+
+  return formatStatus(settings.spfStatus);
+});
 const domainStatusSummary = computed(() => {
   const settings = domainSettings.value;
 
@@ -780,8 +837,12 @@ const domainStatusSummary = computed(() => {
     return "Not configured";
   }
 
-  if (settings.domainStatus === "verified" && settings.dkimStatus === "verified" && settings.spfStatus === "verified") {
+  if (isBrandedSendingReady.value) {
     return "Ready to send";
+  }
+
+  if (settings.domainStatus === "verified" && isDkimReady.value) {
+    return "DNS needs attention";
   }
 
   return "Verification in progress";
@@ -1296,16 +1357,18 @@ const senderIdentitySummary = computed(() => {
     : domainSettings.value.fromEmail;
 });
 const verificationStatusSummary = computed(() => {
-  if (!domainSettings.value?.domainName) {
+  const settings = domainSettings.value;
+
+  if (!settings?.domainName) {
     return "Not configured";
   }
 
-  if (
-    domainSettings.value.domainStatus === "verified" &&
-    domainSettings.value.dkimStatus === "verified" &&
-    domainSettings.value.spfStatus === "verified"
-  ) {
-    return "Fully verified";
+  if (isBrandedSendingReady.value) {
+    return "Ready for branded sending";
+  }
+
+  if (settings.domainStatus === "verified" && isDkimReady.value) {
+    return isSpfReady.value ? "Ready for branded sending" : "SES verified, SPF review needed";
   }
 
   return "Needs DNS attention";
@@ -1340,11 +1403,15 @@ const systemWarnings = computed(() => {
     return warnings;
   }
 
-  if (settings.spfStatus !== "verified") {
-    warnings.push("SPF is not verified yet.");
+  if (!isSpfReady.value) {
+    warnings.push(
+      settings.domainSetupAnalysis?.existingSpfValue
+        ? "SPF still needs an update."
+        : "SPF record is not ready yet.",
+    );
   }
 
-  if (settings.dkimStatus !== "verified") {
+  if (!isDkimReady.value) {
     warnings.push("DKIM is not verified yet.");
   }
 
@@ -4488,7 +4555,7 @@ onBeforeUnmount(() => {
               <span class="workspace-chip">{{ domainStatusSummary }}</span>
               <span class="workspace-chip">Domain: {{ formatStatus(domainSettings?.domainStatus) }}</span>
               <span class="workspace-chip">DKIM: {{ formatStatus(domainSettings?.dkimStatus) }}</span>
-              <span class="workspace-chip">SPF: {{ formatStatus(domainSettings?.spfStatus) }}</span>
+              <span class="workspace-chip">SPF: {{ spfReadinessSummary }}</span>
             </div>
 
             <div class="domain-summary-grid">
