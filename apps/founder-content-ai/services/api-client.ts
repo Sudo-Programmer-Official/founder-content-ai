@@ -55,7 +55,7 @@ function resolveApiBaseUrl(): string {
     return "http://localhost:3001/api";
   }
 
-  return "https://api.foundercontent.ai/api";
+  return `${window.location.origin}/api`;
 }
 
 function parseJsonSafely<T>(value: string): T | null {

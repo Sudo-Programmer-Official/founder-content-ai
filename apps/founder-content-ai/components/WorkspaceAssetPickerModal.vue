@@ -320,17 +320,20 @@ watch(search, () => {
   gap: 1rem;
   overflow: auto;
   padding-right: 0.25rem;
+  align-items: start;
 }
 
 .picker-asset-card {
   display: grid;
   gap: 0.75rem;
+  min-width: 0;
   padding: 0.8rem;
   border: 1px solid rgba(214, 136, 64, 0.14);
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.9);
   text-align: left;
   cursor: pointer;
+  overflow: hidden;
   transition:
     transform 160ms ease,
     box-shadow 160ms ease,
@@ -346,7 +349,9 @@ watch(search, () => {
 
 .picker-asset-preview,
 .picker-asset-placeholder {
+  display: block;
   width: 100%;
+  max-width: 100%;
   aspect-ratio: 1 / 1;
   border-radius: 18px;
   object-fit: cover;
@@ -365,15 +370,20 @@ watch(search, () => {
 .picker-asset-copy {
   display: grid;
   gap: 0.2rem;
+  min-width: 0;
 }
 
 .picker-asset-copy strong {
   font-size: 1rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .picker-asset-copy span {
   font-size: 0.88rem;
   color: rgba(83, 52, 36, 0.68);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .picker-selection-summary {
