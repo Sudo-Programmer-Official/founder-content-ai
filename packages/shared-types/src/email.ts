@@ -217,6 +217,10 @@ export interface EmailCampaign {
   deliveredCount: number;
   failedCount: number;
   unsubscribedCount: number;
+  uniqueOpens: number;
+  totalOpens: number;
+  uniqueClicks: number;
+  totalClicks: number;
 }
 
 export interface EmailCampaignSend {
@@ -304,6 +308,8 @@ export type EmailContactImportField =
   | "name"
   | "firstName"
   | "lastName"
+  | "emailStatus"
+  | "emailPermissionStatus"
   | "lists"
   | "tags"
   | "state"
@@ -357,6 +363,7 @@ export interface EmailContactImportPreviewRow {
   name?: string;
   firstName?: string;
   lastName?: string;
+  status?: EmailContactStatus;
   lists: string[];
   tags: string[];
   attributes: EmailContactAttributes;

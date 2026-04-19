@@ -8,6 +8,8 @@ import type {
   CreateEmailDomainResponse,
   DeleteEmailCampaignResponse,
   EmailCampaign,
+  EmailCampaignLink,
+  EmailCampaignLinkListResponse,
   EmailCampaignSend,
   EmailCampaignListResponse,
   EmailBodyBlock,
@@ -172,6 +174,24 @@ interface EmailCampaignRow extends QueryResultRow {
   delivered_count?: string | number;
   failed_count?: string | number;
   unsubscribed_count?: string | number;
+  unique_opens?: string | number;
+  total_opens?: string | number;
+  unique_clicks?: string | number;
+  total_clicks?: string | number;
+}
+
+interface EmailCampaignLinkAggregateRow extends QueryResultRow {
+  id: string;
+  campaign_id: string;
+  send_id: string;
+  business_id: string;
+  original_url: string;
+  normalized_url: string;
+  label: string | null;
+  position_index: number | null;
+  created_at: Date | string;
+  unique_clicks?: string | number;
+  total_clicks?: string | number;
 }
 
 interface EmailCampaignSendRow extends QueryResultRow {
@@ -1174,6 +1194,26 @@ function mapEmailCampaign(row: EmailCampaignRow): EmailCampaign {
     deliveredCount: toNumber(row.delivered_count),
     failedCount: toNumber(row.failed_count),
     unsubscribedCount: toNumber(row.unsubscribed_count),
+    uniqueOpens: toNumber(row.unique_opens),
+    totalOpens: toNumber(row.total_opens),
+    uniqueClicks: toNumber(row.unique_clicks),
+    totalClicks: toNumber(row.total_clicks),
+  };
+}
+
+function mapEmailCampaignLink(row: EmailCampaignLinkAggregateRow): EmailCampaignLink {
+  return {
+    id: row.id,
+    campaignId: row.campaign_id,
+    sendId: row.send_id,
+    businessId: row.business_id,
+    originalUrl: row.original_url,
+    normalizedUrl: row.normalized_url,
+    label: row.label ?? undefined,
+    positionIndex: row.position_index === null ? undefined : Number(row.position_index),
+    uniqueClicks: toNumber(row.unique_clicks),
+    totalClicks: toNumber(row.total_clicks),
+    createdAt: new Date(row.created_at).toISOString(),
   };
 }
 
@@ -2192,6 +2232,7 @@ interface ParsedEmailImportContact {
   email: string;
   firstName?: string;
   lastName?: string;
+  status?: EmailContactStatus;
   lists: string[];
   tags: string[];
   attributes: EmailContactAttributes;
@@ -2222,6 +2263,8 @@ const EMAIL_CONTACT_IMPORT_FIELDS: Array<{
   { field: "name", label: "Full name", required: false },
   { field: "firstName", label: "First name", required: false },
   { field: "lastName", label: "Last name", required: false },
+  { field: "emailStatus", label: "Email status", required: false },
+  { field: "emailPermissionStatus", label: "Email permission", required: false },
   { field: "lists", label: "Lists", required: false },
   { field: "tags", label: "Tags", required: false },
   { field: "state", label: "State", required: false },
@@ -2265,6 +2308,25 @@ const EMAIL_CONTACT_IMPORT_FIELD_ALIASES: Record<EmailContactImportField, string
     "surname",
     "familyname",
     "family_name",
+  ],
+  emailStatus: [
+    "emailstatus",
+    "email_status",
+    "status",
+    "contactstatus",
+    "contact_status",
+    "subscriberstatus",
+    "subscriber_status",
+  ],
+  emailPermissionStatus: [
+    "emailpermissionstatus",
+    "email_permission_status",
+    "permissionstatus",
+    "permission_status",
+    "consentstatus",
+    "consent_status",
+    "marketingpermission",
+    "marketing_permission",
   ],
   lists: ["lists", "list", "listname", "list_name", "audience_groups", "audiences", "groups"],
   tags: ["tags", "tag", "labels", "segments", "interests"],
@@ -2535,6 +2597,72 @@ function splitListNames(value: string | undefined): string[] {
   return names;
 }
 
+function resolveImportedEmailContactStatus(input: {
+  emailStatus?: string;
+  emailPermissionStatus?: string;
+}): EmailContactStatus | undefined {
+  const normalizedSignals = [
+    normalizeColumnName(input.emailStatus ?? ""),
+    normalizeColumnName(input.emailPermissionStatus ?? ""),
+  ].filter(Boolean);
+
+  if (normalizedSignals.length === 0) {
+    return undefined;
+  }
+
+  const hasSignal = (markers: string[]): boolean =>
+    normalizedSignals.some((signal) => markers.some((marker) => signal.includes(marker)));
+
+  if (hasSignal(["complaint", "complained", "spam", "abuse", "reportedspam"])) {
+    return "complained";
+  }
+
+  if (hasSignal(["bounce", "bounced", "hardbounce", "softbounce", "undeliverable", "invalid"])) {
+    return "bounced";
+  }
+
+  if (hasSignal([
+    "unsubscribe",
+    "unsubscribed",
+    "optout",
+    "optedout",
+    "removed",
+    "revoked",
+    "nopermission",
+    "donotemail",
+    "donotsend",
+    "transactionalonly",
+  ])) {
+    return "unsubscribed";
+  }
+
+  if (hasSignal(["suppressed", "suppression", "blocked", "blacklisted", "donotmail"])) {
+    return "suppressed";
+  }
+
+  if (hasSignal(["active", "subscribed", "implied", "express", "explicit", "optin", "optedin", "confirmed"])) {
+    return "active";
+  }
+
+  return undefined;
+}
+
+function resolveImportedContactStatusLabel(status: EmailContactStatus): string {
+  switch (status) {
+    case "unsubscribed":
+      return "unsubscribed";
+    case "bounced":
+      return "bounced";
+    case "complained":
+      return "complained";
+    case "suppressed":
+      return "suppressed";
+    case "active":
+    default:
+      return "active";
+  }
+}
+
 function extractImportedListNames(contacts: ParsedEmailImportContact[], fallbackListName: string): string[] {
   const seen = new Set<string>();
   const listNames: string[] = [];
@@ -2652,6 +2780,9 @@ function parseContactImportPayload(
     const nameValue = sanitizedMapping.name ? raw[sanitizedMapping.name] : "";
     const firstNameValue = sanitizedMapping.firstName ? raw[sanitizedMapping.firstName] : "";
     const lastNameValue = sanitizedMapping.lastName ? raw[sanitizedMapping.lastName] : "";
+    const emailStatusValue = sanitizedMapping.emailStatus ? raw[sanitizedMapping.emailStatus] : "";
+    const emailPermissionStatusValue =
+      sanitizedMapping.emailPermissionStatus ? raw[sanitizedMapping.emailPermissionStatus] : "";
     const [fallbackFirstName, ...fallbackRest] = nameValue.split(/\s+/).filter(Boolean);
     const issues: string[] = [];
 
@@ -2669,10 +2800,15 @@ function parseContactImportPayload(
     const lists = splitListNames(sanitizedMapping.lists ? raw[sanitizedMapping.lists] : undefined);
     const tags = splitTags(sanitizedMapping.tags ? raw[sanitizedMapping.tags] : undefined);
     const attributes = extractContactAttributesFromRaw(raw, sanitizedMapping);
+    const importedStatus = resolveImportedEmailContactStatus({
+      emailStatus: emailStatusValue,
+      emailPermissionStatus: emailPermissionStatusValue,
+    });
     const parsedContact: ParsedEmailImportContact = {
       email,
       firstName: firstNameValue || fallbackFirstName || undefined,
       lastName: lastNameValue || (fallbackRest.length > 0 ? fallbackRest.join(" ") : undefined),
+      status: importedStatus,
       lists,
       tags,
       attributes,
@@ -2688,15 +2824,22 @@ function parseContactImportPayload(
     }
 
     if (previewRows.length < 10) {
+      const previewIssues = [...issues];
+
+      if (importedStatus && importedStatus !== "active") {
+        previewIssues.push(`Will import as ${resolveImportedContactStatusLabel(importedStatus)}.`);
+      }
+
       previewRows.push({
         email: email || undefined,
         name: nameValue || undefined,
         firstName: parsedContact.firstName,
         lastName: parsedContact.lastName,
+        status: importedStatus,
         lists,
         tags,
         attributes,
-        issues,
+        issues: previewIssues,
         raw,
       });
     }
@@ -2896,6 +3039,7 @@ async function upsertContact(
     email: string;
     firstName?: string;
     lastName?: string;
+    status?: EmailContactStatus;
     tags: string[];
     attributes: EmailContactAttributes;
   },
@@ -2923,10 +3067,59 @@ async function upsertContact(
   const attributeJson = JSON.stringify(input.attributes ?? {});
 
   if (existingResult.rows[0]) {
+    const nextStatus = isSuppressed
+      ? "unsubscribed"
+      : input.status
+        ? (
+            input.status === "active" && existingResult.rows[0].status !== "active"
+              ? existingResult.rows[0].status
+              : input.status
+          )
+        : existingResult.rows[0].status;
+    const shouldSetUnsubscribedAt =
+      nextStatus === "unsubscribed" && existingResult.rows[0].unsubscribed_at === null;
+    const shouldClearUnsubscribedAt =
+      existingResult.rows[0].unsubscribed_at !== null && nextStatus !== "unsubscribed";
+
     if (strategy === "skip") {
+      if (
+        nextStatus === existingResult.rows[0].status
+        && !shouldSetUnsubscribedAt
+        && !shouldClearUnsubscribedAt
+      ) {
+        return {
+          row: existingResult.rows[0],
+          operation: "skipped",
+        };
+      }
+
+      const statusOnlyResult = await executeQuery<EmailContactRow>(
+        `
+          update email_contacts
+          set
+            status = $2,
+            unsubscribed_at = case
+              when $3 then coalesce(unsubscribed_at, now())
+              when $4 then null
+              else unsubscribed_at
+            end,
+            updated_at = now()
+          where id = $1::uuid
+          returning
+            ${projection}
+        `,
+        [
+          existingResult.rows[0].id,
+          nextStatus,
+          shouldSetUnsubscribedAt,
+          shouldClearUnsubscribedAt,
+        ],
+        client,
+      );
+
       return {
-        row: existingResult.rows[0],
-        operation: "skipped",
+        row: statusOnlyResult.rows[0],
+        operation: "updated",
       };
     }
 
@@ -2936,19 +3129,17 @@ async function upsertContact(
         set
           first_name = coalesce($2, first_name),
           last_name = coalesce($3, last_name),
-          status = case
-            when $5 then 'unsubscribed'
-            else status
-          end,
+          status = $5,
           unsubscribed_at = case
-            when $5 and unsubscribed_at is null then now()
+            when $6 then coalesce(unsubscribed_at, now())
+            when $7 then null
             else unsubscribed_at
           end,
           tags_json = case
             when jsonb_array_length($4::jsonb) > 0 then $4::jsonb
             else tags_json
           end,
-          ${hasAttributesJson ? "attributes_json = case when $6::jsonb <> '{}'::jsonb then coalesce(attributes_json, '{}'::jsonb) || $6::jsonb else attributes_json end," : ""}
+          ${hasAttributesJson ? "attributes_json = case when $8::jsonb <> '{}'::jsonb then coalesce(attributes_json, '{}'::jsonb) || $8::jsonb else attributes_json end," : ""}
           updated_at = now()
         where id = $1::uuid
         returning
@@ -2959,7 +3150,9 @@ async function upsertContact(
         input.firstName ?? null,
         input.lastName ?? null,
         tagJson,
-        isSuppressed,
+        nextStatus,
+        shouldSetUnsubscribedAt,
+        shouldClearUnsubscribedAt,
         ...(hasAttributesJson ? [attributeJson] : []),
       ],
       client,
@@ -2970,6 +3163,8 @@ async function upsertContact(
       operation: "updated",
     };
   }
+
+  const nextStatus = isSuppressed ? "unsubscribed" : input.status ?? "active";
 
   const insertResult = await executeQuery<EmailContactRow>(
     `
@@ -3002,8 +3197,8 @@ async function upsertContact(
       input.lastName ?? null,
       tagJson,
       ...(hasAttributesJson ? [attributeJson] : []),
-      isSuppressed ? "unsubscribed" : "active",
-      isSuppressed ? new Date().toISOString() : null,
+      nextStatus,
+      nextStatus === "unsubscribed" ? new Date().toISOString() : null,
     ],
     client,
   );
@@ -3045,7 +3240,11 @@ async function loadEmailCampaignOrThrow(
         count(r.id) filter (where r.status in ('sent', 'delivered'))::int as sent_count,
         count(r.id) filter (where r.status = 'delivered')::int as delivered_count,
         count(r.id) filter (where r.status = 'failed')::int as failed_count,
-        count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_count
+        count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_count,
+        count(r.id) filter (where r.open_count > 0)::int as unique_opens,
+        coalesce(sum(r.open_count), 0)::int as total_opens,
+        count(r.id) filter (where r.click_count > 0)::int as unique_clicks,
+        coalesce(sum(r.click_count), 0)::int as total_clicks
       from email_campaigns c
       left join lateral (
         select s.id
@@ -4867,7 +5066,11 @@ export async function createEmailCampaign(
           0::int as sent_count,
           0::int as delivered_count,
           0::int as failed_count,
-          0::int as unsubscribed_count
+          0::int as unsubscribed_count,
+          0::int as unique_opens,
+          0::int as total_opens,
+          0::int as unique_clicks,
+          0::int as total_clicks
       `,
       [
         businessId,
@@ -4968,7 +5171,11 @@ export async function updateEmailCampaign(
           0::int as sent_count,
           0::int as delivered_count,
           0::int as failed_count,
-          0::int as unsubscribed_count
+          0::int as unsubscribed_count,
+          0::int as unique_opens,
+          0::int as total_opens,
+          0::int as unique_clicks,
+          0::int as total_clicks
       `,
       [
         campaignId,
@@ -5193,7 +5400,11 @@ export async function listEmailCampaigns(businessId: string): Promise<EmailCampa
         count(r.id) filter (where r.status in ('sent', 'delivered'))::int as sent_count,
         count(r.id) filter (where r.status = 'delivered')::int as delivered_count,
         count(r.id) filter (where r.status = 'failed')::int as failed_count,
-        count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_count
+        count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_count,
+        count(r.id) filter (where r.open_count > 0)::int as unique_opens,
+        coalesce(sum(r.open_count), 0)::int as total_opens,
+        count(r.id) filter (where r.click_count > 0)::int as unique_clicks,
+        coalesce(sum(r.click_count), 0)::int as total_clicks
       from email_campaigns c
       left join lateral (
         select s.id
@@ -5222,6 +5433,53 @@ export async function getEmailCampaignStatsResponse(
   await loadEmailCampaignOrThrow(businessId, campaignId);
   return {
     stats: await getCampaignStats(businessId, campaignId),
+  };
+}
+
+export async function listEmailCampaignLinksResponse(
+  businessId: string,
+  campaignId: string,
+): Promise<EmailCampaignLinkListResponse> {
+  await loadEmailCampaignOrThrow(businessId, campaignId);
+
+  const result = await executeQuery<EmailCampaignLinkAggregateRow>(
+    `
+      with latest_send as (
+        select id
+        from email_campaign_sends
+        where campaign_id = $2::uuid
+        order by created_at desc, id desc
+        limit 1
+      )
+      select
+        l.id,
+        l.campaign_id,
+        l.send_id,
+        l.business_id,
+        l.original_url,
+        l.normalized_url,
+        l.label,
+        l.position_index,
+        l.created_at,
+        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'click')::int as unique_clicks,
+        count(e.id) filter (where e.event_type = 'click')::int as total_clicks
+      from latest_send
+      inner join email_campaign_links l on l.send_id = latest_send.id
+      left join email_events e on e.link_id = l.id
+      where l.business_id = $1::uuid
+        and l.campaign_id = $2::uuid
+      group by l.id
+      order by
+        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'click') desc,
+        count(e.id) filter (where e.event_type = 'click') desc,
+        coalesce(l.position_index, 999999) asc,
+        l.created_at asc
+    `,
+    [businessId, campaignId],
+  );
+
+  return {
+    links: result.rows.map(mapEmailCampaignLink),
   };
 }
 

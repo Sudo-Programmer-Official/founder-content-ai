@@ -5,6 +5,7 @@ import type {
   CreateEmailDomainResponse,
   DeleteEmailCampaignResponse,
   DeleteEmailContactResponse,
+  EmailCampaignLinkListResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
   EmailContactImportJobListResponse,
@@ -244,6 +245,17 @@ export async function requestEmailCampaignStats(
   const encodedCampaignId = encodeURIComponent(campaignId);
   return apiGet<EmailCampaignStatsResponse>(
     `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}/stats`,
+  );
+}
+
+export async function requestEmailCampaignLinks(
+  businessId: string,
+  campaignId: string,
+): Promise<EmailCampaignLinkListResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedCampaignId = encodeURIComponent(campaignId);
+  return apiGet<EmailCampaignLinkListResponse>(
+    `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}/links`,
   );
 }
 

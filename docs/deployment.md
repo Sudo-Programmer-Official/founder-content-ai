@@ -83,6 +83,7 @@ Notes:
 - the backend also allows the main Vercel project domain and Vercel preview URLs for browser-based testing and preview deploys
 - `STRIPE_WEBHOOK_SECRET` must come from the live Stripe webhook endpoint when billing is moved to production
 - `STRIPE_STARTER_PRICE_ID` and `STRIPE_PRO_PRICE_ID` must be live Stripe price ids in production, not test ids
+- if `/app/billing` should sell the email add-on, `STRIPE_EMAIL_STARTER_PRICE_ID`, `STRIPE_EMAIL_GROWTH_PRICE_ID`, and `STRIPE_EMAIL_SCALE_PRICE_ID` must also be live Stripe price ids
 - `META_REDIRECT_URI` must exactly match a Valid OAuth Redirect URI in the Meta app dashboard.
 - use the backend API host for the Meta callback. Do not point Meta OAuth back to the frontend app host.
 

@@ -343,7 +343,7 @@ async function preparePhotoOverlayLogoDataUrl(logoUrl: string | undefined): Prom
   try {
     const preparedLogo = await sharp(logoBytes)
       .trim()
-      .resize(240, 92, {
+      .resize(320, 112, {
         fit: "contain",
         background: {
           r: 0,
@@ -1740,8 +1740,14 @@ function buildPhotoOverlayCompositeSvg(input: {
   const brandLabelUpper = escapeSvg(brandLabel.toUpperCase());
   const brandPillWidth = Math.max(240, estimateTextWidth(brandLabelUpper, 18, 0.52) + 116);
   const ctaWidth = ctaText ? Math.max(176, estimateTextWidth(ctaText, 24, 0.5) + 58) : 0;
-  const logoBadgeWidth = 220;
-  const logoBadgeX = 1024 - 72 - logoBadgeWidth;
+  const promoDomainLabel =
+    input.logoDataUrl && ctaText
+      ? sanitizePhrase(input.businessContext?.domainLabel, 36)
+      : "";
+  const logoImageX = 72;
+  const logoImageY = 68;
+  const logoImageWidth = 260;
+  const logoImageHeight = 84;
 
   return `
     <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
@@ -1758,17 +1764,15 @@ function buildPhotoOverlayCompositeSvg(input: {
       <rect width="1024" height="1024" fill="url(#photoOverlayShade)" />
       ${input.logoDataUrl
         ? `
-          <g filter="url(#photoOverlayShadow)">
-            <rect x="${logoBadgeX}" y="72" width="${logoBadgeWidth}" height="72" rx="24" fill="${brandPillColor}" />
-            <image
-              x="${logoBadgeX + 18}"
-              y="90"
-              width="${logoBadgeWidth - 36}"
-              height="36"
-              href="${input.logoDataUrl}"
-              preserveAspectRatio="xMidYMid meet"
-            />
-          </g>
+          <image
+            x="${logoImageX}"
+            y="${logoImageY}"
+            width="${logoImageWidth}"
+            height="${logoImageHeight}"
+            href="${input.logoDataUrl}"
+            preserveAspectRatio="xMinYMid meet"
+            filter="url(#photoOverlayShadow)"
+          />
         `
         : `
           <g filter="url(#photoOverlayShadow)">
@@ -1796,6 +1800,22 @@ function buildPhotoOverlayCompositeSvg(input: {
           `
           : ""}
       </g>
+      ${promoDomainLabel
+        ? `
+          <text
+            x="952"
+            y="972"
+            text-anchor="end"
+            font-size="21"
+            font-weight="600"
+            letter-spacing="0.5"
+            font-family="'Avenir Next', 'Segoe UI', Arial, sans-serif"
+            fill="#FFFFFF"
+            opacity="0.88"
+            filter="url(#photoOverlayShadow)"
+          >${escapeSvg(promoDomainLabel)}</text>
+        `
+        : ""}
     </svg>
   `.trim();
 }

@@ -26,6 +26,9 @@ User-facing plans:
 - Free -> `$0/month`
 - Starter -> `$9/month`
 - Pro -> `$19/month`
+- Starter Email -> `$39/month`
+- Growth Email -> `$69/month`
+- Scale Email -> `$99/month`
 
 Internal workspace plan codes:
 
@@ -38,6 +41,14 @@ Important: internal plan codes do not match the marketing labels exactly. In thi
 
 - `pro` means the user-facing Starter plan
 - `growth` means the user-facing Pro plan
+
+Internal email add-on tier codes:
+
+- `none` -> no separate email billing
+- `starter_email` -> Starter Email
+- `growth_email` -> Growth Email
+- `scale_email` -> Scale Email
+- `custom` -> manual support setup
 
 ## Current Stripe Test Configuration
 
@@ -54,6 +65,16 @@ STRIPE_PRO_PRICE_ID=price_1TKlPmQZyvgtsQ6EGWsRlkVt
 ```
 
 These are test-mode values and should not be reused for production.
+
+Current email add-on test price ids are not committed in the repo. Create them in Stripe first, then set:
+
+```env
+STRIPE_EMAIL_STARTER_PRICE_ID=price_...
+STRIPE_EMAIL_GROWTH_PRICE_ID=price_...
+STRIPE_EMAIL_SCALE_PRICE_ID=price_...
+```
+
+The `/app/billing` email add-on purchase buttons stay disabled until those three env vars are present on the API.
 
 ## Current Product Behavior
 
@@ -131,6 +152,9 @@ STRIPE_SECRET_KEY=sk_test_...
 STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_STARTER_PRICE_ID=price_1TKlOBQZyvgtsQ6Eu9Tr9Qw0
 STRIPE_PRO_PRICE_ID=price_1TKlPmQZyvgtsQ6EGWsRlkVt
+STRIPE_EMAIL_STARTER_PRICE_ID=price_...
+STRIPE_EMAIL_GROWTH_PRICE_ID=price_...
+STRIPE_EMAIL_SCALE_PRICE_ID=price_...
 FRONTEND_ORIGIN=http://localhost:5173
 ```
 
@@ -138,15 +162,35 @@ FRONTEND_ORIGIN=http://localhost:5173
 
 In Stripe test mode:
 
-1. Create product `Starter` with a recurring monthly price of `$9`.
-2. Create product `Pro` with a recurring monthly price of `$19`.
-3. Copy the resulting price ids into:
+1. Ensure product `FounderContent Starter` has a recurring monthly price of `$9`.
+2. Ensure product `FounderContent Pro` has a recurring monthly price of `$19`.
+3. Create product `FounderContent Email Starter` with a recurring monthly price of `$39`.
+4. Create product `FounderContent Email Growth` with a recurring monthly price of `$69`.
+5. Create product `FounderContent Email Scale` with a recurring monthly price of `$99`.
+6. Copy the resulting price ids into:
    - `STRIPE_STARTER_PRICE_ID`
    - `STRIPE_PRO_PRICE_ID`
-4. Create a webhook endpoint that points to:
+   - `STRIPE_EMAIL_STARTER_PRICE_ID`
+   - `STRIPE_EMAIL_GROWTH_PRICE_ID`
+   - `STRIPE_EMAIL_SCALE_PRICE_ID`
+7. Create a webhook endpoint that points to:
    - local: `http://localhost:3001/api/webhooks/stripe`
    - production: `https://<your-api-domain>/api/webhooks/stripe`
-5. Enable the Stripe customer portal in the Stripe dashboard.
+8. Enable the Stripe customer portal in the Stripe dashboard.
+
+If you already have a Stripe secret key locally, the repo includes a bootstrap script that can create or reuse the catalog for you:
+
+```bash
+cd apps/founder-content-api
+npm run stripe:bootstrap-email
+```
+
+To create or reuse all five recurring prices and write the resolved ids back into `apps/founder-content-api/.env`:
+
+```bash
+cd apps/founder-content-api
+npm run stripe:bootstrap-catalog -- --write-env
+```
 
 Recommended webhook events:
 
@@ -221,6 +265,8 @@ Use:
 - any CVC
 - any ZIP code
 
+Before testing email billing locally, make sure the three `STRIPE_EMAIL_*_PRICE_ID` env vars are set. Otherwise the email add-on buttons on `/app/billing` will remain disabled by design.
+
 ## Verification Checklist
 
 Before switching to live mode, verify all of this in test mode:
@@ -241,6 +287,11 @@ Before switching to live mode, verify all of this in test mode:
 8. Confirm the Stripe billing portal opens from the app.
 9. Confirm a portal-side change updates the workspace state after webhook delivery.
 10. Repeat the same flow for Pro.
+11. Start Starter Email checkout.
+12. Complete checkout with the Stripe test card.
+13. Confirm the billing page updates from `No email add-on` to `Starter Email`.
+14. Confirm `email_billing_configs` contains the Stripe customer id, subscription id, price id, and billing window.
+15. Repeat the same flow for Growth Email and Scale Email or confirm those changes work through the Stripe billing portal.
 
 Helpful SQL checks:
 
@@ -271,11 +322,12 @@ Only after test mode is verified:
 1. Create the same products and prices in Stripe live mode.
 2. Replace `STRIPE_SECRET_KEY` with the live secret key.
 3. Replace `STRIPE_STARTER_PRICE_ID` and `STRIPE_PRO_PRICE_ID` with live price ids.
-4. Point the Stripe live webhook endpoint to the production API URL.
-5. Replace `STRIPE_WEBHOOK_SECRET` with the live webhook signing secret.
-6. Confirm the Stripe customer portal is enabled in live mode.
-7. Run one live checkout with a real payment method.
-8. Confirm the app, database, and Stripe portal all reflect the live subscription correctly.
+4. Replace `STRIPE_EMAIL_STARTER_PRICE_ID`, `STRIPE_EMAIL_GROWTH_PRICE_ID`, and `STRIPE_EMAIL_SCALE_PRICE_ID` with live price ids.
+5. Point the Stripe live webhook endpoint to the production API URL.
+6. Replace `STRIPE_WEBHOOK_SECRET` with the live webhook signing secret.
+7. Confirm the Stripe customer portal is enabled in live mode.
+8. Run one live checkout with a real payment method.
+9. Confirm the app, database, and Stripe portal all reflect the live subscription correctly.
 
 ## Safety Rules
 

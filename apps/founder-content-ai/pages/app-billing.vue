@@ -56,6 +56,12 @@ const subscription = computed(() => overview.value?.subscription);
 const planCards = computed(() => overview.value?.plans ?? []);
 const emailAddon = computed(() => overview.value?.emailAddon);
 const emailPlanCards = computed(() => overview.value?.emailPlans ?? []);
+const hasMissingEmailStripeConfig = computed(
+  () =>
+    emailAddon.value?.source !== "addon" &&
+    emailAddon.value?.source !== "custom" &&
+    emailPlanCards.value.some((plan) => !plan.current && !plan.priceId),
+);
 const featuredPlan = computed(
   () =>
     planCards.value.find((plan) => plan.planCode === "growth" && !plan.current) ||
@@ -555,6 +561,10 @@ function getEmailPlanActionLabel(plan: BillingEmailPlanOption): string {
     return "Manage in billing";
   }
 
+  if (!plan.priceId) {
+    return "Stripe setup required";
+  }
+
   return plan.ctaLabel;
 }
 
@@ -1030,6 +1040,9 @@ watch(
           This workspace uses a manual or custom email billing setup.
         </template>
       </p>
+      <p v-if="hasMissingEmailStripeConfig" class="billing-email-config-note">
+        Email checkout stays disabled until the Stripe email price ids are configured on the API.
+      </p>
 
       <div class="billing-plan-list email-addon">
         <article
@@ -1324,9 +1337,14 @@ watch(
 
 .billing-email-summary-meta span:last-child,
 .billing-email-metric-head span,
-.billing-email-footnote {
+.billing-email-footnote,
+.billing-email-config-note {
   color: color-mix(in srgb, var(--fc-text) 76%, white 24%);
   line-height: 1.5;
+}
+
+.billing-email-config-note {
+  margin-top: -12px;
 }
 
 .billing-progress-track {

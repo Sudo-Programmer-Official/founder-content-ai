@@ -7,6 +7,7 @@ import type {
   DeleteEmailCampaignResponse,
   DeleteEmailContactResponse,
   EmailCampaignListResponse,
+  EmailCampaignLinkListResponse,
   EmailCampaignStatsResponse,
   EmailContactListResponse,
   EmailContactStatus,
@@ -44,6 +45,7 @@ import {
   deleteEmailContact,
   createEmailDomain,
   getEmailContactImportJob,
+  listEmailCampaignLinksResponse,
   getEmailDomainSettings,
   getEmailCampaignStatsResponse,
   listEmailContactImportJobs,
@@ -950,6 +952,43 @@ export async function getEmailCampaignStats(
       code: "email_campaign_stats_failed",
       message: "Unable to load email campaign stats.",
       logMessage: "Failed to load email campaign stats.",
+    });
+  }
+}
+
+export async function getEmailCampaignLinks(
+  request: Request<{ businessId: string; campaignId: string }>,
+  response: Response<EmailCampaignLinkListResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceReadAccess(request.auth, businessId, "email_campaigns");
+    const result = await listEmailCampaignLinksResponse(businessId, request.params.campaignId);
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_campaign_links_failed",
+      message: "Unable to load email campaign links.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_campaign_links_failed",
+      message: "Unable to load email campaign links.",
+      logMessage: "Failed to load email campaign links.",
     });
   }
 }

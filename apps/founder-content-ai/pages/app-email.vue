@@ -7,6 +7,7 @@ import type {
   EmailBodyBlock,
   EmailContactAttributes,
   EmailCampaignContent,
+  EmailCampaignLink,
   EmailContactImportDuplicateStrategy,
   EmailContactImportField,
   EmailContactImportJob,
@@ -42,6 +43,7 @@ import { requestMyBusinesses } from "../services/admin-analytics-service";
 import {
   requestEmailCampaignCreate,
   requestEmailCampaignDelete,
+  requestEmailCampaignLinks,
   requestEmailCampaignPreview,
   requestEmailCampaignSend,
   requestEmailCampaignStats,
@@ -710,6 +712,7 @@ const emailContactsTotal = ref(0);
 const contactImportJobs = ref<EmailContactImportJob[]>([]);
 const campaigns = ref<EmailCampaign[]>([]);
 const latestStats = ref<EmailCampaignStats | null>(null);
+const latestCampaignLinks = ref<EmailCampaignLink[]>([]);
 const domainSettings = ref<BusinessEmailSettings | null>(null);
 const isLoading = ref(true);
 const isImporting = ref(false);
@@ -811,6 +814,8 @@ const CONTACT_IMPORT_FIELDS: Array<{
   { field: "name", label: "Full name", required: false },
   { field: "firstName", label: "First name", required: false },
   { field: "lastName", label: "Last name", required: false },
+  { field: "emailStatus", label: "Email status", required: false },
+  { field: "emailPermissionStatus", label: "Email permission", required: false },
   { field: "lists", label: "Lists", required: false },
   { field: "tags", label: "Tags", required: false },
   { field: "state", label: "State", required: false },
@@ -1288,6 +1293,60 @@ const campaignDashboardCards = computed(() =>
     preview: htmlToPreviewText(campaign.bodyText || campaign.bodyHtml).slice(0, 180).trim(),
   })),
 );
+const latestStatsCampaign = computed(() =>
+  latestStatsCampaignId.value
+    ? campaigns.value.find((campaign) => campaign.id === latestStatsCampaignId.value) ?? null
+    : null,
+);
+const latestCampaignTopLinks = computed(() =>
+  [...latestCampaignLinks.value]
+    .sort((left, right) => {
+      const leftUniqueClicks = left.uniqueClicks ?? 0;
+      const rightUniqueClicks = right.uniqueClicks ?? 0;
+
+      if (rightUniqueClicks !== leftUniqueClicks) {
+        return rightUniqueClicks - leftUniqueClicks;
+      }
+
+      return (right.totalClicks ?? 0) - (left.totalClicks ?? 0);
+    }),
+);
+const latestCampaignTotalUniqueLinkClicks = computed(() =>
+  latestCampaignTopLinks.value.reduce((total, link) => total + (link.uniqueClicks ?? 0), 0),
+);
+const latestCampaignReportCards = computed(() => {
+  const stats = latestStats.value;
+
+  if (!stats) {
+    return [];
+  }
+
+  return [
+    { label: "Sent", value: stats.recipientCount.toLocaleString(), detail: "Recipients in this send." },
+    { label: "Delivered", value: stats.deliveredCount.toLocaleString(), detail: "Reached inbox providers." },
+    { label: "Opened", value: stats.uniqueOpens.toLocaleString(), detail: `${stats.totalOpens.toLocaleString()} total opens.` },
+    { label: "Clicked", value: stats.uniqueClicks.toLocaleString(), detail: `${stats.totalClicks.toLocaleString()} total clicks.` },
+    { label: "Failed", value: stats.failedCount.toLocaleString(), detail: "Bounced, rejected, or otherwise undelivered." },
+    { label: "Unsubscribed", value: stats.unsubscribedCount.toLocaleString(), detail: "Opt-outs from this campaign." },
+  ];
+});
+const latestCampaignReportRates = computed(() => {
+  const stats = latestStats.value;
+
+  if (!stats) {
+    return [];
+  }
+
+  return [
+    `Delivery rate: ${formatCampaignRate(stats.deliveredCount, stats.recipientCount)}`,
+    `Open rate: ${formatCampaignRate(stats.uniqueOpens, stats.deliveredCount)}`,
+    `CTR: ${formatCampaignRate(stats.uniqueClicks, stats.deliveredCount)}`,
+    `CTOR: ${formatCampaignRate(stats.uniqueClicks, stats.uniqueOpens)}`,
+    `Bounce rate: ${formatCampaignRate(stats.failedCount, stats.recipientCount)}`,
+    `Unsubscribe rate: ${formatCampaignRate(stats.unsubscribedCount, stats.recipientCount)}`,
+    `Pending: ${stats.pendingCount.toLocaleString()}`,
+  ];
+});
 function findEmailListByReference(listId: string | undefined | null): EmailList | null {
   const normalized = listId?.trim();
 
@@ -2842,6 +2901,61 @@ function resolveCampaignListName(campaign: EmailCampaign): string {
   return findEmailListByReference(campaign.listId)?.name || "Selected audience";
 }
 
+function buildCampaignStatsFallback(campaign: EmailCampaign): EmailCampaignStats {
+  return {
+    campaignId: campaign.id,
+    sendCount: 0,
+    recipientCount: campaign.recipientCount,
+    pendingCount: campaign.pendingCount,
+    sentCount: campaign.sentCount,
+    deliveredCount: campaign.deliveredCount,
+    failedCount: campaign.failedCount,
+    unsubscribedCount: campaign.unsubscribedCount,
+    uniqueOpens: campaign.uniqueOpens,
+    totalOpens: campaign.totalOpens,
+    uniqueClicks: campaign.uniqueClicks,
+    totalClicks: campaign.totalClicks,
+  };
+}
+
+function formatCampaignRate(numerator: number, denominator: number): string {
+  if (!denominator || denominator <= 0) {
+    return "0%";
+  }
+
+  const percent = (numerator / denominator) * 100;
+  const rounded = percent >= 10 ? percent.toFixed(0) : percent.toFixed(1);
+  return `${rounded}%`;
+}
+
+function formatCampaignMetricWithRate(numerator: number, denominator: number): string {
+  return `${numerator.toLocaleString()} (${formatCampaignRate(numerator, denominator)})`;
+}
+
+function formatCampaignLinkLabel(link: EmailCampaignLink): string {
+  const explicitLabel = link.label?.trim();
+
+  if (explicitLabel) {
+    return explicitLabel;
+  }
+
+  try {
+    return new URL(link.originalUrl).hostname.replace(/^www\./i, "");
+  } catch {
+    return link.originalUrl;
+  }
+}
+
+function resolveCampaignLinkBarWidth(link: EmailCampaignLink): string {
+  const strongestLinkClicks = latestCampaignTopLinks.value[0]?.uniqueClicks ?? latestStats.value?.uniqueClicks ?? 0;
+
+  if (strongestLinkClicks <= 0) {
+    return "0%";
+  }
+
+  return `${Math.max(6, ((link.uniqueClicks ?? 0) / strongestLinkClicks) * 100)}%`;
+}
+
 function formatCampaignStatusChipLabel(campaign: EmailCampaign): string {
   if (campaign.status === "queued") {
     return "Queued";
@@ -2941,11 +3055,23 @@ async function refreshCampaignProgress(): Promise<void> {
   }
 
   try {
-    const statsResponse = await requestEmailCampaignStats(selectedBusinessId.value, latestStatsCampaignId.value);
-    latestStats.value = statsResponse.stats;
+    await refreshLatestCampaignReport();
   } catch {
     // Keep the last known stats visible; the list itself still refreshes.
   }
+}
+
+async function refreshLatestCampaignReport(): Promise<void> {
+  if (!selectedBusinessId.value || !latestStatsCampaignId.value) {
+    return;
+  }
+
+  const [statsResponse, linksResponse] = await Promise.all([
+    requestEmailCampaignStats(selectedBusinessId.value, latestStatsCampaignId.value),
+    requestEmailCampaignLinks(selectedBusinessId.value, latestStatsCampaignId.value),
+  ]);
+  latestStats.value = statsResponse.stats;
+  latestCampaignLinks.value = linksResponse.links;
 }
 
 async function refreshImportJobProgress(): Promise<void> {
@@ -3224,6 +3350,7 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     contactImportJobs.value = [];
     campaigns.value = [];
     latestStats.value = null;
+    latestCampaignLinks.value = [];
     footerBrandKit.value = null;
     applyDomainSettings(null, { syncForm: options.syncDomainForm });
     return;
@@ -3250,21 +3377,18 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     if (!matchingCampaign) {
       latestStatsCampaignId.value = "";
       latestStats.value = null;
+      latestCampaignLinks.value = [];
     } else {
-      latestStats.value = {
-        campaignId: matchingCampaign.id,
-        sendCount: 0,
-        recipientCount: matchingCampaign.recipientCount,
-        pendingCount: matchingCampaign.pendingCount,
-        sentCount: matchingCampaign.sentCount,
-        deliveredCount: matchingCampaign.deliveredCount,
-        failedCount: matchingCampaign.failedCount,
-        unsubscribedCount: matchingCampaign.unsubscribedCount,
-        uniqueOpens: 0,
-        totalOpens: 0,
-        uniqueClicks: 0,
-        totalClicks: 0,
-      };
+      latestStats.value = buildCampaignStatsFallback(matchingCampaign);
+    }
+  }
+
+  if (!latestStatsCampaignId.value) {
+    const defaultReportCampaign = resolveDefaultReportCampaign(campaigns.value);
+
+    if (defaultReportCampaign) {
+      latestStatsCampaignId.value = defaultReportCampaign.id;
+      latestStats.value = buildCampaignStatsFallback(defaultReportCampaign);
     }
   }
 
@@ -3294,6 +3418,7 @@ async function initializePage(): Promise<void> {
 
     await loadBusinesses();
     await loadEmailState({ syncDomainForm: true });
+    await refreshLatestCampaignReport().catch(() => undefined);
     syncCampaignComposerToRoute({ force: true });
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to load email.";
@@ -3498,11 +3623,13 @@ async function createCampaign(sendNow = false): Promise<void> {
       const sendResponse = await requestEmailCampaignSend(selectedBusinessId.value, response.campaign.id);
       latestStatsCampaignId.value = response.campaign.id;
       latestStats.value = sendResponse.stats;
+      latestCampaignLinks.value = [];
       feedbackMessage.value = `Campaign queued: ${response.campaign.name}. Processing ${sendResponse.stats.recipientCount} recipients in the background.`;
       await Promise.all([
         loadEmailState(),
         refreshProductAccess(selectedBusinessId.value),
       ]);
+      await refreshLatestCampaignReport().catch(() => undefined);
     } else {
       feedbackMessage.value = editingCampaignId.value
         ? `Draft updated: ${response.campaign.name}.`
@@ -3564,6 +3691,20 @@ function resolveCampaignAudienceSize(campaign: EmailCampaign): number {
 
   const matchingList = findEmailListByReference(campaign.listId);
   return matchingList?.contactCount ?? 0;
+}
+
+function resolveDefaultReportCampaign(campaignList: EmailCampaign[]): EmailCampaign | null {
+  const eligibleCampaigns = campaignList.filter((campaign) => campaign.status !== "draft");
+
+  if (eligibleCampaigns.length === 0) {
+    return null;
+  }
+
+  return [...eligibleCampaigns].sort((left, right) => {
+    const leftTimestamp = left.sendCompletedAt || left.updatedAt || left.createdAt;
+    const rightTimestamp = right.sendCompletedAt || right.updatedAt || right.createdAt;
+    return new Date(rightTimestamp).getTime() - new Date(leftTimestamp).getTime();
+  })[0] ?? null;
 }
 
 function editCampaign(campaign: EmailCampaign): void {
@@ -3635,14 +3776,13 @@ async function sendCampaign(campaign: EmailCampaign): Promise<void> {
     const response = await requestEmailCampaignSend(selectedBusinessId.value, campaign.id);
     latestStatsCampaignId.value = campaign.id;
     latestStats.value = response.stats;
+    latestCampaignLinks.value = [];
     feedbackMessage.value = `Campaign queued. Processing ${response.stats.recipientCount} recipients in the background.`;
     await Promise.all([
       loadEmailState(),
       refreshProductAccess(selectedBusinessId.value),
-      requestEmailCampaignStats(selectedBusinessId.value, campaign.id).then((statsResponse) => {
-        latestStats.value = statsResponse.stats;
-      }),
     ]);
+    await refreshLatestCampaignReport().catch(() => undefined);
   } catch (error) {
     errorMessage.value =
       error instanceof Error
@@ -3650,6 +3790,23 @@ async function sendCampaign(campaign: EmailCampaign): Promise<void> {
         : "Something failed sending your email. Try again or contact support.";
   } finally {
     isSending.value = false;
+  }
+}
+
+async function viewCampaignReport(campaign: EmailCampaign): Promise<void> {
+  if (!selectedBusinessId.value) {
+    return;
+  }
+
+  latestStatsCampaignId.value = campaign.id;
+  latestStats.value = buildCampaignStatsFallback(campaign);
+  latestCampaignLinks.value = [];
+  errorMessage.value = "";
+
+  try {
+    await refreshLatestCampaignReport();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to load the campaign report.";
   }
 }
 
@@ -3841,6 +3998,7 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
   void (async () => {
     await loadBusinesses();
     await loadEmailState({ syncDomainForm: true });
+    await refreshLatestCampaignReport().catch(() => undefined);
     syncCampaignComposerToRoute({ force: true });
   })();
 });
@@ -4792,6 +4950,8 @@ Daycare Spots"
                     <th>Audience</th>
                     <th>Sent</th>
                     <th>Delivered</th>
+                    <th>Opens</th>
+                    <th>Clicks</th>
                     <th>Failed</th>
                     <th>Last activity</th>
                     <th>Actions</th>
@@ -4813,6 +4973,8 @@ Daycare Spots"
                     <td>{{ resolveCampaignAudienceSize(campaign).toLocaleString() }}</td>
                     <td>{{ campaign.sentCount.toLocaleString() }}</td>
                     <td>{{ campaign.deliveredCount.toLocaleString() }}</td>
+                    <td>{{ formatCampaignMetricWithRate(campaign.uniqueOpens, campaign.deliveredCount) }}</td>
+                    <td>{{ formatCampaignMetricWithRate(campaign.uniqueClicks, campaign.deliveredCount) }}</td>
                     <td>{{ campaign.failedCount.toLocaleString() }}</td>
                     <td>{{ formatCampaignLastSendSummary(campaign) || formatCampaignLifecycleLabel(campaign) }}</td>
                     <td>
@@ -4827,6 +4989,13 @@ Daycare Spots"
                         </button>
                         <button type="button" class="secondary-action" @click="duplicateCampaign(campaign)">
                           Duplicate
+                        </button>
+                        <button
+                          type="button"
+                          class="secondary-action"
+                          @click="void viewCampaignReport(campaign)"
+                        >
+                          Report
                         </button>
                         <button
                           type="button"
@@ -4867,12 +5036,94 @@ Daycare Spots"
               </div>
             </div>
 
-            <div v-if="latestStats" class="stats-strip">
-              <span>Sent: {{ latestStats.sentCount }}</span>
-              <span>Delivered: {{ latestStats.deliveredCount }}</span>
-              <span>Failed: {{ latestStats.failedCount }}</span>
-              <span>Unsubscribed: {{ latestStats.unsubscribedCount }}</span>
-            </div>
+            <section v-if="latestStats" class="campaign-report-card">
+              <div class="campaign-report-header">
+                <div>
+                  <p class="panel-meta">Campaign report</p>
+                  <h3>{{ latestStatsCampaign?.name || "Latest campaign activity" }}</h3>
+                  <p class="panel-note">
+                    {{
+                      latestStatsCampaign
+                        ? `${resolveCampaignListName(latestStatsCampaign)} · ${formatCampaignLastSendSummary(latestStatsCampaign) || formatCampaignLifecycleLabel(latestStatsCampaign)}`
+                        : "Campaign performance refreshes here after each send."
+                    }}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="!latestStatsCampaignId"
+                  @click="void refreshLatestCampaignReport()"
+                >
+                  Refresh report
+                </button>
+              </div>
+
+              <div class="campaign-report-grid">
+                <article
+                  v-for="card in latestCampaignReportCards"
+                  :key="card.label"
+                  class="campaign-report-metric"
+                >
+                  <span>{{ card.label }}</span>
+                  <strong>{{ card.value }}</strong>
+                  <small>{{ card.detail }}</small>
+                </article>
+              </div>
+
+              <div class="stats-strip">
+                <span v-for="rate in latestCampaignReportRates" :key="rate">{{ rate }}</span>
+              </div>
+
+              <div class="campaign-link-report">
+                <div class="campaign-link-report-head">
+                  <div>
+                    <p class="panel-meta">Clickthrough distribution</p>
+                    <h4>Top links</h4>
+                  </div>
+                  <span class="workspace-chip">
+                    {{ latestCampaignTotalUniqueLinkClicks.toLocaleString() }} unique link clicks
+                  </span>
+                </div>
+
+                <div v-if="latestCampaignTopLinks.length > 0" class="campaign-link-list">
+                  <article
+                    v-for="link in latestCampaignTopLinks"
+                    :key="link.id"
+                    class="campaign-link-row"
+                  >
+                    <div class="campaign-link-copy">
+                      <strong>{{ formatCampaignLinkLabel(link) }}</strong>
+                      <a :href="link.originalUrl" target="_blank" rel="noopener noreferrer">{{ link.originalUrl }}</a>
+                    </div>
+                    <div class="campaign-link-metrics">
+                      <span>
+                        {{ (link.uniqueClicks ?? 0).toLocaleString() }} unique
+                      </span>
+                      <span>
+                        {{ (link.totalClicks ?? 0).toLocaleString() }} total
+                      </span>
+                      <span>
+                        {{
+                          formatCampaignRate(
+                            link.uniqueClicks ?? 0,
+                            latestCampaignTotalUniqueLinkClicks || latestStats.uniqueClicks,
+                          )
+                        }}
+                      </span>
+                    </div>
+                    <div class="campaign-link-bar">
+                      <span
+                        :style="{ width: resolveCampaignLinkBarWidth(link) }"
+                      ></span>
+                    </div>
+                  </article>
+                </div>
+                <p v-else class="panel-note campaign-link-empty-state">
+                  No tracked link clicks yet. Links will appear here after recipients start clicking.
+                </p>
+              </div>
+            </section>
           </template>
         </section>
 
@@ -4986,6 +5237,7 @@ Daycare Spots"
                   <span>Lists</span>
                   <span>Attributes</span>
                   <span>Tags</span>
+                  <span>Status</span>
                   <span>Issues</span>
                 </div>
                 <div
@@ -4998,6 +5250,7 @@ Daycare Spots"
                   <span>{{ row.lists.join(", ") || contactImport.listName || "—" }}</span>
                   <span>{{ buildContactAttributeSummary(row.attributes) || "—" }}</span>
                   <span>{{ row.tags.join(", ") || "—" }}</span>
+                  <span>{{ row.status ? formatStatus(row.status) : "—" }}</span>
                   <span>{{ row.issues.join(", ") || "Looks good" }}</span>
                 </div>
               </div>
@@ -6013,7 +6266,7 @@ Daycare Spots"
 
 .campaign-table {
   width: 100%;
-  min-width: 920px;
+  min-width: 1160px;
   border-collapse: collapse;
 }
 
@@ -6987,6 +7240,7 @@ Daycare Spots"
     minmax(170px, 1fr)
     minmax(180px, 1.1fr)
     minmax(120px, 0.8fr)
+    minmax(120px, 0.8fr)
     minmax(180px, 1.2fr);
   gap: 12px;
   padding: 12px 14px;
@@ -7318,6 +7572,136 @@ Daycare Spots"
   background: var(--fc-surface-subtle);
   border: 1px solid var(--fc-border);
   font-weight: 700;
+}
+
+.campaign-report-card {
+  margin-top: 18px;
+  padding: 22px;
+  border-radius: 24px;
+  border: 1px solid var(--fc-border);
+  background: color-mix(in srgb, var(--fc-surface) 94%, white 6%);
+  display: grid;
+  gap: 18px;
+}
+
+.campaign-report-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.campaign-report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.campaign-report-metric {
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: var(--fc-surface-subtle);
+}
+
+.campaign-report-metric span,
+.campaign-report-metric small {
+  display: block;
+  color: var(--fc-text-muted);
+}
+
+.campaign-report-metric span {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.campaign-report-metric strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.45rem;
+  line-height: 1.05;
+}
+
+.campaign-report-metric small {
+  margin-top: 8px;
+  line-height: 1.45;
+}
+
+.campaign-link-report {
+  display: grid;
+  gap: 14px;
+}
+
+.campaign-link-report-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.campaign-link-report-head h4 {
+  margin: 0;
+  font-size: 1.02rem;
+}
+
+.campaign-link-list {
+  display: grid;
+  gap: 12px;
+}
+
+.campaign-link-row {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--fc-border);
+  background: color-mix(in srgb, var(--fc-surface-subtle) 92%, white 8%);
+}
+
+.campaign-link-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.campaign-link-copy strong {
+  font-size: 0.95rem;
+}
+
+.campaign-link-copy a {
+  color: var(--fc-text-muted);
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.campaign-link-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--fc-text-muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.campaign-link-bar {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-border) 82%, white 18%);
+}
+
+.campaign-link-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+}
+
+.campaign-link-empty-state {
+  margin: 0;
 }
 
 .domain-card {
