@@ -16,9 +16,12 @@ import type {
   ImportEmailContactsPreviewResponse,
   EmailCampaign,
   EmailCampaignStats,
+  EmailFooterSettings,
+  EmailFooterSocialPlatform,
   EmailList,
   ImportEmailContactsRequest,
   MediaRecommendationSuggestion,
+  PreviewEmailCampaignRequest,
   PostAsset,
   WorkspaceAsset,
 } from "../../../packages/shared-types";
@@ -39,8 +42,10 @@ import { requestMyBusinesses } from "../services/admin-analytics-service";
 import {
   requestEmailCampaignCreate,
   requestEmailCampaignDelete,
+  requestEmailCampaignPreview,
   requestEmailCampaignSend,
   requestEmailCampaignStats,
+  requestEmailCampaignTestSend,
   requestEmailCampaigns,
   requestEmailCampaignUpdate,
   requestEmailContactDelete,
@@ -300,6 +305,380 @@ function normalizeWebsiteUrlForSignature(value: string | undefined | null, domai
   }
 
   return /^[a-z]+:\/\//i.test(normalized) ? normalized : `https://${normalized}`;
+}
+
+type EmailFooterForm = {
+  signoff: string;
+  businessName: string;
+  websiteUrl: string;
+  supportEmail: string;
+  streetAddress: string;
+  addressLine2: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+  additionalText: string;
+  socialLinks: Record<EmailFooterSocialPlatform, string>;
+};
+
+const EMAIL_FOOTER_SOCIAL_PLATFORMS: EmailFooterSocialPlatform[] = [
+  "facebook",
+  "instagram",
+  "x",
+  "youtube",
+  "linkedin",
+];
+
+const EMAIL_FOOTER_SOCIAL_LABELS: Record<EmailFooterSocialPlatform, string> = {
+  facebook: "Facebook",
+  instagram: "Instagram",
+  x: "X",
+  youtube: "YouTube",
+  linkedin: "LinkedIn",
+};
+
+const EMAIL_FOOTER_SOCIAL_BADGE_LABELS: Record<EmailFooterSocialPlatform, string> = {
+  facebook: "f",
+  instagram: "ig",
+  x: "x",
+  youtube: "yt",
+  linkedin: "in",
+};
+
+const EMAIL_FOOTER_SOCIAL_BADGE_COLORS: Record<EmailFooterSocialPlatform, string> = {
+  facebook: "#1877F2",
+  instagram: "#E4405F",
+  x: "#111827",
+  youtube: "#FF0000",
+  linkedin: "#0A66C2",
+};
+
+function createEmptyFooterForm(): EmailFooterForm {
+  return {
+    signoff: "",
+    businessName: "",
+    websiteUrl: "",
+    supportEmail: "",
+    streetAddress: "",
+    addressLine2: "",
+    city: "",
+    state: "",
+    postalCode: "",
+    country: "",
+    additionalText: "",
+    socialLinks: {
+      facebook: "",
+      instagram: "",
+      x: "",
+      youtube: "",
+      linkedin: "",
+    },
+  };
+}
+
+function normalizeOptionalPublicUrl(value: string | undefined | null): string {
+  const normalized = (value ?? "").trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  const candidate = /^[a-z]+:\/\//i.test(normalized) ? normalized : `https://${normalized}`;
+
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeFooterSocialUrl(platform: EmailFooterSocialPlatform, value: string | undefined | null): string {
+  const normalized = (value ?? "").trim();
+
+  if (!normalized) {
+    return "";
+  }
+
+  const directUrl = normalizeOptionalPublicUrl(normalized);
+
+  if (directUrl) {
+    return directUrl;
+  }
+
+  const handle = normalized.replace(/^@/, "").replace(/^\/+|\/+$/g, "");
+
+  if (!handle) {
+    return "";
+  }
+
+  if (platform === "facebook") {
+    return `https://www.facebook.com/${handle}`;
+  }
+
+  if (platform === "instagram") {
+    return `https://www.instagram.com/${handle}`;
+  }
+
+  if (platform === "x") {
+    return `https://x.com/${handle}`;
+  }
+
+  if (platform === "youtube") {
+    return handle.includes("/") || handle.startsWith("@")
+      ? `https://www.youtube.com/${handle.replace(/^\/+/, "")}`
+      : `https://www.youtube.com/@${handle}`;
+  }
+
+  return `https://www.linkedin.com/company/${handle}`;
+}
+
+function normalizeFooterForm(value: EmailFooterForm): EmailFooterSettings {
+  const socialLinks = EMAIL_FOOTER_SOCIAL_PLATFORMS.reduce<Record<EmailFooterSocialPlatform, string>>(
+    (accumulator, platform) => {
+      const normalized = normalizeFooterSocialUrl(platform, value.socialLinks[platform]);
+
+      if (normalized) {
+        accumulator[platform] = normalized;
+      }
+
+      return accumulator;
+    },
+    {} as Record<EmailFooterSocialPlatform, string>,
+  );
+
+  return {
+    signoff: value.signoff.trim() || undefined,
+    businessName: value.businessName.trim() || undefined,
+    websiteUrl: normalizeOptionalPublicUrl(value.websiteUrl) || undefined,
+    supportEmail: normalizeEmailInput(value.supportEmail) || undefined,
+    streetAddress: value.streetAddress.trim() || undefined,
+    addressLine2: value.addressLine2.trim() || undefined,
+    city: value.city.trim() || undefined,
+    state: value.state.trim() || undefined,
+    postalCode: value.postalCode.trim() || undefined,
+    country: value.country.trim() || undefined,
+    additionalText: value.additionalText.trim() || undefined,
+    socialLinks: Object.keys(socialLinks).length > 0 ? socialLinks : undefined,
+  };
+}
+
+function buildFooterFormFromSettings(
+  footer: EmailFooterSettings | undefined,
+  options: {
+    fallbackBusinessName?: string;
+    fallbackWebsiteUrl?: string;
+    fallbackSupportEmail?: string;
+    legacySignatureText?: string;
+  } = {},
+): EmailFooterForm {
+  const next = createEmptyFooterForm();
+  const hasStructuredSource = hasFooterContent(footer);
+
+  next.businessName = footer?.businessName || options.fallbackBusinessName || "";
+  next.websiteUrl = footer?.websiteUrl || options.fallbackWebsiteUrl || "";
+  next.supportEmail = footer?.supportEmail || options.fallbackSupportEmail || "";
+  next.signoff =
+    footer?.signoff ||
+    (!hasStructuredSource && options.legacySignatureText ? "" : next.businessName ? `Sincerely,\n${next.businessName}` : "");
+  next.streetAddress = footer?.streetAddress || "";
+  next.addressLine2 = footer?.addressLine2 || "";
+  next.city = footer?.city || "";
+  next.state = footer?.state || "";
+  next.postalCode = footer?.postalCode || "";
+  next.country = footer?.country || "";
+  next.additionalText = footer?.additionalText || (!hasStructuredSource ? options.legacySignatureText || "" : "");
+
+  for (const platform of EMAIL_FOOTER_SOCIAL_PLATFORMS) {
+    next.socialLinks[platform] = footer?.socialLinks?.[platform] || "";
+  }
+
+  return next;
+}
+
+function hasFooterContent(footer: EmailFooterSettings | undefined): boolean {
+  if (!footer) {
+    return false;
+  }
+
+  return Boolean(
+    footer.signoff ||
+      footer.businessName ||
+      footer.websiteUrl ||
+      footer.supportEmail ||
+      footer.streetAddress ||
+      footer.addressLine2 ||
+      footer.city ||
+      footer.state ||
+      footer.postalCode ||
+      footer.country ||
+      footer.additionalText ||
+      Object.keys(footer.socialLinks ?? {}).length > 0,
+  );
+}
+
+function buildFooterAddressSegments(footer: EmailFooterSettings | undefined): string[] {
+  if (!footer) {
+    return [];
+  }
+
+  const locality = [footer.city, footer.state, footer.postalCode].filter(Boolean).join(", ").replace(", ,", ",");
+
+  return [footer.streetAddress, footer.addressLine2, locality, footer.country]
+    .map((segment) => segment?.trim() || "")
+    .filter((segment) => segment !== "");
+}
+
+function buildFooterAddressText(footer: EmailFooterSettings | undefined): string {
+  return buildFooterAddressSegments(footer).join(", ");
+}
+
+function buildFooterAddressUrl(footer: EmailFooterSettings | undefined): string {
+  const addressText = buildFooterAddressText(footer);
+  return addressText ? `https://maps.google.com/?q=${encodeURIComponent(addressText)}` : "";
+}
+
+function buildFooterText(
+  footer: EmailFooterSettings | undefined,
+  fallbackSignatureText = "",
+): string {
+  if (!hasFooterContent(footer)) {
+    return fallbackSignatureText.trim();
+  }
+
+  const lines: string[] = [];
+
+  if (footer?.signoff) {
+    lines.push(footer.signoff.trim());
+  }
+
+  if (footer?.businessName) {
+    lines.push(footer.businessName);
+  }
+
+  if (footer?.websiteUrl) {
+    lines.push(footer.websiteUrl);
+  }
+
+  if (footer?.supportEmail) {
+    lines.push(footer.supportEmail);
+  }
+
+  const addressText = buildFooterAddressText(footer);
+
+  if (addressText) {
+    lines.push(addressText);
+  }
+
+  for (const platform of EMAIL_FOOTER_SOCIAL_PLATFORMS) {
+    const url = footer?.socialLinks?.[platform];
+
+    if (url) {
+      lines.push(`${EMAIL_FOOTER_SOCIAL_LABELS[platform]}: ${url}`);
+    }
+  }
+
+  if (footer?.additionalText) {
+    lines.push(footer.additionalText);
+  }
+
+  return lines.join("\n");
+}
+
+function renderFooterPreviewHtml(input: {
+  footer?: EmailFooterSettings;
+  logoUrl?: string;
+  logoAltText?: string;
+  fallbackSignatureText?: string;
+}): string {
+  const footer = input.footer;
+  const logoUrl = input.logoUrl?.trim() || "";
+  const footerText = buildFooterText(footer, input.fallbackSignatureText);
+
+  if (!hasFooterContent(footer)) {
+    if (!footerText && !logoUrl) {
+      return "";
+    }
+
+    const signatureParagraphs = footerText
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.trim())
+      .filter((paragraph) => paragraph !== "");
+
+    const htmlParts = ['<div class="email-preview-signature">'];
+
+    if (logoUrl) {
+      htmlParts.push(
+        `<div class="email-preview-signature-logo"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(input.logoAltText || "Brand logo")}" /></div>`,
+      );
+    }
+
+    for (const paragraph of signatureParagraphs) {
+      htmlParts.push(`<p>${linkifyHtmlText(paragraph)}</p>`);
+    }
+
+    htmlParts.push("</div>");
+    return htmlParts.join("");
+  }
+
+  const primaryLinks = [
+    footer?.businessName ? `<strong>${escapeHtml(footer.businessName)}</strong>` : "",
+    footer?.websiteUrl
+      ? `<a href="${escapeHtml(footer.websiteUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(footer.websiteUrl)}</a>`
+      : "",
+    footer?.supportEmail
+      ? `<a href="mailto:${escapeHtml(footer.supportEmail)}">${escapeHtml(footer.supportEmail)}</a>`
+      : "",
+  ].filter(Boolean);
+  const addressText = buildFooterAddressText(footer);
+  const addressUrl = buildFooterAddressUrl(footer);
+  const additionalParagraphs = (footer?.additionalText || "")
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter((paragraph) => paragraph !== "")
+    .map((paragraph) => `<p class="email-preview-footer-note">${linkifyHtmlText(paragraph)}</p>`)
+    .join("");
+  const socialButtons = EMAIL_FOOTER_SOCIAL_PLATFORMS
+    .map((platform) => {
+      const url = footer?.socialLinks?.[platform];
+
+      if (!url) {
+        return "";
+      }
+
+      return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="email-preview-footer-social-button" style="--footer-social-accent:${EMAIL_FOOTER_SOCIAL_BADGE_COLORS[platform]};">${escapeHtml(EMAIL_FOOTER_SOCIAL_BADGE_LABELS[platform])}</a>`;
+    })
+    .filter(Boolean)
+    .join("");
+
+  return [
+    '<div class="email-preview-signature email-preview-signature-rich">',
+    logoUrl
+      ? `<div class="email-preview-signature-logo"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(input.logoAltText || "Brand logo")}" /></div>`
+      : "",
+    footer?.signoff
+      ? `<div class="email-preview-footer-signoff">${footer.signoff
+          .split(/\n+/)
+          .map((line) => line.trim())
+          .filter((line) => line !== "")
+          .map((line) => `<p>${escapeHtml(line)}</p>`)
+          .join("")}</div>`
+      : "",
+    primaryLinks.length > 0
+      ? `<p class="email-preview-footer-links">${primaryLinks.join('<span class="email-preview-footer-separator">|</span>')}</p>`
+      : "",
+    addressText
+      ? `<p class="email-preview-footer-address">${
+          addressUrl
+            ? `<a href="${escapeHtml(addressUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(addressText)}</a>`
+            : escapeHtml(addressText)
+        }</p>`
+      : "",
+    socialButtons ? `<div class="email-preview-footer-social-row">${socialButtons}</div>` : "",
+    additionalParagraphs,
+    "</div>",
+  ].join("");
 }
 
 const route = useRoute();
@@ -727,15 +1106,21 @@ const campaignForm = ref({
   mediaUrlInput: "",
 });
 const campaignBlocks = ref<EmailComposerBlockDraft[]>([]);
+const syncedPreviewEmailHtml = ref("");
+const previewSyncErrorMessage = ref("");
+const isRefreshingComposerPreview = ref(false);
+const testRecipientEmail = ref("");
+const isSendingTestEmail = ref(false);
 let isSyncingCampaignBlocksFromBody = false;
 let isSyncingCampaignBodyFromBlocks = false;
+let composerPreviewDebounceHandle: number | null = null;
 
 const domainForm = ref({
   domainName: "",
   fromName: "",
   fromEmail: "",
   replyToEmail: "",
-  signatureText: "",
+  footer: createEmptyFooterForm(),
 });
 
 const emailFeatureEnabled = computed(
@@ -755,17 +1140,18 @@ const recommendedDomainForm = computed(() => {
   const domainName = workspaceSuggestedDomain.value;
   const fromName = business?.brandName?.trim() || business?.name?.trim() || resolvedUserName.value || "";
   const fromEmail = buildDefaultSenderEmail(domainName);
-  const signatureLines = [
-    business?.brandName?.trim() || business?.name?.trim() || fromName,
-    normalizeWebsiteUrlForSignature(business?.websiteUrl, domainName),
-  ].filter((value) => value !== "");
+  const footer = buildFooterFormFromSettings(undefined, {
+    fallbackBusinessName: business?.brandName?.trim() || business?.name?.trim() || fromName,
+    fallbackWebsiteUrl: normalizeWebsiteUrlForSignature(business?.websiteUrl, domainName),
+    fallbackSupportEmail: fromEmail,
+  });
 
   return {
     domainName,
     fromName,
     fromEmail,
     replyToEmail: fromEmail,
-    signatureText: signatureLines.join("\n"),
+    footer,
   };
 });
 const emailLimitText = computed(() => {
@@ -1245,30 +1631,36 @@ const previewEmailHtml = computed(() => {
     htmlParts.push('<p class="email-preview-placeholder">Write the email body here to see the preview.</p>');
   }
 
-  if (signatureText || footerLogoUrl) {
-    const signatureParagraphs = signatureText
-      .split(/\n{2,}/)
-      .map((paragraph) => paragraph.trim())
-      .filter((paragraph) => paragraph !== "");
-
-    htmlParts.push('<div class="email-preview-signature">');
-
-    if (footerLogoUrl) {
-      htmlParts.push(
-        `<div class="email-preview-signature-logo"><img src="${escapeHtml(footerLogoUrl)}" alt="${escapeHtml(footerLogoAlt)}" /></div>`,
-      );
-    }
-
-    for (const paragraph of signatureParagraphs) {
-      htmlParts.push(`<p>${linkifyHtmlText(paragraph)}</p>`);
-    }
-
-    htmlParts.push("</div>");
+  if (hasFooterContent(effectiveFooterSettings.value) || signatureText || footerLogoUrl) {
+    htmlParts.push(
+      renderFooterPreviewHtml({
+        footer: effectiveFooterSettings.value,
+        logoUrl: footerLogoUrl,
+        logoAltText: footerLogoAlt,
+        fallbackSignatureText: fallbackSenderSignatureText.value,
+      }),
+    );
   }
 
   htmlParts.push("</div>");
   return htmlParts.join("");
 });
+const previewRequestPayload = computed<PreviewEmailCampaignRequest>(() => ({
+  subject: campaignForm.value.subject.trim(),
+  bodyText: campaignForm.value.bodyText,
+  replyToEmail: normalizedDomainForm.value.replyToEmail || campaignForm.value.replyToEmail || undefined,
+  content: campaignContentPayload.value,
+  sender: {
+    fromName: normalizedDomainForm.value.fromName || undefined,
+    fromEmail: normalizedDomainForm.value.fromEmail || undefined,
+    replyToEmail: normalizedDomainForm.value.replyToEmail || undefined,
+    signatureText: normalizedDomainForm.value.signatureText || undefined,
+    footer: effectiveFooterSettings.value,
+  },
+}));
+const effectivePreviewEmailHtml = computed(() =>
+  syncedPreviewEmailHtml.value.trim() || previewEmailHtml.value,
+);
 const availableDraftImages = computed(() =>
   emailMediaAssets.value.map((asset) => ({
     id: asset.id,
@@ -1276,41 +1668,29 @@ const availableDraftImages = computed(() =>
     label: `Image ${asset.orderIndex + 1}`,
   })),
 );
-const effectiveSignatureText = computed(() => {
-  const explicit = domainForm.value.signatureText.trim();
-
-  if (explicit) {
-    return explicit;
-  }
-
-  return [domainForm.value.fromName || domainSettings.value?.fromName, domainForm.value.fromEmail || domainSettings.value?.fromEmail]
+const effectiveFooterSettings = computed(() => normalizeFooterForm(domainForm.value.footer));
+const fallbackSenderSignatureText = computed(() =>
+  [domainForm.value.fromName || domainSettings.value?.fromName, domainForm.value.fromEmail || domainSettings.value?.fromEmail]
     .map((value) => value?.trim() || "")
     .filter((value) => value !== "")
-    .join("\n");
+    .join("\n"),
+);
+const effectiveSignatureText = computed(() => {
+  return buildFooterText(effectiveFooterSettings.value, fallbackSenderSignatureText.value);
 });
 const footerDetailsPlaceholderText = computed(() => {
-  const business = currentBusinessMembership.value?.business;
-  const brandLabel =
-    business?.brandName?.trim()
-    || business?.name?.trim()
-    || domainForm.value.fromName.trim()
-    || domainSettings.value?.fromName?.trim()
-    || "Your business";
-  const website =
-    normalizeWebsiteUrlForSignature(
-      business?.websiteUrl,
-      normalizedDomainForm.value.domainName || domainSettings.value?.domainName || "",
-    )
-    || "https://yourbrand.com";
-
-  return [brandLabel, "Street address, City, State ZIP", website].join("\n");
+  return "Add compliance copy, licensing notes, or any extra footer text here.";
 });
 const footerDetailsStatusText = computed(() => {
   if (!campaignForm.value.includeSignature) {
     return "Footer is hidden in this email. Turn it back on if you need the logo or legal address in the message.";
   }
 
-  if (domainForm.value.signatureText.trim()) {
+  if (hasFooterContent(effectiveFooterSettings.value)) {
+    if (!buildFooterAddressText(effectiveFooterSettings.value)) {
+      return "Footer is included, but add a mailing address before using this for production sends.";
+    }
+
     return "Footer is included in this email. Save the defaults once and the next email will reuse the same logo and footer details.";
   }
 
@@ -1319,7 +1699,8 @@ const footerDetailsStatusText = computed(() => {
 const effectiveFooterLogoUrl = computed(() => footerBrandKit.value?.logoUrl?.trim() || "");
 const effectiveFooterLogoAltText = computed(() => {
   const brandLabel =
-    domainForm.value.fromName.trim()
+    domainForm.value.footer.businessName.trim()
+    || domainForm.value.fromName.trim()
     || domainSettings.value?.fromName?.trim()
     || currentBusinessMembership.value?.business.brandName?.trim()
     || currentBusinessMembership.value?.business.name?.trim()
@@ -1327,6 +1708,14 @@ const effectiveFooterLogoAltText = computed(() => {
 
   return `${brandLabel} logo`;
 });
+const footerPreviewHtml = computed(() =>
+  renderFooterPreviewHtml({
+    footer: effectiveFooterSettings.value,
+    logoUrl: effectiveFooterLogoUrl.value,
+    logoAltText: effectiveFooterLogoAltText.value,
+    fallbackSignatureText: fallbackSenderSignatureText.value,
+  }),
+);
 const selectedInlineImagePreviews = computed(() =>
   campaignForm.value.inlineImageUrls.map((url, index) => ({
     id: `${url}-${index}`,
@@ -1346,6 +1735,41 @@ const campaignContentPayload = computed<EmailCampaignContent>(() => ({
   })),
   includeSignature: campaignForm.value.includeSignature,
 }));
+const previewSenderIdentitySummary = computed(() => {
+  const fromName = normalizedDomainForm.value.fromName.trim();
+  const fromEmail = normalizedDomainForm.value.fromEmail.trim();
+
+  if (!fromEmail) {
+    return senderIdentitySummary.value;
+  }
+
+  return fromName ? `${fromName} · ${fromEmail}` : fromEmail;
+});
+const campaignTestSendBlockReason = computed(() => {
+  if (!campaignForm.value.subject.trim()) {
+    return "Add a subject line before sending a test.";
+  }
+
+  if (!campaignForm.value.bodyText.trim()) {
+    return "Write the email before sending a test.";
+  }
+
+  if (!hasConfiguredDomain.value && !normalizedDomainForm.value.fromEmail.trim()) {
+    return "Finish sender setup before sending a test.";
+  }
+
+  if (!testRecipientEmail.value.trim()) {
+    return "Add a test inbox so you can send a preview to yourself.";
+  }
+
+  const normalizedTestEmail = normalizeEmailInput(testRecipientEmail.value);
+
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/i.test(normalizedTestEmail)) {
+    return "Use a valid test email address.";
+  }
+
+  return "";
+});
 const senderIdentitySummary = computed(() => {
   if (!domainSettings.value?.fromEmail) {
     return "No sender configured";
@@ -1437,7 +1861,8 @@ const normalizedDomainForm = computed(() => {
   const fromName = domainForm.value.fromName.trim() || recommended.fromName;
   const fromEmail = normalizeEmailInput(domainForm.value.fromEmail) || buildDefaultSenderEmail(domainName);
   const replyToEmail = normalizeEmailInput(domainForm.value.replyToEmail) || fromEmail;
-  const signatureText = domainForm.value.signatureText.trim();
+  const footer = normalizeFooterForm(domainForm.value.footer);
+  const signatureText = buildFooterText(footer, fallbackSenderSignatureText.value);
 
   return {
     domainName,
@@ -1445,6 +1870,7 @@ const normalizedDomainForm = computed(() => {
     fromEmail,
     replyToEmail,
     signatureText,
+    footer,
   };
 });
 const domainSetupHints = computed(() => {
@@ -1512,21 +1938,36 @@ const hasPendingDomainSetupChanges = computed(() => {
         fromName: domainSettings.value.fromName?.trim() || "",
         fromEmail: normalizeEmailInput(domainSettings.value.fromEmail) || "",
         replyToEmail: normalizeEmailInput(domainSettings.value.replyToEmail) || "",
-        signatureText: domainSettings.value.signatureText?.trim() || "",
+        footer: JSON.stringify(
+          normalizeFooterForm(
+            buildFooterFormFromSettings(domainSettings.value.footer, {
+              fallbackBusinessName: domainSettings.value.fromName?.trim() || "",
+              fallbackWebsiteUrl:
+                currentBusinessMembership.value?.business.websiteUrl
+                  ? normalizeWebsiteUrlForSignature(
+                      currentBusinessMembership.value.business.websiteUrl,
+                      normalizeDomainInput(domainSettings.value.domainName) || "",
+                    )
+                  : "",
+              fallbackSupportEmail: normalizeEmailInput(domainSettings.value.replyToEmail || domainSettings.value.fromEmail),
+              legacySignatureText: domainSettings.value.signatureText,
+            }),
+          ),
+        ),
       }
     : {
         domainName: recommended.domainName,
         fromName: recommended.fromName.trim(),
         fromEmail: normalizeEmailInput(recommended.fromEmail) || "",
         replyToEmail: normalizeEmailInput(recommended.replyToEmail) || "",
-        signatureText: recommended.signatureText.trim(),
+        footer: JSON.stringify(normalizeFooterForm(recommended.footer)),
       };
   const current = {
     domainName: normalizeDomainInput(domainForm.value.domainName) || "",
     fromName: domainForm.value.fromName.trim(),
     fromEmail: normalizeEmailInput(domainForm.value.fromEmail) || "",
     replyToEmail: normalizeEmailInput(domainForm.value.replyToEmail) || "",
-    signatureText: domainForm.value.signatureText.trim(),
+    footer: JSON.stringify(normalizeFooterForm(domainForm.value.footer)),
   };
 
   return (
@@ -1534,7 +1975,7 @@ const hasPendingDomainSetupChanges = computed(() => {
     current.fromName !== saved.fromName ||
     current.fromEmail !== saved.fromEmail ||
     current.replyToEmail !== saved.replyToEmail ||
-    current.signatureText !== saved.signatureText
+    current.footer !== saved.footer
   );
 });
 const campaignSendBlockReason = computed(() => {
@@ -2554,6 +2995,7 @@ function applyDomainSettings(
 ): void {
   domainSettings.value = settings;
   domainSaveErrorMessage.value = "";
+  testRecipientEmail.value = settings?.testRecipientEmail ?? "";
 
   if (!options.syncForm) {
     return;
@@ -2566,12 +3008,24 @@ function applyDomainSettings(
     fromName: settings?.fromName ?? recommended.fromName,
     fromEmail: settings?.fromEmail ?? recommended.fromEmail,
     replyToEmail: settings?.replyToEmail ?? recommended.replyToEmail,
-    signatureText: settings ? settings.signatureText ?? "" : recommended.signatureText,
+    footer: buildFooterFormFromSettings(settings?.footer, {
+      fallbackBusinessName: settings?.fromName ?? recommended.fromName,
+      fallbackWebsiteUrl:
+        normalizeWebsiteUrlForSignature(
+          currentBusinessMembership.value?.business.websiteUrl,
+          settings?.domainName ?? recommended.domainName,
+        ) || recommended.footer.websiteUrl,
+      fallbackSupportEmail: settings?.replyToEmail ?? settings?.fromEmail ?? recommended.replyToEmail,
+      legacySignatureText: settings?.signatureText,
+    }),
   };
 }
 
 function applyRecommendedDomainSetup(): void {
-  domainForm.value = { ...recommendedDomainForm.value };
+  domainForm.value = {
+    ...recommendedDomainForm.value,
+    footer: buildFooterFormFromSettings(normalizeFooterForm(recommendedDomainForm.value.footer)),
+  };
   domainSaveErrorMessage.value = "";
   feedbackMessage.value = workspaceSuggestedDomain.value
     ? `Prefilled sender setup from ${workspaceSuggestedDomain.value}.`
@@ -3252,6 +3706,94 @@ async function saveFooterDefaults(): Promise<void> {
   });
 }
 
+function clearComposerPreviewDebounce(): void {
+  if (composerPreviewDebounceHandle === null || typeof window === "undefined") {
+    return;
+  }
+
+  window.clearTimeout(composerPreviewDebounceHandle);
+  composerPreviewDebounceHandle = null;
+}
+
+async function refreshComposerPreview(): Promise<void> {
+  if (!selectedBusinessId.value || !campaignComposerOpen.value) {
+    syncedPreviewEmailHtml.value = "";
+    previewSyncErrorMessage.value = "";
+    return;
+  }
+
+  if (!previewRequestPayload.value.subject.trim() || !campaignForm.value.bodyText.trim()) {
+    syncedPreviewEmailHtml.value = "";
+    previewSyncErrorMessage.value = "";
+    return;
+  }
+
+  isRefreshingComposerPreview.value = true;
+
+  try {
+    const response = await requestEmailCampaignPreview(selectedBusinessId.value, previewRequestPayload.value);
+    syncedPreviewEmailHtml.value = response.html;
+    previewSyncErrorMessage.value = "";
+  } catch (error) {
+    syncedPreviewEmailHtml.value = "";
+    previewSyncErrorMessage.value = error instanceof Error ? error.message : "Unable to sync the live email preview.";
+  } finally {
+    isRefreshingComposerPreview.value = false;
+  }
+}
+
+function queueComposerPreviewRefresh(): void {
+  clearComposerPreviewDebounce();
+
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  composerPreviewDebounceHandle = window.setTimeout(() => {
+    composerPreviewDebounceHandle = null;
+    void refreshComposerPreview();
+  }, 260);
+}
+
+async function sendTestEmailPreview(): Promise<void> {
+  if (!selectedBusinessId.value) {
+    errorMessage.value = "Select a workspace before sending a test email.";
+    return;
+  }
+
+  if (campaignTestSendBlockReason.value) {
+    errorMessage.value = campaignTestSendBlockReason.value;
+    return;
+  }
+
+  isSendingTestEmail.value = true;
+  errorMessage.value = "";
+
+  try {
+    if (hasPendingDomainSetupChanges.value) {
+      const persistedSettings = await persistDomainSetup({ showSuccessFeedback: false });
+
+      if (!persistedSettings) {
+        errorMessage.value = domainSaveErrorMessage.value || "Unable to save sender and footer defaults.";
+        return;
+      }
+    }
+
+    const response = await requestEmailCampaignTestSend(selectedBusinessId.value, {
+      ...previewRequestPayload.value,
+      recipientEmail: testRecipientEmail.value.trim(),
+      saveRecipient: true,
+    });
+
+    testRecipientEmail.value = response.savedRecipientEmail || response.recipientEmail;
+    feedbackMessage.value = `Test email sent to ${response.recipientEmail}.`;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to send the test email.";
+  } finally {
+    isSendingTestEmail.value = false;
+  }
+}
+
 watch(errorMessage, (nextMessage) => {
   if (!nextMessage) {
     return;
@@ -3284,6 +3826,9 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
   }
 
   selectedBusinessId.value = nextBusinessId;
+  syncedPreviewEmailHtml.value = "";
+  previewSyncErrorMessage.value = "";
+  testRecipientEmail.value = "";
   contactImportFileName.value = "";
   contactSearch.value = "";
   contactStatusFilter.value = "all";
@@ -3350,10 +3895,25 @@ watch(
     selectedBusinessId.value,
     campaignForm.value.subject,
     campaignForm.value.bodyText,
+    campaignForm.value.replyToEmail,
+    campaignForm.value.headerImageUrl,
+    campaignForm.value.inlineImageUrls.join("|"),
+    campaignForm.value.includeSignature,
+    normalizedDomainForm.value.fromName,
+    normalizedDomainForm.value.fromEmail,
+    normalizedDomainForm.value.replyToEmail,
+    normalizedDomainForm.value.signatureText,
+    JSON.stringify(effectiveFooterSettings.value),
+    effectiveFooterLogoUrl.value,
+    campaignComposerOpen.value,
+    activeEmailTab.value,
+    editingCampaignId.value,
+    testRecipientEmail.value,
     emailMediaAssets.value.length,
   ],
   () => {
     void loadEmailMediaRecommendations();
+    queueComposerPreviewRefresh();
   },
   { immediate: true },
 );
@@ -3407,6 +3967,7 @@ onBeforeUnmount(() => {
   stopCampaignProgressPolling();
   stopImportJobPolling();
   clearEmailToastTimer();
+  clearComposerPreviewDebounce();
 });
 </script>
 
@@ -3914,22 +4475,113 @@ onBeforeUnmount(() => {
 
                   <p class="panel-note email-footer-state-note">{{ footerDetailsStatusText }}</p>
 
-                  <div v-if="effectiveFooterLogoUrl" class="signature-logo-preview">
-                    <img :src="effectiveFooterLogoUrl" :alt="effectiveFooterLogoAltText" />
-                  </div>
+                  <article v-if="footerPreviewHtml" class="signature-preview-card footer-preview-inline-card">
+                    <div class="footer-preview-html" v-html="footerPreviewHtml"></div>
+                  </article>
 
-                  <label class="domain-field footer-details-field email-footer-editor-field">
-                    <span>Footer details</span>
-                    <textarea
-                      v-model="domainForm.signatureText"
-                      class="workspace-textarea compact"
-                      :placeholder="footerDetailsPlaceholderText"
-                    />
-                    <small>
-                      Use the business name, street address, website, support email, or any required compliance copy.
-                      Save once and future emails will auto-fill the same footer.
-                    </small>
-                  </label>
+                  <div class="email-footer-form-grid">
+                    <label class="domain-field email-footer-editor-field is-full">
+                      <span>Sign-off</span>
+                      <textarea
+                        v-model="domainForm.footer.signoff"
+                        class="workspace-textarea compact"
+                        placeholder="Sincerely,
+Daycare Spots"
+                      />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>Business name</span>
+                      <input
+                        v-model="domainForm.footer.businessName"
+                        class="workspace-input"
+                        placeholder="Daycare Spots"
+                      />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>Website</span>
+                      <input
+                        v-model="domainForm.footer.websiteUrl"
+                        class="workspace-input"
+                        placeholder="https://www.daycarespots.com"
+                      />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>Support email</span>
+                      <input
+                        v-model="domainForm.footer.supportEmail"
+                        class="workspace-input"
+                        placeholder="info@daycarespots.com"
+                      />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>Street address</span>
+                      <input
+                        v-model="domainForm.footer.streetAddress"
+                        class="workspace-input"
+                        placeholder="1312 17th Street Suite 860"
+                      />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>Address line 2</span>
+                      <input
+                        v-model="domainForm.footer.addressLine2"
+                        class="workspace-input"
+                        placeholder="Building, floor, or landmark"
+                      />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>City</span>
+                      <input v-model="domainForm.footer.city" class="workspace-input" placeholder="Denver" />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>State</span>
+                      <input v-model="domainForm.footer.state" class="workspace-input" placeholder="CO" />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>Postal code</span>
+                      <input v-model="domainForm.footer.postalCode" class="workspace-input" placeholder="80202" />
+                    </label>
+
+                    <label class="domain-field email-footer-editor-field">
+                      <span>Country</span>
+                      <input v-model="domainForm.footer.country" class="workspace-input" placeholder="US" />
+                    </label>
+
+                    <div class="email-footer-social-grid is-full">
+                      <label
+                        v-for="platform in EMAIL_FOOTER_SOCIAL_PLATFORMS"
+                        :key="`footer-social-${platform}`"
+                        class="domain-field email-footer-editor-field"
+                      >
+                        <span>{{ EMAIL_FOOTER_SOCIAL_LABELS[platform] }}</span>
+                        <input
+                          v-model="domainForm.footer.socialLinks[platform]"
+                          class="workspace-input"
+                          :placeholder="`${EMAIL_FOOTER_SOCIAL_LABELS[platform]} handle or URL`"
+                        />
+                      </label>
+                    </div>
+
+                    <label class="domain-field footer-details-field email-footer-editor-field is-full">
+                      <span>Additional footer note</span>
+                      <textarea
+                        v-model="domainForm.footer.additionalText"
+                        class="workspace-textarea compact"
+                        :placeholder="footerDetailsPlaceholderText"
+                      />
+                      <small>
+                        Use this for compliance copy, legal notes, or anything you want to appear below the address and social links.
+                      </small>
+                    </label>
+                  </div>
 
                   <p v-if="domainSaveErrorMessage" class="inline-form-message error">{{ domainSaveErrorMessage }}</p>
 
@@ -4584,7 +5236,8 @@ onBeforeUnmount(() => {
               </div>
               <div>
                 <span class="domain-summary-label">Footer details</span>
-                <pre class="domain-summary-signature">{{ domainSettings?.signatureText || "Uses sender identity" }}</pre>
+                <div v-if="footerPreviewHtml" class="domain-summary-footer-preview footer-preview-html" v-html="footerPreviewHtml"></div>
+                <strong v-else>Uses sender identity</strong>
               </div>
             </div>
 
@@ -4704,21 +5357,110 @@ onBeforeUnmount(() => {
                 </div>
               </div>
               <p class="panel-note">Choose the logo once here. New emails will reuse it automatically.</p>
-              <div v-if="effectiveFooterLogoUrl" class="signature-logo-preview">
-                <img :src="effectiveFooterLogoUrl" :alt="effectiveFooterLogoAltText" />
-              </div>
-              <pre>{{ domainForm.signatureText || footerDetailsPlaceholderText }}</pre>
+              <div v-if="footerPreviewHtml" class="footer-preview-html" v-html="footerPreviewHtml"></div>
             </article>
 
-            <label class="domain-field footer-details-field">
-              <span>Footer details</span>
-              <textarea
-                v-model="domainForm.signatureText"
-                class="workspace-textarea compact"
-                :placeholder="footerDetailsPlaceholderText"
-              />
-              <small>Use this for the brand address, website, or any reusable signature copy. It is saved once for the workspace.</small>
-            </label>
+            <div class="email-footer-form-grid">
+              <label class="domain-field email-footer-editor-field is-full">
+                <span>Sign-off</span>
+                <textarea
+                  v-model="domainForm.footer.signoff"
+                  class="workspace-textarea compact"
+                  placeholder="Sincerely,
+Daycare Spots"
+                />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>Business name</span>
+                <input
+                  v-model="domainForm.footer.businessName"
+                  class="workspace-input"
+                  placeholder="Daycare Spots"
+                />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>Website</span>
+                <input
+                  v-model="domainForm.footer.websiteUrl"
+                  class="workspace-input"
+                  placeholder="https://www.daycarespots.com"
+                />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>Support email</span>
+                <input
+                  v-model="domainForm.footer.supportEmail"
+                  class="workspace-input"
+                  placeholder="info@daycarespots.com"
+                />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>Street address</span>
+                <input
+                  v-model="domainForm.footer.streetAddress"
+                  class="workspace-input"
+                  placeholder="1312 17th Street Suite 860"
+                />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>Address line 2</span>
+                <input
+                  v-model="domainForm.footer.addressLine2"
+                  class="workspace-input"
+                  placeholder="Building, floor, or landmark"
+                />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>City</span>
+                <input v-model="domainForm.footer.city" class="workspace-input" placeholder="Denver" />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>State</span>
+                <input v-model="domainForm.footer.state" class="workspace-input" placeholder="CO" />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>Postal code</span>
+                <input v-model="domainForm.footer.postalCode" class="workspace-input" placeholder="80202" />
+              </label>
+
+              <label class="domain-field email-footer-editor-field">
+                <span>Country</span>
+                <input v-model="domainForm.footer.country" class="workspace-input" placeholder="US" />
+              </label>
+
+              <div class="email-footer-social-grid is-full">
+                <label
+                  v-for="platform in EMAIL_FOOTER_SOCIAL_PLATFORMS"
+                  :key="`settings-footer-social-${platform}`"
+                  class="domain-field email-footer-editor-field"
+                >
+                  <span>{{ EMAIL_FOOTER_SOCIAL_LABELS[platform] }}</span>
+                  <input
+                    v-model="domainForm.footer.socialLinks[platform]"
+                    class="workspace-input"
+                    :placeholder="`${EMAIL_FOOTER_SOCIAL_LABELS[platform]} handle or URL`"
+                  />
+                </label>
+              </div>
+
+              <label class="domain-field footer-details-field email-footer-editor-field is-full">
+                <span>Additional footer note</span>
+                <textarea
+                  v-model="domainForm.footer.additionalText"
+                  class="workspace-textarea compact"
+                  :placeholder="footerDetailsPlaceholderText"
+                />
+                <small>Use this for compliance copy, legal notes, or anything you want to appear below the address and social links.</small>
+              </label>
+            </div>
 
             <div class="workspace-actions">
               <button
@@ -5714,17 +6456,20 @@ onBeforeUnmount(() => {
   border: 1px solid color-mix(in srgb, var(--fc-border) 85%, transparent);
 }
 
-.email-preview-frame :deep(.email-preview-signature) {
+.email-preview-frame :deep(.email-preview-signature),
+.footer-preview-html :deep(.email-preview-signature) {
   margin-top: 28px;
   padding-top: 18px;
   border-top: 1px solid #eaded2;
 }
 
-.email-preview-frame :deep(.email-preview-signature-logo) {
+.email-preview-frame :deep(.email-preview-signature-logo),
+.footer-preview-html :deep(.email-preview-signature-logo) {
   margin-bottom: 16px;
 }
 
-.email-preview-frame :deep(.email-preview-signature-logo img) {
+.email-preview-frame :deep(.email-preview-signature-logo img),
+.footer-preview-html :deep(.email-preview-signature-logo img) {
   display: block;
   max-width: 180px;
   max-height: 72px;
@@ -5733,10 +6478,72 @@ onBeforeUnmount(() => {
   object-fit: contain;
 }
 
-.email-preview-frame :deep(.email-preview-signature p) {
+.email-preview-frame :deep(.email-preview-signature p),
+.footer-preview-html :deep(.email-preview-signature p) {
   margin-bottom: 10px;
   font-size: 14px;
   color: #6d5d53;
+}
+
+.email-preview-frame :deep(.email-preview-signature-rich),
+.footer-preview-html :deep(.email-preview-signature-rich) {
+  display: grid;
+  gap: 0;
+}
+
+.email-preview-frame :deep(.email-preview-footer-signoff p),
+.footer-preview-html :deep(.email-preview-footer-signoff p) {
+  margin: 0 0 4px;
+  color: #3b2d23;
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.email-preview-frame :deep(.email-preview-footer-links),
+.email-preview-frame :deep(.email-preview-footer-address),
+.email-preview-frame :deep(.email-preview-footer-note),
+.footer-preview-html :deep(.email-preview-footer-links),
+.footer-preview-html :deep(.email-preview-footer-address),
+.footer-preview-html :deep(.email-preview-footer-note) {
+  margin: 12px 0 0;
+  color: #6d5d53;
+  font-size: 13px;
+  line-height: 1.65;
+  text-align: center;
+}
+
+.email-preview-frame :deep(.email-preview-footer-separator),
+.footer-preview-html :deep(.email-preview-footer-separator) {
+  display: inline-block;
+  margin: 0 6px;
+  color: #c6ad9c;
+}
+
+.email-preview-frame :deep(.email-preview-footer-social-row),
+.footer-preview-html :deep(.email-preview-footer-social-row) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.email-preview-frame :deep(.email-preview-footer-social-button),
+.footer-preview-html :deep(.email-preview-footer-social-button) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: var(--footer-social-accent, #6d5d53);
+  color: #fff;
+  text-decoration: none;
+  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
 }
 
 .email-preview-frame :deep(.email-preview-placeholder) {
@@ -5855,6 +6662,17 @@ onBeforeUnmount(() => {
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.footer-preview-html {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+}
+
+.footer-preview-inline-card {
+  padding: 14px;
 }
 
 .overview-domain-status {
@@ -6554,14 +7372,6 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
-.domain-summary-signature {
-  margin: 0;
-  font: inherit;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 .domain-summary-logo-preview,
 .signature-logo-preview {
   display: inline-flex;
@@ -6614,6 +7424,29 @@ onBeforeUnmount(() => {
 
 .footer-details-field {
   margin-top: 18px;
+}
+
+.domain-summary-footer-preview {
+  min-height: 120px;
+}
+
+.email-footer-form-grid,
+.email-footer-social-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.email-footer-form-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.email-footer-social-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.email-footer-editor-field.is-full,
+.email-footer-social-grid.is-full {
+  grid-column: 1 / -1;
 }
 
 .signature-preview-header {
@@ -6685,6 +7518,8 @@ onBeforeUnmount(() => {
   .overview-quick-actions,
   .overview-dashboard-grid,
   .domain-grid,
+  .email-footer-form-grid,
+  .email-footer-social-grid,
   .contact-import-stack {
     grid-template-columns: 1fr;
   }

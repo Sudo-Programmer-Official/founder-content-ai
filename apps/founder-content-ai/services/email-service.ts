@@ -17,9 +17,13 @@ import type {
   ImportEmailContactsPreviewRequest,
   ImportEmailContactsPreviewResponse,
   ImportEmailContactsResponse,
+  PreviewEmailCampaignRequest,
+  PreviewEmailCampaignResponse,
   QueueEmailContactsImportRequest,
   QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
+  SendTestEmailCampaignRequest,
+  SendTestEmailCampaignResponse,
   UpdateEmailContactRequest,
   UpdateEmailContactResponse,
   UpdateEmailCampaignRequest,
@@ -200,6 +204,28 @@ export async function requestEmailCampaignSend(
   return apiPost<{ businessId: string }, SendEmailCampaignResponse>(
     `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}/send`,
     { businessId },
+  );
+}
+
+export async function requestEmailCampaignPreview(
+  businessId: string,
+  payload: PreviewEmailCampaignRequest,
+): Promise<PreviewEmailCampaignResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiPost<PreviewEmailCampaignRequest, PreviewEmailCampaignResponse>(
+    `/businesses/${encodedBusinessId}/email/preview`,
+    payload,
+  );
+}
+
+export async function requestEmailCampaignTestSend(
+  businessId: string,
+  payload: SendTestEmailCampaignRequest,
+): Promise<SendTestEmailCampaignResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiPost<SendTestEmailCampaignRequest, SendTestEmailCampaignResponse>(
+    `/businesses/${encodedBusinessId}/email/test-send`,
+    payload,
   );
 }
 

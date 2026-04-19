@@ -106,6 +106,31 @@ export interface EmailDeliverabilitySnapshot {
   lastEvaluatedAt?: string;
 }
 
+export type EmailFooterSocialPlatform = "facebook" | "instagram" | "x" | "youtube" | "linkedin";
+
+export interface EmailFooterSocialLinks {
+  facebook?: string;
+  instagram?: string;
+  x?: string;
+  youtube?: string;
+  linkedin?: string;
+}
+
+export interface EmailFooterSettings {
+  signoff?: string;
+  businessName?: string;
+  websiteUrl?: string;
+  supportEmail?: string;
+  streetAddress?: string;
+  addressLine2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  additionalText?: string;
+  socialLinks?: EmailFooterSocialLinks;
+}
+
 export interface BusinessEmailSettings {
   id?: string;
   businessId: string;
@@ -125,6 +150,8 @@ export interface BusinessEmailSettings {
   updatedAt?: string;
   domainSetupAnalysis?: EmailDomainSetupAnalysis;
   deliverability?: EmailDeliverabilitySnapshot;
+  footer?: EmailFooterSettings;
+  testRecipientEmail?: string;
 }
 
 export interface EmailList {
@@ -458,6 +485,41 @@ export interface SendEmailCampaignRequest {
   businessId: string;
 }
 
+export interface EmailPreviewSenderSettings {
+  fromName?: string;
+  fromEmail?: string;
+  replyToEmail?: string;
+  signatureText?: string;
+  footer?: EmailFooterSettings;
+}
+
+export interface PreviewEmailCampaignRequest {
+  subject: string;
+  bodyHtml?: string;
+  bodyText?: string;
+  replyToEmail?: string;
+  content?: EmailCampaignContent;
+  sender?: EmailPreviewSenderSettings;
+}
+
+export interface PreviewEmailCampaignResponse {
+  html: string;
+  text: string;
+  senderDisplayName?: string;
+  senderEmail?: string;
+  replyToEmail?: string;
+}
+
+export interface SendTestEmailCampaignRequest extends PreviewEmailCampaignRequest {
+  recipientEmail: string;
+  saveRecipient?: boolean;
+}
+
+export interface SendTestEmailCampaignResponse {
+  recipientEmail: string;
+  savedRecipientEmail?: string;
+}
+
 export interface SendEmailCampaignResponse {
   campaign: EmailCampaign;
   stats: EmailCampaignStats;
@@ -487,6 +549,7 @@ export interface CreateEmailDomainRequest {
   fromEmail?: string;
   replyToEmail?: string;
   signatureText?: string;
+  footer?: EmailFooterSettings;
 }
 
 export interface CreateEmailDomainResponse {

@@ -78,6 +78,7 @@ interface WorkspaceBrandKitRow extends QueryResultRow {
   primary_color: string;
   secondary_color: string;
   logo_asset_id: string | null;
+  logo_storage_key: string | null;
   logo_url: string | null;
   metadata: unknown;
   updated_at: Date | string;
@@ -442,6 +443,13 @@ function buildWorkspaceAssetPreviewUrl(storageKey: string | null, storageUrl: st
     });
     return storageUrl;
   }
+}
+
+export function resolveWorkspaceAssetPreviewUrl(
+  storageKey: string | null,
+  storageUrl: string,
+): string | undefined {
+  return buildWorkspaceAssetPreviewUrl(storageKey, storageUrl);
 }
 
 function buildWorkspaceAssetDownloadUrl(storageKey: string | null, storageUrl: string): string {
@@ -1059,6 +1067,7 @@ async function loadWorkspaceBrandKitSummary(
         workspace_brand_kits.primary_color,
         workspace_brand_kits.secondary_color,
         workspace_brand_kits.logo_asset_id,
+        workspace_assets.storage_key as logo_storage_key,
         workspace_assets.storage_url as logo_url,
         workspace_brand_kits.metadata,
         workspace_brand_kits.updated_at
@@ -1082,7 +1091,10 @@ async function loadWorkspaceBrandKitSummary(
     primaryColor: row.primary_color,
     secondaryColor: row.secondary_color,
     logoAssetId: row.logo_asset_id ?? undefined,
-    logoUrl: row.logo_url ?? undefined,
+    logoUrl:
+      row.logo_url && row.logo_storage_key !== undefined
+        ? resolveWorkspaceAssetPreviewUrl(row.logo_storage_key, row.logo_url) ?? undefined
+        : row.logo_url ?? undefined,
     metadata: normalizeRecord(row.metadata),
     updatedAt: toIsoString(row.updated_at),
   };

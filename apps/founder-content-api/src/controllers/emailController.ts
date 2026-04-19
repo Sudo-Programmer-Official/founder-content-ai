@@ -18,9 +18,13 @@ import type {
   ImportEmailContactsPreviewRequest,
   ImportEmailContactsPreviewResponse,
   ImportEmailContactsResponse,
+  PreviewEmailCampaignRequest,
+  PreviewEmailCampaignResponse,
   QueueEmailContactsImportRequest,
   QueueEmailContactsImportResponse,
   SendEmailCampaignResponse,
+  SendTestEmailCampaignRequest,
+  SendTestEmailCampaignResponse,
   UnsubscribeEmailResponse,
   UpdateEmailContactRequest,
   UpdateEmailContactResponse,
@@ -45,8 +49,10 @@ import {
   importEmailContacts,
   listEmailCampaigns,
   previewEmailContactsImport,
+  previewEmailCampaign,
   queueEmailContactsImport,
   sendEmailCampaign,
+  sendTestEmailCampaign,
   unsubscribeEmail,
   updateEmailContact,
   updateEmailCampaign,
@@ -370,6 +376,40 @@ export async function patchEmailCampaign(
   }
 }
 
+export async function postEmailCampaignPreview(
+  request: Request<{ businessId: string }, unknown, PreviewEmailCampaignRequest>,
+  response: Response<PreviewEmailCampaignResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceReadAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+    const result = await previewEmailCampaign(businessId, request.body);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_campaign_preview_failed",
+      message: "Unable to render the email preview.",
+      logMessage: "Failed to render email preview.",
+    });
+  }
+}
+
 export async function deleteEmailCampaignController(
   request: Request<{ businessId: string; campaignId: string }>,
   response: Response<DeleteEmailCampaignResponse | ApiError>,
@@ -407,6 +447,47 @@ export async function deleteEmailCampaignController(
       code: "email_campaign_delete_failed",
       message: "Unable to delete email campaign.",
       logMessage: "Failed to delete email campaign.",
+    });
+  }
+}
+
+export async function postEmailCampaignTestSend(
+  request: Request<{ businessId: string }, unknown, SendTestEmailCampaignRequest>,
+  response: Response<SendTestEmailCampaignResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+    const result = await sendTestEmailCampaign(businessId, request.body);
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_campaign_test_send_failed",
+      message: "Unable to send test email.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_campaign_test_send_failed",
+      message: "Unable to send test email.",
+      logMessage: "Failed to send test email.",
     });
   }
 }

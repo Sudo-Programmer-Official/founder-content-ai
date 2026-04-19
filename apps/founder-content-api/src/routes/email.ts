@@ -15,7 +15,9 @@ import {
   patchEmailCampaign,
   patchEmailContactController,
   postEmailCampaign,
+  postEmailCampaignPreview,
   postEmailCampaignSend,
+  postEmailCampaignTestSend,
   postEmailContactsImport,
   postEmailContactsImportJob,
   postEmailContactsImportPreview,
@@ -38,7 +40,9 @@ emailRoute.patch("/api/businesses/:businessId/email/contacts/:contactId", requir
 emailRoute.delete("/api/businesses/:businessId/email/contacts/:contactId", requireAuth(), deleteEmailContactController);
 emailRoute.get("/api/businesses/:businessId/email/lists", requireAuth(), getEmailLists);
 emailRoute.get("/api/businesses/:businessId/email/settings", requireAuth(), getEmailDomainSettingsController);
+emailRoute.post("/api/businesses/:businessId/email/preview", requireAuth(), postEmailCampaignPreview);
 emailRoute.post("/api/businesses/:businessId/email/campaigns", requireAuth(), postEmailCampaign);
+emailRoute.post("/api/businesses/:businessId/email/test-send", requireAuth(), postEmailCampaignTestSend);
 emailRoute.patch("/api/businesses/:businessId/email/campaigns/:campaignId", requireAuth(), patchEmailCampaign);
 emailRoute.delete("/api/businesses/:businessId/email/campaigns/:campaignId", requireAuth(), deleteEmailCampaignController);
 emailRoute.post("/api/businesses/:businessId/email/campaigns/:campaignId/send", requireAuth(), postEmailCampaignSend);

@@ -25,6 +25,9 @@ import type {
   EmailDomainConflictFlag,
   EmailDomainSetupAnalysis,
   EmailDomainSettingsResponse,
+  EmailFooterSettings,
+  EmailFooterSocialLinks,
+  EmailPreviewSenderSettings,
   EmailList,
   EmailListListResponse,
   EmailMxRecord,
@@ -42,7 +45,11 @@ import type {
   EmailContactImportJobResponse,
   QueueEmailContactsImportRequest,
   QueueEmailContactsImportResponse,
+  PreviewEmailCampaignRequest,
+  PreviewEmailCampaignResponse,
   SendEmailCampaignResponse,
+  SendTestEmailCampaignRequest,
+  SendTestEmailCampaignResponse,
   UnsubscribeEmailResponse,
   UpdateEmailCampaignRequest,
   UpdateEmailCampaignResponse,
@@ -67,6 +74,7 @@ import { HttpError } from "../../utils/http.ts";
 import { logWarn } from "../../utils/logger.ts";
 import { safeCreateSystemErrorLog } from "../systemErrorLogService.ts";
 import { claimQueuedJobs, createJob, markJobCompleted, markJobFailed } from "../jobQueueService.ts";
+import { resolveWorkspaceAssetPreviewUrl } from "../workspaceAssetService.ts";
 import {
   buildEmailBillingSendWarnings,
   getBillingEmailAddonSummary,
@@ -80,6 +88,7 @@ interface EmailSettingsRow extends QueryResultRow {
   from_email: string | null;
   reply_to_email: string | null;
   signature_text: string | null;
+  configuration_json: unknown;
   provider: string;
   ses_identity: string | null;
   domain_name: string | null;
@@ -218,8 +227,14 @@ interface BusinessIdRow extends QueryResultRow {
 
 interface EmailFooterBrandingRow extends QueryResultRow {
   logo_url: string | null;
+  configuration_json: unknown;
   brand_name: string | null;
   name: string | null;
+}
+
+interface EmailFooterLogoAssetRow extends QueryResultRow {
+  storage_key: string | null;
+  storage_url: string;
 }
 
 interface SourceAssetRow extends QueryResultRow {
@@ -318,6 +333,7 @@ const EMAIL_SETTINGS_SELECT_FIELDS = `
   from_email,
   reply_to_email,
   signature_text,
+  configuration_json,
   provider,
   ses_identity,
   domain_name,
@@ -681,6 +697,168 @@ function normalizeOptionalHttpUrl(value: string | undefined | null): string | nu
   }
 }
 
+type EmailSettingsConfiguration = {
+  footer?: EmailFooterSettings;
+  testRecipientEmail?: string;
+};
+
+const EMAIL_FOOTER_SOCIAL_PLATFORMS = [
+  "facebook",
+  "instagram",
+  "x",
+  "youtube",
+  "linkedin",
+] as const;
+
+function normalizeOptionalText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeOptionalPublicUrl(value: string | undefined | null): string | null {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  return normalizeOptionalHttpUrl(/^[a-z]+:\/\//i.test(normalized) ? normalized : `https://${normalized}`);
+}
+
+function normalizeEmailFooterSocialUrl(
+  platform: typeof EMAIL_FOOTER_SOCIAL_PLATFORMS[number],
+  value: unknown,
+): string | undefined {
+  const normalized = normalizeOptionalText(value);
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  const directUrl = normalizeOptionalPublicUrl(normalized);
+
+  if (directUrl) {
+    return directUrl;
+  }
+
+  const handle = normalized.replace(/^@/, "").replace(/^\/+|\/+$/g, "");
+
+  if (!handle) {
+    return undefined;
+  }
+
+  switch (platform) {
+    case "facebook":
+      return `https://www.facebook.com/${handle}`;
+    case "instagram":
+      return `https://www.instagram.com/${handle}`;
+    case "x":
+      return `https://x.com/${handle}`;
+    case "youtube":
+      return handle.includes("/") || handle.startsWith("@")
+        ? `https://www.youtube.com/${handle.replace(/^\/+/, "")}`
+        : `https://www.youtube.com/@${handle}`;
+    case "linkedin":
+      return `https://www.linkedin.com/company/${handle}`;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeEmailFooterSocialLinks(value: unknown): EmailFooterSocialLinks | undefined {
+  const source = parseJsonObject<Record<string, unknown>>(value);
+  const socialLinks = EMAIL_FOOTER_SOCIAL_PLATFORMS.reduce<EmailFooterSocialLinks>((accumulator, platform) => {
+    const url = normalizeEmailFooterSocialUrl(platform, source[platform]);
+
+    if (url) {
+      accumulator[platform] = url;
+    }
+
+    return accumulator;
+  }, {});
+
+  return Object.keys(socialLinks).length > 0 ? socialLinks : undefined;
+}
+
+function normalizeEmailFooterSettings(value: unknown): EmailFooterSettings | undefined {
+  const source = parseJsonObject<Record<string, unknown>>(value);
+  const footer: EmailFooterSettings = {
+    signoff: normalizeOptionalText(source.signoff),
+    businessName: normalizeOptionalText(source.businessName),
+    websiteUrl: normalizeOptionalPublicUrl(normalizeOptionalText(source.websiteUrl)) ?? undefined,
+    supportEmail: normalizeOptionalEmail(normalizeOptionalText(source.supportEmail)) ?? undefined,
+    streetAddress: normalizeOptionalText(source.streetAddress),
+    addressLine2: normalizeOptionalText(source.addressLine2),
+    city: normalizeOptionalText(source.city),
+    state: normalizeOptionalText(source.state),
+    postalCode: normalizeOptionalText(source.postalCode),
+    country: normalizeOptionalText(source.country),
+    additionalText: normalizeOptionalText(source.additionalText),
+    socialLinks: normalizeEmailFooterSocialLinks(source.socialLinks),
+  };
+
+  return Object.values(footer).some((entry) => {
+    if (entry == null) {
+      return false;
+    }
+
+    if (typeof entry === "object") {
+      return Object.keys(entry).length > 0;
+    }
+
+    return true;
+  })
+    ? footer
+    : undefined;
+}
+
+function parseEmailSettingsConfiguration(value: unknown): EmailSettingsConfiguration {
+  const source = parseJsonObject<Record<string, unknown>>(value);
+  return {
+    footer: normalizeEmailFooterSettings(source.footer),
+    testRecipientEmail: normalizeOptionalEmail(normalizeOptionalText(source.testRecipientEmail)) ?? undefined,
+  };
+}
+
+function buildEmailSettingsConfiguration(input: {
+  footer?: EmailFooterSettings;
+  testRecipientEmail?: string;
+}): EmailSettingsConfiguration {
+  return {
+    footer: normalizeEmailFooterSettings(input.footer),
+    testRecipientEmail: normalizeOptionalEmail(input.testRecipientEmail) ?? undefined,
+  };
+}
+
+function extractStorageKeyFromStoredUrl(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.startsWith("s3://")) {
+    const parts = normalized.replace(/^s3:\/\//, "").split("/");
+    return parts.length > 1 ? parts.slice(1).join("/") : null;
+  }
+
+  return null;
+}
+
+function resolveStoredLogoUrl(value: string | null | undefined): string | undefined {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
+  }
+
+  const storageKey = extractStorageKeyFromStoredUrl(normalized);
+  return storageKey ? resolveWorkspaceAssetPreviewUrl(storageKey, normalized) ?? undefined : undefined;
+}
+
 function extractEmailDomain(value: string): string | null {
   const [localPart, domainPart, ...rest] = value.trim().toLowerCase().split("@");
 
@@ -859,6 +1037,8 @@ function buildDomainSetupAnalysis(row: EmailSettingsRow): EmailDomainSetupAnalys
 }
 
 function mapEmailSettings(row: EmailSettingsRow): BusinessEmailSettings {
+  const configuration = parseEmailSettingsConfiguration(row.configuration_json);
+
   return {
     id: row.id,
     businessId: row.business_id,
@@ -877,6 +1057,8 @@ function mapEmailSettings(row: EmailSettingsRow): BusinessEmailSettings {
     lastCheckedAt: toIsoString(row.last_checked_at),
     updatedAt: toIsoString(row.updated_at),
     domainSetupAnalysis: buildDomainSetupAnalysis(row),
+    footer: configuration.footer,
+    testRecipientEmail: configuration.testRecipientEmail,
   };
 }
 
@@ -888,9 +1070,11 @@ async function loadEmailFooterBranding(
     `
       select
         bk.logo_url,
+        s.configuration_json,
         b.brand_name,
         b.name
       from businesses b
+      left join business_email_settings s on s.business_id = b.id
       left join brand_kits bk on bk.business_id = b.id
       where b.id = $1::uuid
       limit 1
@@ -900,12 +1084,14 @@ async function loadEmailFooterBranding(
   );
 
   const row = result.rows[0];
-  const logoUrl = normalizeOptionalHttpUrl(row?.logo_url);
+  const settingsConfiguration = parseEmailSettingsConfiguration(row?.configuration_json);
+  const logoUrl = resolveStoredLogoUrl(row?.logo_url);
   const brandLabel = row?.brand_name?.trim() || row?.name?.trim() || "Brand";
+  const companyName = settingsConfiguration.footer?.businessName?.trim() || brandLabel;
 
   return {
     logoUrl: logoUrl ?? undefined,
-    logoAltText: `${brandLabel} logo`,
+    logoAltText: `${companyName} logo`,
   };
 }
 
@@ -1518,7 +1704,7 @@ function renderEmailImageBlock(input: { url: string; altText?: string; variant: 
   return `<div style="margin:${margin};text-align:center;"><img src="${escapeHtml(input.url)}" alt="${escapeHtml(altText)}" style="display:block;width:100%;max-width:600px;margin:0 auto;border-radius:${borderRadius};height:auto;border:0;outline:none;text-decoration:none;" /></div>`;
 }
 
-function renderSignatureHtml(input: {
+function renderLegacySignatureHtml(input: {
   signatureText: string;
   logoUrl?: string;
   logoAltText?: string;
@@ -1541,6 +1727,204 @@ function renderSignatureHtml(input: {
   return `<div style="margin-top:28px;padding-top:18px;border-top:1px solid #eaded2;">${logoMarkup}${renderedParagraphs.join("")}</div>`;
 }
 
+function hasEmailFooterContent(footer?: EmailFooterSettings): boolean {
+  if (!footer) {
+    return false;
+  }
+
+  return Boolean(
+    footer.signoff ||
+      footer.businessName ||
+      footer.websiteUrl ||
+      footer.supportEmail ||
+      footer.streetAddress ||
+      footer.addressLine2 ||
+      footer.city ||
+      footer.state ||
+      footer.postalCode ||
+      footer.country ||
+      footer.additionalText ||
+      Object.keys(footer.socialLinks ?? {}).length > 0,
+  );
+}
+
+function buildEmailFooterAddressLines(footer?: EmailFooterSettings): string[] {
+  if (!footer) {
+    return [];
+  }
+
+  const localityLine = [footer.city, footer.state, footer.postalCode].filter(Boolean).join(", ").replace(", ,", ",");
+
+  return [footer.streetAddress, footer.addressLine2, localityLine, footer.country]
+    .map((line) => line?.trim() || "")
+    .filter((line) => line !== "");
+}
+
+function buildEmailFooterAddressUrl(footer?: EmailFooterSettings): string | undefined {
+  const address = buildEmailFooterAddressLines(footer).join(", ");
+  return address ? `https://maps.google.com/?q=${encodeURIComponent(address)}` : undefined;
+}
+
+function buildEmailFooterText(
+  footer: EmailFooterSettings | undefined,
+  fallbackSignatureText = "",
+): string {
+  if (!hasEmailFooterContent(footer)) {
+    return fallbackSignatureText.trim();
+  }
+
+  const lines: string[] = [];
+
+  if (footer?.signoff) {
+    lines.push(footer.signoff.trim());
+  }
+
+  if (footer?.businessName) {
+    lines.push(footer.businessName);
+  }
+
+  if (footer?.websiteUrl) {
+    lines.push(footer.websiteUrl);
+  }
+
+  if (footer?.supportEmail) {
+    lines.push(footer.supportEmail);
+  }
+
+  const addressLines = buildEmailFooterAddressLines(footer);
+
+  if (addressLines.length > 0) {
+    lines.push(addressLines.join(", "));
+  }
+
+  for (const [platform, url] of Object.entries(footer?.socialLinks ?? {})) {
+    if (url) {
+      lines.push(`${platform}: ${url}`);
+    }
+  }
+
+  if (footer?.additionalText) {
+    lines.push(footer.additionalText);
+  }
+
+  return lines.join("\n");
+}
+
+function renderEmailFooterSocialButtons(footer?: EmailFooterSettings): string {
+  const socialEntries = Object.entries(footer?.socialLinks ?? {}).filter(
+    (entry): entry is [string, string] => Boolean(entry[1]),
+  );
+
+  if (socialEntries.length === 0) {
+    return "";
+  }
+
+  const labels: Record<string, string> = {
+    facebook: "f",
+    instagram: "ig",
+    x: "x",
+    youtube: "yt",
+    linkedin: "in",
+  };
+
+  const colors: Record<string, string> = {
+    facebook: "#1877F2",
+    instagram: "#E4405F",
+    x: "#111827",
+    youtube: "#FF0000",
+    linkedin: "#0A66C2",
+  };
+
+  return `<div style="margin-top:16px;text-align:center;">${socialEntries
+    .map(
+      ([platform, url]) =>
+        `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin:0 4px;width:34px;height:34px;line-height:34px;border-radius:999px;background:${colors[platform] || "#6d5d53"};color:#ffffff;text-decoration:none;font-size:${platform === "instagram" ? "10px" : "12px"};font-weight:700;text-transform:uppercase;text-align:center;">${escapeHtml(labels[platform] || platform.slice(0, 2))}</a>`,
+    )
+    .join("")}</div>`;
+}
+
+function renderEmailFooterHtml(input: {
+  footer?: EmailFooterSettings;
+  fallbackSignatureText?: string;
+  logoUrl?: string;
+  logoAltText?: string;
+}): string {
+  const footer = normalizeEmailFooterSettings(input.footer);
+  const logoUrl = resolveStoredLogoUrl(input.logoUrl) ?? normalizeOptionalHttpUrl(input.logoUrl);
+  const fallbackSignatureText = input.fallbackSignatureText?.trim() || "";
+  const footerText = buildEmailFooterText(footer, fallbackSignatureText);
+
+  if (!hasEmailFooterContent(footer)) {
+    return footerText || logoUrl
+      ? renderLegacySignatureHtml({
+          signatureText: footerText,
+          logoUrl: logoUrl ?? undefined,
+          logoAltText: input.logoAltText,
+        })
+      : "";
+  }
+
+  const signoffMarkup = footer?.signoff
+    ? footer.signoff
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter((line) => line !== "")
+        .map(
+          (line) =>
+            `<p style="margin:0 0 4px;font-size:16px;line-height:1.6;color:#3b2d23;text-align:center;font-weight:600;">${escapeHtml(line)}</p>`,
+        )
+        .join("")
+    : "";
+  const primaryLinks = [
+    footer?.businessName ? `<strong style="font-weight:700;color:#2b1f19;">${escapeHtml(footer.businessName)}</strong>` : "",
+    footer?.websiteUrl
+      ? `<a href="${escapeHtml(footer.websiteUrl)}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:underline;">${escapeHtml(footer.websiteUrl)}</a>`
+      : "",
+    footer?.supportEmail
+      ? `<a href="mailto:${escapeHtml(footer.supportEmail)}" style="color:#2563eb;text-decoration:underline;">${escapeHtml(footer.supportEmail)}</a>`
+      : "",
+  ].filter(Boolean);
+  const addressLines = buildEmailFooterAddressLines(footer);
+  const addressUrl = buildEmailFooterAddressUrl(footer);
+  const additionalMarkup = footer?.additionalText
+    ? footer.additionalText
+        .split(/\n{2,}/)
+        .map((paragraph) => paragraph.trim())
+        .filter((paragraph) => paragraph !== "")
+        .map(
+          (paragraph) =>
+            `<p style="margin:12px 0 0;font-size:13px;line-height:1.7;color:#6d5d53;text-align:center;">${linkifyHtmlText(paragraph)}</p>`,
+        )
+        .join("")
+    : "";
+  const logoMarkup = logoUrl
+    ? `<div style="margin:0 0 16px;text-align:center;"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(input.logoAltText?.trim() || "Brand logo")}" style="display:inline-block;max-width:180px;max-height:72px;width:auto;height:auto;object-fit:contain;border:0;outline:none;text-decoration:none;" /></div>`
+    : "";
+
+  return `
+    <div style="margin-top:28px;padding-top:18px;border-top:1px solid #eaded2;">
+      ${logoMarkup}
+      ${signoffMarkup}
+      ${
+        primaryLinks.length > 0
+          ? `<p style="margin:14px 0 0;font-size:14px;line-height:1.7;color:#6d5d53;text-align:center;">${primaryLinks.join('<span style="margin:0 6px;color:#c6ad9c;">|</span>')}</p>`
+          : ""
+      }
+      ${
+        addressLines.length > 0
+          ? `<p style="margin:10px 0 0;font-size:13px;line-height:1.7;color:#6d5d53;text-align:center;">${
+              addressUrl
+                ? `<a href="${escapeHtml(addressUrl)}" target="_blank" rel="noopener noreferrer" style="color:#6d5d53;text-decoration:underline;">${escapeHtml(addressLines.join(", "))}</a>`
+                : escapeHtml(addressLines.join(", "))
+            }</p>`
+          : ""
+      }
+      ${renderEmailFooterSocialButtons(footer)}
+      ${additionalMarkup}
+    </div>
+  `.trim();
+}
+
 function resolveEmailSignatureText(
   settings: Pick<BusinessEmailSettings, "signatureText" | "fromName" | "fromEmail">,
 ): string {
@@ -1555,7 +1939,7 @@ function resolveEmailSignatureText(
 
 function buildEmailCampaignBodies(
   input: CreateEmailCampaignRequest,
-  settings: Pick<BusinessEmailSettings, "signatureText" | "fromName" | "fromEmail">,
+  settings: Pick<BusinessEmailSettings, "signatureText" | "fromName" | "fromEmail" | "footer">,
   footerBranding: {
     logoUrl?: string;
     logoAltText?: string;
@@ -1645,17 +2029,22 @@ function buildEmailCampaignBodies(
     }
   }
 
-  if (signatureText || footerLogoUrl) {
-    htmlParts.push(
-      renderSignatureHtml({
-        signatureText,
-        logoUrl: footerLogoUrl ?? undefined,
-        logoAltText: footerBranding.logoAltText,
-      }),
-    );
+  if (hasEmailFooterContent(settings.footer) || signatureText || footerLogoUrl) {
+    const renderedFooter = renderEmailFooterHtml({
+      footer: settings.footer,
+      fallbackSignatureText: signatureText,
+      logoUrl: footerLogoUrl ?? undefined,
+      logoAltText: footerBranding.logoAltText,
+    });
 
-    if (signatureText) {
-      textParts.push(signatureText);
+    if (renderedFooter) {
+      htmlParts.push(renderedFooter);
+    }
+
+    const footerText = buildEmailFooterText(settings.footer, signatureText);
+
+    if (footerText) {
+      textParts.push(footerText);
     }
   }
 
@@ -1683,6 +2072,87 @@ function appendUnsubscribeFooter(html: string, text: string, unsubscribeUrl: str
     html: `${html}<p style="margin-top:24px;font-size:12px;color:#6b7280;">If you no longer want these emails, <a href="${unsubscribeUrl}">unsubscribe here</a>.</p>`,
     text: `${text}\n\nIf you no longer want these emails, unsubscribe here: ${unsubscribeUrl}`,
   };
+}
+
+function buildPreviewCampaignInput(input: PreviewEmailCampaignRequest): CreateEmailCampaignRequest {
+  return {
+    listId: "",
+    name: input.subject.trim() || "Preview email",
+    subject: input.subject.trim(),
+    bodyHtml: input.bodyHtml,
+    bodyText: input.bodyText,
+    replyToEmail: input.replyToEmail,
+    content: input.content,
+  };
+}
+
+function buildPreviewEmailSettings(
+  base: BusinessEmailSettings,
+  sender?: EmailPreviewSenderSettings,
+): Pick<BusinessEmailSettings, "signatureText" | "fromName" | "fromEmail" | "replyToEmail" | "footer"> {
+  const footer = normalizeEmailFooterSettings(sender?.footer) ?? base.footer;
+  const fromName = sender?.fromName?.trim() || base.fromName;
+  const fromEmail = normalizeOptionalEmail(sender?.fromEmail) ?? base.fromEmail;
+  const replyToEmail = normalizeOptionalEmail(sender?.replyToEmail) ?? base.replyToEmail;
+  const signatureText =
+    sender?.signatureText?.trim() || buildEmailFooterText(footer, base.signatureText ?? "");
+
+  return {
+    fromName: fromName || undefined,
+    fromEmail: fromEmail || undefined,
+    replyToEmail: replyToEmail || undefined,
+    signatureText: signatureText || undefined,
+    footer,
+  };
+}
+
+function buildEmailPreviewBodies(
+  input: PreviewEmailCampaignRequest,
+  settings: Pick<BusinessEmailSettings, "signatureText" | "fromName" | "fromEmail" | "replyToEmail" | "footer">,
+  footerBranding: {
+    logoUrl?: string;
+    logoAltText?: string;
+  },
+): { html: string; text: string } {
+  const renderedBody = buildEmailCampaignBodies(buildPreviewCampaignInput(input), settings, footerBranding);
+  const unsubscribeUrl = `${resolveEmailPublicApiBaseUrl()}/email/unsubscribe/test-preview`;
+  return appendUnsubscribeFooter(renderedBody.html, renderedBody.text, unsubscribeUrl);
+}
+
+async function updateEmailSettingsConfiguration(
+  businessId: string,
+  patch: {
+    footer?: EmailFooterSettings;
+    testRecipientEmail?: string;
+  },
+  client?: PoolClient,
+): Promise<EmailSettingsRow> {
+  const existingRow = await ensureEmailSettingsRow(businessId, client);
+  const existingConfiguration = parseEmailSettingsConfiguration(existingRow.configuration_json);
+  const nextConfiguration = buildEmailSettingsConfiguration({
+    footer: patch.footer ?? existingConfiguration.footer,
+    testRecipientEmail: patch.testRecipientEmail ?? existingConfiguration.testRecipientEmail,
+  });
+
+  const result = await executeQuery<EmailSettingsRow>(
+    `
+      update business_email_settings
+      set
+        configuration_json = $2::jsonb,
+        updated_at = now()
+      where business_id = $1::uuid
+      returning
+        ${EMAIL_SETTINGS_SELECT_FIELDS}
+    `,
+    [businessId, JSON.stringify(nextConfiguration)],
+    client,
+  );
+
+  if (!result.rows[0]) {
+    throw new HttpError(500, "email_settings_missing", "Email settings could not be updated.");
+  }
+
+  return result.rows[0];
 }
 
 interface ParsedEmailImportContact {
@@ -4489,6 +4959,93 @@ export async function updateEmailCampaign(
   });
 }
 
+export async function previewEmailCampaign(
+  businessId: string,
+  input: PreviewEmailCampaignRequest,
+): Promise<PreviewEmailCampaignResponse> {
+  if (input.subject.trim() === "" || (input.bodyText?.trim() || input.bodyHtml?.trim() || "") === "") {
+    throw new HttpError(400, "email_campaign_invalid", "Subject and email body are required.");
+  }
+
+  const settingsRow = await ensureEmailSettingsRow(businessId);
+  const baseSettings = mapEmailSettings(settingsRow);
+  const footerBranding = await loadEmailFooterBranding(businessId);
+  const previewSettings = buildPreviewEmailSettings(baseSettings, input.sender);
+  const renderedBody = buildEmailPreviewBodies(input, previewSettings, footerBranding);
+
+  return {
+    html: renderedBody.html,
+    text: renderedBody.text,
+    senderDisplayName: previewSettings.fromName,
+    senderEmail: previewSettings.fromEmail,
+    replyToEmail: input.replyToEmail?.trim() || previewSettings.replyToEmail,
+  };
+}
+
+export async function sendTestEmailCampaign(
+  businessId: string,
+  input: SendTestEmailCampaignRequest,
+): Promise<SendTestEmailCampaignResponse> {
+  if (input.subject.trim() === "" || (input.bodyText?.trim() || input.bodyHtml?.trim() || "") === "") {
+    throw new HttpError(400, "email_campaign_invalid", "Subject and email body are required.");
+  }
+
+  const recipientEmail = normalizeOptionalEmail(input.recipientEmail);
+  assertValidOptionalEmail(
+    recipientEmail,
+    "email_recipient_invalid",
+    "A valid test recipient email is required.",
+  );
+
+  await ensureBusinessEmailSendingPreconditions(businessId);
+
+  return withDbTransaction(async (client) => {
+    const settingsRow = await ensureEmailSettingsRow(businessId, client);
+    const baseSettings = mapEmailSettings(settingsRow);
+    const footerBranding = await loadEmailFooterBranding(businessId, client);
+    const previewSettings = buildPreviewEmailSettings(baseSettings, input.sender);
+    const fromEmail = previewSettings.fromEmail || process.env.SYSTEM_FROM_EMAIL?.trim();
+    const fromName = previewSettings.fromName || process.env.SYSTEM_FROM_NAME?.trim() || undefined;
+    const replyToEmail = input.replyToEmail?.trim() || previewSettings.replyToEmail;
+
+    if (!fromEmail) {
+      throw new HttpError(500, "system_from_email_missing", "SYSTEM_FROM_EMAIL is not configured.");
+    }
+
+    const renderedBody = buildEmailPreviewBodies(input, previewSettings, footerBranding);
+
+    await sendPlatformEmail({
+      fromEmail,
+      fromName,
+      replyToEmail: replyToEmail || undefined,
+      toEmail: recipientEmail!,
+      subject: input.subject.trim(),
+      htmlBody: renderedBody.html,
+      textBody: renderedBody.text,
+      tags: {
+        business_id: businessId,
+        preview_send: "true",
+      },
+    });
+
+    const updatedSettings = input.saveRecipient === false
+      ? settingsRow
+      : await updateEmailSettingsConfiguration(
+          businessId,
+          {
+            testRecipientEmail: recipientEmail!,
+          },
+          client,
+        );
+    const updatedConfiguration = parseEmailSettingsConfiguration(updatedSettings.configuration_json);
+
+    return {
+      recipientEmail: recipientEmail!,
+      savedRecipientEmail: updatedConfiguration.testRecipientEmail,
+    };
+  });
+}
+
 export async function deleteEmailCampaign(
   businessId: string,
   campaignId: string,
@@ -5094,7 +5651,8 @@ export async function createEmailDomain(
 ): Promise<CreateEmailDomainResponse> {
   const fromEmail = normalizeOptionalEmail(input.fromEmail);
   const replyToEmail = normalizeOptionalEmail(input.replyToEmail);
-  const signatureText = input.signatureText?.trim() || null;
+  const footer = normalizeEmailFooterSettings(input.footer);
+  const signatureText = input.signatureText?.trim() || buildEmailFooterText(footer) || null;
   const domainName =
     normalizeDomainNameInput(input.domainName) ||
     normalizeDomainNameInput(fromEmail) ||
@@ -5127,6 +5685,13 @@ export async function createEmailDomain(
     );
   }
 
+  const existingSettingsRow = await ensureEmailSettingsRow(businessId);
+  const existingConfiguration = parseEmailSettingsConfiguration(existingSettingsRow.configuration_json);
+  const configuration = buildEmailSettingsConfiguration({
+    footer,
+    testRecipientEmail: existingConfiguration.testRecipientEmail,
+  });
+
   const snapshot = await ensureSesDomainIdentity(domainName);
   const safety = await inspectDomainSafety({
     domainName,
@@ -5142,6 +5707,7 @@ export async function createEmailDomain(
         from_email,
         reply_to_email,
         signature_text,
+        configuration_json,
         provider,
         domain_name,
         domain_status,
@@ -5162,19 +5728,20 @@ export async function createEmailDomain(
         $3,
         $4,
         $5,
+        $6::jsonb,
         'ses',
-        $6,
         $7,
         $8,
         $9,
         $10,
-        $11::jsonb,
+        $11,
         $12::jsonb,
-        $13,
+        $13::jsonb,
         $14,
         $15,
-        $16::jsonb,
-        case when $17 then now() else null end,
+        $16,
+        $17::jsonb,
+        case when $18 then now() else null end,
         now()
       )
       on conflict (business_id)
@@ -5183,6 +5750,7 @@ export async function createEmailDomain(
         from_email = excluded.from_email,
         reply_to_email = excluded.reply_to_email,
         signature_text = excluded.signature_text,
+        configuration_json = excluded.configuration_json,
         domain_name = excluded.domain_name,
         domain_status = excluded.domain_status,
         dkim_status = excluded.dkim_status,
@@ -5210,6 +5778,7 @@ export async function createEmailDomain(
       fromEmail,
       replyToEmail,
       signatureText,
+      JSON.stringify(configuration),
       domainName,
       snapshot.domainStatus,
       snapshot.dkimStatus,

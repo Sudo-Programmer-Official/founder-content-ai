@@ -13,7 +13,10 @@ import type {
 import type { AuthenticatedPrincipal } from "../../middleware/auth.ts";
 import { requireBusinessMembership } from "../authBusinessService.ts";
 import { queryDb } from "../db/client.ts";
-import { syncWorkspaceBrandKitForBusiness } from "../workspaceAssetService.ts";
+import {
+  resolveWorkspaceAssetPreviewUrl,
+  syncWorkspaceBrandKitForBusiness,
+} from "../workspaceAssetService.ts";
 import { HttpError } from "../../utils/http.ts";
 
 interface BrandKitRow extends QueryResultRow {
@@ -42,6 +45,30 @@ function toIsoString(value: Date | string): string {
   return new Date(value).toISOString();
 }
 
+function extractStorageKey(value: string): string | null {
+  if (value.startsWith("s3://")) {
+    const parts = value.replace(/^s3:\/\//, "").split("/");
+    return parts.length > 1 ? parts.slice(1).join("/") : null;
+  }
+
+  return null;
+}
+
+function resolveBrandKitLogoUrl(value: string | null): string | undefined {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (/^https?:\/\//i.test(normalized)) {
+    return normalized;
+  }
+
+  const storageKey = extractStorageKey(normalized);
+  return storageKey ? resolveWorkspaceAssetPreviewUrl(storageKey, normalized) ?? undefined : undefined;
+}
+
 function mapBrandKit(row: BrandKitRow): BrandKit {
   return {
     id: row.id,
@@ -54,7 +81,7 @@ function mapBrandKit(row: BrandKitRow): BrandKit {
     tone: row.tone,
     accentStyle: row.accent_style,
     brandPlacement: row.brand_placement,
-    logoUrl: row.logo_url ?? undefined,
+    logoUrl: resolveBrandKitLogoUrl(row.logo_url),
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
