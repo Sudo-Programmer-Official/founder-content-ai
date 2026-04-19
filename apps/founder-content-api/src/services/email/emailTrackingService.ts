@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { PoolClient, QueryResultRow } from "pg";
 import { queryDb, withDbTransaction } from "../db/client.ts";
 import { HttpError } from "../../utils/http.ts";
+import { resolveEmailPublicApiBaseUrl } from "./emailPublicUrlService.ts";
 
 const TRACKING_TOKEN_VERSION = 1;
 const TRANSPARENT_GIF = Buffer.from(
@@ -74,13 +75,6 @@ function resolveTrackingSecret(): string {
   }
 
   return configuredSecret;
-}
-
-function resolveTrackingApiBaseUrl(): string {
-  return (
-    process.env.API_PUBLIC_BASE_URL?.trim() ||
-    `http://localhost:${process.env.PORT?.trim() || "3001"}/api`
-  ).replace(/\/$/, "");
 }
 
 function computeSignature(input: string): string {
@@ -221,7 +215,7 @@ function buildOpenTrackingUrl(input: {
     sendId: input.sendId,
     recipientId: input.recipientId,
   });
-  return `${resolveTrackingApiBaseUrl()}/email/track/open?t=${encodeURIComponent(token)}`;
+  return `${resolveEmailPublicApiBaseUrl()}/email/track/open?t=${encodeURIComponent(token)}`;
 }
 
 function buildClickTrackingUrl(input: {
@@ -240,7 +234,7 @@ function buildClickTrackingUrl(input: {
     recipientId: input.recipientId,
     linkId: input.linkId,
   });
-  return `${resolveTrackingApiBaseUrl()}/email/track/click?t=${encodeURIComponent(token)}`;
+  return `${resolveEmailPublicApiBaseUrl()}/email/track/click?t=${encodeURIComponent(token)}`;
 }
 
 function extractTrackableHtmlLinks(html: string): Array<{ originalUrl: string; label?: string }> {

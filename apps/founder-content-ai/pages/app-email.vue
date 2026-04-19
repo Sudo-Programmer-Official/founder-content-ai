@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type {
+  BrandKit,
   BusinessEmailSettings,
   BusinessMembership,
   EmailContact,
@@ -26,6 +27,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "../access/product-access-context";
 import { useAuthContext } from "../auth/auth-context";
+import { requestBrandKit, requestUpdateBrandKit } from "../services/brand-kit-service";
 import WorkspaceAssetPickerModal from "../components/WorkspaceAssetPickerModal.vue";
 import EmailSkeleton from "../components/skeletons/EmailSkeleton.vue";
 import {
@@ -340,8 +342,10 @@ const isEditingDomainSetup = ref(false);
 const isLoadingDraftMedia = ref(false);
 const isUploadingDraftMedia = ref(false);
 const isWorkspaceAssetPickerOpen = ref(false);
+const isFooterLogoPickerOpen = ref(false);
 const isLoadingMediaRecommendations = ref(false);
 const isGeneratingMediaRecommendationId = ref("");
+const isSavingFooterLogo = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const domainSaveErrorMessage = ref("");
@@ -353,6 +357,7 @@ const latestStatsCampaignId = ref("");
 const editingCampaignId = ref("");
 const emailMediaAssets = ref<PostAsset[]>([]);
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
+const footerBrandKit = ref<BrandKit | null>(null);
 let campaignProgressPollHandle: number | null = null;
 let importJobPollHandle: number | null = null;
 let emailToastTimeoutHandle: number | null = null;
@@ -700,7 +705,7 @@ const contactForm = ref<{
 const activationDraftLibrary = ref<ActivationDraftRecord[]>([]);
 const campaignSourceMode = ref<CampaignSourceMode>("fresh");
 const campaignTone = ref<CampaignToneMode>("direct");
-const campaignEditorMode = ref<CampaignEditorMode>("edit");
+const campaignEditorMode = ref<CampaignEditorMode>("preview");
 const campaignAdvancedOpen = ref(false);
 const campaignIntent = ref<CampaignComposerIntent>("quick_update");
 const campaignSearch = ref("");
@@ -751,8 +756,7 @@ const recommendedDomainForm = computed(() => {
   const fromName = business?.brandName?.trim() || business?.name?.trim() || resolvedUserName.value || "";
   const fromEmail = buildDefaultSenderEmail(domainName);
   const signatureLines = [
-    resolvedUserName.value || fromName,
-    resolvedUserName.value && business?.brandName?.trim() ? `Founder @ ${business.brandName.trim()}` : "",
+    business?.brandName?.trim() || business?.name?.trim() || fromName,
     normalizeWebsiteUrlForSignature(business?.websiteUrl, domainName),
   ].filter((value) => value !== "");
 
@@ -1152,6 +1156,8 @@ const libraryDraftCards = computed(() =>
 const previewEmailHtml = computed(() => {
   const bodyText = campaignForm.value.bodyText.trim();
   const signatureText = campaignForm.value.includeSignature ? effectiveSignatureText.value.trim() : "";
+  const footerLogoUrl = campaignForm.value.includeSignature ? effectiveFooterLogoUrl.value : "";
+  const footerLogoAlt = effectiveFooterLogoAltText.value;
   const blocks = parseEmailBodyBlocks(bodyText);
 
   const htmlParts: string[] = ['<div class="email-preview-frame-inner">'];
@@ -1178,13 +1184,19 @@ const previewEmailHtml = computed(() => {
     htmlParts.push('<p class="email-preview-placeholder">Write the email body here to see the preview.</p>');
   }
 
-  if (signatureText) {
+  if (signatureText || footerLogoUrl) {
     const signatureParagraphs = signatureText
       .split(/\n{2,}/)
       .map((paragraph) => paragraph.trim())
       .filter((paragraph) => paragraph !== "");
 
     htmlParts.push('<div class="email-preview-signature">');
+
+    if (footerLogoUrl) {
+      htmlParts.push(
+        `<div class="email-preview-signature-logo"><img src="${escapeHtml(footerLogoUrl)}" alt="${escapeHtml(footerLogoAlt)}" /></div>`,
+      );
+    }
 
     for (const paragraph of signatureParagraphs) {
       htmlParts.push(`<p>${linkifyHtmlText(paragraph)}</p>`);
@@ -1214,6 +1226,17 @@ const effectiveSignatureText = computed(() => {
     .map((value) => value?.trim() || "")
     .filter((value) => value !== "")
     .join("\n");
+});
+const effectiveFooterLogoUrl = computed(() => footerBrandKit.value?.logoUrl?.trim() || "");
+const effectiveFooterLogoAltText = computed(() => {
+  const brandLabel =
+    domainForm.value.fromName.trim()
+    || domainSettings.value?.fromName?.trim()
+    || currentBusinessMembership.value?.business.brandName?.trim()
+    || currentBusinessMembership.value?.business.name?.trim()
+    || "Brand";
+
+  return `${brandLabel} logo`;
 });
 const selectedInlineImagePreviews = computed(() =>
   campaignForm.value.inlineImageUrls.map((url, index) => ({
@@ -1456,7 +1479,7 @@ function applySourceToCampaign(sourceText: string, titleFallback?: string): void
 
   campaignForm.value.subject = buildSourceTitle(normalizedSource, titleFallback);
   campaignForm.value.bodyText = buildEmailBodyFromSource(normalizedSource, campaignTone.value);
-  campaignEditorMode.value = "edit";
+  campaignEditorMode.value = "preview";
 }
 
 function syncCampaignBlocksFromBodyText(): void {
@@ -1594,7 +1617,7 @@ function startFreshCampaign(): void {
   campaignForm.value.replyToEmail = domainSettings.value?.replyToEmail || "";
   campaignForm.value.includeSignature = true;
   resetSelectedMedia();
-  campaignEditorMode.value = "edit";
+  campaignEditorMode.value = "preview";
 }
 
 function loadCampaignIntoComposer(
@@ -1603,7 +1626,7 @@ function loadCampaignIntoComposer(
 ): void {
   editingCampaignId.value = options.duplicate ? "" : campaign.id;
   campaignSourceMode.value = "fresh";
-  campaignEditorMode.value = "edit";
+  campaignEditorMode.value = "preview";
   campaignAdvancedOpen.value = false;
   errorMessage.value = "";
   campaignForm.value.listId =
@@ -2427,6 +2450,84 @@ function applyRecommendedDomainSetup(): void {
     : "Prefilled the recommended sender defaults for this workspace.";
 }
 
+async function loadFooterBranding(): Promise<void> {
+  if (!selectedBusinessId.value) {
+    footerBrandKit.value = null;
+    return;
+  }
+
+  try {
+    const response = await requestBrandKit(selectedBusinessId.value);
+    footerBrandKit.value = response.brandKit;
+  } catch {
+    footerBrandKit.value = null;
+  }
+}
+
+async function handleFooterLogoSelection(assets: WorkspaceAsset[]): Promise<void> {
+  if (!selectedBusinessId.value || assets.length === 0) {
+    return;
+  }
+
+  const [asset] = assets;
+  const logoUrl = asset.storageUrl?.trim() || asset.previewUrl?.trim();
+
+  if (!logoUrl) {
+    domainSaveErrorMessage.value = "The selected asset does not have a usable image URL.";
+    return;
+  }
+
+  isSavingFooterLogo.value = true;
+  domainSaveErrorMessage.value = "";
+
+  try {
+    const response = await requestUpdateBrandKit({
+      businessId: selectedBusinessId.value,
+      brandKit: {
+        logoUrl,
+      },
+    });
+    footerBrandKit.value = response.brandKit;
+    await requestRecordWorkspaceAssetUsage(asset.id, {
+      businessId: selectedBusinessId.value,
+      usageSurface: "brand_kit",
+      metadata: {
+        slot: "email_footer_logo",
+      },
+    }).catch(() => undefined);
+    isFooterLogoPickerOpen.value = false;
+    feedbackMessage.value = "Footer logo saved. Future emails will reuse it automatically.";
+  } catch (error) {
+    domainSaveErrorMessage.value = error instanceof Error ? error.message : "Unable to save the footer logo.";
+  } finally {
+    isSavingFooterLogo.value = false;
+  }
+}
+
+async function clearFooterLogo(): Promise<void> {
+  if (!selectedBusinessId.value || !effectiveFooterLogoUrl.value) {
+    return;
+  }
+
+  isSavingFooterLogo.value = true;
+  domainSaveErrorMessage.value = "";
+
+  try {
+    const response = await requestUpdateBrandKit({
+      businessId: selectedBusinessId.value,
+      brandKit: {
+        logoUrl: "",
+      },
+    });
+    footerBrandKit.value = response.brandKit;
+    feedbackMessage.value = "Footer logo removed from future emails.";
+  } catch (error) {
+    domainSaveErrorMessage.value = error instanceof Error ? error.message : "Unable to remove the footer logo.";
+  } finally {
+    isSavingFooterLogo.value = false;
+  }
+}
+
 function setEmailTab(tab: EmailTabKey): void {
   if (isEmailDashboardRoute.value) {
     const nextQuery: Record<string, string | string[] | null | undefined> = {
@@ -2541,6 +2642,7 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     contactImportJobs.value = [];
     campaigns.value = [];
     latestStats.value = null;
+    footerBrandKit.value = null;
     applyDomainSettings(null, { syncForm: options.syncDomainForm });
     return;
   }
@@ -2598,6 +2700,7 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
   }
 
   await loadDraftMedia();
+  await loadFooterBranding();
 }
 
 async function initializePage(): Promise<void> {
@@ -3561,28 +3664,54 @@ onBeforeUnmount(() => {
                     {{ campaignComposerSecondaryLabel }}
                   </button>
                 </div>
+
+                <article class="workspace-card email-composer-advanced-toggle">
+                  <div>
+                    <p class="panel-meta">Advanced settings</p>
+                    <p class="panel-note">Open raw markup, links, and optional media only when this draft needs more control.</p>
+                  </div>
+                  <button
+                    type="button"
+                    class="workspace-secondary-button compact"
+                    @click="campaignAdvancedOpen = !campaignAdvancedOpen"
+                  >
+                    {{ campaignAdvancedOpen ? "Hide advanced settings" : "Show advanced settings" }}
+                  </button>
+                </article>
               </div>
 
               <aside class="email-composer-sidebar">
-                <article class="workspace-card email-composer-side-card">
-                  <p class="panel-meta">Sender</p>
-                  <strong>{{ senderIdentitySummary }}</strong>
-                  <p class="panel-note">
-                    {{ hasConfiguredDomain ? domainStatusSummary : "Finish sender setup before sending." }}
-                  </p>
-                </article>
+                <section class="workspace-card email-preview-sidebar-card">
+                  <div class="email-preview-sidebar-header">
+                    <div>
+                      <p class="panel-meta">Preview</p>
+                      <h3>{{ campaignForm.subject || "Add a subject line" }}</h3>
+                      <p class="panel-note">Mobile preview stays visible while you write.</p>
+                    </div>
+                    <span class="workspace-chip">Mobile</span>
+                  </div>
 
-                <article class="workspace-card email-composer-side-card">
-                  <p class="panel-meta">Advanced</p>
-                  <p class="panel-note">Preview, links, and optional media stay hidden until you need them.</p>
-                  <button
-                    type="button"
-                    class="secondary-action"
-                    @click="campaignAdvancedOpen = !campaignAdvancedOpen"
-                  >
-                    {{ campaignAdvancedOpen ? "Hide advanced" : "Show advanced" }}
-                  </button>
-                </article>
+                  <div class="email-mobile-preview-shell">
+                    <div class="email-mobile-preview-device">
+                      <div class="email-mobile-preview-notch" aria-hidden="true"></div>
+
+                      <div class="email-mobile-preview-screen">
+                        <div class="email-mobile-preview-message-header">
+                          <div class="email-mobile-preview-avatar" aria-hidden="true">
+                            {{ (senderIdentitySummary || "E").slice(0, 1).toUpperCase() }}
+                          </div>
+                          <div class="email-mobile-preview-message-copy">
+                            <span>From</span>
+                            <strong>{{ senderIdentitySummary }}</strong>
+                            <p>{{ hasConfiguredDomain ? domainStatusSummary : "Finish sender setup before sending." }}</p>
+                          </div>
+                        </div>
+
+                        <div class="email-preview-frame email-preview-frame-mobile" v-html="previewEmailHtml"></div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
               </aside>
             </div>
 
@@ -3590,7 +3719,7 @@ onBeforeUnmount(() => {
               <div class="panel-header">
                 <div>
                   <p class="panel-meta">Advanced</p>
-                  <h3>Preview, links, and optional media</h3>
+                  <h3>Raw markup, links, and optional media</h3>
                   <p class="panel-note">Keep this light. Use visuals only when they help the message.</p>
                 </div>
               </div>
@@ -3618,17 +3747,9 @@ onBeforeUnmount(() => {
                   type="button"
                   class="workspace-secondary-button compact"
                   :class="{ active: campaignEditorMode === 'edit' }"
-                  @click="campaignEditorMode = 'edit'"
+                  @click="campaignEditorMode = campaignEditorMode === 'edit' ? 'preview' : 'edit'"
                 >
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  class="workspace-secondary-button compact"
-                  :class="{ active: campaignEditorMode === 'preview' }"
-                  @click="campaignEditorMode = 'preview'"
-                >
-                  Preview
+                  {{ campaignEditorMode === "edit" ? "Hide raw markup" : "Edit raw markup" }}
                 </button>
               </div>
 
@@ -3643,17 +3764,6 @@ onBeforeUnmount(() => {
                   placeholder="Use raw email block syntax if you need direct control."
                 />
               </div>
-
-              <section v-if="campaignEditorMode === 'preview'" class="email-preview-shell">
-                <div class="email-preview-header">
-                  <div>
-                    <p class="panel-meta">Preview</p>
-                    <h3>{{ campaignForm.subject || "Add a subject line" }}</h3>
-                  </div>
-                  <span class="workspace-chip">{{ campaignComposerIntentSelection.label }}</span>
-                </div>
-                <div class="email-preview-frame" v-html="previewEmailHtml"></div>
-              </section>
 
               <div class="email-media-input-row">
                 <input
@@ -4226,8 +4336,15 @@ onBeforeUnmount(() => {
                 <strong>{{ domainSettings?.replyToEmail || "Not set" }}</strong>
               </div>
               <div>
-                <span class="domain-summary-label">Signature</span>
-                <strong>{{ domainSettings?.signatureText || "Uses sender identity" }}</strong>
+                <span class="domain-summary-label">Footer logo</span>
+                <div v-if="effectiveFooterLogoUrl" class="domain-summary-logo-preview">
+                  <img :src="effectiveFooterLogoUrl" :alt="effectiveFooterLogoAltText" />
+                </div>
+                <strong>{{ effectiveFooterLogoUrl ? "Saved for future emails" : "Not set" }}</strong>
+              </div>
+              <div>
+                <span class="domain-summary-label">Footer details</span>
+                <pre class="domain-summary-signature">{{ domainSettings?.signatureText || "Uses sender identity" }}</pre>
               </div>
             </div>
 
@@ -4319,11 +4436,49 @@ onBeforeUnmount(() => {
             <ul v-if="domainSetupHints.length > 0" class="sender-setup-hint-list">
               <li v-for="hint in domainSetupHints" :key="hint">{{ hint }}</li>
             </ul>
-            <textarea
-              v-model="domainForm.signatureText"
-              class="workspace-textarea compact"
-              placeholder="Abhishek&#10;Founder, PlanCraft AI&#10;https://linkedin.com/in/abhishek"
-            />
+
+            <article class="signature-preview-card">
+              <div class="signature-preview-header">
+                <div>
+                  <p class="panel-meta">Footer preview</p>
+                  <strong>{{ effectiveFooterLogoUrl ? "Logo and footer details will carry forward" : "Saved footer details for future emails" }}</strong>
+                </div>
+                <div class="signature-preview-actions">
+                  <button
+                    type="button"
+                    class="workspace-secondary-button compact"
+                    :disabled="isSavingFooterLogo"
+                    @click="isFooterLogoPickerOpen = true"
+                  >
+                    {{ effectiveFooterLogoUrl ? "Replace footer logo" : "Select footer logo" }}
+                  </button>
+                  <button
+                    v-if="effectiveFooterLogoUrl"
+                    type="button"
+                    class="workspace-secondary-button compact"
+                    :disabled="isSavingFooterLogo"
+                    @click="void clearFooterLogo()"
+                  >
+                    {{ isSavingFooterLogo ? "Removing..." : "Remove logo" }}
+                  </button>
+                </div>
+              </div>
+              <p class="panel-note">Choose the logo once here. New emails will reuse it automatically.</p>
+              <div v-if="effectiveFooterLogoUrl" class="signature-logo-preview">
+                <img :src="effectiveFooterLogoUrl" :alt="effectiveFooterLogoAltText" />
+              </div>
+              <pre>{{ domainForm.signatureText || "Daycare Spots\n123 Main St, Austin, TX 78701\nhttps://www.daycarespots.com" }}</pre>
+            </article>
+
+            <label class="domain-field footer-details-field">
+              <span>Footer details</span>
+              <textarea
+                v-model="domainForm.signatureText"
+                class="workspace-textarea compact"
+                placeholder="Daycare Spots&#10;123 Main St, Austin, TX 78701&#10;https://www.daycarespots.com"
+              />
+              <small>Use this for the brand address, website, or any reusable signature copy. It is saved once for the workspace.</small>
+            </label>
 
             <div class="workspace-actions">
               <button
@@ -4349,6 +4504,15 @@ onBeforeUnmount(() => {
         </section>
       </section>
     </template>
+    <WorkspaceAssetPickerModal
+      :open="isFooterLogoPickerOpen"
+      :business-id="selectedBusinessId"
+      asset-type="all"
+      :accepted-mime-prefixes="['image/']"
+      title="Select a footer logo"
+      @close="isFooterLogoPickerOpen = false"
+      @select="void handleFooterLogoSelection($event)"
+    />
     <transition name="email-toast">
       <div v-if="emailToast" class="email-toast" :class="`tone-${emailToast.tone}`" role="status" aria-live="polite">
         {{ emailToast.message }}
@@ -4608,14 +4772,21 @@ onBeforeUnmount(() => {
 
 .email-composer-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(260px, 0.8fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.88fr);
   gap: 18px;
+  align-items: start;
 }
 
 .email-composer-main,
 .email-composer-sidebar {
   display: grid;
   gap: 16px;
+}
+
+.email-composer-sidebar {
+  position: sticky;
+  top: 24px;
+  align-self: start;
 }
 
 .email-block-composer,
@@ -4688,9 +4859,127 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.email-composer-side-card {
+.email-composer-advanced-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.email-composer-advanced-toggle > div {
   display: grid;
-  gap: 10px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.email-preview-sidebar-card {
+  display: grid;
+  gap: 18px;
+}
+
+.email-preview-sidebar-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.email-preview-sidebar-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.4;
+}
+
+.email-mobile-preview-shell {
+  display: flex;
+  justify-content: center;
+}
+
+.email-mobile-preview-device {
+  width: min(100%, 360px);
+  padding: 14px 12px 16px;
+  border-radius: 38px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 84%, transparent);
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.95), rgba(255, 247, 239, 0.76)),
+    linear-gradient(180deg, rgba(243, 229, 216, 0.72), rgba(255, 250, 245, 0.96));
+  box-shadow:
+    0 32px 60px rgba(60, 36, 21, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.email-mobile-preview-notch {
+  width: 34%;
+  min-width: 110px;
+  height: 18px;
+  margin: 0 auto 14px;
+  border-radius: 999px;
+  background: rgba(36, 24, 19, 0.14);
+}
+
+.email-mobile-preview-screen {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 28px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 86%, transparent);
+  background: linear-gradient(180deg, rgba(255, 252, 248, 0.98), rgba(255, 247, 240, 0.96));
+}
+
+.email-mobile-preview-message-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.email-mobile-preview-avatar {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
+  color: var(--fc-accent-contrast);
+  font-size: 0.95rem;
+  font-weight: 800;
+  flex: 0 0 auto;
+}
+
+.email-mobile-preview-message-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.email-mobile-preview-message-copy span {
+  color: var(--fc-text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.email-mobile-preview-message-copy strong,
+.email-mobile-preview-message-copy p {
+  margin: 0;
+}
+
+.email-mobile-preview-message-copy strong {
+  color: #241813;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.email-mobile-preview-message-copy p {
+  color: var(--fc-text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .campaign-dashboard-toolbar {
@@ -5033,11 +5322,25 @@ onBeforeUnmount(() => {
   box-shadow: 0 24px 50px rgba(60, 36, 21, 0.08);
 }
 
+.email-preview-frame-mobile {
+  width: 100%;
+  max-height: min(64vh, 720px);
+  padding: 18px 16px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+  overflow: auto;
+}
+
 .email-preview-frame :deep(.email-preview-frame-inner) {
   width: 100%;
   max-width: 600px;
   margin: 0 auto;
   color: #241813;
+}
+
+.email-preview-frame-mobile :deep(.email-preview-frame-inner) {
+  max-width: none;
 }
 
 .email-preview-frame :deep(p) {
@@ -5145,6 +5448,19 @@ onBeforeUnmount(() => {
   border-top: 1px solid #eaded2;
 }
 
+.email-preview-frame :deep(.email-preview-signature-logo) {
+  margin-bottom: 16px;
+}
+
+.email-preview-frame :deep(.email-preview-signature-logo img) {
+  display: block;
+  max-width: 180px;
+  max-height: 72px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
 .email-preview-frame :deep(.email-preview-signature p) {
   margin-bottom: 10px;
   font-size: 14px;
@@ -5153,6 +5469,36 @@ onBeforeUnmount(() => {
 
 .email-preview-frame :deep(.email-preview-placeholder) {
   color: var(--fc-text-muted);
+}
+
+.email-preview-frame-mobile :deep(p) {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.72;
+}
+
+.email-preview-frame-mobile :deep(.email-preview-hero),
+.email-preview-frame-mobile :deep(.email-preview-cta-section),
+.email-preview-frame-mobile :deep(.email-preview-feature-block) {
+  margin: 20px 0;
+  padding: 18px;
+  border-radius: 20px;
+}
+
+.email-preview-frame-mobile :deep(.email-preview-section-title) {
+  font-size: clamp(1.2rem, 5vw, 1.55rem);
+}
+
+.email-preview-frame-mobile :deep(.email-preview-section-body) {
+  font-size: 14px;
+}
+
+.email-preview-frame-mobile :deep(.email-preview-image img) {
+  border-radius: 18px;
+}
+
+.email-preview-frame-mobile :deep(.email-preview-signature) {
+  margin-top: 22px;
 }
 
 .email-media-input-row {
@@ -5936,6 +6282,40 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
+.domain-summary-signature {
+  margin: 0;
+  font: inherit;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.domain-summary-logo-preview,
+.signature-logo-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 72px;
+  padding: 12px 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 88%, transparent);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.domain-summary-logo-preview {
+  margin-bottom: 8px;
+}
+
+.domain-summary-logo-preview img,
+.signature-logo-preview img {
+  display: block;
+  max-width: 180px;
+  max-height: 64px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
 .domain-grid {
   display: grid;
   gap: 12px;
@@ -5953,6 +6333,29 @@ onBeforeUnmount(() => {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+
+.domain-field small {
+  color: var(--fc-text-muted);
+  line-height: 1.5;
+}
+
+.footer-details-field {
+  margin-top: 18px;
+}
+
+.signature-preview-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.signature-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
 }
 
 .field-validation {
@@ -6014,6 +6417,18 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
+  .email-composer-sidebar {
+    position: static;
+  }
+
+  .email-mobile-preview-device {
+    width: min(100%, 420px);
+  }
+
+  .email-composer-advanced-toggle {
+    align-items: stretch;
+  }
+
   .contact-preview-summary,
   .contact-mapping-grid,
   .contact-editor-grid {
@@ -6052,6 +6467,8 @@ onBeforeUnmount(() => {
     width: 100%;
   }
 
+  .email-composer-advanced-toggle,
+  .email-composer-advanced-toggle .secondary-action,
   .email-header-actions,
   .campaign-dashboard-toolbar,
   .campaign-table-actions {

@@ -1352,13 +1352,16 @@ watch(
 
 .asset-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 1rem;
+  align-items: start;
 }
 
 .asset-card {
   display: grid;
   gap: 0.95rem;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .asset-preview {
@@ -1381,6 +1384,7 @@ watch(
 .asset-card-copy {
   display: grid;
   gap: 0.4rem;
+  min-width: 0;
 }
 
 .asset-card-topline,
@@ -1391,6 +1395,7 @@ watch(
   gap: 0.45rem;
   margin: 0;
   color: rgba(83, 52, 36, 0.68);
+  min-width: 0;
 }
 
 .asset-card-topline span,
@@ -1399,22 +1404,31 @@ watch(
   border-radius: 999px;
   background: rgba(249, 237, 227, 0.88);
   font-size: 0.82rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .asset-card-copy h3 {
   margin: 0;
   font-size: 1.05rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .asset-card-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 0.75rem;
+  align-items: stretch;
 }
 
 .asset-link,
 .asset-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
   border: 1px solid rgba(214, 136, 64, 0.18);
   border-radius: 999px;
   background: #ffffff;
@@ -1423,6 +1437,8 @@ watch(
   color: #2b1d16;
   text-decoration: none;
   cursor: pointer;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 900px) {

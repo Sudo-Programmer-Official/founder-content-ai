@@ -60,6 +60,7 @@ import {
   createEmailTrackingContextForSend,
   rewriteEmailTrackingLinksForRecipient,
 } from "./emailTrackingService.ts";
+import { resolveEmailPublicApiBaseUrl } from "./emailPublicUrlService.ts";
 import { ensureSesDomainIdentity, getSesDomainIdentity } from "./sesIdentityService.ts";
 import { sendPlatformEmail } from "./emailTransportService.ts";
 import { HttpError } from "../../utils/http.ts";
@@ -213,6 +214,12 @@ interface CountRow extends QueryResultRow {
 
 interface BusinessIdRow extends QueryResultRow {
   business_id: string;
+}
+
+interface EmailFooterBrandingRow extends QueryResultRow {
+  logo_url: string | null;
+  brand_name: string | null;
+  name: string | null;
 }
 
 interface SourceAssetRow extends QueryResultRow {
@@ -873,6 +880,35 @@ function mapEmailSettings(row: EmailSettingsRow): BusinessEmailSettings {
   };
 }
 
+async function loadEmailFooterBranding(
+  businessId: string,
+  client?: PoolClient,
+): Promise<{ logoUrl?: string; logoAltText?: string }> {
+  const result = await executeQuery<EmailFooterBrandingRow>(
+    `
+      select
+        bk.logo_url,
+        b.brand_name,
+        b.name
+      from businesses b
+      left join brand_kits bk on bk.business_id = b.id
+      where b.id = $1::uuid
+      limit 1
+    `,
+    [businessId],
+    client,
+  );
+
+  const row = result.rows[0];
+  const logoUrl = normalizeOptionalHttpUrl(row?.logo_url);
+  const brandLabel = row?.brand_name?.trim() || row?.name?.trim() || "Brand";
+
+  return {
+    logoUrl: logoUrl ?? undefined,
+    logoAltText: `${brandLabel} logo`,
+  };
+}
+
 async function attachEmailDeliverability(
   settings: BusinessEmailSettings,
 ): Promise<BusinessEmailSettings> {
@@ -1297,6 +1333,22 @@ async function recordBusinessUnsubscribe(input: {
   );
 }
 
+async function removeBusinessUnsubscribe(
+  businessId: string,
+  email: string,
+  client?: PoolClient,
+): Promise<void> {
+  await executeQuery(
+    `
+      delete from email_unsubscribes
+      where business_id = $1::uuid
+        and lower(email) = lower($2)
+    `,
+    [businessId, normalizeEmail(email)],
+    client,
+  );
+}
+
 function stripHtml(html: string): string {
   return html
     .replace(/<br\s*\/?>/gi, "\n")
@@ -1466,19 +1518,27 @@ function renderEmailImageBlock(input: { url: string; altText?: string; variant: 
   return `<div style="margin:${margin};text-align:center;"><img src="${escapeHtml(input.url)}" alt="${escapeHtml(altText)}" style="display:block;width:100%;max-width:600px;margin:0 auto;border-radius:${borderRadius};height:auto;border:0;outline:none;text-decoration:none;" /></div>`;
 }
 
-function renderSignatureHtml(signatureText: string): string {
-  const paragraphs = signatureText
+function renderSignatureHtml(input: {
+  signatureText: string;
+  logoUrl?: string;
+  logoAltText?: string;
+}): string {
+  const paragraphs = input.signatureText
     .trim()
     .split(/\n{2,}/)
     .map((paragraph) => paragraph.trim())
     .filter((paragraph) => paragraph !== "");
 
+  const logoUrl = normalizeOptionalHttpUrl(input.logoUrl);
   const renderedParagraphs = paragraphs.map(
     (paragraph) =>
       `<p style="margin:0 0 10px;font-size:14px;line-height:1.7;color:#6d5d53;">${linkifyHtmlText(paragraph)}</p>`,
   );
+  const logoMarkup = logoUrl
+    ? `<div style="margin:0 0 16px;"><img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(input.logoAltText?.trim() || "Brand logo")}" style="display:block;max-width:180px;max-height:72px;width:auto;height:auto;object-fit:contain;border:0;outline:none;text-decoration:none;" /></div>`
+    : "";
 
-  return `<div style="margin-top:28px;padding-top:18px;border-top:1px solid #eaded2;">${renderedParagraphs.join("")}</div>`;
+  return `<div style="margin-top:28px;padding-top:18px;border-top:1px solid #eaded2;">${logoMarkup}${renderedParagraphs.join("")}</div>`;
 }
 
 function resolveEmailSignatureText(
@@ -1496,6 +1556,10 @@ function resolveEmailSignatureText(
 function buildEmailCampaignBodies(
   input: CreateEmailCampaignRequest,
   settings: Pick<BusinessEmailSettings, "signatureText" | "fromName" | "fromEmail">,
+  footerBranding: {
+    logoUrl?: string;
+    logoAltText?: string;
+  } = {},
 ): { html: string; text: string } {
   const baseText = (input.bodyText?.trim() || stripHtml(input.bodyHtml ?? "")).trim();
 
@@ -1523,6 +1587,7 @@ function buildEmailCampaignBodies(
     .slice(0, 6);
   const includeSignature = content?.includeSignature !== false;
   const signatureText = includeSignature ? resolveEmailSignatureText(settings) : "";
+  const footerLogoUrl = includeSignature ? normalizeOptionalHttpUrl(footerBranding.logoUrl) : null;
 
   const blocks = parseEmailBodyBlocks(baseText);
 
@@ -1580,9 +1645,18 @@ function buildEmailCampaignBodies(
     }
   }
 
-  if (signatureText) {
-    htmlParts.push(renderSignatureHtml(signatureText));
-    textParts.push(signatureText);
+  if (signatureText || footerLogoUrl) {
+    htmlParts.push(
+      renderSignatureHtml({
+        signatureText,
+        logoUrl: footerLogoUrl ?? undefined,
+        logoAltText: footerBranding.logoAltText,
+      }),
+    );
+
+    if (signatureText) {
+      textParts.push(signatureText);
+    }
   }
 
   htmlParts.push("</div>");
@@ -1599,13 +1673,6 @@ function personalizeTemplate(template: string, contact: Pick<EmailContact, "firs
     .replace(/{{\s*name\s*}}/gi, fullName || contact.firstName || contact.email)
     .replace(/{{\s*first_name\s*}}/gi, contact.firstName || contact.email)
     .replace(/{{\s*last_name\s*}}/gi, contact.lastName || "");
-}
-
-function resolveApiBaseUrl(): string {
-  return (
-    process.env.API_PUBLIC_BASE_URL?.trim() ||
-    `http://localhost:${process.env.PORT?.trim() || "3001"}/api`
-  ).replace(/\/$/, "");
 }
 
 function appendUnsubscribeFooter(html: string, text: string, unsubscribeUrl: string): {
@@ -2855,7 +2922,7 @@ async function createCampaignRecipientsForSend(
   contacts: Array<EmailContact & { unsubscribeToken: string }>,
   client: PoolClient,
 ): Promise<void> {
-  const apiBaseUrl = resolveApiBaseUrl();
+  const apiBaseUrl = resolveEmailPublicApiBaseUrl();
   const trackingContext = await createEmailTrackingContextForSend({
     businessId: campaign.business_id,
     campaignId: campaign.id,
@@ -3957,9 +4024,22 @@ export async function updateEmailContact(
     }
 
     const isSuppressed = await isEmailUnsubscribed(businessId, normalizedEmail, client);
-    const nextStatus = isSuppressed ? "unsubscribed" : normalizedStatus ?? existingContact.status;
+    const isExplicitResubscribe =
+      normalizedStatus === "active" &&
+      (existingContact.status === "unsubscribed" || isSuppressed);
+
+    if (isExplicitResubscribe) {
+      await removeBusinessUnsubscribe(businessId, normalizedEmail, client);
+    }
+
+    const nextStatus = isExplicitResubscribe
+      ? "active"
+      : isSuppressed
+        ? "unsubscribed"
+        : normalizedStatus ?? existingContact.status;
     const shouldSetUnsubscribedAt = nextStatus === "unsubscribed";
-    const shouldClearUnsubscribedAt = !shouldSetUnsubscribedAt && Boolean(normalizedStatus);
+    const shouldClearUnsubscribedAt =
+      isExplicitResubscribe || (!shouldSetUnsubscribedAt && Boolean(normalizedStatus));
 
     try {
       const result = await executeQuery<EmailContactRow>(
@@ -4227,7 +4307,8 @@ export async function createEmailCampaign(
   return withDbTransaction(async (client) => {
     const listScope = await loadEmailListScopeById(businessId, input.listId, client);
     const settingsRow = await ensureEmailSettingsRow(businessId, client);
-    const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow));
+    const footerBranding = await loadEmailFooterBranding(businessId, client);
+    const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow), footerBranding);
     const campaignSource = await resolveCampaignSource(businessId, input, client);
 
     const result = await executeQuery<EmailCampaignRow>(
@@ -4323,7 +4404,8 @@ export async function updateEmailCampaign(
     const latestSend = await loadLatestCampaignSend(campaignId, client);
     const listScope = await loadEmailListScopeById(businessId, input.listId, client);
     const settingsRow = await ensureEmailSettingsRow(businessId, client);
-    const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow));
+    const footerBranding = await loadEmailFooterBranding(businessId, client);
+    const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow), footerBranding);
     const campaignSource = await resolveCampaignSource(businessId, input, client);
 
     if (latestSend && campaign.status === "failed") {
