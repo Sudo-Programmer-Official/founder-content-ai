@@ -759,6 +759,14 @@ type EmailRoutePrefill = {
   ctaUrl: string;
   headerImageUrl: string;
 };
+type ContactImportDraftStorage = {
+  version: 1;
+  listName: string;
+  csvText: string;
+  fileName: string;
+  mapping: EmailContactImportMapping;
+  duplicateStrategy: EmailContactImportDuplicateStrategy;
+};
 
 type EmailComposerBlockDraft = {
   id: string;
@@ -780,6 +788,7 @@ const EMAIL_TABS: Array<{ key: EmailTabKey; label: string }> = [
   { key: "settings", label: "Settings" },
 ];
 const CONTACT_DIRECTORY_PAGE_SIZE_OPTIONS = [50, 100, 250];
+const CONTACT_IMPORT_DRAFT_STORAGE_PREFIX = "fc:email-contact-import-draft";
 const CAMPAIGN_INTENT_OPTIONS: Array<{
   value: CampaignComposerIntent;
   label: string;
@@ -1125,6 +1134,7 @@ let isSyncingCampaignBlocksFromBody = false;
 let isSyncingCampaignBodyFromBlocks = false;
 let composerPreviewDebounceHandle: number | null = null;
 let contactDirectorySearchDebounceHandle: number | null = null;
+let isRestoringContactImportDraft = false;
 
 const domainForm = ref({
   domainName: "",
@@ -3300,6 +3310,107 @@ function setEmailTab(tab: EmailTabKey): void {
   goToEmailDashboard(tab);
 }
 
+function getContactImportDraftStorageKey(businessId: string): string {
+  return `${CONTACT_IMPORT_DRAFT_STORAGE_PREFIX}:${businessId}`;
+}
+
+function hasPersistableContactImportDraft(): boolean {
+  return Boolean(
+    contactImport.value.csvText.trim() ||
+    contactImport.value.listName.trim() ||
+    contactImportFileName.value.trim() ||
+    Object.keys(contactImportMapping.value).length > 0 ||
+    contactImportDuplicateStrategy.value !== "upsert",
+  );
+}
+
+function clearStoredContactImportDraft(businessId = selectedBusinessId.value): void {
+  if (typeof window === "undefined" || !businessId) {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(getContactImportDraftStorageKey(businessId));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function persistContactImportDraft(): void {
+  if (typeof window === "undefined" || !selectedBusinessId.value) {
+    return;
+  }
+
+  if (!hasPersistableContactImportDraft()) {
+    clearStoredContactImportDraft(selectedBusinessId.value);
+    return;
+  }
+
+  const payload: ContactImportDraftStorage = {
+    version: 1,
+    listName: contactImport.value.listName,
+    csvText: contactImport.value.csvText,
+    fileName: contactImportFileName.value,
+    mapping: { ...contactImportMapping.value },
+    duplicateStrategy: contactImportDuplicateStrategy.value,
+  };
+
+  try {
+    window.localStorage.setItem(
+      getContactImportDraftStorageKey(selectedBusinessId.value),
+      JSON.stringify(payload),
+    );
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function resetContactImportDraftState(): void {
+  contactImport.value.listName = "";
+  contactImport.value.csvText = "";
+  contactImportFileName.value = "";
+  contactImportDuplicateStrategy.value = "upsert";
+  resetContactImportPreview();
+}
+
+function restoreContactImportDraft(businessId = selectedBusinessId.value): void {
+  if (typeof window === "undefined" || !businessId) {
+    return;
+  }
+
+  const rawDraft = window.localStorage.getItem(getContactImportDraftStorageKey(businessId));
+
+  if (!rawDraft) {
+    return;
+  }
+
+  try {
+    const parsedDraft = JSON.parse(rawDraft) as Partial<ContactImportDraftStorage>;
+
+    isRestoringContactImportDraft = true;
+    contactImport.value.listName = typeof parsedDraft.listName === "string" ? parsedDraft.listName : "";
+    contactImport.value.csvText = typeof parsedDraft.csvText === "string" ? parsedDraft.csvText : "";
+    contactImportFileName.value = typeof parsedDraft.fileName === "string" ? parsedDraft.fileName : "";
+    contactImportDuplicateStrategy.value =
+      parsedDraft.duplicateStrategy === "skip" ? "skip" : "upsert";
+    contactImportPreview.value = null;
+    contactImportMapping.value =
+      parsedDraft.mapping && typeof parsedDraft.mapping === "object" ? { ...parsedDraft.mapping } : {};
+  } catch {
+    isRestoringContactImportDraft = false;
+    clearStoredContactImportDraft(businessId);
+    return;
+  }
+
+  if (typeof window !== "undefined") {
+    window.setTimeout(() => {
+      isRestoringContactImportDraft = false;
+    }, 0);
+  } else {
+    isRestoringContactImportDraft = false;
+  }
+}
+
 function resetContactImportPreview(): void {
   contactImportPreview.value = null;
   contactImportMapping.value = {};
@@ -3490,6 +3601,7 @@ async function initializePage(): Promise<void> {
     loadActivationDraftLibrary();
 
     await loadBusinesses();
+    restoreContactImportDraft();
     await loadEmailState({ syncDomainForm: true });
     await refreshLatestCampaignReport().catch(() => undefined);
     syncCampaignComposerToRoute({ force: true });
@@ -3549,10 +3661,8 @@ async function importContacts(): Promise<void> {
     });
     latestImportJobId.value = response.importJob.id;
     feedbackMessage.value = `Import queued for ${response.importJob.listName}. Keep this tab open to watch live progress.`;
-    contactImport.value.csvText = "";
-    contactImport.value.listName = "";
-    contactImportFileName.value = "";
-    resetContactImportPreview();
+    resetContactImportDraftState();
+    clearStoredContactImportDraft(selectedBusinessId.value);
     await loadEmailState();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to import contacts.";
@@ -4057,7 +4167,8 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
   syncedPreviewEmailHtml.value = "";
   previewSyncErrorMessage.value = "";
   testRecipientEmail.value = "";
-  contactImportFileName.value = "";
+  resetContactImportDraftState();
+  restoreContactImportDraft(nextBusinessId);
   contactSearch.value = "";
   contactListFilter.value = "all";
   contactStatusFilter.value = "all";
@@ -4068,7 +4179,6 @@ watch(() => productAccess.value?.activeBusinessId || activeBusinessId.value, (ne
   contactDirectoryPageSize.value = CONTACT_DIRECTORY_PAGE_SIZE_OPTIONS[0];
   latestImportJobId.value = "";
   clearContactDirectorySearchDebounce();
-  resetContactImportPreview();
   campaignRouteSyncKey.value = "";
 
   void (async () => {
@@ -4253,9 +4363,27 @@ watch(
 );
 
 watch(
+  () => [
+    selectedBusinessId.value,
+    contactImport.value.listName,
+    contactImport.value.csvText,
+    contactImportFileName.value,
+    contactImportDuplicateStrategy.value,
+    JSON.stringify(contactImportMapping.value),
+  ],
+  ([businessId]) => {
+    if (!businessId || isRestoringContactImportDraft) {
+      return;
+    }
+
+    persistContactImportDraft();
+  },
+);
+
+watch(
   () => contactImport.value.csvText,
   (nextValue, previousValue) => {
-    if (nextValue === previousValue) {
+    if (nextValue === previousValue || isRestoringContactImportDraft) {
       return;
     }
 
@@ -5452,10 +5580,13 @@ Daycare Spots"
               {{ isPreviewingContacts ? "Previewing..." : contactImportPreview ? "Refresh preview" : "Preview import" }}
             </button>
             <button type="button" class="primary-action" :disabled="isImporting || !canImportContacts" @click="importContacts">
-              {{ isImporting ? "Importing..." : "Import contacts" }}
+              {{ isImporting ? "Queuing import..." : "Import contacts" }}
             </button>
           </div>
-          <p v-if="hasActiveImportWorkflow" class="import-protection-note">
+          <p v-if="isImporting" class="import-protection-note">
+            We are creating the import job now. Do not close or refresh until the latest import card appears.
+          </p>
+          <p v-else-if="hasActiveImportWorkflow" class="import-protection-note">
             Leave protection is on while this import runs. We will warn before closing the tab or leaving this page so you do not lose the live progress view.
           </p>
 
