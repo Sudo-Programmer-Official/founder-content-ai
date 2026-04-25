@@ -23,6 +23,16 @@ import {
 const { bootstrap, isReady } = useProductAccessContext();
 
 const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? "");
+const GENERATOR_DRAFT_STORAGE_VERSION = 1;
+const GENERATOR_DRAFT_STORAGE_PREFIX = "brand-studio-generator-drafts";
+const BRAND_STUDIO_ASSET_KINDS: BrandStudioAssetKind[] = [
+  "homepage_hero",
+  "feature_section",
+  "cta_banner",
+  "icon_set",
+  "social_media",
+  "email_header",
+];
 
 const isLoading = ref(false);
 const isSavingBrandKit = ref(false);
@@ -31,6 +41,24 @@ const feedback = ref("");
 const brandKit = ref<BrandKit | null>(null);
 const history = ref<BrandStudioGeneration[]>([]);
 const latestGeneration = ref<BrandStudioGeneration | null>(null);
+const generatorDrafts = reactive<Partial<Record<BrandStudioAssetKind, GeneratorDraft>>>({});
+let isApplyingGeneratorDraft = false;
+
+type GeneratorDraft = {
+  goal: string;
+  context: string;
+  layout: string;
+  extraInstructions: string;
+  iconLabels: string;
+  matchPreviousStyle: boolean;
+  referenceGenerationId: string;
+};
+
+type PersistedGeneratorDraftState = {
+  version: number;
+  selectedAssetKind?: BrandStudioAssetKind;
+  drafts?: Partial<Record<BrandStudioAssetKind, GeneratorDraft>>;
+};
 
 const brandForm = reactive<{
   brandName: string;
@@ -168,6 +196,10 @@ const savedBrandRuleChips = computed(() => {
     brandKit.value.iconStyle ? `Icon style: ${brandKit.value.iconStyle}` : undefined,
   ].filter((entry): entry is string => Boolean(entry));
 });
+
+function generatorDraftStorageKey(businessId: string): string {
+  return `${GENERATOR_DRAFT_STORAGE_PREFIX}:${businessId}`;
+}
 
 function splitCommaList(value: string): string[] {
   return [...new Set(value
@@ -331,6 +363,213 @@ function isExternalUrl(value: string | undefined): boolean {
   }
 }
 
+function resolveBrandNameForDrafts(): string {
+  return brandKit.value?.brandName?.trim() || "your brand";
+}
+
+function resolveIndustryForDrafts(): string {
+  return brandKit.value?.industry?.trim() || "your business";
+}
+
+function buildDefaultGeneratorDraft(assetKind: BrandStudioAssetKind): GeneratorDraft {
+  const brandName = resolveBrandNameForDrafts();
+  const industry = resolveIndustryForDrafts();
+
+  switch (assetKind) {
+    case "homepage_hero":
+      return {
+        goal: `Create a homepage hero visual for ${brandName} that feels trustworthy, modern, and on-brand.`,
+        context: `Use this for the ${brandName} website and landing pages in the ${industry} category.`,
+        layout: "Website-ready hero composition with clean overlay space for headline and CTA",
+        extraInstructions: "Match the saved brand colors and overall visual system. No text baked into the image.",
+        iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        matchPreviousStyle: false,
+        referenceGenerationId: "",
+      };
+    case "feature_section":
+      return {
+        goal: `Create a supporting feature visual for ${brandName} that explains the product clearly.`,
+        context: `Use this beside product or website copy for ${brandName}. Keep it relevant to ${industry}.`,
+        layout: "Landscape section visual with clear focal point and room for adjacent copy",
+        extraInstructions: "Keep it simple, polished, and brand-matched. Avoid clutter and generic stock-business scenes.",
+        iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        matchPreviousStyle: false,
+        referenceGenerationId: "",
+      };
+    case "cta_banner":
+      return {
+        goal: `Create a conversion-focused CTA banner for ${brandName}.`,
+        context: `Use this for website calls to action that should drive clicks and conversions for ${brandName}.`,
+        layout: "Wide website banner with a strong focal area and clean message space",
+        extraInstructions: "Use the saved brand palette, keep the composition premium, and leave space for CTA copy.",
+        iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        matchPreviousStyle: false,
+        referenceGenerationId: "",
+      };
+    case "icon_set":
+      return {
+        goal: `Create a clear, consistent icon system for ${brandName}.`,
+        context: `Use this to replace confusing or generic icons with visuals that make sense for the ${industry} brand.`,
+        layout: "Four matching icons in a clean 2x2 system with consistent spacing and stroke weight",
+        extraInstructions: "Keep icons simple, recognizable, rounded, and relevant. No labels, numbers, or decorative clutter.",
+        iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        matchPreviousStyle: false,
+        referenceGenerationId: "",
+      };
+    case "social_media":
+      return {
+        goal: `Create a branded social campaign visual for ${brandName}.`,
+        context: `Use this for Instagram, Facebook, or paid social so it feels consistent with the ${brandName} website.`,
+        layout: "Square social composition with one strong focal area and clean framing",
+        extraInstructions: "Keep it scroll-stopping but brand-safe. Match saved colors and avoid generic stock-ad aesthetics.",
+        iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        matchPreviousStyle: false,
+        referenceGenerationId: "",
+      };
+    case "email_header":
+      return {
+        goal: `Create a branded email header for ${brandName}.`,
+        context: `Use this at the top of newsletters and promotional emails for ${brandName}.`,
+        layout: "Wide email header composition with safe crop zone and calm overlay area",
+        extraInstructions: "Keep it polished, readable, and consistent with the saved brand rules. No text baked into the image.",
+        iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        matchPreviousStyle: false,
+        referenceGenerationId: "",
+      };
+    default:
+      return {
+        goal: "",
+        context: "",
+        layout: "Website-ready composition with clean overlay space",
+        extraInstructions: "",
+        iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        matchPreviousStyle: false,
+        referenceGenerationId: "",
+      };
+  }
+}
+
+function captureCurrentGeneratorDraft(): GeneratorDraft {
+  return {
+    goal: generatorForm.goal,
+    context: generatorForm.context,
+    layout: generatorForm.layout,
+    extraInstructions: generatorForm.extraInstructions,
+    iconLabels: generatorForm.iconLabels,
+    matchPreviousStyle: generatorForm.matchPreviousStyle,
+    referenceGenerationId: generatorForm.referenceGenerationId,
+  };
+}
+
+function applyGeneratorDraft(assetKind: BrandStudioAssetKind): void {
+  const draft = generatorDrafts[assetKind] ?? buildDefaultGeneratorDraft(assetKind);
+
+  isApplyingGeneratorDraft = true;
+  generatorForm.goal = draft.goal;
+  generatorForm.context = draft.context;
+  generatorForm.layout = draft.layout;
+  generatorForm.extraInstructions = draft.extraInstructions;
+  generatorForm.iconLabels = draft.iconLabels;
+  generatorForm.matchPreviousStyle = draft.matchPreviousStyle;
+  generatorForm.referenceGenerationId = draft.referenceGenerationId;
+  isApplyingGeneratorDraft = false;
+}
+
+function clearGeneratorDrafts(): void {
+  for (const assetKind of BRAND_STUDIO_ASSET_KINDS) {
+    delete generatorDrafts[assetKind];
+  }
+}
+
+function persistGeneratorDrafts(): void {
+  if (typeof window === "undefined" || !activeBusinessId.value) {
+    return;
+  }
+
+  const persistedDrafts = BRAND_STUDIO_ASSET_KINDS.reduce<Partial<Record<BrandStudioAssetKind, GeneratorDraft>>>(
+    (accumulator, assetKind) => {
+      const draft = generatorDrafts[assetKind];
+
+      if (draft) {
+        accumulator[assetKind] = draft;
+      }
+
+      return accumulator;
+    },
+    {},
+  );
+  const payload: PersistedGeneratorDraftState = {
+    version: GENERATOR_DRAFT_STORAGE_VERSION,
+    selectedAssetKind: generatorForm.assetKind,
+    drafts: persistedDrafts,
+  };
+
+  window.localStorage.setItem(generatorDraftStorageKey(activeBusinessId.value), JSON.stringify(payload));
+}
+
+function normalizeGeneratorDraft(value: unknown): GeneratorDraft | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+
+  return {
+    goal: typeof candidate.goal === "string" ? candidate.goal : "",
+    context: typeof candidate.context === "string" ? candidate.context : "",
+    layout: typeof candidate.layout === "string" ? candidate.layout : "",
+    extraInstructions: typeof candidate.extraInstructions === "string" ? candidate.extraInstructions : "",
+    iconLabels: typeof candidate.iconLabels === "string" ? candidate.iconLabels : buildDefaultGeneratorDraft("icon_set").iconLabels,
+    matchPreviousStyle: candidate.matchPreviousStyle === true,
+    referenceGenerationId: typeof candidate.referenceGenerationId === "string" ? candidate.referenceGenerationId : "",
+  };
+}
+
+function loadGeneratorDrafts(): void {
+  clearGeneratorDrafts();
+
+  if (typeof window === "undefined" || !activeBusinessId.value) {
+    applyGeneratorDraft(generatorForm.assetKind);
+    return;
+  }
+
+  const persisted = window.localStorage.getItem(generatorDraftStorageKey(activeBusinessId.value));
+
+  if (!persisted) {
+    applyGeneratorDraft(generatorForm.assetKind);
+    persistGeneratorDrafts();
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(persisted) as PersistedGeneratorDraftState;
+
+    if (parsed.version !== GENERATOR_DRAFT_STORAGE_VERSION) {
+      applyGeneratorDraft(generatorForm.assetKind);
+      persistGeneratorDrafts();
+      return;
+    }
+
+    for (const assetKind of BRAND_STUDIO_ASSET_KINDS) {
+      const normalizedDraft = normalizeGeneratorDraft(parsed.drafts?.[assetKind]);
+
+      if (normalizedDraft) {
+        generatorDrafts[assetKind] = normalizedDraft;
+      }
+    }
+
+    if (parsed.selectedAssetKind && BRAND_STUDIO_ASSET_KINDS.includes(parsed.selectedAssetKind)) {
+      generatorForm.assetKind = parsed.selectedAssetKind;
+    }
+
+    applyGeneratorDraft(generatorForm.assetKind);
+    persistGeneratorDrafts();
+  } catch {
+    applyGeneratorDraft(generatorForm.assetKind);
+    persistGeneratorDrafts();
+  }
+}
+
 async function loadStudio(): Promise<void> {
   if (!isReady.value || !activeBusinessId.value) {
     return;
@@ -342,6 +581,7 @@ async function loadStudio(): Promise<void> {
   try {
     const response = await requestBrandStudioHistory(activeBusinessId.value, 8);
     applyBrandKit(response.brandKit);
+    loadGeneratorDrafts();
     history.value = response.generations;
     latestGeneration.value = response.generations[0] ?? null;
   } catch (error) {
@@ -460,6 +700,42 @@ async function generateAsset(): Promise<void> {
     isGenerating.value = false;
   }
 }
+
+watch(
+  () => generatorForm.assetKind,
+  (nextAssetKind, previousAssetKind) => {
+    if (isApplyingGeneratorDraft) {
+      return;
+    }
+
+    if (previousAssetKind && previousAssetKind !== nextAssetKind) {
+      generatorDrafts[previousAssetKind] = captureCurrentGeneratorDraft();
+    }
+
+    applyGeneratorDraft(nextAssetKind);
+    persistGeneratorDrafts();
+  },
+);
+
+watch(
+  () => [
+    generatorForm.goal,
+    generatorForm.context,
+    generatorForm.layout,
+    generatorForm.extraInstructions,
+    generatorForm.iconLabels,
+    generatorForm.matchPreviousStyle,
+    generatorForm.referenceGenerationId,
+  ],
+  () => {
+    if (isApplyingGeneratorDraft) {
+      return;
+    }
+
+    generatorDrafts[generatorForm.assetKind] = captureCurrentGeneratorDraft();
+    persistGeneratorDrafts();
+  },
+);
 
 watch(
   () => activeBusinessId.value,
@@ -757,6 +1033,11 @@ watch(
             <span>{{ option.description }}</span>
           </button>
         </div>
+
+        <p class="draft-note">
+          Prompts are remembered per asset type for this workspace, so switching between Hero, Icon Set, and other
+          formats keeps your draft instead of wiping it.
+        </p>
 
         <div class="form-grid">
           <label class="field field-wide">
@@ -1072,6 +1353,13 @@ watch(
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.85rem;
   margin-bottom: 1rem;
+}
+
+.draft-note {
+  margin: 0 0 1rem;
+  color: #475569;
+  font-size: 0.92rem;
+  line-height: 1.5;
 }
 
 .saved-guidelines {
