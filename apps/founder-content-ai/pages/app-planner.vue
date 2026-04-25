@@ -572,8 +572,28 @@ const socialAutopilotPreviewDays = computed<SocialAutopilotPreviewDay[]>(() => {
   return [...grouped.values()].sort((left, right) => left.day - right.day);
 });
 
+const plannerWorkspaceChannelPerformance = computed(() => ({
+  social: {
+    trackedPosts: workspaceInsights.value?.channelPerformance?.social?.trackedPosts ?? 0,
+    publishedPosts: workspaceInsights.value?.channelPerformance?.social?.publishedPosts ?? 0,
+    highSignalPosts: workspaceInsights.value?.channelPerformance?.social?.highSignalPosts ?? 0,
+    mediumSignalPosts: workspaceInsights.value?.channelPerformance?.social?.mediumSignalPosts ?? 0,
+    lowSignalPosts: workspaceInsights.value?.channelPerformance?.social?.lowSignalPosts ?? 0,
+    avgEngagementScore: workspaceInsights.value?.channelPerformance?.social?.avgEngagementScore ?? 0,
+  },
+}));
+const plannerWorkspaceSummary = computed(() => ({
+  topTopicLabel: workspaceInsights.value?.summary?.topTopicLabel,
+  crossChannelTopicLabel: workspaceInsights.value?.summary?.crossChannelTopicLabel,
+  bestAngleLabel: workspaceInsights.value?.summary?.bestAngleLabel,
+  bestFormatLabel: workspaceInsights.value?.summary?.bestFormatLabel,
+  bestSendWindowLabel: workspaceInsights.value?.summary?.bestSendWindowLabel,
+}));
+
 const plannerLearningCards = computed(() => {
   const insights = workspaceInsights.value;
+  const channelPerformance = plannerWorkspaceChannelPerformance.value;
+  const summary = plannerWorkspaceSummary.value;
 
   if (!insights) {
     return [];
@@ -582,31 +602,31 @@ const plannerLearningCards = computed(() => {
   return [
     {
       label: "Top topic",
-      value: insights.summary.topTopicLabel || "Still learning",
-      detail: insights.summary.crossChannelTopicLabel
-        ? `${insights.summary.crossChannelTopicLabel} is also working in email.`
+      value: summary.topTopicLabel || "Still learning",
+      detail: summary.crossChannelTopicLabel
+        ? `${summary.crossChannelTopicLabel} is also working in email.`
         : "The strongest reusable theme lands here.",
     },
     {
       label: "Best angle",
-      value: insights.summary.bestAngleLabel || "Still learning",
-      detail: insights.summary.bestFormatLabel
-        ? `Best format: ${insights.summary.bestFormatLabel}`
+      value: summary.bestAngleLabel || "Still learning",
+      detail: summary.bestFormatLabel
+        ? `Best format: ${summary.bestFormatLabel}`
         : "Angle performance builds here over time.",
     },
     {
       label: "Best window",
-      value: insights.summary.bestSendWindowLabel || "Still learning",
-      detail: insights.channelPerformance.social.publishedPosts > 0
-        ? `${insights.channelPerformance.social.publishedPosts} published social post${insights.channelPerformance.social.publishedPosts === 1 ? "" : "s"} tracked.`
+      value: summary.bestSendWindowLabel || "Still learning",
+      detail: channelPerformance.social.publishedPosts > 0
+        ? `${channelPerformance.social.publishedPosts} published social post${channelPerformance.social.publishedPosts === 1 ? "" : "s"} tracked.`
         : "Publishing-time signal lands here after posts go out.",
     },
     {
       label: "Avg engagement",
-      value: insights.channelPerformance.social.trackedPosts > 0
-        ? insights.channelPerformance.social.avgEngagementScore.toFixed(1)
+      value: channelPerformance.social.trackedPosts > 0
+        ? channelPerformance.social.avgEngagementScore.toFixed(1)
         : "Still learning",
-      detail: `${insights.channelPerformance.social.highSignalPosts} high-signal post${insights.channelPerformance.social.highSignalPosts === 1 ? "" : "s"} recorded.`,
+      detail: `${channelPerformance.social.highSignalPosts} high-signal post${channelPerformance.social.highSignalPosts === 1 ? "" : "s"} recorded.`,
     },
   ];
 });

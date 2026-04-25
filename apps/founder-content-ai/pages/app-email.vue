@@ -1457,8 +1457,27 @@ const latestCampaignReportRates = computed(() => {
     `Pending: ${stats.pendingCount.toLocaleString()}`,
   ];
 });
+const emailWorkspaceChannelPerformance = computed(() => ({
+  email: {
+    campaigns: workspaceInsights.value?.channelPerformance?.email?.campaigns ?? 0,
+    sent: workspaceInsights.value?.channelPerformance?.email?.sent ?? 0,
+    delivered: workspaceInsights.value?.channelPerformance?.email?.delivered ?? 0,
+    opens: workspaceInsights.value?.channelPerformance?.email?.opens ?? 0,
+    clicks: workspaceInsights.value?.channelPerformance?.email?.clicks ?? 0,
+    avgOpenRate: workspaceInsights.value?.channelPerformance?.email?.avgOpenRate ?? 0,
+    avgClickRate: workspaceInsights.value?.channelPerformance?.email?.avgClickRate ?? 0,
+  },
+}));
+const emailWorkspaceSummary = computed(() => ({
+  topTopicLabel: workspaceInsights.value?.summary?.topTopicLabel,
+  crossChannelTopicLabel: workspaceInsights.value?.summary?.crossChannelTopicLabel,
+  bestAngleLabel: workspaceInsights.value?.summary?.bestAngleLabel,
+  bestSendWindowLabel: workspaceInsights.value?.summary?.bestSendWindowLabel,
+}));
 const emailLearningCards = computed(() => {
   const insights = workspaceInsights.value;
+  const channelPerformance = emailWorkspaceChannelPerformance.value;
+  const summary = emailWorkspaceSummary.value;
 
   if (!insights) {
     return [];
@@ -1467,30 +1486,30 @@ const emailLearningCards = computed(() => {
   return [
     {
       label: "Avg open rate",
-      value: insights.channelPerformance.email.campaigns > 0
-        ? `${insights.channelPerformance.email.avgOpenRate.toFixed(1)}%`
+      value: channelPerformance.email.campaigns > 0
+        ? `${channelPerformance.email.avgOpenRate.toFixed(1)}%`
         : "Still learning",
-      detail: `${insights.channelPerformance.email.campaigns} campaign${insights.channelPerformance.email.campaigns === 1 ? "" : "s"} in memory.`,
+      detail: `${channelPerformance.email.campaigns} campaign${channelPerformance.email.campaigns === 1 ? "" : "s"} in memory.`,
     },
     {
       label: "Avg click rate",
-      value: insights.channelPerformance.email.campaigns > 0
-        ? `${insights.channelPerformance.email.avgClickRate.toFixed(1)}%`
+      value: channelPerformance.email.campaigns > 0
+        ? `${channelPerformance.email.avgClickRate.toFixed(1)}%`
         : "Still learning",
-      detail: `${insights.channelPerformance.email.clicks.toLocaleString()} tracked click${insights.channelPerformance.email.clicks === 1 ? "" : "s"} so far.`,
+      detail: `${channelPerformance.email.clicks.toLocaleString()} tracked click${channelPerformance.email.clicks === 1 ? "" : "s"} so far.`,
     },
     {
       label: "Best send window",
-      value: insights.summary.bestSendWindowLabel || "Still learning",
-      detail: insights.summary.crossChannelTopicLabel
-        ? `Cross-channel topic: ${insights.summary.crossChannelTopicLabel}`
+      value: summary.bestSendWindowLabel || "Still learning",
+      detail: summary.crossChannelTopicLabel
+        ? `Cross-channel topic: ${summary.crossChannelTopicLabel}`
         : "Timing signal sharpens as sends accumulate.",
     },
     {
       label: "Winning topic",
-      value: insights.summary.topTopicLabel || "Still learning",
-      detail: insights.summary.bestAngleLabel
-        ? `Best angle: ${insights.summary.bestAngleLabel}`
+      value: summary.topTopicLabel || "Still learning",
+      detail: summary.bestAngleLabel
+        ? `Best angle: ${summary.bestAngleLabel}`
         : "Topic reuse signal lands here.",
     },
   ];
