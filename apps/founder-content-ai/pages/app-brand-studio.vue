@@ -25,6 +25,9 @@ const { bootstrap, isReady } = useProductAccessContext();
 const activeBusinessId = computed(() => bootstrap.value?.activeBusinessId ?? "");
 const GENERATOR_DRAFT_STORAGE_VERSION = 1;
 const GENERATOR_DRAFT_STORAGE_PREFIX = "brand-studio-generator-drafts";
+const BRAND_COLOR_HISTORY_STORAGE_VERSION = 1;
+const BRAND_COLOR_HISTORY_STORAGE_PREFIX = "brand-studio-brand-colors";
+const MAX_BRAND_COLOR_HISTORY = 16;
 const BRAND_STUDIO_ASSET_KINDS: BrandStudioAssetKind[] = [
   "homepage_hero",
   "feature_section",
@@ -41,7 +44,9 @@ const feedback = ref("");
 const brandKit = ref<BrandKit | null>(null);
 const history = ref<BrandStudioGeneration[]>([]);
 const latestGeneration = ref<BrandStudioGeneration | null>(null);
+const isPromptExpanded = ref(false);
 const iconSetSlices = ref<IconSetSlicePreview[]>([]);
+const recentBrandColors = ref<string[]>([]);
 const generatorDrafts = reactive<Partial<Record<BrandStudioAssetKind, GeneratorDraft>>>({});
 let isApplyingGeneratorDraft = false;
 let iconSetSliceRequestId = 0;
@@ -66,6 +71,11 @@ type PersistedGeneratorDraftState = {
   version: number;
   selectedAssetKind?: BrandStudioAssetKind;
   drafts?: Partial<Record<BrandStudioAssetKind, GeneratorDraft>>;
+};
+
+type PersistedBrandColorHistoryState = {
+  version: number;
+  colors?: string[];
 };
 
 const brandForm = reactive<{
@@ -204,9 +214,31 @@ const savedBrandRuleChips = computed(() => {
     brandKit.value.iconStyle ? `Icon style: ${brandKit.value.iconStyle}` : undefined,
   ].filter((entry): entry is string => Boolean(entry));
 });
+const primaryColorInputValue = computed(() => resolveColorInputValue(brandForm.primaryColor, "#111827"));
+const secondaryColorInputValue = computed(() => resolveColorInputValue(brandForm.secondaryColor, "#F8FAFC"));
 
 function generatorDraftStorageKey(businessId: string): string {
   return `${GENERATOR_DRAFT_STORAGE_PREFIX}:${businessId}`;
+}
+
+function brandColorHistoryStorageKey(businessId: string): string {
+  return `${BRAND_COLOR_HISTORY_STORAGE_PREFIX}:${businessId}`;
+}
+
+function normalizeHexColor(value: string): string {
+  const normalized = value.trim().toUpperCase();
+  return /^#[0-9A-F]{6}$/.test(normalized) ? normalized : "";
+}
+
+function normalizeHexColorList(values: string[]): string[] {
+  return [...new Set(values
+    .map((value) => normalizeHexColor(value))
+    .filter(Boolean))]
+    .slice(0, MAX_BRAND_COLOR_HISTORY);
+}
+
+function resolveColorInputValue(value: string, fallback: string): string {
+  return normalizeHexColor(value) || fallback;
 }
 
 function splitCommaList(value: string): string[] {
@@ -241,8 +273,8 @@ function applyBrandKit(nextBrandKit: BrandKit): void {
   brandForm.brandName = nextBrandKit.brandName ?? "";
   brandForm.industry = nextBrandKit.industry ?? "";
   brandForm.style = nextBrandKit.style ?? "";
-  brandForm.primaryColor = nextBrandKit.primaryColor;
-  brandForm.secondaryColor = nextBrandKit.secondaryColor;
+  brandForm.primaryColor = normalizeHexColor(nextBrandKit.primaryColor) || nextBrandKit.primaryColor;
+  brandForm.secondaryColor = normalizeHexColor(nextBrandKit.secondaryColor) || nextBrandKit.secondaryColor;
   brandForm.fontFamily = nextBrandKit.fontFamily ?? "";
   brandForm.iconStyle = nextBrandKit.iconStyle ?? "";
   brandForm.backgroundStyle = nextBrandKit.backgroundStyle;
@@ -259,12 +291,15 @@ function applyBrandKit(nextBrandKit: BrandKit): void {
 }
 
 function buildBrandKitPayload(): BrandKitInput {
+  const primaryColor = normalizeHexColor(brandForm.primaryColor) || "#111827";
+  const secondaryColor = normalizeHexColor(brandForm.secondaryColor) || "#F8FAFC";
+
   return {
     brandName: brandForm.brandName,
     industry: brandForm.industry,
     style: brandForm.style,
-    primaryColor: brandForm.primaryColor,
-    secondaryColor: brandForm.secondaryColor,
+    primaryColor,
+    secondaryColor,
     fontFamily: brandForm.fontFamily,
     iconStyle: brandForm.iconStyle,
     backgroundStyle: brandForm.backgroundStyle,
@@ -281,6 +316,73 @@ function buildBrandKitPayload(): BrandKitInput {
   };
 }
 
+function loadRecentBrandColors(): void {
+  recentBrandColors.value = [];
+
+  if (typeof window === "undefined" || !activeBusinessId.value) {
+    return;
+  }
+
+  const persisted = window.localStorage.getItem(brandColorHistoryStorageKey(activeBusinessId.value));
+
+  if (!persisted) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(persisted) as PersistedBrandColorHistoryState;
+
+    if (parsed.version !== BRAND_COLOR_HISTORY_STORAGE_VERSION) {
+      return;
+    }
+
+    recentBrandColors.value = normalizeHexColorList(parsed.colors ?? []);
+  } catch {
+    recentBrandColors.value = [];
+  }
+}
+
+function persistRecentBrandColors(): void {
+  if (typeof window === "undefined" || !activeBusinessId.value) {
+    return;
+  }
+
+  const payload: PersistedBrandColorHistoryState = {
+    version: BRAND_COLOR_HISTORY_STORAGE_VERSION,
+    colors: recentBrandColors.value,
+  };
+
+  window.localStorage.setItem(brandColorHistoryStorageKey(activeBusinessId.value), JSON.stringify(payload));
+}
+
+function rememberBrandColors(colors: string[]): void {
+  const normalizedIncoming = normalizeHexColorList(colors);
+
+  if (normalizedIncoming.length === 0) {
+    return;
+  }
+
+  recentBrandColors.value = normalizeHexColorList([
+    ...normalizedIncoming,
+    ...recentBrandColors.value,
+  ]);
+  persistRecentBrandColors();
+}
+
+function updateBrandColor(field: "primaryColor" | "secondaryColor", value: string): void {
+  const normalized = normalizeHexColor(value);
+  brandForm[field] = normalized || value.toUpperCase();
+
+  if (normalized) {
+    rememberBrandColors([normalized]);
+  }
+}
+
+function applyRecentBrandColor(field: "primaryColor" | "secondaryColor", color: string): void {
+  brandForm[field] = color;
+  rememberBrandColors([color]);
+}
+
 function formatRelativeDate(value: string): string {
   const date = new Date(value);
 
@@ -290,6 +392,10 @@ function formatRelativeDate(value: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+function buildPromptPreviewLabel(value: string | undefined): string {
+  return value?.trim() ? "Prompt hidden to keep the preview compact." : "No prompt details available.";
 }
 
 function formatToneLabel(value: BrandKitTone): string {
@@ -589,6 +695,7 @@ async function loadStudio(): Promise<void> {
   try {
     const response = await requestBrandStudioHistory(activeBusinessId.value, 8);
     applyBrandKit(response.brandKit);
+    rememberBrandColors([response.brandKit.primaryColor, response.brandKit.secondaryColor]);
     loadGeneratorDrafts();
     history.value = response.generations;
     latestGeneration.value = response.generations[0] ?? null;
@@ -613,6 +720,7 @@ async function saveBrandKit(): Promise<void> {
       brandKit: buildBrandKitPayload(),
     });
     applyBrandKit(response.brandKit);
+    rememberBrandColors([response.brandKit.primaryColor, response.brandKit.secondaryColor]);
     feedback.value = "Brand system saved. New assets will use the updated rules.";
   } catch (error) {
     feedback.value = error instanceof Error ? error.message : "Unable to save brand kit.";
@@ -827,6 +935,7 @@ async function generateAsset(): Promise<void> {
 watch(
   () => latestGeneration.value,
   (generation) => {
+    isPromptExpanded.value = false;
     void refreshIconSetSlices(generation);
   },
   { immediate: true },
@@ -873,6 +982,7 @@ watch(
   () => {
     history.value = [];
     latestGeneration.value = null;
+    loadRecentBrandColors();
     void loadStudio();
   },
   { immediate: true },
@@ -942,12 +1052,65 @@ watch(
 
           <label class="field">
             <span>Primary color</span>
-            <input v-model="brandForm.primaryColor" type="text" placeholder="#FF7A00" />
+            <div class="color-input-row">
+              <input
+                :value="primaryColorInputValue"
+                class="color-picker-input"
+                type="color"
+                @input="updateBrandColor('primaryColor', ($event.target as HTMLInputElement).value)"
+              />
+              <input
+                v-model="brandForm.primaryColor"
+                type="text"
+                placeholder="#FF7A00"
+                @blur="updateBrandColor('primaryColor', brandForm.primaryColor)"
+              />
+            </div>
+            <div v-if="recentBrandColors.length > 0" class="saved-color-chip-row">
+              <button
+                v-for="color in recentBrandColors"
+                :key="`primary-${color}`"
+                type="button"
+                class="saved-color-chip-button"
+                :title="`Use ${color} as primary color`"
+                @click="applyRecentBrandColor('primaryColor', color)"
+              >
+                <span class="saved-color-chip-swatch" :style="{ background: color }" />
+                <span>{{ color }}</span>
+              </button>
+            </div>
           </label>
 
           <label class="field">
             <span>Secondary color</span>
-            <input v-model="brandForm.secondaryColor" type="text" placeholder="#1F3C88" />
+            <div class="color-input-row">
+              <input
+                :value="secondaryColorInputValue"
+                class="color-picker-input"
+                type="color"
+                @input="updateBrandColor('secondaryColor', ($event.target as HTMLInputElement).value)"
+              />
+              <input
+                v-model="brandForm.secondaryColor"
+                type="text"
+                placeholder="#1F3C88"
+                @blur="updateBrandColor('secondaryColor', brandForm.secondaryColor)"
+              />
+            </div>
+            <p class="field-hint">Secondary color is currently used as the accent color across generated assets.</p>
+            <div v-if="recentBrandColors.length > 0" class="saved-color-chip-row">
+              <button
+                v-for="color in recentBrandColors"
+                :key="`secondary-${color}`"
+                type="button"
+                class="saved-color-chip-button"
+                :title="`Use ${color} as secondary color`"
+                @click="applyRecentBrandColor('secondaryColor', color)"
+              >
+                <span class="saved-color-chip-swatch" :style="{ background: color }" />
+                <span>{{ color }}</span>
+              </button>
+            </div>
           </label>
 
           <label class="field">
@@ -1274,8 +1437,18 @@ watch(
               <span class="chip">{{ latestGeneration.consistencyMode.replace(/_/g, " ") }}</span>
             </div>
 
-            <p class="detail-label">Prompt</p>
-            <p class="detail-text">{{ latestGeneration.prompt }}</p>
+            <div class="detail-header">
+              <p class="detail-label">Prompt</p>
+              <button
+                type="button"
+                class="detail-toggle"
+                @click="isPromptExpanded = !isPromptExpanded"
+              >
+                {{ isPromptExpanded ? "Hide prompt" : "View prompt" }}
+              </button>
+            </div>
+            <p v-if="isPromptExpanded" class="detail-text detail-text-expanded">{{ latestGeneration.prompt }}</p>
+            <p v-else class="detail-text detail-text-muted">{{ buildPromptPreviewLabel(latestGeneration.prompt) }}</p>
 
             <p class="detail-label">Generated</p>
             <p class="detail-text">{{ formatRelativeDate(latestGeneration.createdAt) }}</p>
@@ -1480,6 +1653,60 @@ watch(
   font-size: 0.85rem;
   font-weight: 600;
   color: #334155;
+}
+
+.field-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.color-input-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.color-picker-input {
+  width: 3rem;
+  min-width: 3rem;
+  height: 3rem;
+  padding: 0;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 0.9rem;
+  background: #fff;
+  cursor: pointer;
+}
+
+.saved-color-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.saved-color-chip-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.42rem 0.65rem;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: #fff;
+  color: #334155;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.saved-color-chip-swatch {
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  flex: 0 0 auto;
 }
 
 .field input,
@@ -1746,10 +1973,37 @@ watch(
   color: #64748b;
 }
 
+.detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.detail-toggle {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  padding: 0.45rem 0.7rem;
+  background: #ffffff;
+  color: #1d4ed8;
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .detail-text {
   margin: 0;
   color: #334155;
   line-height: 1.55;
+}
+
+.detail-text-expanded {
+  white-space: pre-wrap;
+}
+
+.detail-text-muted {
+  color: #64748b;
 }
 
 .icon-slice-section {
@@ -1862,6 +2116,7 @@ watch(
   .saved-guidelines-header,
   .consistency-row,
   .history-topline,
+  .detail-header,
   .icon-slice-meta,
   .panel-actions,
   .history-actions {
