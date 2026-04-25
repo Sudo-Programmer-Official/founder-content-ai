@@ -1,6 +1,7 @@
 import type { PoolClient, QueryResultRow } from "pg";
 import type {
   ContentAssetIntelligence,
+  WorkspaceChannelPerformance,
   WorkspaceContentPatternRollup,
   WorkspaceInsightAngleType,
   WorkspaceInsightPatternType,
@@ -54,6 +55,7 @@ interface EmailCampaignSignalRow extends QueryResultRow {
   delivered_count: string | number;
   failed_count: string | number;
   open_count: string | number;
+  click_count: string | number;
   source_asset_id: string | null;
   source_idea_id: string | null;
   source_title: string | null;
@@ -119,6 +121,13 @@ interface PatternAggregate {
   performanceScore: number;
 }
 
+interface WorkspaceInsightRefreshResult {
+  generatedAt: string;
+  topicToIdeaId: Map<string, string>;
+  channelPerformance: WorkspaceChannelPerformance;
+  topContentTags: string[];
+}
+
 const ANGLE_TYPES: WorkspaceInsightAngleType[] = ["contrarian", "story", "tactical"];
 
 function toIsoString(value: Date | string): string {
@@ -150,6 +159,15 @@ function normalizeTopicKey(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 72);
+}
+
+function humanizeLabel(value: string): string {
+  return value
+    .split(/[\s-_]+/g)
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function extractIdeaTopic(row: IdeaInsightRow): string {
@@ -343,7 +361,6 @@ async function loadAssets(client: PoolClient, businessId: string): Promise<Asset
         updated_at
       from content_assets
       where business_id = $1
-        and source_idea_id is not null
       order by updated_at desc
     `,
     [businessId],
@@ -389,6 +406,7 @@ async function loadEmailCampaignSignals(
         count(r.id) filter (where r.status = 'delivered')::int as delivered_count,
         count(r.id) filter (where r.status = 'failed')::int as failed_count,
         count(e.id) filter (where e.event_type = 'open')::int as open_count,
+        count(e.id) filter (where e.event_type = 'click')::int as click_count,
         c.source_asset_id,
         c.source_idea_id,
         c.source_title
@@ -631,6 +649,62 @@ function buildSuggestions(
   return suggestions.slice(0, 4);
 }
 
+function buildLearningInsights(input: {
+  topics: WorkspaceTopicInsight[];
+  patterns: WorkspaceContentPatternRollup[];
+  channelPerformance: WorkspaceChannelPerformance;
+  topContentTags: string[];
+}): string[] {
+  const bestAngle = input.patterns
+    .filter((pattern) => pattern.patternType === "angle")
+    .sort((left, right) => right.performanceScore - left.performanceScore)[0];
+  const bestFormat = input.patterns
+    .filter((pattern) => pattern.patternType === "format")
+    .sort((left, right) => right.performanceScore - left.performanceScore)[0];
+  const bestWindow = input.patterns
+    .filter((pattern) => pattern.patternType === "send_window")
+    .sort((left, right) => right.performanceScore - left.performanceScore)[0];
+  const topTopic = input.topics[0];
+  const crossChannelTopic = [...input.topics]
+    .filter((topic) => topic.emailSupportScore > 0)
+    .sort((left, right) => right.emailSupportScore - left.emailSupportScore)[0];
+  const weakTopic = [...input.topics]
+    .filter((topic) => topic.lowSignalCount > topic.highSignalCount && topic.lowSignalCount > 0)
+    .sort((left, right) => right.lowSignalCount - left.lowSignalCount)[0];
+  const lines = [
+    topTopic
+      ? `${topTopic.topicLabel} is the strongest topic to reuse right now.`
+      : undefined,
+    crossChannelTopic
+      ? `${crossChannelTopic.topicLabel} is carrying signal across email and social.`
+      : undefined,
+    bestAngle && bestFormat
+      ? `${bestAngle.label} paired with ${bestFormat.label.toLowerCase()} content is the most repeatable combination so far.`
+      : bestAngle
+        ? `${bestAngle.label} is the strongest angle to keep testing.`
+        : bestFormat
+          ? `${bestFormat.label} is the strongest content format so far.`
+          : undefined,
+    bestWindow
+      ? `Your current timing edge is ${bestWindow.label.toLowerCase()}.`
+      : undefined,
+    input.topContentTags.length > 0
+      ? `High-signal themes include ${input.topContentTags.slice(0, 3).join(", ")}.`
+      : undefined,
+    input.channelPerformance.email.campaigns > 0
+      ? `Email is averaging ${input.channelPerformance.email.avgOpenRate.toFixed(1)}% opens and ${input.channelPerformance.email.avgClickRate.toFixed(1)}% clicks.`
+      : undefined,
+    input.channelPerformance.social.trackedPosts > 0
+      ? `Tracked social posts are averaging ${input.channelPerformance.social.avgEngagementScore.toFixed(1)} engagement points.`
+      : undefined,
+    weakTopic
+      ? `Rework ${weakTopic.topicLabel} before repeating it. The current framing is underperforming.`
+      : undefined,
+  ].filter((entry): entry is string => Boolean(entry));
+
+  return [...new Set(lines)].slice(0, 5);
+}
+
 async function persistInsights(
   client: PoolClient,
   businessId: string,
@@ -753,10 +827,7 @@ async function persistInsights(
 async function buildAndPersistWorkspaceInsights(
   client: PoolClient,
   businessId: string,
-): Promise<{
-  generatedAt: string;
-  topicToIdeaId: Map<string, string>;
-}> {
+): Promise<WorkspaceInsightRefreshResult> {
   const [businessTimeZone, ideas, assets, scheduledSignals, emailSignals] = await Promise.all([
     loadBusinessTimezone(client, businessId),
     loadIdeas(client, businessId),
@@ -769,12 +840,32 @@ async function buildAndPersistWorkspaceInsights(
   const patternMap = new Map<string, PatternAggregate>();
   const ideaTopicById = new Map<string, string>();
   const topicToIdeaId = new Map<string, string>();
+  const emailChannel = {
+    campaigns: 0,
+    sent: 0,
+    delivered: 0,
+    opens: 0,
+    clicks: 0,
+    openRateTotal: 0,
+    clickRateTotal: 0,
+    rateCount: 0,
+  };
+  const socialChannel = {
+    trackedPosts: 0,
+    publishedPosts: 0,
+    highSignalPosts: 0,
+    mediumSignalPosts: 0,
+    lowSignalPosts: 0,
+    engagementTotal: 0,
+    engagementCount: 0,
+  };
   const assetById = new Map<
     string,
     {
-      sourceIdeaId: string;
-      topicKey: string;
+      sourceIdeaId?: string;
+      topicKey?: string;
       intelligence?: ContentAssetIntelligence;
+      tags: string[];
       publishedViaAsset: boolean;
       updatedAt?: string;
     }
@@ -792,41 +883,31 @@ async function buildAndPersistWorkspaceInsights(
   }
 
   for (const asset of assets) {
-    if (!asset.source_idea_id) {
-      continue;
-    }
-
-    const topicKey = ideaTopicById.get(asset.source_idea_id);
-
-    if (!topicKey) {
-      continue;
-    }
-
-    const topic = topicMap.get(topicKey);
-
-    if (!topic) {
-      continue;
-    }
-
     const textContent = extractTextContent(asset.content_body) || asset.title || "";
     const intelligence = resolveStoredContentAssetIntelligence(asset.content_metadata, textContent);
     const angleType = deriveAngleType(intelligence);
     const formatKey = intelligence?.format ?? "insight";
+    const tags = intelligence?.tags ?? [];
     const publishedViaAsset = asset.pipeline_stage === "posted" || asset.status === "published";
+    const topicKey = asset.source_idea_id ? ideaTopicById.get(asset.source_idea_id) : undefined;
+    const topic = topicKey ? topicMap.get(topicKey) : undefined;
 
-    topic.postCount += 1;
-    topic.exploredAngles.add(angleType);
-    topic.missingAngles.delete(angleType);
-    topic.lastUsedAt = setLatestValue(topic.lastUsedAt, toOptionalIsoString(asset.updated_at));
+    if (topic) {
+      topic.postCount += 1;
+      topic.exploredAngles.add(angleType);
+      topic.missingAngles.delete(angleType);
+      topic.lastUsedAt = setLatestValue(topic.lastUsedAt, toOptionalIsoString(asset.updated_at));
 
-    if (publishedViaAsset) {
-      topic.publishedCount += 1;
+      if (publishedViaAsset) {
+        topic.publishedCount += 1;
+      }
     }
 
     assetById.set(asset.id, {
-      sourceIdeaId: asset.source_idea_id,
+      sourceIdeaId: asset.source_idea_id ?? undefined,
       topicKey,
       intelligence,
+      tags,
       publishedViaAsset,
       updatedAt: toOptionalIsoString(asset.updated_at),
     });
@@ -841,6 +922,17 @@ async function buildAndPersistWorkspaceInsights(
       formatKey[0].toUpperCase() + formatKey.slice(1),
     );
     formatPattern.supportCount += 1;
+
+    for (const tag of tags) {
+      const normalizedTagKey = normalizeTopicKey(tag);
+
+      if (!normalizedTagKey) {
+        continue;
+      }
+
+      const tagPattern = ensurePatternAggregate(patternMap, "tag", normalizedTagKey, humanizeLabel(tag));
+      tagPattern.supportCount += 1;
+    }
   }
 
   for (const signal of scheduledSignals) {
@@ -854,15 +946,15 @@ async function buildAndPersistWorkspaceInsights(
       continue;
     }
 
-    const topic = topicMap.get(asset.topicKey);
-
-    if (!topic) {
-      continue;
-    }
+    socialChannel.trackedPosts += 1;
+    const topic = asset.topicKey ? topicMap.get(asset.topicKey) : undefined;
 
     if (signal.published_at) {
-      topic.publishedCount += asset.publishedViaAsset ? 0 : 1;
-      topic.lastUsedAt = setLatestValue(topic.lastUsedAt, toOptionalIsoString(signal.published_at));
+      socialChannel.publishedPosts += 1;
+      if (topic) {
+        topic.publishedCount += asset.publishedViaAsset ? 0 : 1;
+        topic.lastUsedAt = setLatestValue(topic.lastUsedAt, toOptionalIsoString(signal.published_at));
+      }
 
       const window = resolveSendWindow(signal.published_at, signal.audience_timezone?.trim() || businessTimeZone);
       const sendWindowPattern = ensurePatternAggregate(patternMap, "send_window", window.key, window.label);
@@ -886,18 +978,31 @@ async function buildAndPersistWorkspaceInsights(
     }
 
     if (signal.performance_label === "high") {
-      topic.highSignalCount += 1;
+      if (topic) {
+        topic.highSignalCount += 1;
+      }
+      socialChannel.highSignalPosts += 1;
     } else if (signal.performance_label === "medium") {
-      topic.mediumSignalCount += 1;
+      if (topic) {
+        topic.mediumSignalCount += 1;
+      }
+      socialChannel.mediumSignalPosts += 1;
     } else if (signal.performance_label === "low") {
-      topic.lowSignalCount += 1;
+      if (topic) {
+        topic.lowSignalCount += 1;
+      }
+      socialChannel.lowSignalPosts += 1;
     }
 
     const engagementScore = toNumber(signal.engagement_score);
 
     if (engagementScore > 0) {
-      topic.engagementTotal += engagementScore;
-      topic.engagementCount += 1;
+      if (topic) {
+        topic.engagementTotal += engagementScore;
+        topic.engagementCount += 1;
+      }
+      socialChannel.engagementTotal += engagementScore;
+      socialChannel.engagementCount += 1;
     }
 
     const angleType = deriveAngleType(asset.intelligence);
@@ -929,6 +1034,30 @@ async function buildAndPersistWorkspaceInsights(
       formatPattern.engagementTotal += engagementScore;
       formatPattern.engagementCount += 1;
     }
+
+    for (const tag of asset.tags) {
+      const normalizedTagKey = normalizeTopicKey(tag);
+
+      if (!normalizedTagKey) {
+        continue;
+      }
+
+      const tagPattern = ensurePatternAggregate(patternMap, "tag", normalizedTagKey, humanizeLabel(tag));
+      tagPattern.publishedCount += signal.published_at ? 1 : 0;
+
+      if (signal.performance_label === "high") {
+        tagPattern.highSignalCount += 1;
+      }
+
+      if (signal.performance_label === "low") {
+        tagPattern.lowSignalCount += 1;
+      }
+
+      if (engagementScore > 0) {
+        tagPattern.engagementTotal += engagementScore;
+        tagPattern.engagementCount += 1;
+      }
+    }
   }
 
   for (const emailSignal of emailSignals) {
@@ -939,10 +1068,17 @@ async function buildAndPersistWorkspaceInsights(
     const sentCount = toNumber(emailSignal.sent_count);
     const deliveredCount = toNumber(emailSignal.delivered_count);
     const openCount = toNumber(emailSignal.open_count);
+    const clickCount = toNumber(emailSignal.click_count);
 
-    if (sentCount <= 0 && deliveredCount <= 0 && openCount <= 0) {
+    if (sentCount <= 0 && deliveredCount <= 0 && openCount <= 0 && clickCount <= 0) {
       continue;
     }
+
+    emailChannel.campaigns += 1;
+    emailChannel.sent += sentCount;
+    emailChannel.delivered += deliveredCount;
+    emailChannel.opens += openCount;
+    emailChannel.clicks += clickCount;
 
     const window = resolveSendWindow(emailSignal.activity_at, businessTimeZone);
     const sendWindowPattern = ensurePatternAggregate(patternMap, "send_window", window.key, window.label);
@@ -950,7 +1086,14 @@ async function buildAndPersistWorkspaceInsights(
 
     const deliveryRate = sentCount > 0 ? deliveredCount / sentCount : 0;
     const openRate = deliveredCount > 0 ? openCount / deliveredCount : 0;
-    const syntheticScore = Number((deliveryRate + openRate * 1.25).toFixed(4));
+    const clickRate = deliveredCount > 0 ? clickCount / deliveredCount : 0;
+    const syntheticScore = Number((deliveryRate + openRate * 1.1 + clickRate * 1.6).toFixed(4));
+
+    if (deliveredCount > 0) {
+      emailChannel.openRateTotal += openRate * 100;
+      emailChannel.clickRateTotal += clickRate * 100;
+      emailChannel.rateCount += 1;
+    }
     const linkedTopicKey =
       (emailSignal.source_asset_id ? assetById.get(emailSignal.source_asset_id)?.topicKey : undefined)
       ?? (emailSignal.source_idea_id ? ideaTopicById.get(emailSignal.source_idea_id) : undefined);
@@ -959,19 +1102,6 @@ async function buildAndPersistWorkspaceInsights(
       sendWindowPattern.engagementTotal += syntheticScore;
       sendWindowPattern.engagementCount += 1;
     }
-
-    if (!linkedTopicKey) {
-      continue;
-    }
-
-    const topic = topicMap.get(linkedTopicKey);
-
-    if (!topic) {
-      continue;
-    }
-
-    topic.emailSupportScore += syntheticScore;
-    topic.lastUsedAt = setLatestValue(topic.lastUsedAt, toOptionalIsoString(emailSignal.activity_at));
 
     if (emailSignal.source_asset_id) {
       const sourceAsset = assetById.get(emailSignal.source_asset_id);
@@ -998,8 +1128,36 @@ async function buildAndPersistWorkspaceInsights(
           formatPattern.engagementTotal += syntheticScore;
           formatPattern.engagementCount += 1;
         }
+
+        for (const tag of sourceAsset.tags) {
+          const normalizedTagKey = normalizeTopicKey(tag);
+
+          if (!normalizedTagKey) {
+            continue;
+          }
+
+          const tagPattern = ensurePatternAggregate(patternMap, "tag", normalizedTagKey, humanizeLabel(tag));
+
+          if (syntheticScore > 0) {
+            tagPattern.engagementTotal += syntheticScore;
+            tagPattern.engagementCount += 1;
+          }
+        }
       }
     }
+
+    if (!linkedTopicKey) {
+      continue;
+    }
+
+    const topic = topicMap.get(linkedTopicKey);
+
+    if (!topic) {
+      continue;
+    }
+
+    topic.emailSupportScore += syntheticScore;
+    topic.lastUsedAt = setLatestValue(topic.lastUsedAt, toOptionalIsoString(emailSignal.activity_at));
   }
 
   const topics = [...topicMap.values()].map((topic) => {
@@ -1013,19 +1171,44 @@ async function buildAndPersistWorkspaceInsights(
 
   await persistInsights(client, businessId, topics, patterns);
 
+  const topContentTags = patterns
+    .filter((pattern) => pattern.patternType === "tag")
+    .sort((left, right) => right.performanceScore - left.performanceScore)
+    .map((pattern) => pattern.label)
+    .slice(0, 6);
+
   return {
     generatedAt: new Date().toISOString(),
     topicToIdeaId,
+    channelPerformance: {
+      email: {
+        campaigns: emailChannel.campaigns,
+        sent: emailChannel.sent,
+        delivered: emailChannel.delivered,
+        opens: emailChannel.opens,
+        clicks: emailChannel.clicks,
+        avgOpenRate: emailChannel.rateCount > 0 ? Number((emailChannel.openRateTotal / emailChannel.rateCount).toFixed(2)) : 0,
+        avgClickRate: emailChannel.rateCount > 0 ? Number((emailChannel.clickRateTotal / emailChannel.rateCount).toFixed(2)) : 0,
+      },
+      social: {
+        trackedPosts: socialChannel.trackedPosts,
+        publishedPosts: socialChannel.publishedPosts,
+        highSignalPosts: socialChannel.highSignalPosts,
+        mediumSignalPosts: socialChannel.mediumSignalPosts,
+        lowSignalPosts: socialChannel.lowSignalPosts,
+        avgEngagementScore: socialChannel.engagementCount > 0
+          ? Number((socialChannel.engagementTotal / socialChannel.engagementCount).toFixed(2))
+          : 0,
+      },
+    },
+    topContentTags,
   };
 }
 
-export async function getWorkspaceInsights(
-  principal: AuthenticatedPrincipal | undefined,
+async function buildWorkspaceInsightsResponse(
+  client: PoolClient,
   businessId: string,
 ): Promise<WorkspaceInsightsResponse> {
-  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
-
-  return withDbTransaction(async (client) => {
     const refresh = await buildAndPersistWorkspaceInsights(client, businessId);
     const [topicsResult, patternsResult] = await Promise.all([
       client.query<StoredTopicInsightRow>(
@@ -1076,6 +1259,9 @@ export async function getWorkspaceInsights(
     const weakTopic = [...topics]
       .filter((topic) => topic.lowSignalCount > topic.highSignalCount && topic.lowSignalCount > 0)
       .sort((left, right) => right.lowSignalCount - left.lowSignalCount)[0];
+    const crossChannelTopic = [...topics]
+      .filter((topic) => topic.emailSupportScore > 0)
+      .sort((left, right) => right.emailSupportScore - left.emailSupportScore)[0];
     const bestAngle = patterns
       .filter((pattern) => pattern.patternType === "angle")
       .sort((left, right) => right.performanceScore - left.performanceScore)[0];
@@ -1092,14 +1278,36 @@ export async function getWorkspaceInsights(
       summary: {
         topTopicLabel: topTopic?.topicLabel,
         topTopicKey: topTopic?.topicKey,
+        crossChannelTopicLabel: crossChannelTopic?.topicLabel,
         weakTopicLabel: weakTopic?.topicLabel,
         bestAngleLabel: bestAngle?.label,
         bestFormatLabel: bestFormat?.label,
         bestSendWindowLabel: bestSendWindow?.label,
       },
+      channelPerformance: refresh.channelPerformance,
+      learningInsights: buildLearningInsights({
+        topics,
+        patterns,
+        channelPerformance: refresh.channelPerformance,
+        topContentTags: refresh.topContentTags,
+      }),
+      topContentTags: refresh.topContentTags,
       topics,
       patterns,
       suggestions: buildSuggestions(topics, patterns, refresh.topicToIdeaId),
     };
-  });
+}
+
+export async function getWorkspaceInsightsSnapshotForBusiness(
+  businessId: string,
+): Promise<WorkspaceInsightsResponse> {
+  return withDbTransaction(async (client) => buildWorkspaceInsightsResponse(client, businessId));
+}
+
+export async function getWorkspaceInsights(
+  principal: AuthenticatedPrincipal | undefined,
+  businessId: string,
+): Promise<WorkspaceInsightsResponse> {
+  await enforceWorkspaceReadAccess(principal, businessId, "control_dashboard");
+  return getWorkspaceInsightsSnapshotForBusiness(businessId);
 }

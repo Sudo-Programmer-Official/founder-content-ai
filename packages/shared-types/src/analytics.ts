@@ -33,6 +33,22 @@ export type ContentAssetFormat = "story" | "list" | "insight";
 export type ContentAssetHookType = "question" | "bold_statement" | "curiosity" | "direct";
 export type ContentAssetLengthBucket = "short" | "medium" | "long";
 export type ContentPovBoldness = "measured" | "balanced" | "bold";
+export type ContentAssetCtaType =
+  | "book_now"
+  | "learn_more"
+  | "reply"
+  | "message"
+  | "download"
+  | "sign_up"
+  | "shop_now"
+  | "none";
+export type ContentAssetIntent =
+  | "conversion"
+  | "engagement"
+  | "education"
+  | "storytelling"
+  | "social_proof"
+  | "awareness";
 export type AdminAlertType = "api_failure" | "abuse" | "anomaly";
 export type AdminAlertSeverity = "low" | "medium" | "high";
 
@@ -63,6 +79,10 @@ export interface ContentAssetIntelligence {
   length: ContentAssetLengthBucket;
   wordCount: number;
   characterCount: number;
+  tags: string[];
+  primaryTag?: string;
+  ctaType?: ContentAssetCtaType;
+  intent?: ContentAssetIntent;
   quality?: ContentQualityScore;
   pov?: ContentPovProfile;
 }

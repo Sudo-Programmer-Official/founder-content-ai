@@ -4,12 +4,17 @@ import { useRoute, useRouter } from "vue-router";
 import type {
   BusinessMembership,
   ControlDashboardResponse,
+  GenerateContentPlanResponse,
   PostAsset,
   RecommendedPostTimeSlot,
   ScheduledPost,
   SchedulingSafetyWarning,
   ScheduledPostStatus,
+  SocialContentPlanDuration,
+  SocialContentPlanEntry,
+  SocialContentPlanPlatform,
   SocialAccount,
+  WorkspaceInsightsResponse,
 } from "../../../packages/shared-types";
 import { useAuthContext } from "../auth/auth-context";
 import { useProductAccessContext } from "../access/product-access-context";
@@ -31,7 +36,12 @@ import {
   requestSocialAccounts,
   requestUpdateScheduledPost,
 } from "../services/publishing-service";
+import {
+  requestApproveContentPlan,
+  requestGenerateContentPlan,
+} from "../services/content-plan-service";
 import { requestPostAssets } from "../services/post-assets-service";
+import { requestWorkspaceInsights } from "../services/workspace-insights-service";
 import { appRoutes } from "../utils/routes";
 import {
   addDaysToDateKey,
@@ -81,6 +91,13 @@ interface LinkedInPreviewModel {
   truncated: boolean;
 }
 
+interface SocialAutopilotPreviewDay {
+  day: number;
+  dateKey: string;
+  label: string;
+  entries: SocialContentPlanEntry[];
+}
+
 const route = useRoute();
 const router = useRouter();
 const auth = useAuthContext();
@@ -106,9 +123,11 @@ const COMMON_AUDIENCE_TIMEZONES = [
   "Asia/Singapore",
   "Australia/Sydney",
 ] as const;
+const DEFAULT_SOCIAL_PLAN_TIME = "09:00";
 
 const businesses = ref<BusinessMembership[]>([]);
 const dashboard = ref<ControlDashboardResponse | null>(null);
+const workspaceInsights = ref<WorkspaceInsightsResponse | null>(null);
 const scheduledPosts = ref<ScheduledPost[]>([]);
 const socialAccounts = ref<SocialAccount[]>([]);
 const selectedBacklogPostAssets = ref<PostAsset[]>([]);
@@ -142,6 +161,35 @@ const isMetaSelectionModalOpen = ref(false);
 const pendingMetaSession = ref("");
 const draftActionAssetId = ref("");
 const draftActionKind = ref<"duplicate" | "delete" | "">("");
+const isGeneratingSocialPlan = ref(false);
+const isApprovingSocialPlan = ref(false);
+const generatedSocialPlan = ref<GenerateContentPlanResponse | null>(null);
+const SOCIAL_AUTOPILOT_DURATION_OPTIONS: Array<{
+  value: SocialContentPlanDuration;
+  label: string;
+  description: string;
+}> = [
+  { value: "7_days", label: "7 days", description: "Ship a focused week of content fast." },
+  { value: "14_days", label: "14 days", description: "Build two weeks of consistent coverage." },
+  { value: "30_days", label: "30 days", description: "Map the month before momentum slips." },
+];
+const socialAutopilotForm = ref<{
+  goal: string;
+  duration: SocialContentPlanDuration;
+  platforms: SocialContentPlanPlatform[];
+  tone: string;
+  startDate: string;
+  defaultScheduledTime: string;
+  audienceTimezone: string;
+}>({
+  goal: "",
+  duration: "7_days",
+  platforms: [initialSchedulingPlatform],
+  tone: "",
+  startDate: "",
+  defaultScheduledTime: DEFAULT_SOCIAL_PLAN_TIME,
+  audienceTimezone: "",
+});
 
 const resolvedBusinessId = computed(
   () => {
@@ -428,6 +476,143 @@ watch(
   },
   { immediate: true },
 );
+
+function resolveSocialAutopilotDurationDays(duration: SocialContentPlanDuration): number {
+  switch (duration) {
+    case "14_days":
+      return 14;
+    case "30_days":
+      return 30;
+    case "7_days":
+    default:
+      return 7;
+  }
+}
+
+function isSocialAutopilotPlatformSelected(platform: SocialContentPlanPlatform): boolean {
+  return socialAutopilotForm.value.platforms.includes(platform);
+}
+
+function toggleSocialAutopilotPlatform(platform: SocialContentPlanPlatform): void {
+  if (isSocialAutopilotPlatformSelected(platform)) {
+    if (socialAutopilotForm.value.platforms.length === 1) {
+      return;
+    }
+
+    socialAutopilotForm.value.platforms = socialAutopilotForm.value.platforms.filter(
+      (candidate) => candidate !== platform,
+    );
+    return;
+  }
+
+  socialAutopilotForm.value.platforms = [
+    ...socialAutopilotForm.value.platforms,
+    platform,
+  ];
+}
+
+const socialAutopilotSelectedPlatformsLabel = computed(() =>
+  formatSelectedPlatformsLabel(socialAutopilotForm.value.platforms as PublishableSocialPlatform[]),
+);
+const socialAutopilotDurationDays = computed(() =>
+  resolveSocialAutopilotDurationDays(socialAutopilotForm.value.duration),
+);
+const socialAutopilotProjectedPosts = computed(() => {
+  if (generatedSocialPlan.value) {
+    return generatedSocialPlan.value.plan.length;
+  }
+
+  return socialAutopilotDurationDays.value * Math.max(1, socialAutopilotForm.value.platforms.length);
+});
+const socialAutopilotQueueGuardrail = computed(() => {
+  if (scheduledQueueRemaining.value === null) {
+    return "";
+  }
+
+  if (socialAutopilotProjectedPosts.value > scheduledQueueRemaining.value) {
+    return `This plan needs ${socialAutopilotProjectedPosts.value} queue slots, but only ${scheduledQueueRemaining.value} remain right now.`;
+  }
+
+  return "";
+});
+const socialAutopilotSummaryText = computed(() => {
+  if (!socialAutopilotForm.value.goal.trim()) {
+    return "";
+  }
+
+  return `${socialAutopilotDurationDays.value} days for ${socialAutopilotSelectedPlatformsLabel.value} focused on ${socialAutopilotForm.value.goal.trim()}.`;
+});
+const socialAutopilotPreviewDays = computed<SocialAutopilotPreviewDay[]>(() => {
+  if (!generatedSocialPlan.value) {
+    return [];
+  }
+
+  const grouped = new Map<number, SocialAutopilotPreviewDay>();
+
+  for (const entry of generatedSocialPlan.value.plan) {
+    const existing = grouped.get(entry.day);
+
+    if (existing) {
+      existing.entries.push(entry);
+      continue;
+    }
+
+    grouped.set(entry.day, {
+      day: entry.day,
+      dateKey: entry.dateKey,
+      label: formatDateInTimezone(`${entry.dateKey}T12:00:00.000Z`, "UTC", {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      }),
+      entries: [entry],
+    });
+  }
+
+  return [...grouped.values()].sort((left, right) => left.day - right.day);
+});
+
+const plannerLearningCards = computed(() => {
+  const insights = workspaceInsights.value;
+
+  if (!insights) {
+    return [];
+  }
+
+  return [
+    {
+      label: "Top topic",
+      value: insights.summary.topTopicLabel || "Still learning",
+      detail: insights.summary.crossChannelTopicLabel
+        ? `${insights.summary.crossChannelTopicLabel} is also working in email.`
+        : "The strongest reusable theme lands here.",
+    },
+    {
+      label: "Best angle",
+      value: insights.summary.bestAngleLabel || "Still learning",
+      detail: insights.summary.bestFormatLabel
+        ? `Best format: ${insights.summary.bestFormatLabel}`
+        : "Angle performance builds here over time.",
+    },
+    {
+      label: "Best window",
+      value: insights.summary.bestSendWindowLabel || "Still learning",
+      detail: insights.channelPerformance.social.publishedPosts > 0
+        ? `${insights.channelPerformance.social.publishedPosts} published social post${insights.channelPerformance.social.publishedPosts === 1 ? "" : "s"} tracked.`
+        : "Publishing-time signal lands here after posts go out.",
+    },
+    {
+      label: "Avg engagement",
+      value: insights.channelPerformance.social.trackedPosts > 0
+        ? insights.channelPerformance.social.avgEngagementScore.toFixed(1)
+        : "Still learning",
+      detail: `${insights.channelPerformance.social.highSignalPosts} high-signal post${insights.channelPerformance.social.highSignalPosts === 1 ? "" : "s"} recorded.`,
+    },
+  ];
+});
+
+const plannerLearningInsights = computed(() => workspaceInsights.value?.learningInsights ?? []);
+const plannerTopContentTags = computed(() => workspaceInsights.value?.topContentTags ?? []);
 
 const postsByDayKey = computed(() => {
   const grouped = new Map<string, ScheduledPost[]>();
@@ -949,6 +1134,24 @@ function initializeWeekState(): void {
   }
 }
 
+function syncSocialAutopilotDefaults(): void {
+  if (!socialAutopilotForm.value.audienceTimezone) {
+    socialAutopilotForm.value.audienceTimezone = audienceTimezone.value || workspaceDefaultAudienceTimezone.value;
+  }
+
+  if (!socialAutopilotForm.value.startDate) {
+    socialAutopilotForm.value.startDate = clampAudienceDateKey(selectedGridDateKey.value || minimumAudienceDateKey.value);
+  }
+
+  if (!socialAutopilotForm.value.defaultScheduledTime) {
+    socialAutopilotForm.value.defaultScheduledTime = scheduleTime.value || DEFAULT_SOCIAL_PLAN_TIME;
+  }
+
+  if (socialAutopilotForm.value.platforms.length === 0) {
+    socialAutopilotForm.value.platforms = [selectedSchedulingPlatform.value];
+  }
+}
+
 function clampAudienceDateKey(dateKey: string): string {
   if (!dateKey) {
     return minimumAudienceDateKey.value;
@@ -1087,23 +1290,26 @@ async function loadSelectedBacklogPostAssets(): Promise<void> {
 async function loadPlannerData(): Promise<void> {
   if (!auth.isReady.value || !auth.isAuthenticated.value || !resolvedBusinessId.value || !schedulerEnabled.value) {
     dashboard.value = null;
+    workspaceInsights.value = null;
     scheduledPosts.value = [];
     recommendedSlots.value = [];
     socialAccounts.value = [];
     return;
   }
 
-  const [scheduledResponse, recommendationsResponse] = await Promise.all([
+  const [scheduledResponse, recommendationsResponse, insightsResponse] = await Promise.all([
     requestScheduledPosts(resolvedBusinessId.value),
     requestRecommendedPostTimes(
       resolvedBusinessId.value,
       "text",
       audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
     ).catch(() => null),
+    requestWorkspaceInsights(resolvedBusinessId.value).catch(() => null),
     loadSocialAccounts(),
   ]);
 
   scheduledPosts.value = scheduledResponse.scheduledPosts;
+  workspaceInsights.value = insightsResponse;
 
   if (recommendationsResponse) {
     recommendedSlots.value = recommendationsResponse.slots;
@@ -1129,6 +1335,8 @@ async function loadPlannerData(): Promise<void> {
   } else {
     dashboard.value = null;
   }
+
+  syncSocialAutopilotDefaults();
 }
 
 async function initializePage(): Promise<void> {
@@ -1241,6 +1449,96 @@ function applyRecommendedSlot(slot: RecommendedPostTimeSlot): void {
     audienceTimezone.value || workspaceDefaultAudienceTimezone.value,
   );
   selectedScheduledPostId.value = "";
+}
+
+async function generateSocialAutopilotPlan(): Promise<void> {
+  if (!resolvedBusinessId.value) {
+    errorMessage.value = "Pick a workspace before generating a social plan.";
+    return;
+  }
+
+  if (!socialAutopilotForm.value.goal.trim()) {
+    errorMessage.value = "Describe the business goal for social autopilot.";
+    return;
+  }
+
+  if (socialAutopilotForm.value.platforms.length === 0) {
+    errorMessage.value = "Select at least one platform for the social plan.";
+    return;
+  }
+
+  isGeneratingSocialPlan.value = true;
+  errorMessage.value = "";
+  feedbackMessage.value = "";
+
+  try {
+    const response = await requestGenerateContentPlan({
+      businessId: resolvedBusinessId.value,
+      duration: socialAutopilotForm.value.duration,
+      goal: socialAutopilotForm.value.goal.trim(),
+      platforms: socialAutopilotForm.value.platforms,
+      tone: socialAutopilotForm.value.tone.trim() || undefined,
+      audienceTimezone: socialAutopilotForm.value.audienceTimezone || workspaceDefaultAudienceTimezone.value,
+      defaultScheduledTime: socialAutopilotForm.value.defaultScheduledTime || DEFAULT_SOCIAL_PLAN_TIME,
+      startDate: socialAutopilotForm.value.startDate || minimumAudienceDateKey.value,
+    });
+    generatedSocialPlan.value = response;
+    if (response.plan[0]?.dateKey) {
+      socialAutopilotForm.value.startDate = response.plan[0].dateKey;
+      selectedWeekStartKey.value = startOfWeekDateKey(response.plan[0].dateKey);
+      selectedGridDateKey.value = response.plan[0].dateKey;
+    }
+    feedbackMessage.value =
+      `Generated ${response.plan.length} planned posts across ${formatSelectedPlatformsLabel(response.selectedPlatforms as PublishableSocialPlatform[])}.`;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to generate social autopilot plan.";
+  } finally {
+    isGeneratingSocialPlan.value = false;
+  }
+}
+
+function clearSocialAutopilotPlan(): void {
+  generatedSocialPlan.value = null;
+  feedbackMessage.value = "Autopilot preview cleared.";
+  errorMessage.value = "";
+}
+
+async function approveSocialAutopilotPlan(): Promise<void> {
+  if (!resolvedBusinessId.value || !generatedSocialPlan.value) {
+    errorMessage.value = "Generate a plan before approving it.";
+    return;
+  }
+
+  if (socialAutopilotQueueGuardrail.value) {
+    errorMessage.value = socialAutopilotQueueGuardrail.value;
+    return;
+  }
+
+  isApprovingSocialPlan.value = true;
+  errorMessage.value = "";
+  feedbackMessage.value = "";
+
+  try {
+    const response = await requestApproveContentPlan(generatedSocialPlan.value.batch.id, {
+      businessId: resolvedBusinessId.value,
+      batchId: generatedSocialPlan.value.batch.id,
+      startDate: socialAutopilotForm.value.startDate || minimumAudienceDateKey.value,
+      defaultScheduledTime: socialAutopilotForm.value.defaultScheduledTime || DEFAULT_SOCIAL_PLAN_TIME,
+      audienceTimezone: socialAutopilotForm.value.audienceTimezone || workspaceDefaultAudienceTimezone.value,
+      platforms: socialAutopilotForm.value.platforms,
+    });
+
+    generatedSocialPlan.value = null;
+    await loadPlannerData();
+    await refreshProductAccess(resolvedBusinessId.value);
+    syncSelection();
+    feedbackMessage.value =
+      `Queued ${response.scheduleItems.length} posts for ${formatSelectedPlatformsLabel(response.selectedPlatforms as PublishableSocialPlatform[])}.`;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to approve social autopilot plan.";
+  } finally {
+    isApprovingSocialPlan.value = false;
+  }
 }
 
 async function scheduleSelectedAsset(): Promise<void> {
@@ -1605,6 +1903,8 @@ watch(
   () => resolvedBusinessId.value,
   () => {
     audienceTimezone.value = workspaceDefaultAudienceTimezone.value;
+    generatedSocialPlan.value = null;
+    syncSocialAutopilotDefaults();
     void loadSocialAccounts();
   },
 );
@@ -1637,6 +1937,8 @@ watch(
     if (!selectedAudienceDateKey.value) {
       selectedAudienceDateKey.value = minimumAudienceDateKey.value;
     }
+
+    syncSocialAutopilotDefaults();
   },
   { immediate: true },
 );
@@ -1649,6 +1951,13 @@ watch(
       && (!selectedAudienceDateKey.value || selectedAudienceDateKey.value < nextMinimumDateKey)
     ) {
       selectedAudienceDateKey.value = nextMinimumDateKey;
+    }
+
+    if (
+      !socialAutopilotForm.value.startDate
+      || socialAutopilotForm.value.startDate < nextMinimumDateKey
+    ) {
+      socialAutopilotForm.value.startDate = nextMinimumDateKey;
     }
   },
   { immediate: true },
@@ -1797,6 +2106,241 @@ onMounted(() => {
       </section>
 
       <template v-else>
+        <section class="workspace-card planner-autopilot-card">
+          <div class="planner-autopilot-header">
+            <div>
+              <p class="workspace-eyebrow">Social Autopilot</p>
+              <h2>Generate a branded content pack, then approve it into the planner.</h2>
+            </div>
+            <p class="workspace-description compact">
+              This reuses your brand context and creates a structured weekly plan instead of one-off posts.
+            </p>
+          </div>
+
+          <div class="planner-autopilot-grid">
+            <label class="planner-autopilot-field planner-autopilot-field-wide">
+              <span>Goal</span>
+              <input
+                v-model="socialAutopilotForm.goal"
+                type="text"
+                class="workspace-input"
+                placeholder="Increase bookings, tours, demos, or inbound leads"
+              />
+            </label>
+
+            <label class="planner-autopilot-field">
+              <span>Duration</span>
+              <select v-model="socialAutopilotForm.duration" class="workspace-select">
+                <option
+                  v-for="option in SOCIAL_AUTOPILOT_DURATION_OPTIONS"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+
+            <label class="planner-autopilot-field">
+              <span>Start date</span>
+              <input
+                v-model="socialAutopilotForm.startDate"
+                type="date"
+                class="workspace-input"
+                :min="minimumAudienceDateKey"
+              />
+            </label>
+
+            <label class="planner-autopilot-field">
+              <span>Queue time</span>
+              <input
+                v-model="socialAutopilotForm.defaultScheduledTime"
+                type="time"
+                class="workspace-input"
+              />
+            </label>
+
+            <label class="planner-autopilot-field">
+              <span>Audience timezone</span>
+              <select v-model="socialAutopilotForm.audienceTimezone" class="workspace-select">
+                <option
+                  v-for="option in audienceTimezoneOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+
+            <label class="planner-autopilot-field planner-autopilot-field-wide">
+              <span>Tone override</span>
+              <input
+                v-model="socialAutopilotForm.tone"
+                type="text"
+                class="workspace-input"
+                placeholder="Optional: warm, credible, founder-led"
+              />
+            </label>
+          </div>
+
+          <div class="planner-inline-section">
+            <label class="planner-inline-label">Platforms</label>
+            <div class="planner-platform-selector">
+              <article
+                v-for="platform in PUBLISHABLE_SOCIAL_PLATFORMS"
+                :key="platform"
+                class="planner-platform-option"
+                :data-active="resolveSchedulingGuardrail(platform) === ''"
+                :data-selected="isSocialAutopilotPlatformSelected(platform)"
+                @click="toggleSocialAutopilotPlatform(platform)"
+              >
+                <div class="planner-platform-option-topline">
+                  <label class="planner-platform-checkbox">
+                    <input
+                      type="checkbox"
+                      :checked="isSocialAutopilotPlatformSelected(platform)"
+                      @click.stop
+                      @change="toggleSocialAutopilotPlatform(platform)"
+                    />
+                    <span>{{ resolveSocialPlatformLabel(platform) }}</span>
+                  </label>
+                  <span class="planner-platform-state">
+                    {{ isSocialAutopilotPlatformSelected(platform) ? "included" : "optional" }}
+                  </span>
+                </div>
+                <p>{{ resolveSchedulingPlatformHint(platform) }}</p>
+              </article>
+            </div>
+          </div>
+
+          <p v-if="socialAutopilotSummaryText" class="planner-inline-tip">
+            {{ socialAutopilotSummaryText }}
+          </p>
+          <p v-if="socialAutopilotQueueGuardrail" class="planner-feedback danger">
+            {{ socialAutopilotQueueGuardrail }}
+          </p>
+
+          <div class="planner-sidebar-actions">
+            <button
+              type="button"
+              class="workspace-primary-button"
+              :disabled="isGeneratingSocialPlan"
+              @click="generateSocialAutopilotPlan"
+            >
+              {{ isGeneratingSocialPlan ? "Generating..." : generatedSocialPlan ? "Regenerate pack" : "Generate pack" }}
+            </button>
+            <button
+              type="button"
+              class="workspace-secondary-button"
+              :disabled="!generatedSocialPlan || isGeneratingSocialPlan || isApprovingSocialPlan"
+              @click="clearSocialAutopilotPlan"
+            >
+              Clear preview
+            </button>
+            <button
+              type="button"
+              class="workspace-secondary-button"
+              :disabled="!generatedSocialPlan || isApprovingSocialPlan || Boolean(socialAutopilotQueueGuardrail)"
+              @click="approveSocialAutopilotPlan"
+            >
+              {{ isApprovingSocialPlan ? "Approving..." : "Approve into planner" }}
+            </button>
+          </div>
+
+          <div v-if="generatedSocialPlan" class="planner-autopilot-preview">
+            <div class="planner-autopilot-preview-header">
+              <div>
+                <strong>{{ generatedSocialPlan.plan.length }} planned posts ready</strong>
+                <p class="planner-inline-tip">
+                  {{ socialAutopilotPreviewDays.length }} day pack · {{ socialAutopilotSelectedPlatformsLabel }}
+                </p>
+              </div>
+              <span class="workspace-chip">{{ generatedSocialPlan.batch.title || "Social autopilot" }}</span>
+            </div>
+
+            <div class="planner-autopilot-preview-grid">
+              <article
+                v-for="day in socialAutopilotPreviewDays"
+                :key="`${day.day}-${day.dateKey}`"
+                class="planner-day-schedule-card"
+              >
+                <div class="planner-day-schedule-card-header">
+                  <strong>Day {{ day.day }}</strong>
+                  <span class="planner-status-pill subtle">{{ day.label }}</span>
+                </div>
+
+                <div class="planner-day-schedule-list">
+                  <article
+                    v-for="entry in day.entries"
+                    :key="entry.variantId"
+                    class="planner-day-schedule-card"
+                  >
+                    <div class="planner-day-schedule-card-header">
+                      <span class="planner-platform-pill">{{ resolveSocialPlatformLabel(entry.platform) }}</span>
+                      <span class="planner-status-pill subtle">{{ entry.type.replace(/_/g, " ") }}</span>
+                    </div>
+                    <strong>{{ entry.title || buildExcerpt(entry.content, 72) }}</strong>
+                    <p>{{ buildExcerpt(entry.content, 180) }}</p>
+                    <p class="planner-inline-tip">CTA: {{ entry.cta }}</p>
+                    <p class="planner-inline-tip">Image prompt: {{ buildExcerpt(entry.imagePrompt, 180) }}</p>
+                  </article>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="workspaceInsights" class="workspace-card">
+          <div class="panel-header">
+            <div>
+              <p class="panel-meta">Learning Engine</p>
+              <h2>What is performing across social and email</h2>
+              <p class="panel-note">
+                These signals are reused when the planner generates the next content pack.
+              </p>
+            </div>
+          </div>
+
+          <div class="planner-insight-row">
+            <article
+              v-for="card in plannerLearningCards"
+              :key="card.label"
+              class="planner-insight-card"
+            >
+              <span class="planner-insight-label">{{ card.label }}</span>
+              <strong>{{ card.value }}</strong>
+              <p>{{ card.detail }}</p>
+            </article>
+          </div>
+
+          <div v-if="plannerLearningInsights.length > 0" class="workspace-card-section">
+            <span class="planner-insight-label">Prompt guidance</span>
+            <div class="workspace-stack-sm">
+              <p
+                v-for="insight in plannerLearningInsights"
+                :key="insight"
+                class="planner-inline-tip"
+              >
+                {{ insight }}
+              </p>
+            </div>
+          </div>
+
+          <div v-if="plannerTopContentTags.length > 0" class="workspace-card-section">
+            <span class="planner-insight-label">Winning tags</span>
+            <div class="workspace-chip-row">
+              <span
+                v-for="tag in plannerTopContentTags"
+                :key="tag"
+                class="workspace-chip"
+              >
+                {{ tag }}
+              </span>
+            </div>
+          </div>
+        </section>
+
         <section class="planner-main-grid">
           <article class="workspace-card planner-grid-panel">
             <div class="planner-grid-header planner-grid-header-simple">
@@ -2543,6 +3087,71 @@ onMounted(() => {
 .planner-main-grid {
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
+}
+
+.planner-autopilot-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1.45rem;
+  border: 1px solid rgba(204, 102, 45, 0.14);
+  background:
+    radial-gradient(circle at top left, rgba(255, 187, 132, 0.16), transparent 38%),
+    linear-gradient(135deg, rgba(255, 252, 247, 0.98), rgba(255, 246, 237, 0.96));
+  box-shadow: 0 22px 52px rgba(145, 84, 39, 0.08);
+}
+
+.planner-autopilot-header,
+.planner-autopilot-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.9rem;
+}
+
+.planner-autopilot-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.planner-autopilot-grid,
+.planner-autopilot-preview-grid {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.planner-autopilot-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.planner-autopilot-preview-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planner-autopilot-field {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.planner-autopilot-field-wide {
+  grid-column: span 2;
+}
+
+.planner-autopilot-field span {
+  color: rgba(64, 42, 28, 0.72);
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.planner-autopilot-field input,
+.planner-autopilot-field select {
+  min-height: 46px;
+  width: 100%;
+}
+
+.planner-autopilot-preview {
+  display: grid;
+  gap: 0.9rem;
 }
 
 .planner-grid-panel,
@@ -3514,14 +4123,17 @@ onMounted(() => {
 @media (max-width: 1180px) {
   .planner-command-bar,
   .planner-main-grid,
-  .planner-detail-meta-grid {
+  .planner-detail-meta-grid,
+  .planner-autopilot-grid,
+  .planner-autopilot-preview-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 960px) {
   .planner-command-summary,
-  .planner-week-grid {
+  .planner-week-grid,
+  .planner-autopilot-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -3533,7 +4145,9 @@ onMounted(() => {
   .planner-detail-header,
   .planner-day-header,
   .planner-backlog-card-footer,
-  .planner-preview-card-header {
+  .planner-preview-card-header,
+  .planner-autopilot-header,
+  .planner-autopilot-preview-header {
     flex-direction: column;
     align-items: flex-start;
   }
@@ -3541,7 +4155,9 @@ onMounted(() => {
   .planner-command-summary,
   .planner-week-grid,
   .planner-backlog-grid,
-  .planner-platform-selector {
+  .planner-platform-selector,
+  .planner-autopilot-grid,
+  .planner-autopilot-preview-grid {
     grid-template-columns: 1fr;
   }
 
@@ -3558,6 +4174,10 @@ onMounted(() => {
 
   .planner-day-card {
     min-height: auto;
+  }
+
+  .planner-autopilot-field-wide {
+    grid-column: span 1;
   }
 }
 </style>

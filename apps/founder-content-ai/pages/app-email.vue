@@ -16,7 +16,11 @@ import type {
   GenerateVisualResponse,
   ImportEmailContactsPreviewResponse,
   EmailCampaign,
+  EmailCampaignAnalytics,
   EmailCampaignStats,
+  EmailCampaignVariant,
+  EmailAutopilotRun,
+  EmailAutopilotStrategy,
   EmailFooterSettings,
   EmailFooterSocialPlatform,
   EmailList,
@@ -25,6 +29,7 @@ import type {
   PreviewEmailCampaignRequest,
   PostAsset,
   WorkspaceAsset,
+  WorkspaceInsightsResponse,
 } from "../../../packages/shared-types";
 import { parseEmailBodyBlocks } from "../../../packages/shared-types";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -41,12 +46,12 @@ import {
 } from "../services/activation-flow-service";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
 import {
+  requestEmailCampaignAnalytics,
+  requestEmailCampaignAutopilot,
   requestEmailCampaignCreate,
   requestEmailCampaignDelete,
-  requestEmailCampaignLinks,
   requestEmailCampaignPreview,
   requestEmailCampaignSend,
-  requestEmailCampaignStats,
   requestEmailCampaignTestSend,
   requestEmailCampaigns,
   requestEmailCampaignUpdate,
@@ -71,6 +76,7 @@ import {
   requestRecordWorkspaceAssetUsage,
   requestWorkspaceAssetUploadUrl,
 } from "../services/workspace-assets-service";
+import { requestWorkspaceInsights } from "../services/workspace-insights-service";
 import { appRoutes } from "../utils/routes";
 
 function buildSuggestedSubject(value: string): string {
@@ -711,7 +717,9 @@ const emailContacts = ref<EmailContact[]>([]);
 const emailContactsTotal = ref(0);
 const contactImportJobs = ref<EmailContactImportJob[]>([]);
 const campaigns = ref<EmailCampaign[]>([]);
+const workspaceInsights = ref<WorkspaceInsightsResponse | null>(null);
 const latestStats = ref<EmailCampaignStats | null>(null);
+const latestAnalytics = ref<EmailCampaignAnalytics | null>(null);
 const latestCampaignLinks = ref<EmailCampaignLink[]>([]);
 const domainSettings = ref<BusinessEmailSettings | null>(null);
 const isLoading = ref(true);
@@ -736,6 +744,9 @@ const emailToast = ref<{
   tone: "neutral" | "error";
 } | null>(null);
 const latestStatsCampaignId = ref("");
+const isLaunchingAutopilot = ref(false);
+const latestAutopilotRun = ref<EmailAutopilotRun | null>(null);
+const latestAutopilotWinner = ref<EmailCampaignVariant | null>(null);
 const editingCampaignId = ref("");
 const emailMediaAssets = ref<PostAsset[]>([]);
 const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
@@ -748,6 +759,26 @@ type EmailTabKey = "campaigns" | "contacts" | "settings";
 type CampaignSourceMode = "current" | "draft-library" | "fresh";
 type CampaignToneMode = "direct" | "story" | "educational";
 type CampaignEditorMode = "edit" | "preview";
+
+const autopilotForm = ref<{
+  goal: string;
+  audienceId: string;
+  strategy: EmailAutopilotStrategy;
+}>({
+  goal: "get more bookings",
+  audienceId: "",
+  strategy: "conversion",
+});
+
+const AUTOPILOT_STRATEGY_OPTIONS: Array<{
+  value: EmailAutopilotStrategy;
+  label: string;
+  description: string;
+}> = [
+  { value: "conversion", label: "Conversion", description: "Biases the winner toward clicks and response intent." },
+  { value: "engagement", label: "Engagement", description: "Favors opens and conversation-starting copy." },
+  { value: "awareness", label: "Awareness", description: "Optimizes for clear introduction and trust-building." },
+];
 type CampaignComposerIntent = "quick_update" | "promotion" | "story_email" | "weekly_newsletter";
 type DomainValidationField = "domainName" | "fromEmail";
 type EmailComposerBlockType = EmailBodyBlock["type"];
@@ -1330,38 +1361,152 @@ const latestCampaignTopLinks = computed(() =>
 const latestCampaignTotalUniqueLinkClicks = computed(() =>
   latestCampaignTopLinks.value.reduce((total, link) => total + (link.uniqueClicks ?? 0), 0),
 );
+const latestCampaignFunnelSteps = computed(() => {
+  const stats = latestStats.value;
+  const analytics = latestAnalytics.value;
+
+  if (!stats) {
+    return [];
+  }
+
+  const sent = analytics?.sent ?? stats.sentCount;
+  const delivered = analytics?.delivered ?? stats.deliveredCount;
+  const opens = analytics?.opens ?? stats.uniqueOpens;
+  const clicks = analytics?.clicks ?? stats.uniqueClicks;
+
+  return [
+    {
+      label: "Sent",
+      value: sent,
+      detail: sent > 0 ? "Messages handed off to inbox providers." : "Waiting for the first send batch.",
+      progress: sent > 0 ? 100 : 0,
+    },
+    {
+      label: "Delivered",
+      value: delivered,
+      detail: `${formatCampaignNumericRate(
+        analytics?.deliveryRate ?? calculateCampaignRateValue(delivered, sent),
+      )} of sent email reached inbox providers.`,
+      progress: delivered > 0 && sent > 0 ? Math.max(6, (delivered / sent) * 100) : 0,
+    },
+    {
+      label: "Opened",
+      value: opens,
+      detail: `${formatCampaignNumericRate(
+        analytics?.openRate ?? calculateCampaignRateValue(opens, delivered),
+      )} of delivered recipients opened.`,
+      progress: delivered > 0 ? Math.max(6, (opens / delivered) * 100) : 0,
+    },
+    {
+      label: "Clicked",
+      value: clicks,
+      detail: `${formatCampaignNumericRate(
+        analytics?.clickRate ?? calculateCampaignRateValue(clicks, delivered),
+      )} of delivered recipients clicked.`,
+      progress: delivered > 0 ? Math.max(6, (clicks / delivered) * 100) : 0,
+    },
+  ];
+});
 const latestCampaignReportCards = computed(() => {
   const stats = latestStats.value;
+  const analytics = latestAnalytics.value;
 
   if (!stats) {
     return [];
   }
 
   return [
-    { label: "Sent", value: stats.recipientCount.toLocaleString(), detail: "Recipients in this send." },
+    { label: "Sent", value: (analytics?.sent ?? stats.sentCount).toLocaleString(), detail: "Messages submitted for delivery." },
     { label: "Delivered", value: stats.deliveredCount.toLocaleString(), detail: "Reached inbox providers." },
     { label: "Opened", value: stats.uniqueOpens.toLocaleString(), detail: `${stats.totalOpens.toLocaleString()} total opens.` },
     { label: "Clicked", value: stats.uniqueClicks.toLocaleString(), detail: `${stats.totalClicks.toLocaleString()} total clicks.` },
-    { label: "Failed", value: stats.failedCount.toLocaleString(), detail: "Bounced, rejected, or otherwise undelivered." },
+    {
+      label: "Bounced",
+      value: (analytics?.bounces ?? stats.failedCount).toLocaleString(),
+      detail: "Unique recipients that hard or soft bounced.",
+    },
     { label: "Unsubscribed", value: stats.unsubscribedCount.toLocaleString(), detail: "Opt-outs from this campaign." },
   ];
 });
 const latestCampaignReportRates = computed(() => {
   const stats = latestStats.value;
+  const analytics = latestAnalytics.value;
 
   if (!stats) {
     return [];
   }
 
   return [
-    `Delivery rate: ${formatCampaignRate(stats.deliveredCount, stats.recipientCount)}`,
-    `Open rate: ${formatCampaignRate(stats.uniqueOpens, stats.deliveredCount)}`,
-    `CTR: ${formatCampaignRate(stats.uniqueClicks, stats.deliveredCount)}`,
-    `CTOR: ${formatCampaignRate(stats.uniqueClicks, stats.uniqueOpens)}`,
-    `Bounce rate: ${formatCampaignRate(stats.failedCount, stats.recipientCount)}`,
+    `Delivery rate: ${formatCampaignNumericRate(
+      analytics?.deliveryRate ?? calculateCampaignRateValue(stats.deliveredCount, stats.sentCount),
+    )}`,
+    `Open rate: ${formatCampaignNumericRate(
+      analytics?.openRate ?? calculateCampaignRateValue(stats.uniqueOpens, stats.deliveredCount),
+    )}`,
+    `CTR: ${formatCampaignNumericRate(
+      analytics?.clickRate ?? calculateCampaignRateValue(stats.uniqueClicks, stats.deliveredCount),
+    )}`,
+    `CTOR: ${formatCampaignNumericRate(
+      analytics?.clickToOpenRate ?? calculateCampaignRateValue(stats.uniqueClicks, stats.uniqueOpens),
+    )}`,
+    `Bounce rate: ${formatCampaignNumericRate(
+      analytics?.bounceRate ?? calculateCampaignRateValue(stats.failedCount, stats.sentCount),
+    )}`,
+    `Complaints: ${(analytics?.complaints ?? 0).toLocaleString()}`,
     `Unsubscribe rate: ${formatCampaignRate(stats.unsubscribedCount, stats.recipientCount)}`,
     `Pending: ${stats.pendingCount.toLocaleString()}`,
   ];
+});
+const emailLearningCards = computed(() => {
+  const insights = workspaceInsights.value;
+
+  if (!insights) {
+    return [];
+  }
+
+  return [
+    {
+      label: "Avg open rate",
+      value: insights.channelPerformance.email.campaigns > 0
+        ? `${insights.channelPerformance.email.avgOpenRate.toFixed(1)}%`
+        : "Still learning",
+      detail: `${insights.channelPerformance.email.campaigns} campaign${insights.channelPerformance.email.campaigns === 1 ? "" : "s"} in memory.`,
+    },
+    {
+      label: "Avg click rate",
+      value: insights.channelPerformance.email.campaigns > 0
+        ? `${insights.channelPerformance.email.avgClickRate.toFixed(1)}%`
+        : "Still learning",
+      detail: `${insights.channelPerformance.email.clicks.toLocaleString()} tracked click${insights.channelPerformance.email.clicks === 1 ? "" : "s"} so far.`,
+    },
+    {
+      label: "Best send window",
+      value: insights.summary.bestSendWindowLabel || "Still learning",
+      detail: insights.summary.crossChannelTopicLabel
+        ? `Cross-channel topic: ${insights.summary.crossChannelTopicLabel}`
+        : "Timing signal sharpens as sends accumulate.",
+    },
+    {
+      label: "Winning topic",
+      value: insights.summary.topTopicLabel || "Still learning",
+      detail: insights.summary.bestAngleLabel
+        ? `Best angle: ${insights.summary.bestAngleLabel}`
+        : "Topic reuse signal lands here.",
+    },
+  ];
+});
+const emailLearningInsights = computed(() => workspaceInsights.value?.learningInsights ?? []);
+const emailTopContentTags = computed(() => workspaceInsights.value?.topContentTags ?? []);
+const autopilotSelectedAudience = computed(() => findEmailListByReference(autopilotForm.value.audienceId));
+const autopilotSummaryText = computed(() => {
+  const run = latestAutopilotRun.value;
+  const winner = latestAutopilotWinner.value;
+
+  if (!run || !winner) {
+    return "";
+  }
+
+  return `${winner.label} won for ${run.goal}. Test cohort: ${run.testAudienceSize.toLocaleString()} contacts. Remaining rollout: ${run.remainderAudienceSize.toLocaleString()} contacts.`;
 });
 function findEmailListByReference(listId: string | undefined | null): EmailList | null {
   const normalized = listId?.trim();
@@ -2970,6 +3115,42 @@ function buildCampaignStatsFallback(campaign: EmailCampaign): EmailCampaignStats
   };
 }
 
+function calculateCampaignRateValue(numerator: number, denominator: number): number {
+  if (!denominator || denominator <= 0) {
+    return 0;
+  }
+
+  return Math.round((numerator / denominator) * 1000) / 10;
+}
+
+function buildCampaignAnalyticsFallback(campaign: EmailCampaign): EmailCampaignAnalytics {
+  const stats = buildCampaignStatsFallback(campaign);
+
+  return {
+    campaignId: campaign.id,
+    sent: stats.sentCount,
+    delivered: stats.deliveredCount,
+    opens: stats.uniqueOpens,
+    clicks: stats.uniqueClicks,
+    bounces: stats.failedCount,
+    complaints: 0,
+    unsubscribes: stats.unsubscribedCount,
+    deliveryRate: calculateCampaignRateValue(stats.deliveredCount, stats.sentCount),
+    openRate: calculateCampaignRateValue(stats.uniqueOpens, stats.deliveredCount),
+    clickRate: calculateCampaignRateValue(stats.uniqueClicks, stats.deliveredCount),
+    clickToOpenRate: calculateCampaignRateValue(stats.uniqueClicks, stats.uniqueOpens),
+    bounceRate: calculateCampaignRateValue(stats.failedCount, stats.sentCount),
+    topLinks: [],
+  };
+}
+
+function formatCampaignNumericRate(value: number): string {
+  const rounded = Math.abs(value - Math.round(value)) < 0.05
+    ? String(Math.round(value))
+    : value.toFixed(1);
+  return `${rounded}%`;
+}
+
 function formatCampaignRate(numerator: number, denominator: number): string {
   if (!denominator || denominator <= 0) {
     return "0%";
@@ -3118,12 +3299,10 @@ async function refreshLatestCampaignReport(): Promise<void> {
     return;
   }
 
-  const [statsResponse, linksResponse] = await Promise.all([
-    requestEmailCampaignStats(selectedBusinessId.value, latestStatsCampaignId.value),
-    requestEmailCampaignLinks(selectedBusinessId.value, latestStatsCampaignId.value),
-  ]);
-  latestStats.value = statsResponse.stats;
-  latestCampaignLinks.value = linksResponse.links;
+  const analyticsResponse = await requestEmailCampaignAnalytics(selectedBusinessId.value, latestStatsCampaignId.value);
+  latestStats.value = analyticsResponse.stats;
+  latestAnalytics.value = analyticsResponse.analytics;
+  latestCampaignLinks.value = analyticsResponse.analytics.topLinks;
 }
 
 async function refreshImportJobProgress(): Promise<void> {
@@ -3527,19 +3706,22 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     emailContactsTotal.value = 0;
     contactImportJobs.value = [];
     campaigns.value = [];
+    workspaceInsights.value = null;
     latestStats.value = null;
+    latestAnalytics.value = null;
     latestCampaignLinks.value = [];
     footerBrandKit.value = null;
     applyDomainSettings(null, { syncForm: options.syncDomainForm });
     return;
   }
 
-  const [listsResponse, campaignsResponse, domainResponse, contactsResponse, importJobsResponse] = await Promise.all([
+  const [listsResponse, campaignsResponse, domainResponse, contactsResponse, importJobsResponse, insightsResponse] = await Promise.all([
     requestEmailLists(selectedBusinessId.value),
     requestEmailCampaigns(selectedBusinessId.value),
     requestEmailDomainSettings(selectedBusinessId.value),
     requestEmailContacts(selectedBusinessId.value, buildContactDirectoryRequestOptions()),
     requestEmailContactImportJobs(selectedBusinessId.value),
+    requestWorkspaceInsights(selectedBusinessId.value).catch(() => null),
   ]);
 
   emailLists.value = listsResponse.lists;
@@ -3547,6 +3729,7 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
   emailContacts.value = contactsResponse.contacts;
   contactImportJobs.value = importJobsResponse.importJobs;
   campaigns.value = campaignsResponse.campaigns;
+  workspaceInsights.value = insightsResponse;
   applyDomainSettings(domainResponse.settings, { syncForm: options.syncDomainForm });
 
   const maxPage = Math.max(1, Math.ceil(contactsResponse.total / contactDirectoryPageSize.value));
@@ -3561,9 +3744,11 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     if (!matchingCampaign) {
       latestStatsCampaignId.value = "";
       latestStats.value = null;
+      latestAnalytics.value = null;
       latestCampaignLinks.value = [];
     } else {
       latestStats.value = buildCampaignStatsFallback(matchingCampaign);
+      latestAnalytics.value = buildCampaignAnalyticsFallback(matchingCampaign);
     }
   }
 
@@ -3573,6 +3758,7 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
     if (defaultReportCampaign) {
       latestStatsCampaignId.value = defaultReportCampaign.id;
       latestStats.value = buildCampaignStatsFallback(defaultReportCampaign);
+      latestAnalytics.value = buildCampaignAnalyticsFallback(defaultReportCampaign);
     }
   }
 
@@ -3586,6 +3772,18 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
 
     if (canonicalList && campaignForm.value.listId !== canonicalList.id) {
       campaignForm.value.listId = canonicalList.id;
+    }
+  }
+
+  if (!autopilotForm.value.audienceId && emailLists.value[0]) {
+    autopilotForm.value.audienceId = emailLists.value[0].id;
+  } else {
+    const canonicalAutopilotList = findEmailListByReference(autopilotForm.value.audienceId);
+
+    if (canonicalAutopilotList && autopilotForm.value.audienceId !== canonicalAutopilotList.id) {
+      autopilotForm.value.audienceId = canonicalAutopilotList.id;
+    } else if (!canonicalAutopilotList && emailLists.value[0]) {
+      autopilotForm.value.audienceId = emailLists.value[0].id;
     }
   }
 
@@ -3804,6 +4002,7 @@ async function createCampaign(sendNow = false): Promise<void> {
       const sendResponse = await requestEmailCampaignSend(selectedBusinessId.value, response.campaign.id);
       latestStatsCampaignId.value = response.campaign.id;
       latestStats.value = sendResponse.stats;
+      latestAnalytics.value = buildCampaignAnalyticsFallback(sendResponse.campaign);
       latestCampaignLinks.value = [];
       feedbackMessage.value = `Campaign queued: ${response.campaign.name}. Processing ${sendResponse.stats.recipientCount} recipients in the background.`;
       await Promise.all([
@@ -3823,6 +4022,70 @@ async function createCampaign(sendNow = false): Promise<void> {
     errorMessage.value = error instanceof Error ? error.message : "Unable to save email campaign.";
   } finally {
     isCreatingCampaign.value = false;
+  }
+}
+
+async function launchEmailAutopilot(): Promise<void> {
+  if (!selectedBusinessId.value) {
+    return;
+  }
+
+  if (!hasConfiguredDomain.value) {
+    showEmailToast("Finish sender setup before launching autopilot.", "error");
+    setEmailTab("settings");
+    return;
+  }
+
+  if (!autopilotForm.value.goal.trim()) {
+    errorMessage.value = "Describe the business goal for autopilot.";
+    return;
+  }
+
+  if (!autopilotForm.value.audienceId) {
+    errorMessage.value = "Pick an audience list for autopilot.";
+    return;
+  }
+
+  isLaunchingAutopilot.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestEmailCampaignAutopilot(selectedBusinessId.value, {
+      goal: autopilotForm.value.goal,
+      audienceId: autopilotForm.value.audienceId,
+      strategy: autopilotForm.value.strategy,
+    });
+
+    latestAutopilotRun.value = response.run;
+    latestAutopilotWinner.value = response.winnerVariant ?? null;
+
+    await Promise.all([
+      loadEmailState(),
+      refreshProductAccess(selectedBusinessId.value),
+    ]);
+
+    const focusCampaignId = response.winnerVariant?.rolloutCampaignId ?? response.winnerVariant?.campaignId;
+
+    if (focusCampaignId) {
+      latestStatsCampaignId.value = focusCampaignId;
+
+      const matchingCampaign = campaigns.value.find((campaign) => campaign.id === focusCampaignId);
+
+      if (matchingCampaign) {
+        latestStats.value = buildCampaignStatsFallback(matchingCampaign);
+        latestAnalytics.value = buildCampaignAnalyticsFallback(matchingCampaign);
+      }
+
+      await refreshLatestCampaignReport().catch(() => undefined);
+    }
+
+    const winnerLabel = response.winnerVariant?.label ?? "A winner";
+    feedbackMessage.value =
+      `${winnerLabel} won the autopilot test. ${response.run.remainderAudienceSize.toLocaleString()} contacts remain in rollout.`;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to launch email autopilot.";
+  } finally {
+    isLaunchingAutopilot.value = false;
   }
 }
 
@@ -3957,6 +4220,7 @@ async function sendCampaign(campaign: EmailCampaign): Promise<void> {
     const response = await requestEmailCampaignSend(selectedBusinessId.value, campaign.id);
     latestStatsCampaignId.value = campaign.id;
     latestStats.value = response.stats;
+    latestAnalytics.value = buildCampaignAnalyticsFallback(response.campaign);
     latestCampaignLinks.value = [];
     feedbackMessage.value = `Campaign queued. Processing ${response.stats.recipientCount} recipients in the background.`;
     await Promise.all([
@@ -3981,6 +4245,7 @@ async function viewCampaignReport(campaign: EmailCampaign): Promise<void> {
 
   latestStatsCampaignId.value = campaign.id;
   latestStats.value = buildCampaignStatsFallback(campaign);
+  latestAnalytics.value = buildCampaignAnalyticsFallback(campaign);
   latestCampaignLinks.value = [];
   errorMessage.value = "";
 
@@ -5210,6 +5475,125 @@ Daycare Spots"
           </template>
 
           <template v-else>
+            <section class="email-autopilot-card">
+              <div class="campaign-link-report-head">
+                <div>
+                  <p class="panel-meta">Autopilot</p>
+                  <h3>Test 3 variants, pick a winner, roll out the rest</h3>
+                  <p class="panel-note">
+                    Launches a 10% test cohort, scores variants with the open/click formula, then sends the winner to the remaining audience.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="primary-action"
+                  :disabled="isLaunchingAutopilot || !hasConfiguredDomain || emailLists.length === 0"
+                  @click="void launchEmailAutopilot()"
+                >
+                  {{ isLaunchingAutopilot ? "Launching..." : "Run Autopilot" }}
+                </button>
+              </div>
+
+              <div class="email-autopilot-grid">
+                <label class="email-autopilot-field">
+                  <span>Goal</span>
+                  <input
+                    v-model="autopilotForm.goal"
+                    class="workspace-input"
+                    placeholder="get more bookings"
+                  />
+                </label>
+
+                <label class="email-autopilot-field">
+                  <span>Audience</span>
+                  <select v-model="autopilotForm.audienceId" class="workspace-select">
+                    <option value="" disabled>Select a list</option>
+                    <option v-for="list in emailLists" :key="list.id" :value="list.id">
+                      {{ list.name }} · {{ list.contactCount.toLocaleString() }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="email-autopilot-field">
+                  <span>Strategy</span>
+                  <select v-model="autopilotForm.strategy" class="workspace-select">
+                    <option
+                      v-for="option in AUTOPILOT_STRATEGY_OPTIONS"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="stats-strip">
+                <span v-if="autopilotSelectedAudience">
+                  {{ autopilotSelectedAudience.contactCount.toLocaleString() }} contacts in test pool
+                </span>
+                <span>
+                  {{
+                    AUTOPILOT_STRATEGY_OPTIONS.find((option) => option.value === autopilotForm.strategy)?.description
+                  }}
+                </span>
+                <span>
+                  Minimum 3 active contacts required
+                </span>
+              </div>
+
+              <p v-if="autopilotSummaryText" class="panel-note email-autopilot-summary">
+                {{ autopilotSummaryText }}
+              </p>
+            </section>
+
+            <section v-if="workspaceInsights" class="campaign-report-card">
+              <div class="campaign-report-header">
+                <div>
+                  <p class="panel-meta">Learning engine</p>
+                  <h3>Signals the next campaigns will inherit</h3>
+                  <p class="panel-note">
+                    Email and social performance roll into one memory so new campaigns start from what is already working.
+                  </p>
+                </div>
+              </div>
+
+              <div class="campaign-report-grid">
+                <article
+                  v-for="card in emailLearningCards"
+                  :key="card.label"
+                  class="campaign-report-metric"
+                >
+                  <span>{{ card.label }}</span>
+                  <strong>{{ card.value }}</strong>
+                  <small>{{ card.detail }}</small>
+                </article>
+              </div>
+
+              <div v-if="emailLearningInsights.length > 0" class="campaign-link-report">
+                <div class="campaign-link-report-head">
+                  <div>
+                    <p class="panel-meta">Prompt guidance</p>
+                    <h4>What generation uses next</h4>
+                  </div>
+                </div>
+
+                <div class="workspace-stack-sm">
+                  <p
+                    v-for="insight in emailLearningInsights"
+                    :key="insight"
+                    class="panel-note"
+                  >
+                    {{ insight }}
+                  </p>
+                </div>
+              </div>
+
+              <div v-if="emailTopContentTags.length > 0" class="stats-strip">
+                <span v-for="tag in emailTopContentTags" :key="tag">{{ tag }}</span>
+              </div>
+            </section>
+
             <div class="campaign-dashboard-toolbar">
               <input
                 v-model="campaignSearch"
@@ -5360,6 +5744,37 @@ Daycare Spots"
                   <strong>{{ card.value }}</strong>
                   <small>{{ card.detail }}</small>
                 </article>
+              </div>
+
+              <div class="campaign-funnel-shell">
+                <div class="campaign-link-report-head">
+                  <div>
+                    <p class="panel-meta">Funnel view</p>
+                    <h4>Sent to click progression</h4>
+                  </div>
+                  <span class="workspace-chip">
+                    {{
+                      latestAnalytics
+                        ? formatCampaignNumericRate(latestAnalytics.clickRate)
+                        : formatCampaignRate(latestStats.uniqueClicks, latestStats.deliveredCount)
+                    }} CTR
+                  </span>
+                </div>
+
+                <div class="campaign-funnel-grid">
+                  <article
+                    v-for="step in latestCampaignFunnelSteps"
+                    :key="step.label"
+                    class="campaign-funnel-step"
+                  >
+                    <span>{{ step.label }}</span>
+                    <strong>{{ step.value.toLocaleString() }}</strong>
+                    <small>{{ step.detail }}</small>
+                    <div class="campaign-funnel-bar">
+                      <span :style="{ width: `${step.progress}%` }"></span>
+                    </div>
+                  </article>
+                </div>
               </div>
 
               <div class="stats-strip">
@@ -6612,6 +7027,41 @@ Daycare Spots"
   color: var(--fc-text-muted);
   font-size: 0.82rem;
   line-height: 1.45;
+}
+
+.email-autopilot-card {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 20px;
+  border-radius: 24px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 82%, rgba(215, 102, 52, 0.22));
+  background:
+    radial-gradient(circle at top left, rgba(215, 102, 52, 0.08) 0%, rgba(215, 102, 52, 0) 44%),
+    linear-gradient(180deg, rgba(255, 251, 246, 0.96) 0%, rgba(255, 246, 238, 0.9) 100%);
+}
+
+.email-autopilot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.email-autopilot-field {
+  display: grid;
+  gap: 8px;
+}
+
+.email-autopilot-field span {
+  color: var(--fc-text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.email-autopilot-summary {
+  margin: 0;
 }
 
 .campaign-dashboard-toolbar {
@@ -8079,6 +8529,62 @@ Daycare Spots"
 .campaign-report-metric small {
   margin-top: 8px;
   line-height: 1.45;
+}
+
+.campaign-funnel-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.campaign-funnel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.campaign-funnel-step {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid var(--fc-border);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--fc-surface-subtle) 88%, white 12%), rgba(255, 255, 255, 0.9));
+}
+
+.campaign-funnel-step span,
+.campaign-funnel-step small {
+  color: var(--fc-text-muted);
+}
+
+.campaign-funnel-step span {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.campaign-funnel-step strong {
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.campaign-funnel-step small {
+  line-height: 1.5;
+}
+
+.campaign-funnel-bar {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-border) 82%, white 18%);
+}
+
+.campaign-funnel-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--fc-accent-dark) 0%, var(--fc-accent) 100%);
 }
 
 .campaign-link-report {

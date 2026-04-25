@@ -2,6 +2,7 @@ export const appRoutes = {
   appCreate: "/app/create",
   appAssets: "/app/assets",
   appBilling: "/app/billing",
+  appBrandStudio: "/app/brand-studio",
   appEmail: "/app/email",
   appEmailNew: "/app/email/new",
   appGenerate: "/app/create",

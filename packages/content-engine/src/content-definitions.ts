@@ -284,6 +284,8 @@ function serializeBrandContext(brandContext: BrandPromptContext | undefined): st
   const patterns = (brandContext.patterns ?? []).filter((pattern) => pattern.trim() !== "");
   const marketReferences = (brandContext.marketReferences ?? []).filter((value) => value.trim() !== "");
   const beliefs = (brandContext.beliefs ?? []).filter((value) => value.trim() !== "");
+  const performanceInsights = (brandContext.performanceInsights ?? []).filter((value) => value.trim() !== "");
+  const topContentTags = (brandContext.topContentTags ?? []).filter((value) => value.trim() !== "");
   const lines = [
     brandContext.tone ? `Tone: ${brandContext.tone}` : undefined,
     brandContext.writingStyle ? `Writing style: ${brandContext.writingStyle}` : undefined,
@@ -298,6 +300,8 @@ function serializeBrandContext(brandContext: BrandPromptContext | undefined): st
     patterns.length > 0 ? `Patterns: ${patterns.join(" | ")}` : undefined,
     beliefs.length > 0 ? `Core beliefs: ${beliefs.join(" | ")}` : undefined,
     marketReferences.length > 0 ? `Market references: ${marketReferences.join(" | ")}` : undefined,
+    topContentTags.length > 0 ? `Winning content tags: ${topContentTags.join(", ")}` : undefined,
+    performanceInsights.length > 0 ? `Performance insights: ${performanceInsights.join(" | ")}` : undefined,
   ].filter((line): line is string => Boolean(line));
 
   return lines.length > 0 ? lines.join("\n") : undefined;

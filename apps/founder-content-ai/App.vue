@@ -62,6 +62,7 @@ const visibleAppLinks = computed(() => {
   const hasWorkspaceContext = Boolean(currentWorkspaceId.value);
   const canUsePlanner = hasWorkspaceContext && isFeatureEnabled("scheduler");
   const canUseDashboard = hasWorkspaceContext && isFeatureEnabled("control_dashboard");
+  const canUseBrandStudio = hasWorkspaceContext && isFeatureEnabled("brand_intelligence");
   const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
   const canUseEmail = hasWorkspaceContext && isFeatureEnabled("email_campaigns");
 
@@ -69,6 +70,7 @@ const visibleAppLinks = computed(() => {
     { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
     { to: appRoutes.appIdeas, label: "Ideas", shortLabel: "I", visible: canUseDashboard },
     { to: appRoutes.appAssets, label: "Assets", shortLabel: "AS", visible: canUseDashboard },
+    { to: appRoutes.appBrandStudio, label: "Brand", shortLabel: "B", visible: canUseBrandStudio },
     { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", visible: canUsePlanner },
     { to: appRoutes.appHistory, label: "History", shortLabel: "H", visible: canUsePlanner },
     { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
@@ -91,6 +93,7 @@ const pageTitleMap: Record<string, string> = {
   "app-dashboard": "Dashboard",
   "app-assets": "Assets",
   "app-billing": "Billing",
+  "app-brand-studio": "Brand Studio",
   "app-email": "Email",
   "app-create": "Create new post",
   "app-growth": "Growth",
@@ -125,6 +128,10 @@ const currentPageSubtitle = computed(() => {
 
   if (route.name === "app-assets") {
     return "Keep reusable media, logos, and supporting files in one workspace library.";
+  }
+
+  if (route.name === "app-brand-studio") {
+    return "Turn the workspace brand kit into repeatable website, icon, and campaign assets.";
   }
 
   if (route.name === "app-planner") {

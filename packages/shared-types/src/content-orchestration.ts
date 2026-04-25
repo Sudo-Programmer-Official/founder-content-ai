@@ -2,6 +2,14 @@ export type ContentChannel = "linkedin" | "instagram" | "facebook" | "email";
 export type ContentExecutionLane = "social" | "email";
 export type ContentBatchStatus = "draft" | "confirmed" | "scheduled" | "archived";
 export type ContentBatchSpacing = "daily" | "weekdays";
+export type SocialContentPlanDuration = "7_days" | "14_days" | "30_days";
+export type SocialContentPlanPlatform = Extract<ContentChannel, "linkedin" | "instagram" | "facebook">;
+export type SocialContentPlanEntryType =
+  | "educational"
+  | "social_proof"
+  | "promotional"
+  | "community"
+  | "story";
 export type ContentVariantTextProfile = "full" | "medium" | "short";
 export type ContentVariantStatus =
   | "draft"
@@ -139,6 +147,22 @@ export interface PlannerDaySchedule {
   items: ScheduleItem[];
 }
 
+export interface SocialContentPlanEntry {
+  batchId: string;
+  contentItemId: string;
+  variantId: string;
+  day: number;
+  dateKey: string;
+  scheduledTime: string;
+  type: SocialContentPlanEntryType;
+  platform: SocialContentPlanPlatform;
+  title?: string;
+  content: string;
+  imagePrompt: string;
+  cta: string;
+  angle?: string;
+}
+
 export interface GenerateContentBatchRequest {
   businessId: string;
   lane: ContentExecutionLane;
@@ -173,12 +197,52 @@ export interface ConfirmContentBatchRequest {
   defaultScheduledTime: string;
   audienceTimezone?: string;
   spacing?: ContentBatchSpacing;
+  channels?: SocialContentPlanPlatform[];
 }
 
 export interface ConfirmContentBatchResponse {
   batch: ContentBatch;
   distributionGroups: ContentDistributionGroup[];
   scheduleItems: ScheduleItem[];
+}
+
+export interface GenerateContentPlanRequest {
+  businessId: string;
+  duration: SocialContentPlanDuration;
+  goal: string;
+  platforms: SocialContentPlanPlatform[];
+  title?: string;
+  tone?: string;
+  audienceTimezone?: string;
+  defaultScheduledTime?: string;
+  startDate?: string;
+}
+
+export interface GenerateContentPlanResponse {
+  batch: ContentBatch;
+  items: ContentItem[];
+  variants: ContentVariant[];
+  selectedPlatforms: SocialContentPlanPlatform[];
+  plan: SocialContentPlanEntry[];
+}
+
+export interface GetContentPlanResponse extends GetContentBatchResponse {
+  selectedPlatforms: SocialContentPlanPlatform[];
+  plan: SocialContentPlanEntry[];
+}
+
+export interface ApproveContentPlanRequest {
+  businessId: string;
+  batchId: string;
+  startDate: string;
+  defaultScheduledTime: string;
+  audienceTimezone?: string;
+  spacing?: ContentBatchSpacing;
+  platforms?: SocialContentPlanPlatform[];
+}
+
+export interface ApproveContentPlanResponse extends ConfirmContentBatchResponse {
+  selectedPlatforms: SocialContentPlanPlatform[];
 }
 
 export interface ContentVariantGenerationRequest {

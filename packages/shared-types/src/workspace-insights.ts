@@ -1,4 +1,4 @@
-export type WorkspaceInsightPatternType = "angle" | "format" | "send_window";
+export type WorkspaceInsightPatternType = "angle" | "format" | "send_window" | "tag";
 export type WorkspaceInsightAngleType = "contrarian" | "story" | "tactical";
 export type WorkspaceInsightSuggestionKind =
   | "double_down"
@@ -54,16 +54,44 @@ export interface WorkspaceInsightSuggestion {
 export interface WorkspaceInsightSummary {
   topTopicLabel?: string;
   topTopicKey?: string;
+  crossChannelTopicLabel?: string;
   weakTopicLabel?: string;
   bestAngleLabel?: string;
   bestFormatLabel?: string;
   bestSendWindowLabel?: string;
 }
 
+export interface WorkspaceEmailChannelPerformance {
+  campaigns: number;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  avgOpenRate: number;
+  avgClickRate: number;
+}
+
+export interface WorkspaceSocialChannelPerformance {
+  trackedPosts: number;
+  publishedPosts: number;
+  highSignalPosts: number;
+  mediumSignalPosts: number;
+  lowSignalPosts: number;
+  avgEngagementScore: number;
+}
+
+export interface WorkspaceChannelPerformance {
+  email: WorkspaceEmailChannelPerformance;
+  social: WorkspaceSocialChannelPerformance;
+}
+
 export interface WorkspaceInsightsResponse {
   businessId: string;
   generatedAt: string;
   summary: WorkspaceInsightSummary;
+  channelPerformance: WorkspaceChannelPerformance;
+  learningInsights: string[];
+  topContentTags: string[];
   topics: WorkspaceTopicInsight[];
   patterns: WorkspaceContentPatternRollup[];
   suggestions: WorkspaceInsightSuggestion[];

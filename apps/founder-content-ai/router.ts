@@ -12,6 +12,7 @@ import AdminWorkspacesPage from "./pages/admin-workspaces.vue";
 import AppEmailPage from "./pages/app-email.vue";
 import AppAssetsPage from "./pages/app-assets.vue";
 import AppBillingPage from "./pages/app-billing.vue";
+import AppBrandStudioPage from "./pages/app-brand-studio.vue";
 import AppGeneratePage from "./pages/app-generate.vue";
 import AppGrowthPage from "./pages/app-growth.vue";
 import AppHistoryPage from "./pages/app-history.vue";
@@ -169,6 +170,15 @@ const router = createRouter({
       path: "/app/assets",
       name: "app-assets",
       component: AppAssetsPage,
+      meta: {
+        requiresAuth: true,
+        requiresWorkspace: true,
+      },
+    },
+    {
+      path: "/app/brand-studio",
+      name: "app-brand-studio",
+      component: AppBrandStudioPage,
       meta: {
         requiresAuth: true,
         requiresWorkspace: true,

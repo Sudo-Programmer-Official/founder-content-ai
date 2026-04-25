@@ -8,6 +8,10 @@ export type EmailContactStatus =
   | "suppressed";
 export type EmailCampaignStatus = "draft" | "queued" | "sending" | "sent" | "failed";
 export type EmailCampaignSendStatus = "queued" | "sending" | "sent" | "failed";
+export type EmailCampaignVariantStatus = "testing" | "winner" | "discarded";
+export type EmailAutopilotStrategy = "conversion" | "engagement" | "awareness";
+export type EmailAutopilotRunStatus = "processing" | "testing" | "winner_selected" | "completed" | "failed";
+export type EmailAutopilotEvaluationMode = "simulated" | "live";
 export type EmailCampaignRecipientStatus =
   | "queued"
   | "sending"
@@ -292,6 +296,68 @@ export interface EmailCampaignLink {
   createdAt: string;
 }
 
+export interface EmailCampaignAnalytics {
+  campaignId: string;
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  bounces: number;
+  complaints: number;
+  unsubscribes: number;
+  deliveryRate: number;
+  openRate: number;
+  clickRate: number;
+  clickToOpenRate: number;
+  bounceRate: number;
+  topLinks: EmailCampaignLink[];
+}
+
+export interface EmailCampaignVariantMetrics {
+  sent: number;
+  delivered: number;
+  opens: number;
+  clicks: number;
+  openRate: number;
+  clickRate: number;
+  score: number;
+  evaluationMode: EmailAutopilotEvaluationMode;
+}
+
+export interface EmailCampaignVariant {
+  id: string;
+  autopilotRunId: string;
+  businessId: string;
+  campaignId?: string;
+  rolloutCampaignId?: string;
+  label: string;
+  angle: string;
+  subject: string;
+  content: string;
+  assetId?: string;
+  status: EmailCampaignVariantStatus;
+  metrics?: EmailCampaignVariantMetrics;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface EmailAutopilotRun {
+  id: string;
+  businessId: string;
+  audienceId: string;
+  goal: string;
+  strategy: EmailAutopilotStrategy;
+  status: EmailAutopilotRunStatus;
+  winnerVariantId?: string;
+  testAudienceSize: number;
+  remainderAudienceSize: number;
+  evaluationMode: EmailAutopilotEvaluationMode;
+  summary: Record<string, unknown>;
+  createdAt: string;
+  updatedAt?: string;
+  completedAt?: string;
+}
+
 export interface EmailCampaignImage {
   url: string;
   altText?: string;
@@ -534,12 +600,30 @@ export interface SendEmailCampaignResponse {
   emailAddon?: BillingEmailAddonSummary;
 }
 
+export interface EmailCampaignAutopilotRequest {
+  businessId: string;
+  goal: string;
+  audienceId: string;
+  strategy: EmailAutopilotStrategy;
+}
+
+export interface EmailCampaignAutopilotResponse {
+  run: EmailAutopilotRun;
+  variants: EmailCampaignVariant[];
+  winnerVariant?: EmailCampaignVariant;
+}
+
 export interface EmailCampaignListResponse {
   campaigns: EmailCampaign[];
 }
 
 export interface EmailCampaignStatsResponse {
   stats: EmailCampaignStats;
+}
+
+export interface EmailCampaignAnalyticsResponse {
+  stats: EmailCampaignStats;
+  analytics: EmailCampaignAnalytics;
 }
 
 export interface EmailCampaignSendListResponse {
@@ -588,4 +672,31 @@ export interface EmailSubscriptionStatusResponse {
 export interface ResubscribeEmailResponse {
   success: true;
   email: string;
+}
+
+export interface EmailTrackingEventRequest {
+  token: string;
+}
+
+export interface EmailTrackingEventResponse {
+  success: true;
+}
+
+export interface EmailClickTrackingEventResponse extends EmailTrackingEventResponse {
+  redirectUrl: string;
+}
+
+export interface RecordEmailDeliveredEventRequest {
+  businessId: string;
+  providerMessageId: string;
+  campaignRecipientId?: string;
+  recipientEmail?: string;
+  domainName?: string;
+  occurredAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RecordEmailDeliveredEventResponse {
+  success: true;
+  eventRecorded: boolean;
 }

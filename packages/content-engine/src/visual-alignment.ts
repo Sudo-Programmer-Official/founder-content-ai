@@ -18,6 +18,8 @@ export function buildBrandAlignedImagePrompt(
 
   const topics = sanitizeList(brandContext?.topics);
   const patterns = sanitizeList(brandContext?.patterns);
+  const topContentTags = sanitizeList(brandContext?.topContentTags);
+  const performanceInsights = sanitizeList(brandContext?.performanceInsights);
 
   if (topics.length > 0) {
     promptParts.push(`Prioritize these content themes: ${topics.join(", ")}.`);
@@ -25,6 +27,14 @@ export function buildBrandAlignedImagePrompt(
 
   if (patterns.length > 0) {
     promptParts.push(`Reflect these recurring patterns: ${patterns.join(" | ")}.`);
+  }
+
+  if (topContentTags.length > 0) {
+    promptParts.push(`Keep the visuals anchored to these high-signal themes: ${topContentTags.join(", ")}.`);
+  }
+
+  if (performanceInsights.length > 0) {
+    promptParts.push(`Recent performance guidance: ${performanceInsights.slice(0, 3).join(" | ")}.`);
   }
 
   promptParts.push(

@@ -111,6 +111,10 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function futureScheduledAt(offsetMs = 60_000): Date {
+  return new Date(Date.now() + offsetMs);
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -1022,7 +1026,7 @@ async function runCancelVsWorkerRace(
     context.principal,
     context.businessId,
     contentText,
-    new Date(),
+    futureScheduledAt(),
   );
   const workerPromise = processDueScheduledPosts(1);
 
@@ -1092,7 +1096,7 @@ async function runRetryToTerminalFail(
     businessId: context.businessId,
     userId: context.userId,
     contentText,
-    scheduledAt: new Date(),
+    scheduledAt: futureScheduledAt(),
     runAfter: new Date(Date.now() - 1000),
     maxAttempts: 2,
     priority: -1_000,
@@ -1209,7 +1213,7 @@ async function runGroupedMultiItemProgression(
     businessId: context.businessId,
     userId: context.userId,
     contentText: successText,
-    scheduledAt: new Date(),
+    scheduledAt: futureScheduledAt(),
     runAfter: new Date(Date.now() - 2000),
     priority: -1_000,
   });
@@ -1217,7 +1221,7 @@ async function runGroupedMultiItemProgression(
     businessId: context.businessId,
     userId: context.userId,
     contentText: failText,
-    scheduledAt: new Date(Date.now() + 1000),
+    scheduledAt: futureScheduledAt(90_000),
     runAfter: new Date(Date.now() + 5 * 60 * 1000),
     maxAttempts: 1,
     priority: -999,

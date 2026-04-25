@@ -2,6 +2,7 @@ import type { PoolClient, QueryResultRow } from "pg";
 import { withDbTransaction } from "../db/client.ts";
 import { recalculateEmailDomainReputation } from "./emailDeliverabilityService.ts";
 import { recordGrowthProviderFeedbackEvent } from "../growth/growthAutomationService.ts";
+import { HttpError } from "../../utils/http.ts";
 
 type ProviderEventType = "delivered" | "bounce_soft" | "bounce_hard" | "complaint" | "reject";
 
@@ -88,6 +89,23 @@ export interface SesWebhookProcessResult {
   processedEvents: number;
   skippedEvents: number;
   subscriptionConfirmed: boolean;
+}
+
+export interface RecordEmailDeliveredEventInput {
+  businessId: string;
+  providerMessageId: string;
+  campaignRecipientId?: string;
+  recipientEmail?: string;
+  domainName?: string;
+  occurredAt?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface RecordEmailDeliveredEventResult {
+  eventRecorded: boolean;
+  businessId: string;
+  campaignRecipientId: string;
+  deliveredAt: string;
 }
 
 function isNonEmptyString(value: string | undefined): value is string {
@@ -669,6 +687,98 @@ function buildFailureReason(event: NormalizedProviderEvent): string {
   }
 
   return "SES rejected this message.";
+}
+
+export async function recordEmailDeliveredEvent(
+  input: RecordEmailDeliveredEventInput,
+): Promise<RecordEmailDeliveredEventResult> {
+  const businessId = getString(input.businessId);
+  const providerMessageId = getString(input.providerMessageId);
+  const occurredAt = getString(input.occurredAt) ?? new Date().toISOString();
+  const fallbackDomainName =
+    getString(input.domainName) ?? extractDomainFromEmail(getString(input.recipientEmail));
+  const recipientIdTag = getString(input.campaignRecipientId);
+
+  if (!businessId) {
+    throw new HttpError(400, "business_id_required", "businessId is required.");
+  }
+
+  if (!providerMessageId) {
+    throw new HttpError(400, "provider_message_id_required", "providerMessageId is required.");
+  }
+
+  return withDbTransaction(async (client) => {
+    const context = await resolveEventContext(client, {
+      providerMessageId,
+      fallbackBusinessId: businessId,
+      fallbackDomainName,
+      recipientIdTag,
+    });
+
+    if (!context?.campaignRecipientId) {
+      throw new HttpError(
+        404,
+        "email_campaign_recipient_not_found",
+        "Unable to match this delivery event to a campaign recipient.",
+      );
+    }
+
+    if (context.businessId !== businessId) {
+      throw new HttpError(
+        403,
+        "email_event_business_mismatch",
+        "This delivery event does not belong to the requested workspace.",
+      );
+    }
+
+    const recipientEmail = context.recipientEmail ?? getString(input.recipientEmail);
+
+    if (!recipientEmail) {
+      throw new HttpError(400, "recipient_email_required", "recipientEmail is required.");
+    }
+
+    const event: NormalizedProviderEvent = {
+      eventType: "delivered",
+      occurredAt,
+      providerMessageId,
+      recipientEmail,
+      rawPayloadJson: JSON.stringify({
+        type: "manual_delivery",
+        source: "email_events_api",
+        campaignRecipientId: context.campaignRecipientId,
+        providerMessageId,
+        occurredAt,
+        metadata: input.metadata ?? {},
+      }),
+      context,
+    };
+
+    const inserted = await insertProviderEvent(client, event);
+
+    if (inserted) {
+      await updateCampaignRecipientForDelivery(client, context.campaignRecipientId, occurredAt);
+      await insertEmailEvent(client, {
+        campaignRecipientId: context.campaignRecipientId,
+        providerMessageId,
+        eventType: "delivered",
+        payloadJson: event.rawPayloadJson,
+        occurredAt,
+      });
+      await syncCampaignSendTrackingState(client, context.campaignRecipientId);
+      await recalculateEmailDomainReputation({
+        businessId: context.businessId,
+        domainName: context.domainName,
+        client,
+      });
+    }
+
+    return {
+      eventRecorded: inserted,
+      businessId: context.businessId,
+      campaignRecipientId: context.campaignRecipientId,
+      deliveredAt: occurredAt,
+    };
+  });
 }
 
 export async function processSesWebhookNotification(body: unknown): Promise<SesWebhookProcessResult> {

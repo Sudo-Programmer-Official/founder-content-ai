@@ -28,6 +28,7 @@ import { getCompetitiveIntelligenceSnapshot } from "../competitiveIntelligence/s
 import { normalizePublicUrl } from "../competitiveIntelligence/fetchUtils.ts";
 import { logWarn } from "../../utils/logger.ts";
 import { loadWorkspaceKnowledgeProfileForBusiness } from "./workspaceKnowledgeService.ts";
+import { getWorkspaceInsightsSnapshotForBusiness } from "../workspaceInsightsService.ts";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../../");
 
@@ -647,6 +648,14 @@ function toBrandPromptContext(
     beliefs?: string[];
     topicClusters?: string[];
   },
+  workspaceInsights?: {
+    summary?: {
+      topTopicLabel?: string;
+      crossChannelTopicLabel?: string;
+    };
+    learningInsights?: string[];
+    topContentTags?: string[];
+  },
 ): BrandPromptContext {
   const marketReferences = (
     profile.selectedCompetitors.length > 0
@@ -659,8 +668,11 @@ function toBrandPromptContext(
         : competitor.label,
     );
   const topics = uniqueValues([
+    workspaceInsights?.summary?.topTopicLabel ?? "",
+    workspaceInsights?.summary?.crossChannelTopicLabel ?? "",
     ...profile.topics,
     ...(knowledgeProfile?.topicClusters ?? []),
+    ...(workspaceInsights?.topContentTags ?? []),
   ]);
 
   return {
@@ -675,6 +687,8 @@ function toBrandPromptContext(
     audience: knowledgeProfile?.audienceSummary,
     positioning: knowledgeProfile?.positioningSummary,
     beliefs: uniqueValues(knowledgeProfile?.beliefs ?? []),
+    performanceInsights: uniqueValues(workspaceInsights?.learningInsights ?? []).slice(0, 5),
+    topContentTags: uniqueValues(workspaceInsights?.topContentTags ?? []).slice(0, 6),
   };
 }
 
@@ -1220,9 +1234,10 @@ export async function getBrandPromptContextForBusiness(
   }
 
   try {
-    const [existingProfile, knowledgeProfile] = await Promise.all([
+    const [existingProfile, knowledgeProfile, workspaceInsights] = await Promise.all([
       loadBrandProfileRecord(normalizedBusinessId),
       loadWorkspaceKnowledgeProfileForBusiness(normalizedBusinessId),
+      getWorkspaceInsightsSnapshotForBusiness(normalizedBusinessId).catch(() => undefined),
     ]);
     const suggestedCompetitors = existingProfile ? buildSuggestedCompetitors(existingProfile) : [];
 
@@ -1234,7 +1249,7 @@ export async function getBrandPromptContextForBusiness(
       existingProfile.topics.length > 0 &&
       existingProfile.patterns.length > 0
     ) {
-      return toBrandPromptContext(existingProfile, suggestedCompetitors, knowledgeProfile);
+      return toBrandPromptContext(existingProfile, suggestedCompetitors, knowledgeProfile, workspaceInsights);
     }
 
     const result = await ensureBrandProfileFromSignals(normalizedBusinessId);
@@ -1242,6 +1257,7 @@ export async function getBrandPromptContextForBusiness(
       result.brandProfile,
       buildSuggestedCompetitors(result.brandProfile),
       knowledgeProfile,
+      workspaceInsights,
     );
   } catch (error) {
     logWarn("Skipping brand prompt context enrichment.", {

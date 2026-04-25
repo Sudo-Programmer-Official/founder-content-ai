@@ -13,6 +13,8 @@ export interface BrandPromptContext {
   audience?: string;
   positioning?: string;
   beliefs?: string[];
+  performanceInsights?: string[];
+  topContentTags?: string[];
 }
 
 export interface BrandSignalSummary {

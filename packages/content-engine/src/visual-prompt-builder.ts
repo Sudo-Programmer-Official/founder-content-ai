@@ -13,12 +13,21 @@ import type {
 } from "../../shared-types/index.ts";
 
 const DEFAULT_BRAND_KIT: Omit<BrandKit, "id" | "businessId" | "createdAt" | "updatedAt"> = {
+  brandName: undefined,
+  industry: undefined,
+  style: undefined,
   primaryColor: "#111827",
   secondaryColor: "#F8FAFC",
+  fontFamily: undefined,
+  iconStyle: undefined,
   backgroundStyle: "dark",
   fontStyle: "bold",
   visualStyle: "minimal",
   tone: "professional",
+  toneKeywords: [],
+  imageGuidelines: undefined,
+  businessDescription: undefined,
+  websiteUrl: undefined,
   accentStyle: "highlight_box",
   brandPlacement: "top_left",
   logoUrl: undefined,
@@ -65,6 +74,21 @@ function sanitizePhrase(value: string | undefined, maxLength = 72): string {
   }
 
   return truncateAtWordBoundary(normalized, maxLength);
+}
+
+function sanitizeOptionalText(value: string | undefined, maxLength = 140): string | undefined {
+  return sanitizePhrase(value, maxLength) || undefined;
+}
+
+function sanitizeStringArray(value: string[] | undefined, maxLength = 32, limit = 6): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return [...new Set(value
+    .map((entry) => sanitizePhrase(entry, maxLength))
+    .filter(Boolean))]
+    .slice(0, limit);
 }
 
 function extractHighlightCandidate(value: string): string {
@@ -210,7 +234,18 @@ function resolveStyleBlock(brandKit: BrandKitInput): string {
     visualDescriptions[visualStyle],
     accentDescriptions[accentStyle],
     `color palette led by ${primaryColor} and ${secondaryColor}`,
-  ].join(", ");
+    sanitizeOptionalText(brandKit.style, 120)
+      ? `art direction anchored in ${sanitizeOptionalText(brandKit.style, 120)}`
+      : undefined,
+    sanitizeOptionalText(brandKit.fontFamily, 72)
+      ? `preferred brand font family is ${sanitizeOptionalText(brandKit.fontFamily, 72)}`
+      : undefined,
+    sanitizeOptionalText(brandKit.iconStyle, 96)
+      ? `icons should feel ${sanitizeOptionalText(brandKit.iconStyle, 96)}`
+      : undefined,
+  ]
+    .filter((entry): entry is string => Boolean(entry))
+    .join(", ");
 }
 
 function resolveLayoutBlock(
@@ -417,6 +452,12 @@ function resolveBrandBlock(
   const secondaryColor = sanitizeColor(brandKit.secondaryColor, colorPalette.secondaryColor);
 
   return [
+    sanitizeOptionalText(brandKit.brandName, 72)
+      ? `brand name is ${sanitizeOptionalText(brandKit.brandName, 72)}`
+      : undefined,
+    sanitizeOptionalText(brandKit.industry, 72)
+      ? `industry context is ${sanitizeOptionalText(brandKit.industry, 72)}`
+      : undefined,
     `${tone} brand tone`,
     `${visualStyle} visual system`,
     `${backgroundStyle} background treatment`,
@@ -427,6 +468,21 @@ function resolveBrandBlock(
       : `${brandPlacement} brand placement`,
     `use ${primaryColor} as the dominant brand color`,
     `use ${secondaryColor} for contrast or accent`,
+    sanitizeStringArray(brandKit.toneKeywords, 24, 6).length > 0
+      ? `tone keywords: ${sanitizeStringArray(brandKit.toneKeywords, 24, 6).join(", ")}`
+      : undefined,
+    sanitizeOptionalText(brandKit.style, 120)
+      ? `overall brand style: ${sanitizeOptionalText(brandKit.style, 120)}`
+      : undefined,
+    sanitizeOptionalText(brandKit.iconStyle, 96)
+      ? `icon language: ${sanitizeOptionalText(brandKit.iconStyle, 96)}`
+      : undefined,
+    sanitizeOptionalText(brandKit.imageGuidelines, 160)
+      ? `image rules: ${sanitizeOptionalText(brandKit.imageGuidelines, 160)}`
+      : undefined,
+    sanitizeOptionalText(brandKit.businessDescription, 160)
+      ? `business summary: ${sanitizeOptionalText(brandKit.businessDescription, 160)}`
+      : undefined,
     brandKit.logoUrl
       ? "include a small restrained brand mark or logo in the chosen placement"
       : "use a tiny brand mark rather than a large logo",
@@ -440,7 +496,7 @@ function resolveBrandBlock(
         : undefined,
     "LinkedIn-native composition, control attention flow through contrast and hierarchy, align brand spacing with content spacing, never place the brand centered at the bottom",
   ]
-    .filter(Boolean)
+    .filter((entry): entry is string => Boolean(entry))
     .join(", ");
 }
 
@@ -458,8 +514,13 @@ export function resolveBrandKit(
   return {
     id: overrides.id ?? "brand-kit-default",
     businessId: overrides.businessId ?? "",
+    brandName: sanitizeOptionalText(input.brandName, 72),
+    industry: sanitizeOptionalText(input.industry, 72),
+    style: sanitizeOptionalText(input.style, 120),
     primaryColor: sanitizeColor(input.primaryColor, defaults.primaryColor),
     secondaryColor: sanitizeColor(input.secondaryColor, defaults.secondaryColor),
+    fontFamily: sanitizeOptionalText(input.fontFamily, 72),
+    iconStyle: sanitizeOptionalText(input.iconStyle, 96),
     backgroundStyle,
     fontStyle: sanitizeEnum<BrandKitFontStyle>(
       input.fontStyle,
@@ -476,6 +537,10 @@ export function resolveBrandKit(
       ["professional", "bold", "friendly"],
       DEFAULT_BRAND_KIT.tone,
     ),
+    toneKeywords: sanitizeStringArray(input.toneKeywords, 24, 6),
+    imageGuidelines: sanitizeOptionalText(input.imageGuidelines, 160),
+    businessDescription: sanitizeOptionalText(input.businessDescription, 160),
+    websiteUrl: collapseWhitespace(input.websiteUrl) || undefined,
     accentStyle: sanitizeEnum<BrandKitAccentStyle>(
       input.accentStyle,
       ["highlight_box", "underline", "bold"],

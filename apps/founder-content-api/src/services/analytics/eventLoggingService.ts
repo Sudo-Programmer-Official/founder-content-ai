@@ -1,6 +1,7 @@
 import type {
   AnalyticsEventType,
   AnalyticsInputType,
+  BrandPromptContext,
   ContentAssetStatus,
   ContentAssetSourceKind,
   ContentAssetType,
@@ -49,6 +50,7 @@ interface ContentAssetOptions {
   pipelineStage?: Exclude<ContentAssetStatus, "published">;
   sourceKind?: ContentAssetSourceKind;
   sourceIdeaId?: string;
+  brandContext?: BrandPromptContext;
   intelligence?: ContentAsset["intelligence"];
 }
 
@@ -201,7 +203,7 @@ export async function safeLogContentGeneration(options: GenerationLogOptions): P
 
 export async function createContentAsset(options: ContentAssetOptions): Promise<void> {
   const textContent = extractTextContent(options.contentBody) ?? options.title ?? "";
-  const intelligence = options.intelligence ?? buildContentAssetIntelligenceFromText(textContent);
+  const intelligence = options.intelligence ?? buildContentAssetIntelligenceFromText(textContent, options.brandContext);
 
   await queryDb(
     `
@@ -317,7 +319,7 @@ export async function createContentAssetRecord(
   client?: PoolClient,
 ): Promise<ContentAsset> {
   const textContent = extractTextContent(options.contentBody) ?? options.title ?? "";
-  const intelligence = options.intelligence ?? buildContentAssetIntelligenceFromText(textContent);
+  const intelligence = options.intelligence ?? buildContentAssetIntelligenceFromText(textContent, options.brandContext);
 
   const result = await executeAnalyticsQuery<ContentAssetRow>(
     `

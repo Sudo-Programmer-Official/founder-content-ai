@@ -8,6 +8,8 @@ import type {
   CreateEmailDomainResponse,
   DeleteEmailCampaignResponse,
   EmailCampaign,
+  EmailCampaignAnalytics,
+  EmailCampaignAnalyticsResponse,
   EmailCampaignLink,
   EmailCampaignLinkListResponse,
   EmailCampaignSend,
@@ -194,6 +196,12 @@ interface EmailCampaignLinkAggregateRow extends QueryResultRow {
   total_clicks?: string | number;
 }
 
+interface EmailCampaignEventAnalyticsRow extends QueryResultRow {
+  bounce_total?: string | number;
+  complaint_total?: string | number;
+  unsubscribe_total?: string | number;
+}
+
 interface EmailCampaignSendRow extends QueryResultRow {
   id: string;
   campaign_id: string;
@@ -281,6 +289,10 @@ interface EmailCampaignRecipientProgressRow extends QueryResultRow {
   recipient_total?: string | number;
   delivered_total?: string | number;
   unsubscribed_total?: string | number;
+}
+
+export interface EmailAudienceContact extends EmailContact {
+  unsubscribeToken: string;
 }
 
 interface EmailContactImportJobRow extends QueryResultRow {
@@ -488,6 +500,14 @@ function toIsoString(value: Date | string | null | undefined): string | undefine
 function toNumber(value: string | number | null | undefined): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function toPercentageRate(numerator: number, denominator: number): number {
+  if (!denominator || denominator <= 0) {
+    return 0;
+  }
+
+  return Math.round((numerator / denominator) * 1000) / 10;
 }
 
 function parseJsonArray<T>(value: unknown): T[] {
@@ -3656,6 +3676,55 @@ async function createCampaignSend(
   return result.rows[0];
 }
 
+export async function listActiveEmailAudienceContacts(
+  businessId: string,
+  listId: string,
+  client?: PoolClient,
+): Promise<EmailAudienceContact[]> {
+  const listScope = await loadEmailListScopeById(businessId, listId, client);
+  const result = await executeQuery<EmailContactRow>(
+    `
+      select *
+      from (
+        select distinct on (c.id)
+          c.id,
+          c.business_id,
+          c.email,
+          c.first_name,
+          c.last_name,
+          c.tags_json,
+          c.attributes_json,
+          c.status,
+          c.unsubscribe_token,
+          c.unsubscribed_at,
+          c.last_bounce_at,
+          c.last_complaint_at,
+          c.last_provider_event_at,
+          c.created_at,
+          c.updated_at
+        from email_list_members lm
+        inner join email_contacts c on c.id = lm.contact_id
+        left join email_unsubscribes eu
+          on eu.business_id = c.business_id
+         and lower(eu.email) = lower(c.email)
+        where c.business_id = $1::uuid
+          and lm.list_id = any($2::uuid[])
+          and c.status = 'active'
+          and eu.id is null
+        order by c.id, c.created_at asc
+      ) contacts
+      order by created_at asc
+    `,
+    [businessId, listScope.memberListIds],
+    client,
+  );
+
+  return result.rows.map((row) => ({
+    ...mapEmailContact(row),
+    unsubscribeToken: row.unsubscribe_token,
+  }));
+}
+
 async function loadCampaignContacts(
   businessId: string,
   campaignId: string,
@@ -3896,6 +3965,93 @@ async function getCampaignStats(
     totalOpens: toNumber(row?.total_opens),
     uniqueClicks: toNumber(row?.unique_clicks),
     totalClicks: toNumber(row?.total_clicks),
+  };
+}
+
+async function listCampaignLinks(
+  businessId: string,
+  campaignId: string,
+  client?: PoolClient,
+): Promise<EmailCampaignLink[]> {
+  const result = await executeQuery<EmailCampaignLinkAggregateRow>(
+    `
+      with latest_send as (
+        select id
+        from email_campaign_sends
+        where campaign_id = $2::uuid
+        order by created_at desc, id desc
+        limit 1
+      )
+      select
+        l.id,
+        l.campaign_id,
+        l.send_id,
+        l.business_id,
+        l.original_url,
+        l.normalized_url,
+        l.label,
+        l.position_index,
+        l.created_at,
+        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'click')::int as unique_clicks,
+        count(e.id) filter (where e.event_type = 'click')::int as total_clicks
+      from latest_send
+      inner join email_campaign_links l on l.send_id = latest_send.id
+      left join email_events e on e.link_id = l.id
+      where l.business_id = $1::uuid
+        and l.campaign_id = $2::uuid
+      group by l.id
+      order by
+        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'click') desc,
+        count(e.id) filter (where e.event_type = 'click') desc,
+        coalesce(l.position_index, 999999) asc,
+        l.created_at asc
+    `,
+    [businessId, campaignId],
+    client,
+  );
+
+  return result.rows.map(mapEmailCampaignLink);
+}
+
+async function getCampaignEventAnalytics(
+  businessId: string,
+  campaignId: string,
+  client?: PoolClient,
+): Promise<{
+  bounceCount: number;
+  complaintCount: number;
+  unsubscribeCount: number;
+}> {
+  const result = await executeQuery<EmailCampaignEventAnalyticsRow>(
+    `
+      with latest_send as (
+        select id
+        from email_campaign_sends
+        where campaign_id = $2::uuid
+        order by created_at desc, id desc
+        limit 1
+      )
+      select
+        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'bounce')::int as bounce_total,
+        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'complaint')::int as complaint_total,
+        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'unsubscribe')::int as unsubscribe_total
+      from email_campaigns c
+      left join latest_send on true
+      left join email_events e on e.send_id = latest_send.id
+      where c.business_id = $1::uuid
+        and c.id = $2::uuid
+      group by c.id
+    `,
+    [businessId, campaignId],
+    client,
+  );
+
+  const row = result.rows[0];
+
+  return {
+    bounceCount: toNumber(row?.bounce_total),
+    complaintCount: toNumber(row?.complaint_total),
+    unsubscribeCount: toNumber(row?.unsubscribe_total),
   };
 }
 
@@ -5618,50 +5774,49 @@ export async function getEmailCampaignStatsResponse(
   };
 }
 
+export async function getEmailCampaignAnalyticsResponse(
+  businessId: string,
+  campaignId: string,
+): Promise<EmailCampaignAnalyticsResponse> {
+  await loadEmailCampaignOrThrow(businessId, campaignId);
+
+  const [stats, topLinks, eventAnalytics] = await Promise.all([
+    getCampaignStats(businessId, campaignId),
+    listCampaignLinks(businessId, campaignId),
+    getCampaignEventAnalytics(businessId, campaignId),
+  ]);
+
+  const analytics: EmailCampaignAnalytics = {
+    campaignId,
+    sent: stats.sentCount,
+    delivered: stats.deliveredCount,
+    opens: stats.uniqueOpens,
+    clicks: stats.uniqueClicks,
+    bounces: eventAnalytics.bounceCount,
+    complaints: eventAnalytics.complaintCount,
+    unsubscribes: Math.max(stats.unsubscribedCount, eventAnalytics.unsubscribeCount),
+    deliveryRate: toPercentageRate(stats.deliveredCount, stats.sentCount),
+    openRate: toPercentageRate(stats.uniqueOpens, stats.deliveredCount),
+    clickRate: toPercentageRate(stats.uniqueClicks, stats.deliveredCount),
+    clickToOpenRate: toPercentageRate(stats.uniqueClicks, stats.uniqueOpens),
+    bounceRate: toPercentageRate(eventAnalytics.bounceCount, stats.sentCount),
+    topLinks,
+  };
+
+  return {
+    stats,
+    analytics,
+  };
+}
+
 export async function listEmailCampaignLinksResponse(
   businessId: string,
   campaignId: string,
 ): Promise<EmailCampaignLinkListResponse> {
   await loadEmailCampaignOrThrow(businessId, campaignId);
 
-  const result = await executeQuery<EmailCampaignLinkAggregateRow>(
-    `
-      with latest_send as (
-        select id
-        from email_campaign_sends
-        where campaign_id = $2::uuid
-        order by created_at desc, id desc
-        limit 1
-      )
-      select
-        l.id,
-        l.campaign_id,
-        l.send_id,
-        l.business_id,
-        l.original_url,
-        l.normalized_url,
-        l.label,
-        l.position_index,
-        l.created_at,
-        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'click')::int as unique_clicks,
-        count(e.id) filter (where e.event_type = 'click')::int as total_clicks
-      from latest_send
-      inner join email_campaign_links l on l.send_id = latest_send.id
-      left join email_events e on e.link_id = l.id
-      where l.business_id = $1::uuid
-        and l.campaign_id = $2::uuid
-      group by l.id
-      order by
-        count(distinct e.campaign_recipient_id) filter (where e.event_type = 'click') desc,
-        count(e.id) filter (where e.event_type = 'click') desc,
-        coalesce(l.position_index, 999999) asc,
-        l.created_at asc
-    `,
-    [businessId, campaignId],
-  );
-
   return {
-    links: result.rows.map(mapEmailCampaignLink),
+    links: await listCampaignLinks(businessId, campaignId),
   };
 }
 
@@ -6026,17 +6181,18 @@ export async function drainQueuedEmailCampaigns(
   return aggregate;
 }
 
-export async function sendEmailCampaign(
-  businessId: string,
-  campaignId: string,
-  actorUserId?: string,
-): Promise<SendEmailCampaignResponse> {
-  await ensureBusinessEmailSendingPreconditions(businessId);
+async function sendEmailCampaignInternal(input: {
+  businessId: string;
+  campaignId: string;
+  actorUserId?: string;
+  contactIds?: string[];
+}): Promise<SendEmailCampaignResponse> {
+  await ensureBusinessEmailSendingPreconditions(input.businessId);
   let billingWarnings: string[] = [];
   let emailAddon: SendEmailCampaignResponse["emailAddon"] | undefined;
 
   await withDbTransaction(async (client) => {
-    const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
+    const campaign = await loadEmailCampaignOrThrow(input.businessId, input.campaignId, client);
 
     if (campaign.status === "queued" || campaign.status === "sending") {
       throw new HttpError(
@@ -6046,21 +6202,26 @@ export async function sendEmailCampaign(
       );
     }
 
-    const contacts = await loadCampaignContacts(businessId, campaign.id, client);
+    const allContacts = await loadCampaignContacts(input.businessId, campaign.id, client);
+    const selectedContactIds = input.contactIds?.map((value) => value.trim()).filter(Boolean);
+    const contactIdFilter = selectedContactIds ? new Set(selectedContactIds) : null;
+    const contacts = contactIdFilter
+      ? allContacts.filter((contact) => contactIdFilter.has(contact.id))
+      : allContacts;
 
     if (contacts.length === 0) {
       throw new HttpError(400, "email_campaign_no_contacts", "This campaign has no active contacts.");
     }
 
-    const currentPlanCode = await resolveBusinessPlanCode(businessId, client);
-    emailAddon = await getBillingEmailAddonSummary(businessId, {
+    const currentPlanCode = await resolveBusinessPlanCode(input.businessId, client);
+    emailAddon = await getBillingEmailAddonSummary(input.businessId, {
       currentPlanCode,
     });
     billingWarnings = buildEmailBillingSendWarnings(emailAddon, contacts.length);
 
-    await incrementBusinessDailyUsage(businessId, "emails", contacts.length);
-    await ensureEmailSettingsRow(businessId, client);
-    const send = await createCampaignSend(campaign, contacts.length, actorUserId, client);
+    await incrementBusinessDailyUsage(input.businessId, "emails", contacts.length);
+    await ensureEmailSettingsRow(input.businessId, client);
+    const send = await createCampaignSend(campaign, contacts.length, input.actorUserId, client);
     await createCampaignRecipientsForSend(send, campaign, contacts, client);
     await executeQuery(
       `
@@ -6075,40 +6236,40 @@ export async function sendEmailCampaign(
           updated_at = now()
         where id = $1::uuid
       `,
-      [campaignId],
+      [input.campaignId],
       client,
     );
   });
 
   void drainQueuedEmailCampaigns({
-    businessId,
-    campaignId,
+    businessId: input.businessId,
+    campaignId: input.campaignId,
   }).catch((error) => {
     logWarn("Background email campaign drain failed after enqueue.", {
-      businessId,
-      campaignId,
+      businessId: input.businessId,
+      campaignId: input.campaignId,
       message: error instanceof Error ? error.message : "Unknown error",
     });
   });
 
-  void safeLogEvent("content_selected", actorUserId, businessId, {
+  void safeLogEvent("content_selected", input.actorUserId, input.businessId, {
     source: "email_campaign",
-    campaignId,
+    campaignId: input.campaignId,
   });
 
   void sendEmailCampaignLifecycleNotification({
-    campaignId,
+    campaignId: input.campaignId,
     eventType: "started",
   }).catch((notificationError) => {
     logWarn("Email campaign start notification failed.", {
-      businessId,
-      campaignId,
+      businessId: input.businessId,
+      campaignId: input.campaignId,
       message: notificationError instanceof Error ? notificationError.message : "Unknown error",
     });
   });
 
-  const campaign = mapEmailCampaign(await loadEmailCampaignOrThrow(businessId, campaignId));
-  const stats = await getCampaignStats(businessId, campaignId);
+  const campaign = mapEmailCampaign(await loadEmailCampaignOrThrow(input.businessId, input.campaignId));
+  const stats = await getCampaignStats(input.businessId, input.campaignId);
 
   return {
     campaign,
@@ -6116,6 +6277,31 @@ export async function sendEmailCampaign(
     billingWarnings,
     emailAddon,
   };
+}
+
+export async function sendEmailCampaign(
+  businessId: string,
+  campaignId: string,
+  actorUserId?: string,
+): Promise<SendEmailCampaignResponse> {
+  return sendEmailCampaignInternal({
+    businessId,
+    campaignId,
+    actorUserId,
+  });
+}
+
+export async function sendEmailCampaignToContactIds(input: {
+  businessId: string;
+  campaignId: string;
+  contactIds: string[];
+  actorUserId?: string;
+}): Promise<SendEmailCampaignResponse> {
+  if (input.contactIds.length === 0) {
+    throw new HttpError(400, "email_campaign_no_contacts", "This campaign has no active contacts.");
+  }
+
+  return sendEmailCampaignInternal(input);
 }
 
 export async function createEmailDomain(

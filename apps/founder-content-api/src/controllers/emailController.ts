@@ -6,12 +6,18 @@ import type {
   CreateEmailDomainResponse,
   DeleteEmailCampaignResponse,
   DeleteEmailContactResponse,
+  EmailCampaignAnalyticsResponse,
+  EmailCampaignAutopilotRequest,
+  EmailCampaignAutopilotResponse,
   EmailCampaignListResponse,
   EmailCampaignLinkListResponse,
   EmailCampaignStatsResponse,
+  EmailClickTrackingEventResponse,
   EmailContactListResponse,
   EmailContactStatus,
   EmailDomainSettingsResponse,
+  EmailTrackingEventRequest,
+  EmailTrackingEventResponse,
   EmailContactImportJobListResponse,
   EmailContactImportJobResponse,
   EmailListListResponse,
@@ -23,6 +29,8 @@ import type {
   PreviewEmailCampaignResponse,
   QueueEmailContactsImportRequest,
   QueueEmailContactsImportResponse,
+  RecordEmailDeliveredEventRequest,
+  RecordEmailDeliveredEventResponse,
   ResubscribeEmailResponse,
   SendEmailCampaignResponse,
   SendTestEmailCampaignRequest,
@@ -45,6 +53,7 @@ import {
   deleteEmailContact,
   createEmailDomain,
   getEmailContactImportJob,
+  getEmailCampaignAnalyticsResponse,
   listEmailCampaignLinksResponse,
   getEmailDomainSettings,
   getEmailCampaignStatsResponse,
@@ -65,17 +74,37 @@ import {
   updateEmailCampaign,
   verifyEmailDomain,
 } from "../services/email/emailService.ts";
+import { runEmailCampaignAutopilot } from "../services/email/emailAutopilotService.ts";
 import {
   getEmailTrackingPixelBuffer,
   trackEmailClick,
   trackEmailOpen,
 } from "../services/email/emailTrackingService.ts";
-import { processSesWebhookNotification } from "../services/email/emailProviderEventService.ts";
+import {
+  processSesWebhookNotification,
+  recordEmailDeliveredEvent,
+} from "../services/email/emailProviderEventService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
 import { handleApiError, isHttpError, sendApiError } from "../utils/http.ts";
 
-function readBusinessId(request: Request<{ businessId: string }>): string | undefined {
+function readBusinessId(request: Request<{ businessId?: string }>): string | undefined {
   return request.params.businessId?.trim() || undefined;
+}
+
+function readBusinessIdFromQuery(query: Request["query"]): string | undefined {
+  return typeof query.businessId === "string" && query.businessId.trim()
+    ? query.businessId.trim()
+    : undefined;
+}
+
+function readRequiredText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readAutopilotStrategy(value: unknown): EmailCampaignAutopilotRequest["strategy"] | undefined {
+  return value === "conversion" || value === "engagement" || value === "awareness"
+    ? value
+    : undefined;
 }
 
 function readEmailContactStatus(value: unknown): EmailContactStatus | undefined {
@@ -678,6 +707,59 @@ export async function postEmailCampaignSend(
   }
 }
 
+export async function postEmailCampaignAutopilot(
+  request: Request<{ businessId?: string }, unknown, EmailCampaignAutopilotRequest>,
+  response: Response<EmailCampaignAutopilotResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request) ?? readRequiredText(request.body?.businessId);
+  const strategy = readAutopilotStrategy(request.body?.strategy);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  if (!strategy) {
+    sendApiError(response, 400, "autopilot_strategy_invalid", "strategy is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+    const actor = await ensureCurrentUser(request.auth);
+    const result = await runEmailCampaignAutopilot({
+      businessId,
+      goal: readRequiredText(request.body?.goal) ?? "",
+      audienceId: readRequiredText(request.body?.audienceId) ?? "",
+      strategy,
+    }, request.auth, actor.id);
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_campaign_autopilot_failed",
+      message: "Unable to launch email autopilot.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_campaign_autopilot_failed",
+      message: "Unable to launch email autopilot.",
+      logMessage: "Failed to launch email autopilot.",
+    });
+  }
+}
+
 export async function getEmailCampaigns(
   request: Request<{ businessId: string }>,
   response: Response<EmailCampaignListResponse | ApiError>,
@@ -957,6 +1039,43 @@ export async function getEmailCampaignStats(
       code: "email_campaign_stats_failed",
       message: "Unable to load email campaign stats.",
       logMessage: "Failed to load email campaign stats.",
+    });
+  }
+}
+
+export async function getEmailCampaignAnalytics(
+  request: Request<{ businessId?: string; campaignId: string }, unknown, unknown, { businessId?: string }>,
+  response: Response<EmailCampaignAnalyticsResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessId(request) ?? readBusinessIdFromQuery(request.query);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceReadAccess(request.auth, businessId, "email_campaigns");
+    const result = await getEmailCampaignAnalyticsResponse(businessId, request.params.campaignId);
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_campaign_analytics_failed",
+      message: "Unable to load email campaign analytics.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_campaign_analytics_failed",
+      message: "Unable to load email campaign analytics.",
+      logMessage: "Failed to load email campaign analytics.",
     });
   }
 }
@@ -1347,5 +1466,104 @@ export async function getEmailClickTracking(
     });
     applyTrackingResponseHeaders(response);
     response.status(500).type("text/plain").send("Unable to resolve this tracked email link.");
+  }
+}
+
+export async function postEmailOpenTracking(
+  request: Request<unknown, unknown, EmailTrackingEventRequest>,
+  response: Response<EmailTrackingEventResponse | ApiError>,
+): Promise<void> {
+  try {
+    await trackEmailOpen({
+      token: readRequiredText(request.body?.token) ?? "",
+      userAgent: request.get("user-agent") ?? undefined,
+      ipAddress: request.ip,
+    });
+    response.json({ success: true });
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_open_tracking_failed",
+      message: "Unable to record this email open event.",
+      logMessage: "Failed to record email open event.",
+    });
+  }
+}
+
+export async function postEmailClickTracking(
+  request: Request<unknown, unknown, EmailTrackingEventRequest>,
+  response: Response<EmailClickTrackingEventResponse | ApiError>,
+): Promise<void> {
+  try {
+    const result = await trackEmailClick({
+      token: readRequiredText(request.body?.token) ?? "",
+      userAgent: request.get("user-agent") ?? undefined,
+      ipAddress: request.ip,
+    });
+    response.json({
+      success: true,
+      redirectUrl: result.redirectUrl,
+    });
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_click_tracking_failed",
+      message: "Unable to record this email click event.",
+      logMessage: "Failed to record email click event.",
+    });
+  }
+}
+
+export async function postEmailDeliveredEvent(
+  request: Request<unknown, unknown, RecordEmailDeliveredEventRequest>,
+  response: Response<RecordEmailDeliveredEventResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readRequiredText(request.body?.businessId);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "email_campaigns",
+    });
+
+    const result = await recordEmailDeliveredEvent({
+      businessId,
+      providerMessageId: readRequiredText(request.body?.providerMessageId) ?? "",
+      campaignRecipientId: readRequiredText(request.body?.campaignRecipientId),
+      recipientEmail: readRequiredText(request.body?.recipientEmail),
+      domainName: readRequiredText(request.body?.domainName),
+      occurredAt: readRequiredText(request.body?.occurredAt),
+      metadata: request.body?.metadata,
+    });
+
+    response.json({
+      success: true,
+      eventRecorded: result.eventRecorded,
+    });
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      userId: request.auth.userId,
+      businessId,
+      code: "email_delivered_event_failed",
+      message: "Unable to record this delivered email event.",
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "email_delivered_event_failed",
+      message: "Unable to record this delivered email event.",
+      logMessage: "Failed to record delivered email event.",
+    });
   }
 }

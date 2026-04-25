@@ -12,12 +12,21 @@ export type VisualWatermarkMode = "auto" | "on" | "off";
 export type CarouselNarrativeType = ContentNarrativeType;
 
 export interface BrandKitInput {
+  brandName?: string;
+  industry?: string;
+  style?: string;
   primaryColor?: string;
   secondaryColor?: string;
+  fontFamily?: string;
+  iconStyle?: string;
   backgroundStyle?: BrandKitBackgroundStyle;
   fontStyle?: BrandKitFontStyle;
   visualStyle?: BrandKitVisualStyle;
   tone?: BrandKitTone;
+  toneKeywords?: string[];
+  imageGuidelines?: string;
+  businessDescription?: string;
+  websiteUrl?: string;
   accentStyle?: BrandKitAccentStyle;
   brandPlacement?: BrandKitBrandPlacement;
   logoUrl?: string;
@@ -26,12 +35,21 @@ export interface BrandKitInput {
 export interface BrandKit extends BrandKitInput {
   id: string;
   businessId: string;
+  brandName?: string;
+  industry?: string;
+  style?: string;
   primaryColor: string;
   secondaryColor: string;
+  fontFamily?: string;
+  iconStyle?: string;
   backgroundStyle: BrandKitBackgroundStyle;
   fontStyle: BrandKitFontStyle;
   visualStyle: BrandKitVisualStyle;
   tone: BrandKitTone;
+  toneKeywords: string[];
+  imageGuidelines?: string;
+  businessDescription?: string;
+  websiteUrl?: string;
   accentStyle: BrandKitAccentStyle;
   brandPlacement: BrandKitBrandPlacement;
   logoUrl?: string;

@@ -16,6 +16,17 @@ import {
 } from "../services/governanceService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 export async function getBrandKitController(
   request: Request<unknown, BrandKitResponse | ApiError, unknown, Partial<BrandKitQuery>>,
   response: Response<BrandKitResponse | ApiError>,
@@ -77,12 +88,21 @@ export async function updateBrandKitController(
         principal: request.auth,
         businessId,
         brandKit: {
+          brandName: request.body?.brandKit?.brandName?.trim(),
+          industry: request.body?.brandKit?.industry?.trim(),
+          style: request.body?.brandKit?.style?.trim(),
           primaryColor: request.body?.brandKit?.primaryColor?.trim(),
           secondaryColor: request.body?.brandKit?.secondaryColor?.trim(),
+          fontFamily: request.body?.brandKit?.fontFamily?.trim(),
+          iconStyle: request.body?.brandKit?.iconStyle?.trim(),
           backgroundStyle: request.body?.brandKit?.backgroundStyle,
           fontStyle: request.body?.brandKit?.fontStyle,
           visualStyle: request.body?.brandKit?.visualStyle,
           tone: request.body?.brandKit?.tone,
+          toneKeywords: normalizeStringArray(request.body?.brandKit?.toneKeywords),
+          imageGuidelines: request.body?.brandKit?.imageGuidelines?.trim(),
+          businessDescription: request.body?.brandKit?.businessDescription?.trim(),
+          websiteUrl: request.body?.brandKit?.websiteUrl?.trim(),
           accentStyle: request.body?.brandKit?.accentStyle,
           brandPlacement: request.body?.brandKit?.brandPlacement,
           logoUrl: request.body?.brandKit?.logoUrl?.trim(),

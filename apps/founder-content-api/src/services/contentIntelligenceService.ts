@@ -1,9 +1,11 @@
 import type {
   BrandPromptContext,
   ContentAsset,
+  ContentAssetCtaType,
   ContentAssetFormat,
   ContentAssetHookType,
   ContentAssetIntelligence,
+  ContentAssetIntent,
   ContentAssetLengthBucket,
   ContentPovBoldness,
   ContentPovProfile,
@@ -15,6 +17,62 @@ import type {
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
+
+const TAG_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "also",
+  "always",
+  "another",
+  "around",
+  "because",
+  "before",
+  "being",
+  "between",
+  "bring",
+  "built",
+  "could",
+  "every",
+  "first",
+  "founder",
+  "from",
+  "have",
+  "here",
+  "just",
+  "make",
+  "more",
+  "most",
+  "much",
+  "need",
+  "next",
+  "only",
+  "over",
+  "really",
+  "should",
+  "some",
+  "still",
+  "than",
+  "that",
+  "their",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "this",
+  "those",
+  "through",
+  "until",
+  "very",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "with",
+  "your",
+]);
 
 function extractLines(text: string): string[] {
   return text
@@ -96,6 +154,167 @@ function inferHookType(text: string): ContentAssetHookType {
   }
 
   return "direct";
+}
+
+function addTagScore(map: Map<string, number>, value: string | undefined, score: number): void {
+  const normalized = normalizeTagValue(value);
+
+  if (!normalized) {
+    return;
+  }
+
+  map.set(normalized, (map.get(normalized) ?? 0) + score);
+}
+
+function normalizeTagValue(value: string | undefined): string | undefined {
+  const normalized = value
+    ?.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized || normalized.length < 4 || normalized.length > 36) {
+    return undefined;
+  }
+
+  if (TAG_STOP_WORDS.has(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
+function inferContentTags(text: string, brandContext?: BrandPromptContext): string[] {
+  const normalized = normalizeWhitespace(text).toLowerCase();
+
+  if (!normalized) {
+    return [];
+  }
+
+  const scores = new Map<string, number>();
+  const signalPhrases = [
+    ...(brandContext?.topics ?? []),
+    ...(brandContext?.goals ?? []),
+    ...(brandContext?.topContentTags ?? []),
+  ];
+
+  for (const phrase of signalPhrases) {
+    const normalizedPhrase = normalizeTagValue(phrase);
+
+    if (normalizedPhrase && normalized.includes(normalizedPhrase)) {
+      addTagScore(scores, normalizedPhrase, normalizedPhrase.includes(" ") ? 8 : 6);
+    }
+  }
+
+  const lines = extractLines(text);
+
+  for (const [index, line] of lines.slice(0, 3).entries()) {
+    const tokens = line
+      .toLowerCase()
+      .split(/[^a-z0-9]+/g)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 4 && !TAG_STOP_WORDS.has(token));
+
+    for (const token of tokens) {
+      addTagScore(scores, token, index === 0 ? 4 : 3 - index);
+    }
+  }
+
+  const counts = new Map<string, number>();
+
+  for (const token of normalized.split(/[^a-z0-9]+/g)) {
+    const normalizedToken = normalizeTagValue(token);
+
+    if (!normalizedToken || normalizedToken.includes(" ")) {
+      continue;
+    }
+
+    counts.set(normalizedToken, (counts.get(normalizedToken) ?? 0) + 1);
+  }
+
+  for (const [token, count] of counts.entries()) {
+    addTagScore(scores, token, count >= 3 ? count + 2 : count);
+  }
+
+  return [...scores.entries()]
+    .sort((left, right) => {
+      if (right[1] !== left[1]) {
+        return right[1] - left[1];
+      }
+
+      return left[0].localeCompare(right[0]);
+    })
+    .map(([tag]) => tag)
+    .slice(0, 5);
+}
+
+function inferCtaType(text: string): ContentAssetCtaType {
+  const normalized = normalizeWhitespace(text).toLowerCase();
+
+  if (!normalized) {
+    return "none";
+  }
+
+  if (/\b(book|schedule|reserve|tour)\b/.test(normalized)) {
+    return "book_now";
+  }
+
+  if (/\b(reply|respond|email me|send a reply)\b/.test(normalized)) {
+    return "reply";
+  }
+
+  if (/\b(message|dm|call|text us|reach out)\b/.test(normalized)) {
+    return "message";
+  }
+
+  if (/\b(download|get the guide|get the checklist|get the template)\b/.test(normalized)) {
+    return "download";
+  }
+
+  if (/\b(sign up|subscribe|join now|start your|start the)\b/.test(normalized)) {
+    return "sign_up";
+  }
+
+  if (/\b(shop|buy|order|claim)\b/.test(normalized)) {
+    return "shop_now";
+  }
+
+  if (/\b(learn more|see more|explore|visit|take a look)\b/.test(normalized)) {
+    return "learn_more";
+  }
+
+  return "none";
+}
+
+function inferContentIntent(input: {
+  text: string;
+  format: ContentAssetFormat;
+  ctaType: ContentAssetCtaType;
+}): ContentAssetIntent {
+  const normalized = normalizeWhitespace(input.text).toLowerCase();
+
+  if (input.ctaType === "book_now" || input.ctaType === "shop_now" || input.ctaType === "sign_up") {
+    return "conversion";
+  }
+
+  if (input.ctaType === "reply" || input.ctaType === "message") {
+    return "engagement";
+  }
+
+  if (input.format === "story") {
+    return "storytelling";
+  }
+
+  if (input.format === "list") {
+    return "education";
+  }
+
+  if (/\b(review|testimonial|trusted by|customer|famil(y|ies) love|why parents choose)\b/.test(normalized)) {
+    return "social_proof";
+  }
+
+  return "awareness";
 }
 
 function scoreHookStrength(text: string, hookType: ContentAssetHookType): number {
@@ -281,6 +500,30 @@ function isLengthBucket(value: unknown): value is ContentAssetLengthBucket {
   return value === "short" || value === "medium" || value === "long";
 }
 
+function isCtaType(value: unknown): value is ContentAssetCtaType {
+  return value === "book_now"
+    || value === "learn_more"
+    || value === "reply"
+    || value === "message"
+    || value === "download"
+    || value === "sign_up"
+    || value === "shop_now"
+    || value === "none";
+}
+
+function isContentIntent(value: unknown): value is ContentAssetIntent {
+  return value === "conversion"
+    || value === "engagement"
+    || value === "education"
+    || value === "storytelling"
+    || value === "social_proof"
+    || value === "awareness";
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
 function isQualityScore(value: unknown): value is ContentQualityScore {
   if (!isObject(value)) {
     return false;
@@ -378,15 +621,26 @@ export function buildContentAssetIntelligenceFromText(
   }
 
   const wordCount = countWords(normalized);
+  const format = inferContentFormat(normalized);
+  const ctaType = inferCtaType(normalized);
   const quality = buildContentQualityScoreFromText(normalized, brandContext);
   const pov = buildPovProfileFromText(normalized, brandContext);
+  const tags = inferContentTags(normalized, brandContext);
 
   return {
-    format: inferContentFormat(normalized),
+    format,
     hookType: inferHookType(normalized),
     length: inferLengthBucket(wordCount),
     wordCount,
     characterCount: normalized.length,
+    tags,
+    primaryTag: tags[0],
+    ctaType,
+    intent: inferContentIntent({
+      text: normalized,
+      format,
+      ctaType,
+    }),
     quality,
     pov,
   };
@@ -410,12 +664,25 @@ export function resolveStoredContentAssetIntelligence(
       Number.isFinite(wordCount) &&
       Number.isFinite(characterCount)
     ) {
+      const tags = isStringArray(value.tags)
+        ? value.tags
+            .map((entry) => normalizeTagValue(entry))
+            .filter((entry): entry is string => Boolean(entry))
+            .slice(0, 5)
+        : [];
+      const primaryTag = normalizeTagValue(typeof value.primaryTag === "string" ? value.primaryTag : undefined)
+        ?? tags[0];
+
       return {
         format,
         hookType,
         length,
         wordCount,
         characterCount,
+        tags,
+        primaryTag,
+        ctaType: isCtaType(value.ctaType) ? value.ctaType : undefined,
+        intent: isContentIntent(value.intent) ? value.intent : undefined,
         quality: isQualityScore(value.quality)
           ? {
               overall: Number(value.quality.overall),

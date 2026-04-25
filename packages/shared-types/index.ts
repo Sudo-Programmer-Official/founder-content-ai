@@ -7,6 +7,7 @@ export * from "./src/competitive-intelligence.ts";
 export * from "./src/analytics.ts";
 export * from "./src/onboarding.ts";
 export * from "./src/brand-intelligence.ts";
+export * from "./src/brand-studio.ts";
 export * from "./src/business-generation.ts";
 export * from "./src/generation-intent.ts";
 export * from "./src/ingestion.ts";

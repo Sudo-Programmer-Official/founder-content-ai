@@ -2,6 +2,7 @@ import express, { Router } from "express";
 import {
   deleteEmailCampaignController,
   deleteEmailContactController,
+  getEmailCampaignAnalytics,
   getEmailCampaignLinks,
   getEmailCampaignStats,
   getEmailCampaigns,
@@ -15,6 +16,7 @@ import {
   getEmailUnsubscribe,
   patchEmailCampaign,
   patchEmailContactController,
+  postEmailCampaignAutopilot,
   postEmailCampaign,
   postEmailCampaignPreview,
   postEmailResubscribe,
@@ -23,8 +25,11 @@ import {
   postEmailContactsImport,
   postEmailContactsImportJob,
   postEmailContactsImportPreview,
+  postEmailDeliveredEvent,
   postEmailDomain,
   postEmailDomainVerify,
+  postEmailClickTracking,
+  postEmailOpenTracking,
   postEmailUnsubscribe,
   postSesWebhook,
 } from "../controllers/emailController.ts";
@@ -49,13 +54,22 @@ emailRoute.post("/api/businesses/:businessId/email/test-send", requireAuth(), po
 emailRoute.patch("/api/businesses/:businessId/email/campaigns/:campaignId", requireAuth(), patchEmailCampaign);
 emailRoute.delete("/api/businesses/:businessId/email/campaigns/:campaignId", requireAuth(), deleteEmailCampaignController);
 emailRoute.post("/api/businesses/:businessId/email/campaigns/:campaignId/send", requireAuth(), postEmailCampaignSend);
+emailRoute.post("/api/businesses/:businessId/email/campaigns/autopilot", requireAuth(), postEmailCampaignAutopilot);
 emailRoute.get("/api/businesses/:businessId/email/campaigns", requireAuth(), getEmailCampaigns);
 emailRoute.get("/api/businesses/:businessId/email/campaigns/:campaignId/stats", requireAuth(), getEmailCampaignStats);
+emailRoute.get("/api/businesses/:businessId/email/campaigns/:campaignId/analytics", requireAuth(), getEmailCampaignAnalytics);
 emailRoute.get("/api/businesses/:businessId/email/campaigns/:campaignId/links", requireAuth(), getEmailCampaignLinks);
+emailRoute.post("/api/email/campaigns/autopilot", requireAuth(), postEmailCampaignAutopilot);
+emailRoute.get("/api/email/campaigns/:campaignId/analytics", requireAuth(), getEmailCampaignAnalytics);
 emailRoute.post("/api/businesses/:businessId/email/domains", requireAuth(), postEmailDomain);
 emailRoute.post("/api/businesses/:businessId/email/domains/:domainId/verify", requireAuth(), postEmailDomainVerify);
 emailRoute.get("/api/email/track/open", getEmailOpenTracking);
 emailRoute.get("/api/email/track/click", getEmailClickTracking);
+emailRoute.get("/api/email/events/open", getEmailOpenTracking);
+emailRoute.post("/api/email/events/open", postEmailOpenTracking);
+emailRoute.get("/api/email/events/click", getEmailClickTracking);
+emailRoute.post("/api/email/events/click", postEmailClickTracking);
+emailRoute.post("/api/email/events/delivered", requireAuth(), postEmailDeliveredEvent);
 emailRoute.get("/api/email/unsubscribe/:token", getEmailUnsubscribe);
 emailRoute.post("/api/email/unsubscribe/:token", express.urlencoded({ extended: false }), postEmailUnsubscribe);
 emailRoute.post("/api/email/resubscribe/:token", express.urlencoded({ extended: false }), postEmailResubscribe);

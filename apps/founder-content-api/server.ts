@@ -1,5 +1,6 @@
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import { brandKitRoute } from "./src/routes/brandKit.ts";
+import { brandStudioRoute } from "./src/routes/brandStudio.ts";
 import { businessGenerationRoute } from "./src/routes/businessGeneration.ts";
 import { businessesRoute } from "./src/routes/businesses.ts";
 import { brandProfileRoute } from "./src/routes/brandProfile.ts";
@@ -146,6 +147,7 @@ export function createServerApp(): Express {
   app.use(socialAuthRoute);
   app.use(scheduledPostsRoute);
   app.use(brandKitRoute);
+  app.use(brandStudioRoute);
   app.use(brandProfileRoute);
   app.use(workspaceAssetsRoute);
   app.use(workspaceInsightsRoute);

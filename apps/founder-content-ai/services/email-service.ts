@@ -5,6 +5,9 @@ import type {
   CreateEmailDomainResponse,
   DeleteEmailCampaignResponse,
   DeleteEmailContactResponse,
+  EmailCampaignAnalyticsResponse,
+  EmailCampaignAutopilotRequest,
+  EmailCampaignAutopilotResponse,
   EmailCampaignLinkListResponse,
   EmailCampaignListResponse,
   EmailCampaignStatsResponse,
@@ -255,6 +258,31 @@ export async function requestEmailCampaignStats(
   const encodedCampaignId = encodeURIComponent(campaignId);
   return apiGet<EmailCampaignStatsResponse>(
     `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}/stats`,
+  );
+}
+
+export async function requestEmailCampaignAnalytics(
+  businessId: string,
+  campaignId: string,
+): Promise<EmailCampaignAnalyticsResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  const encodedCampaignId = encodeURIComponent(campaignId);
+  return apiGet<EmailCampaignAnalyticsResponse>(
+    `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}/analytics`,
+  );
+}
+
+export async function requestEmailCampaignAutopilot(
+  businessId: string,
+  payload: Omit<EmailCampaignAutopilotRequest, "businessId">,
+): Promise<EmailCampaignAutopilotResponse> {
+  const encodedBusinessId = encodeURIComponent(businessId);
+  return apiPost<EmailCampaignAutopilotRequest, EmailCampaignAutopilotResponse>(
+    `/businesses/${encodedBusinessId}/email/campaigns/autopilot`,
+    {
+      businessId,
+      ...payload,
+    },
   );
 }
 

@@ -1943,7 +1943,16 @@ async function createPublishAttemptLedger(input: {
     response?: Record<string, unknown>;
   }>;
   client?: PoolClient;
-}): Promise<{ publishAttemptId: string; platformAttemptIds: Map<SocialPlatform, string> }> {
+}): Promise<{
+  publishAttemptId: string;
+  platformAttemptIds: Map<SocialPlatform, string>;
+  platformAttempts: Array<{
+    id: string;
+    platform: SocialPlatform;
+    scheduledPostId?: string;
+    scheduleItemId?: string;
+  }>;
+}> {
   const parentResult = await executeQuery<{ id: string }>(
     `
       insert into publish_attempts (
@@ -1995,6 +2004,12 @@ async function createPublishAttemptLedger(input: {
   }
 
   const platformAttemptIds = new Map<SocialPlatform, string>();
+  const platformAttempts: Array<{
+    id: string;
+    platform: SocialPlatform;
+    scheduledPostId?: string;
+    scheduleItemId?: string;
+  }> = [];
 
   for (const platformInput of input.platforms) {
     const platformResult = await executeQuery<{ id: string }>(
@@ -2075,11 +2090,17 @@ async function createPublishAttemptLedger(input: {
     }
 
     platformAttemptIds.set(platformInput.platform, platformAttemptId);
+    platformAttempts.push({
+      id: platformAttemptId,
+      platform: platformInput.platform,
+      scheduledPostId: platformInput.scheduledPostId?.trim() || undefined,
+      scheduleItemId: platformInput.scheduleItemId?.trim() || undefined,
+    });
   }
 
   await reconcilePublishAttemptStatus(publishAttemptId, input.client);
 
-  return { publishAttemptId, platformAttemptIds };
+  return { publishAttemptId, platformAttemptIds, platformAttempts };
 }
 
 async function updatePublishAttemptPlatformState(input: {
@@ -2330,7 +2351,7 @@ async function ensureScheduledPublishAttemptForPlatform(input: {
       seedRows[0]?.group_title?.trim()
       || extractPublishAttemptTitle(input.duePost.content_text);
 
-    const { publishAttemptId, platformAttemptIds } = await createPublishAttemptLedger({
+    const { publishAttemptId, platformAttemptIds, platformAttempts } = await createPublishAttemptLedger({
       businessId: input.duePost.business_id,
       userId: input.duePost.user_id,
       sourceKind: "scheduled",
@@ -2343,7 +2364,13 @@ async function ensureScheduledPublishAttemptForPlatform(input: {
       client,
     });
 
-    const platformAttemptId = platformAttemptIds.get(input.duePost.platform);
+    const platformAttemptId =
+      platformAttempts.find((attempt) => attempt.scheduledPostId === input.duePost.id)?.id
+      ?? platformAttempts.find((attempt) =>
+        attempt.platform === input.duePost.platform
+        && attempt.scheduleItemId === input.scheduleItemId
+      )?.id
+      ?? platformAttemptIds.get(input.duePost.platform);
 
     if (!platformAttemptId) {
       throw new HttpError(500, "publish_attempt_create_failed", "Unable to seed scheduled publish attempt.");
