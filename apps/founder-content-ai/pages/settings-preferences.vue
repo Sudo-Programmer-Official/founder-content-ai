@@ -899,7 +899,7 @@ function formatBrandThemeAccentStyle(value: BrandKitAccentStyle): string {
     return "Bold emphasis";
   }
 
-  return "Highlight box";
+  return "Soft highlight";
 }
 
 function formatBrandThemePlacement(value: BrandKitBrandPlacement): string {
@@ -2132,7 +2132,7 @@ watch(
                 v-model="brandThemeAccentStyleInput"
                 :disabled="isLoadingBrandTheme || isSavingBrandTheme || !activeBusinessId"
               >
-                <option value="highlight_box">Highlight box</option>
+                <option value="highlight_box">Soft highlight</option>
                 <option value="underline">Underline</option>
                 <option value="bold">Bold emphasis</option>
               </select>

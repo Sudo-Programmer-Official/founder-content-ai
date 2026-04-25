@@ -151,6 +151,23 @@ const referenceOptions = computed(() =>
     label: `${generation.title} · ${formatRelativeDate(generation.createdAt)}`,
   })),
 );
+const savedBrandRuleChips = computed(() => {
+  if (!brandKit.value) {
+    return [];
+  }
+
+  return [
+    `Industry: ${brandKit.value.industry || "Not set"}`,
+    `Tone: ${formatToneLabel(brandKit.value.tone)}`,
+    `Visual style: ${formatVisualStyleLabel(brandKit.value.visualStyle)}`,
+    `Background: ${formatBackgroundStyleLabel(brandKit.value.backgroundStyle)}`,
+    `Accent: ${formatAccentStyleLabel(brandKit.value.accentStyle)}`,
+    `Placement: ${formatBrandPlacementLabel(brandKit.value.brandPlacement)}`,
+    `Font direction: ${formatFontStyleLabel(brandKit.value.fontStyle)}`,
+    brandKit.value.fontFamily ? `Font family: ${brandKit.value.fontFamily}` : undefined,
+    brandKit.value.iconStyle ? `Icon style: ${brandKit.value.iconStyle}` : undefined,
+  ].filter((entry): entry is string => Boolean(entry));
+});
 
 function splitCommaList(value: string): string[] {
   return [...new Set(value
@@ -235,6 +252,85 @@ function formatRelativeDate(value: string): string {
   }).format(date);
 }
 
+function formatToneLabel(value: BrandKitTone): string {
+  switch (value) {
+    case "friendly":
+      return "Friendly";
+    case "bold":
+      return "Bold";
+    default:
+      return "Professional";
+  }
+}
+
+function formatVisualStyleLabel(value: BrandKitVisualStyle): string {
+  switch (value) {
+    case "playful":
+      return "Playful";
+    case "luxury":
+      return "Luxury";
+    default:
+      return "Minimal";
+  }
+}
+
+function formatBackgroundStyleLabel(value: BrandKitBackgroundStyle): string {
+  switch (value) {
+    case "light":
+      return "Light";
+    case "gradient":
+      return "Gradient";
+    default:
+      return "Dark";
+  }
+}
+
+function formatFontStyleLabel(value: BrandKitFontStyle): string {
+  switch (value) {
+    case "bold":
+      return "Bold";
+    case "elegant":
+      return "Elegant";
+    default:
+      return "Modern";
+  }
+}
+
+function formatAccentStyleLabel(value: BrandKitAccentStyle): string {
+  switch (value) {
+    case "underline":
+      return "Underline";
+    case "bold":
+      return "Bold emphasis";
+    default:
+      return "Soft highlight";
+  }
+}
+
+function formatBrandPlacementLabel(value: BrandKitBrandPlacement): string {
+  switch (value) {
+    case "bottom_right":
+      return "Bottom right";
+    case "side_label":
+      return "Side label";
+    default:
+      return "Top left";
+  }
+}
+
+function isExternalUrl(value: string | undefined): boolean {
+  if (!value?.trim()) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 async function loadStudio(): Promise<void> {
   if (!isReady.value || !activeBusinessId.value) {
     return;
@@ -279,7 +375,7 @@ async function saveBrandKit(): Promise<void> {
 
 function useAsReference(generation: BrandStudioGeneration): void {
   generatorForm.matchPreviousStyle = true;
-  generatorForm.referenceGenerationId = generation.id;
+  generatorForm.referenceGenerationId = generation.metadata?.historyPersisted === false ? "" : generation.id;
   latestGeneration.value = generation;
 }
 
@@ -352,10 +448,12 @@ async function generateAsset(): Promise<void> {
     latestGeneration.value = response.generation;
     history.value = [response.generation, ...history.value.filter((item) => item.id !== response.generation.id)]
       .slice(0, 8);
-    if (generatorForm.matchPreviousStyle) {
+    if (generatorForm.matchPreviousStyle && response.generation.metadata?.historyPersisted !== false) {
       generatorForm.referenceGenerationId = response.generation.id;
     }
-    feedback.value = "Brand asset generated and added to version history.";
+    feedback.value = response.generation.metadata?.historyPersisted === false
+      ? "Brand asset generated in compatibility mode. Preview and download work now; saved history will resume after the backend deploy."
+      : "Brand asset generated and added to version history.";
   } catch (error) {
     feedback.value = error instanceof Error ? error.message : "Unable to generate asset.";
   } finally {
@@ -504,7 +602,7 @@ watch(
             <span>Accent style</span>
             <select v-model="brandForm.accentStyle">
               <option value="underline">Underline</option>
-              <option value="highlight_box">Highlight box</option>
+              <option value="highlight_box">Soft highlight</option>
               <option value="bold">Bold emphasis</option>
             </select>
           </label>
@@ -546,6 +644,93 @@ watch(
             />
           </label>
         </div>
+
+        <section v-if="brandKit" class="saved-guidelines">
+          <div class="saved-guidelines-header">
+            <div>
+              <p class="panel-eyebrow">Live Brand Rules</p>
+              <h3>Saved guidelines powering new assets</h3>
+            </div>
+            <p class="saved-guidelines-meta">Updated {{ formatRelativeDate(brandKit.updatedAt) }}</p>
+          </div>
+
+          <div class="saved-color-row">
+            <div class="saved-color-card">
+              <span class="saved-color-swatch" :style="{ background: brandKit.primaryColor }" />
+              <div>
+                <p class="saved-guideline-label">Primary color</p>
+                <p class="saved-guideline-value">{{ brandKit.primaryColor }}</p>
+              </div>
+            </div>
+            <div class="saved-color-card">
+              <span class="saved-color-swatch" :style="{ background: brandKit.secondaryColor }" />
+              <div>
+                <p class="saved-guideline-label">Secondary color</p>
+                <p class="saved-guideline-value">{{ brandKit.secondaryColor }}</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="saved-guideline-chip-row">
+            <span v-for="chip in savedBrandRuleChips" :key="chip" class="saved-guideline-chip">
+              {{ chip }}
+            </span>
+          </div>
+
+          <div class="saved-guideline-grid">
+            <div class="saved-guideline-block">
+              <p class="saved-guideline-label">Style direction</p>
+              <p class="saved-guideline-value">{{ brandKit.style || "Not set yet" }}</p>
+            </div>
+
+            <div class="saved-guideline-block">
+              <p class="saved-guideline-label">Tone keywords</p>
+              <p class="saved-guideline-value">
+                {{ brandKit.toneKeywords.length > 0 ? brandKit.toneKeywords.join(", ") : "Not set yet" }}
+              </p>
+            </div>
+
+            <div class="saved-guideline-block">
+              <p class="saved-guideline-label">Business description</p>
+              <p class="saved-guideline-value">{{ brandKit.businessDescription || "Not set yet" }}</p>
+            </div>
+
+            <div class="saved-guideline-block">
+              <p class="saved-guideline-label">Image guidelines</p>
+              <p class="saved-guideline-value">{{ brandKit.imageGuidelines || "Not set yet" }}</p>
+            </div>
+
+            <div class="saved-guideline-block">
+              <p class="saved-guideline-label">Website</p>
+              <a
+                v-if="isExternalUrl(brandKit.websiteUrl)"
+                class="saved-guideline-link"
+                :href="brandKit.websiteUrl"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {{ brandKit.websiteUrl }}
+              </a>
+              <p v-else class="saved-guideline-value">{{ brandKit.websiteUrl || "Not set yet" }}</p>
+            </div>
+
+            <div class="saved-guideline-block">
+              <p class="saved-guideline-label">Logo</p>
+              <a
+                v-if="isExternalUrl(brandKit.logoUrl)"
+                class="saved-guideline-link"
+                :href="brandKit.logoUrl"
+                target="_blank"
+                rel="noreferrer"
+              >
+                View saved logo
+              </a>
+              <p v-else class="saved-guideline-value">
+                {{ brandKit.logoUrl ? "Logo asset connected" : "Not set yet" }}
+              </p>
+            </div>
+          </div>
+        </section>
       </article>
 
       <article class="studio-panel">
@@ -889,6 +1074,113 @@ watch(
   margin-bottom: 1rem;
 }
 
+.saved-guidelines {
+  margin-top: 1.25rem;
+  padding: 1.1rem;
+  border: 1px solid rgba(249, 115, 22, 0.18);
+  border-radius: 1.1rem;
+  background: linear-gradient(135deg, rgba(255, 247, 237, 0.95), rgba(248, 250, 252, 0.95));
+}
+
+.saved-guidelines-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.saved-guidelines-header h3 {
+  margin: 0.25rem 0 0;
+  color: #0f172a;
+}
+
+.saved-guidelines-meta {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.saved-color-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+  margin-bottom: 0.85rem;
+}
+
+.saved-color-card,
+.saved-guideline-block {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.95rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.95rem;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.saved-color-card {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.saved-color-swatch {
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+}
+
+.saved-guideline-label {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.saved-guideline-value {
+  margin: 0;
+  color: #0f172a;
+  line-height: 1.5;
+}
+
+.saved-guideline-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.saved-guideline-chip {
+  padding: 0.5rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #334155;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.saved-guideline-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.saved-guideline-link {
+  color: #1d4ed8;
+  text-decoration: none;
+  word-break: break-word;
+}
+
+.saved-guideline-link:hover {
+  text-decoration: underline;
+}
+
 .asset-kind-card {
   display: grid;
   gap: 0.3rem;
@@ -1071,18 +1363,25 @@ watch(
   }
 
   .form-grid,
-  .asset-kind-grid {
+  .asset-kind-grid,
+  .saved-color-row,
+  .saved-guideline-grid {
     grid-template-columns: 1fr;
   }
 
   .panel-header,
   .history-header,
+  .saved-guidelines-header,
   .consistency-row,
   .history-topline,
   .panel-actions,
   .history-actions {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .saved-guidelines-meta {
+    white-space: normal;
   }
 }
 </style>

@@ -91,6 +91,17 @@ function sanitizeStringArray(value: string[] | undefined, maxLength = 32, limit 
     .slice(0, limit);
 }
 
+function describeAccentStyle(value: BrandKitAccentStyle): string {
+  switch (value) {
+    case "underline":
+      return "underline accent treatment";
+    case "bold":
+      return "bold emphasis accent treatment";
+    default:
+      return "soft highlight accent treatment";
+  }
+}
+
 function extractHighlightCandidate(value: string): string {
   const normalized = collapseWhitespace(value);
 
@@ -223,7 +234,7 @@ function resolveStyleBlock(brandKit: BrandKitInput): string {
     playful: "expressive composition with a confident modern edge",
   };
   const accentDescriptions: Record<BrandKitAccentStyle, string> = {
-    highlight_box: "highlight phrases land inside a restrained contrast block",
+    highlight_box: "highlight phrases land inside a soft highlight panel or subtle CTA emphasis area",
     underline: "highlight phrases use a sharp underline rather than a box",
     bold: "highlight phrases rely on oversized bold emphasis instead of extra containers",
   };
@@ -273,7 +284,7 @@ function resolveLayoutBlock(
     side_label: "vertical side label locked to one edge",
   };
   const accentDescription: Record<BrandKitAccentStyle, string> = {
-    highlight_box: "one highlighted phrase inside a contrast box",
+    highlight_box: "one highlighted phrase inside a soft highlight panel",
     underline: "one highlighted phrase with an accent underline",
     bold: "one highlighted phrase using oversized bold emphasis",
   };
@@ -462,7 +473,7 @@ function resolveBrandBlock(
     `${visualStyle} visual system`,
     `${backgroundStyle} background treatment`,
     `${fontStyle} type direction`,
-    `${accentStyle} accent treatment`,
+    describeAccentStyle(accentStyle),
     options?.slideVisualRole
       ? "carousel footer branding locked to the bottom-right"
       : `${brandPlacement} brand placement`,
