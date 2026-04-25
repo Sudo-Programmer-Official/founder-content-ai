@@ -839,11 +839,11 @@ export async function generateBrandStudioAsset(input: {
       `
         update brand_studio_generations
         set
-          workspace_asset_id = $2,
+          workspace_asset_id = $2::uuid,
           asset_metadata = jsonb_set(
             coalesce(asset_metadata, '{}'::jsonb),
             '{workspaceAssetId}',
-            to_jsonb($2::text),
+            to_jsonb($3::text),
             true
           )
         where id = $1
@@ -866,7 +866,7 @@ export async function generateBrandStudioAsset(input: {
           asset_metadata,
           created_at
       `,
-      [generationRow.id, asset.id],
+      [generationRow.id, asset.id, asset.id],
     );
 
     return mapGenerationRow({

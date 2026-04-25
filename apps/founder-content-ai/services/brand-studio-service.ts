@@ -25,6 +25,21 @@ const API_ENDPOINTS = {
   visualGenerate: "/generate-visual",
 } as const;
 
+function shouldFallbackToBrandStudioCompatibility(
+  error: unknown,
+  codes: string[],
+): error is ApiRequestError {
+  if (!(error instanceof ApiRequestError)) {
+    return false;
+  }
+
+  if (error.statusCode === 404) {
+    return true;
+  }
+
+  return error.statusCode >= 500 && codes.includes(error.code ?? "");
+}
+
 function createSyntheticGenerationId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return crypto.randomUUID();
@@ -270,11 +285,11 @@ export async function requestBrandStudioHistory(
   try {
     return await apiGet<BrandStudioHistoryResponse>(`${API_ENDPOINTS.history}?${query}`);
   } catch (error) {
-    if (error instanceof ApiRequestError && error.statusCode === 404) {
+    if (shouldFallbackToBrandStudioCompatibility(error, ["brand_studio_history_failed"])) {
       try {
         return await apiGet<BrandStudioHistoryResponse>(`${API_ENDPOINTS.legacyHistory}?${query}`);
       } catch (legacyError) {
-        if (legacyError instanceof ApiRequestError && legacyError.statusCode === 404) {
+        if (shouldFallbackToBrandStudioCompatibility(legacyError, ["brand_studio_history_failed"])) {
           const brandKitResponse = await apiGet<BrandKitResponse>(`${API_ENDPOINTS.brandKit}?${query}`);
           return {
             brandKit: brandKitResponse.brandKit,
@@ -299,7 +314,7 @@ export async function requestGenerateBrandStudioAsset(
       input,
     );
   } catch (error) {
-    if (error instanceof ApiRequestError && error.statusCode === 404) {
+    if (shouldFallbackToBrandStudioCompatibility(error, ["brand_asset_generation_failed"])) {
       const legacyPayload: GenerateBrandStudioAssetRequest = {
         businessId: input.businessId,
         assetKind: toLegacyAssetKind(input.assetType),
@@ -319,7 +334,7 @@ export async function requestGenerateBrandStudioAsset(
           legacyPayload,
         );
       } catch (legacyError) {
-        if (legacyError instanceof ApiRequestError && legacyError.statusCode === 404) {
+        if (shouldFallbackToBrandStudioCompatibility(legacyError, ["brand_studio_generation_failed"])) {
           const visualResponse = await apiPost<GenerateVisualRequest, GenerateVisualResponse>(
             API_ENDPOINTS.visualGenerate,
             buildVisualFallbackRequest(input),
