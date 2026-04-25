@@ -41,8 +41,10 @@ const feedback = ref("");
 const brandKit = ref<BrandKit | null>(null);
 const history = ref<BrandStudioGeneration[]>([]);
 const latestGeneration = ref<BrandStudioGeneration | null>(null);
+const iconSetSlices = ref<IconSetSlicePreview[]>([]);
 const generatorDrafts = reactive<Partial<Record<BrandStudioAssetKind, GeneratorDraft>>>({});
 let isApplyingGeneratorDraft = false;
+let iconSetSliceRequestId = 0;
 
 type GeneratorDraft = {
   goal: string;
@@ -52,6 +54,12 @@ type GeneratorDraft = {
   iconLabels: string;
   matchPreviousStyle: boolean;
   referenceGenerationId: string;
+};
+
+type IconSetSlicePreview = {
+  index: number;
+  label: string;
+  previewUrl: string;
 };
 
 type PersistedGeneratorDraftState = {
@@ -633,6 +641,10 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mimeType });
 }
 
+function sanitizeFilenameFragment(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "asset";
+}
+
 function downloadGeneration(generation: BrandStudioGeneration): void {
   if (typeof window === "undefined") {
     return;
@@ -651,6 +663,117 @@ function downloadGeneration(generation: BrandStudioGeneration): void {
 
   link.href = objectUrl;
   link.download = `${generation.title.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "brand-asset"}.${extension}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(objectUrl);
+}
+
+function openGenerationPreview(generation: BrandStudioGeneration): void {
+  latestGeneration.value = generation;
+}
+
+function formatIconSliceLabel(label: string | undefined, index: number): string {
+  const normalized = label?.trim();
+
+  if (!normalized) {
+    return `Icon ${index + 1}`;
+  }
+
+  return normalized;
+}
+
+function loadImageElement(source: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to load icon set image."));
+    image.src = source;
+  });
+}
+
+async function buildIconSetSlices(generation: BrandStudioGeneration): Promise<IconSetSlicePreview[]> {
+  const image = await loadImageElement(generation.asset.previewUrl);
+  const width = image.naturalWidth || image.width;
+  const height = image.naturalHeight || image.height;
+  const cellWidth = width / 2;
+  const cellHeight = height / 2;
+  const paddingX = Math.round(cellWidth * 0.14);
+  const paddingY = Math.round(cellHeight * 0.14);
+  const mimeType = generation.asset.mimeType.includes("jpeg") ? "image/jpeg" : "image/png";
+
+  return Array.from({ length: 4 }, (_, index) => {
+    const column = index % 2;
+    const row = Math.floor(index / 2);
+    const sourceX = Math.max(0, Math.round(column * cellWidth + paddingX));
+    const sourceY = Math.max(0, Math.round(row * cellHeight + paddingY));
+    const sourceWidth = Math.max(1, Math.round(cellWidth - paddingX * 2));
+    const sourceHeight = Math.max(1, Math.round(cellHeight - paddingY * 2));
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+
+    canvas.width = sourceWidth;
+    canvas.height = sourceHeight;
+    context?.drawImage(
+      image,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      sourceWidth,
+      sourceHeight,
+    );
+
+    return {
+      index,
+      label: formatIconSliceLabel(generation.iconLabels[index], index),
+      previewUrl: canvas.toDataURL(mimeType),
+    };
+  });
+}
+
+async function refreshIconSetSlices(generation: BrandStudioGeneration | null): Promise<void> {
+  const requestId = ++iconSetSliceRequestId;
+
+  if (!generation || generation.assetKind !== "icon_set") {
+    iconSetSlices.value = [];
+    return;
+  }
+
+  try {
+    const slices = await buildIconSetSlices(generation);
+
+    if (requestId !== iconSetSliceRequestId) {
+      return;
+    }
+
+    iconSetSlices.value = slices;
+  } catch {
+    if (requestId === iconSetSliceRequestId) {
+      iconSetSlices.value = [];
+    }
+  }
+}
+
+function downloadIconSetSlice(generation: BrandStudioGeneration, slice: IconSetSlicePreview): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const blob = dataUrlToBlob(slice.previewUrl);
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const extension = generation.asset.mimeType.includes("jpeg") || generation.asset.mimeType.includes("jpg")
+    ? "jpg"
+    : generation.asset.mimeType.includes("svg")
+      ? "svg"
+      : "png";
+
+  link.href = objectUrl;
+  link.download = `${sanitizeFilenameFragment(generation.title)}-${sanitizeFilenameFragment(slice.label)}.${extension}`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -700,6 +823,14 @@ async function generateAsset(): Promise<void> {
     isGenerating.value = false;
   }
 }
+
+watch(
+  () => latestGeneration.value,
+  (generation) => {
+    void refreshIconSetSlices(generation);
+  },
+  { immediate: true },
+);
 
 watch(
   () => generatorForm.assetKind,
@@ -1150,6 +1281,27 @@ watch(
             <p class="detail-text">{{ formatRelativeDate(latestGeneration.createdAt) }}</p>
           </div>
         </div>
+
+        <section v-if="latestGeneration.assetKind === 'icon_set' && iconSetSlices.length > 0" class="icon-slice-section">
+          <p class="detail-label">Individual icons</p>
+          <div class="icon-slice-grid">
+            <article v-for="slice in iconSetSlices" :key="slice.index" class="icon-slice-card">
+              <div class="icon-slice-frame">
+                <img :src="slice.previewUrl" :alt="slice.label" class="icon-slice-image" />
+              </div>
+              <div class="icon-slice-meta">
+                <strong>{{ slice.label }}</strong>
+                <button
+                  type="button"
+                  class="secondary-button compact"
+                  @click="downloadIconSetSlice(latestGeneration, slice)"
+                >
+                  Download Icon
+                </button>
+              </div>
+            </article>
+          </div>
+        </section>
       </article>
     </section>
 
@@ -1175,6 +1327,9 @@ watch(
             </div>
             <p>{{ generation.assetKind.replace(/_/g, " ") }} · {{ generation.templateKey }}</p>
             <div class="history-actions">
+              <button type="button" class="secondary-button compact" @click="openGenerationPreview(generation)">
+                Preview
+              </button>
               <button type="button" class="secondary-button compact" @click="useAsReference(generation)">
                 Match Style
               </button>
@@ -1597,6 +1752,50 @@ watch(
   line-height: 1.55;
 }
 
+.icon-slice-section {
+  margin-top: 1.1rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.icon-slice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.icon-slice-card {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 1rem;
+  background: #f8fafc;
+}
+
+.icon-slice-frame {
+  display: grid;
+  place-items: center;
+  min-height: 12rem;
+  padding: 1rem;
+  border-radius: 0.9rem;
+  background: #ffffff;
+}
+
+.icon-slice-image {
+  width: 100%;
+  max-width: 12rem;
+  display: block;
+  object-fit: contain;
+}
+
+.icon-slice-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
 .studio-history {
   display: grid;
   gap: 1rem;
@@ -1653,7 +1852,8 @@ watch(
   .form-grid,
   .asset-kind-grid,
   .saved-color-row,
-  .saved-guideline-grid {
+  .saved-guideline-grid,
+  .icon-slice-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1662,6 +1862,7 @@ watch(
   .saved-guidelines-header,
   .consistency-row,
   .history-topline,
+  .icon-slice-meta,
   .panel-actions,
   .history-actions {
     flex-direction: column;
