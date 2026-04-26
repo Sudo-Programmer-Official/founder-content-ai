@@ -2,7 +2,9 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
+  BrandKit,
   BusinessMembership,
+  BrandStudioGeneration,
   ControlDashboardResponse,
   GenerateContentPlanResponse,
   PostAsset,
@@ -40,6 +42,8 @@ import {
   requestApproveContentPlan,
   requestGenerateContentPlan,
 } from "../services/content-plan-service";
+import { requestBrandKit } from "../services/brand-kit-service";
+import { requestGenerateBrandStudioAsset } from "../services/brand-studio-service";
 import { requestPostAssets } from "../services/post-assets-service";
 import { requestWorkspaceInsights } from "../services/workspace-insights-service";
 import { appRoutes } from "../utils/routes";
@@ -164,6 +168,10 @@ const draftActionKind = ref<"duplicate" | "delete" | "">("");
 const isGeneratingSocialPlan = ref(false);
 const isApprovingSocialPlan = ref(false);
 const generatedSocialPlan = ref<GenerateContentPlanResponse | null>(null);
+const socialAutopilotBrandKit = ref<BrandKit | null>(null);
+const socialAutopilotGeneratedImages = ref<Record<string, BrandStudioGeneration>>({});
+const socialAutopilotImageLoading = ref<Record<string, boolean>>({});
+const socialAutopilotImageErrors = ref<Record<string, string>>({});
 const SOCIAL_AUTOPILOT_DURATION_OPTIONS: Array<{
   value: SocialContentPlanDuration;
   label: string;
@@ -1108,6 +1116,164 @@ function buildExcerpt(value: string, maxLength = 140): string {
   return `${normalized.slice(0, maxLength).trimEnd()}...`;
 }
 
+function sanitizeFilenameFragment(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "asset";
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [header, payload] = dataUrl.split(",", 2);
+  const mimeMatch = header.match(/^data:([^;]+);base64$/);
+  const mimeType = mimeMatch?.[1] ?? "application/octet-stream";
+  const binary = atob(payload ?? "");
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return new Blob([bytes], { type: mimeType });
+}
+
+function clearSocialAutopilotGeneratedImages(): void {
+  socialAutopilotGeneratedImages.value = {};
+  socialAutopilotImageLoading.value = {};
+  socialAutopilotImageErrors.value = {};
+}
+
+function resolveSocialPlanEntryAssetKey(entry: SocialContentPlanEntry): string {
+  return entry.variantId;
+}
+
+function resolveSocialPlanGeneratedImage(entry: SocialContentPlanEntry): BrandStudioGeneration | null {
+  return socialAutopilotGeneratedImages.value[resolveSocialPlanEntryAssetKey(entry)] ?? null;
+}
+
+function isGeneratingSocialPlanImage(entry: SocialContentPlanEntry): boolean {
+  return socialAutopilotImageLoading.value[resolveSocialPlanEntryAssetKey(entry)] === true;
+}
+
+function resolveSocialPlanImageError(entry: SocialContentPlanEntry): string {
+  return socialAutopilotImageErrors.value[resolveSocialPlanEntryAssetKey(entry)] ?? "";
+}
+
+function buildSocialPlanImageGoal(entry: SocialContentPlanEntry): string {
+  return entry.title?.trim()
+    || `Create a ${resolveSocialPlatformLabel(entry.platform)} ${entry.type.replace(/_/g, " ")} social visual`;
+}
+
+function buildSocialPlanImageLayout(entry: SocialContentPlanEntry): string {
+  if (entry.platform === "instagram") {
+    return "Square social composition with one strong focal point and clean framing";
+  }
+
+  return "Branded social composition with clear focal hierarchy and room for lightweight CTA treatment";
+}
+
+async function ensureSocialAutopilotBrandKit(): Promise<BrandKit | null> {
+  if (socialAutopilotBrandKit.value) {
+    return socialAutopilotBrandKit.value;
+  }
+
+  if (!resolvedBusinessId.value) {
+    return null;
+  }
+
+  try {
+    const response = await requestBrandKit(resolvedBusinessId.value);
+    socialAutopilotBrandKit.value = response.brandKit;
+    return response.brandKit;
+  } catch {
+    return null;
+  }
+}
+
+async function generateSocialPlanImage(entry: SocialContentPlanEntry): Promise<void> {
+  if (!resolvedBusinessId.value) {
+    errorMessage.value = "Pick a workspace before generating post visuals.";
+    return;
+  }
+
+  const assetKey = resolveSocialPlanEntryAssetKey(entry);
+  socialAutopilotImageLoading.value = {
+    ...socialAutopilotImageLoading.value,
+    [assetKey]: true,
+  };
+  socialAutopilotImageErrors.value = {
+    ...socialAutopilotImageErrors.value,
+    [assetKey]: "",
+  };
+  errorMessage.value = "";
+  feedbackMessage.value = "";
+
+  try {
+    const brandKit = await ensureSocialAutopilotBrandKit();
+    const response = await requestGenerateBrandStudioAsset({
+      businessId: resolvedBusinessId.value,
+      assetType: "social_post",
+      goal: buildSocialPlanImageGoal(entry),
+      context: entry.imagePrompt,
+      layout: buildSocialPlanImageLayout(entry),
+      extraInstructions: [
+        `Platform: ${resolveSocialPlatformLabel(entry.platform)}.`,
+        `CTA: ${entry.cta}.`,
+        entry.angle ? `Angle: ${entry.angle}.` : undefined,
+        "Keep this social-ready, on-brand, and usable without extra prompt editing.",
+      ].filter((value): value is string => Boolean(value)).join(" "),
+      brandKit: brandKit ?? undefined,
+    });
+    socialAutopilotGeneratedImages.value = {
+      ...socialAutopilotGeneratedImages.value,
+      [assetKey]: response.generation,
+    };
+    feedbackMessage.value = `Generated image for Day ${entry.day} · ${resolveSocialPlatformLabel(entry.platform)}.`;
+  } catch (error) {
+    socialAutopilotImageErrors.value = {
+      ...socialAutopilotImageErrors.value,
+      [assetKey]: error instanceof Error ? error.message : "Unable to generate an image for this post.",
+    };
+  } finally {
+    socialAutopilotImageLoading.value = {
+      ...socialAutopilotImageLoading.value,
+      [assetKey]: false,
+    };
+  }
+}
+
+function downloadSocialPlanGeneratedImage(generation: BrandStudioGeneration): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const extension = generation.asset.mimeType.includes("jpeg") || generation.asset.mimeType.includes("jpg")
+    ? "jpg"
+    : generation.asset.mimeType.includes("svg")
+      ? "svg"
+      : "png";
+  const filename = `${sanitizeFilenameFragment(generation.title)}.${extension}`;
+
+  if (generation.asset.downloadUrl.startsWith("data:")) {
+    const blob = dataUrlToBlob(generation.asset.downloadUrl);
+    const objectUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(objectUrl);
+    return;
+  }
+
+  const link = document.createElement("a");
+  link.href = generation.asset.downloadUrl;
+  link.download = filename;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 function normalizePreviewParagraphs(value: string): string[] {
   return value
     .split(/\n{2,}/)
@@ -1492,6 +1658,7 @@ async function generateSocialAutopilotPlan(): Promise<void> {
   feedbackMessage.value = "";
 
   try {
+    clearSocialAutopilotGeneratedImages();
     const response = await requestGenerateContentPlan({
       businessId: resolvedBusinessId.value,
       duration: socialAutopilotForm.value.duration,
@@ -1519,6 +1686,7 @@ async function generateSocialAutopilotPlan(): Promise<void> {
 
 function clearSocialAutopilotPlan(): void {
   generatedSocialPlan.value = null;
+  clearSocialAutopilotGeneratedImages();
   feedbackMessage.value = "Autopilot preview cleared.";
   errorMessage.value = "";
 }
@@ -1549,6 +1717,7 @@ async function approveSocialAutopilotPlan(): Promise<void> {
     });
 
     generatedSocialPlan.value = null;
+    clearSocialAutopilotGeneratedImages();
     await loadPlannerData();
     await refreshProductAccess(resolvedBusinessId.value);
     syncSelection();
@@ -1924,6 +2093,8 @@ watch(
   () => {
     audienceTimezone.value = workspaceDefaultAudienceTimezone.value;
     generatedSocialPlan.value = null;
+    socialAutopilotBrandKit.value = null;
+    clearSocialAutopilotGeneratedImages();
     syncSocialAutopilotDefaults();
     void loadSocialAccounts();
   },
@@ -2275,6 +2446,9 @@ onMounted(() => {
                 <p class="planner-inline-tip">
                   {{ socialAutopilotPreviewDays.length }} day pack · {{ socialAutopilotSelectedPlatformsLabel }}
                 </p>
+                <p class="planner-inline-tip">
+                  This pack creates copy plus visual prompts. Generate and download images for the posts that need media; approving the pack still queues the post copy.
+                </p>
               </div>
               <span class="workspace-chip">{{ generatedSocialPlan.batch.title || "Social autopilot" }}</span>
             </div>
@@ -2303,6 +2477,42 @@ onMounted(() => {
                     <strong>{{ entry.title || buildExcerpt(entry.content, 72) }}</strong>
                     <p>{{ buildExcerpt(entry.content, 180) }}</p>
                     <p class="planner-inline-tip">CTA: {{ entry.cta }}</p>
+                    <div
+                      v-if="resolveSocialPlanGeneratedImage(entry)"
+                      class="planner-day-schedule-visual"
+                    >
+                      <img
+                        :src="resolveSocialPlanGeneratedImage(entry)?.asset.previewUrl"
+                        :alt="resolveSocialPlanGeneratedImage(entry)?.title || 'Generated social image preview'"
+                      />
+                    </div>
+                    <div class="planner-card-action-row planner-day-schedule-actions">
+                      <button
+                        type="button"
+                        class="workspace-primary-button compact"
+                        :disabled="isGeneratingSocialPlanImage(entry)"
+                        @click="void generateSocialPlanImage(entry)"
+                      >
+                        {{
+                          isGeneratingSocialPlanImage(entry)
+                            ? "Generating image..."
+                            : resolveSocialPlanGeneratedImage(entry)
+                              ? "Regenerate image"
+                              : "Generate image"
+                        }}
+                      </button>
+                      <button
+                        v-if="resolveSocialPlanGeneratedImage(entry)"
+                        type="button"
+                        class="workspace-secondary-button compact"
+                        @click="downloadSocialPlanGeneratedImage(resolveSocialPlanGeneratedImage(entry)!)"
+                      >
+                        Download image
+                      </button>
+                    </div>
+                    <p v-if="resolveSocialPlanImageError(entry)" class="planner-feedback danger">
+                      {{ resolveSocialPlanImageError(entry) }}
+                    </p>
                     <p class="planner-inline-tip">Image prompt: {{ buildExcerpt(entry.imagePrompt, 180) }}</p>
                   </article>
                 </div>
@@ -3908,6 +4118,25 @@ onMounted(() => {
   background: rgba(255, 255, 255, 0.84);
   padding: 1rem;
   box-shadow: 0 12px 24px rgba(145, 84, 39, 0.05);
+}
+
+.planner-day-schedule-actions {
+  justify-content: flex-start;
+}
+
+.planner-day-schedule-visual {
+  overflow: hidden;
+  border: 1px solid rgba(60, 41, 30, 0.08);
+  border-radius: 1rem;
+  background: rgba(255, 252, 247, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.planner-day-schedule-visual img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: cover;
 }
 
 .planner-day-schedule-card[data-tone="success"] {
