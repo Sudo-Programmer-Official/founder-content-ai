@@ -3355,7 +3355,7 @@ async function loadEmailCampaignOrThrow(
         c.id,
         c.business_id,
         c.list_id,
-        coalesce(campaign_lists.list_ids_json, '[]'::json) as list_ids_json,
+        coalesce(campaign_lists.list_ids_json, '[]'::jsonb) as list_ids_json,
         c.source_asset_id,
         c.source_idea_id,
         c.source_title,
@@ -3390,7 +3390,7 @@ async function loadEmailCampaignOrThrow(
         limit 1
       ) latest_send on true
       left join lateral (
-        select json_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
+        select jsonb_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
         from email_campaign_audience_lists cal
         where cal.campaign_id = c.id
       ) campaign_lists on true
@@ -5840,7 +5840,7 @@ export async function listEmailCampaigns(businessId: string): Promise<EmailCampa
         c.id,
         c.business_id,
         c.list_id,
-        coalesce(campaign_lists.list_ids_json, '[]'::json) as list_ids_json,
+        coalesce(campaign_lists.list_ids_json, '[]'::jsonb) as list_ids_json,
         c.source_asset_id,
         c.source_idea_id,
         c.source_title,
@@ -5875,7 +5875,7 @@ export async function listEmailCampaigns(businessId: string): Promise<EmailCampa
         limit 1
       ) latest_send on true
       left join lateral (
-        select json_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
+        select jsonb_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
         from email_campaign_audience_lists cal
         where cal.campaign_id = c.id
       ) campaign_lists on true
@@ -5959,7 +5959,7 @@ export async function processQueuedEmailCampaigns(
         c.id,
         c.business_id,
         c.list_id,
-        coalesce(campaign_lists.list_ids_json, '[]'::json) as list_ids_json,
+        coalesce(campaign_lists.list_ids_json, '[]'::jsonb) as list_ids_json,
         c.source_asset_id,
         c.source_idea_id,
         c.source_title,
@@ -5982,7 +5982,7 @@ export async function processQueuedEmailCampaigns(
         count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_count
       from email_campaigns c
       left join lateral (
-        select json_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
+        select jsonb_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
         from email_campaign_audience_lists cal
         where cal.campaign_id = c.id
       ) campaign_lists on true
