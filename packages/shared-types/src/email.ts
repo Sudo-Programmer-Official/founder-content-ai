@@ -200,6 +200,7 @@ export interface EmailCampaign {
   id: string;
   businessId: string;
   listId?: string;
+  listIds?: string[];
   sourceAssetId?: string;
   sourceIdeaId?: string;
   sourceTitle?: string;
@@ -516,7 +517,8 @@ export interface DeleteEmailContactResponse {
 }
 
 export interface CreateEmailCampaignRequest {
-  listId: string;
+  listId?: string;
+  listIds?: string[];
   name: string;
   subject: string;
   bodyHtml?: string;
@@ -533,7 +535,8 @@ export interface CreateEmailCampaignResponse {
 }
 
 export interface UpdateEmailCampaignRequest {
-  listId: string;
+  listId?: string;
+  listIds?: string[];
   name: string;
   subject: string;
   bodyHtml?: string;

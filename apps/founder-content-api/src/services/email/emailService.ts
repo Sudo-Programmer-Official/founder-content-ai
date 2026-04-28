@@ -155,6 +155,7 @@ interface EmailCampaignRow extends QueryResultRow {
   id: string;
   business_id: string;
   list_id: string | null;
+  list_ids_json?: unknown;
   source_asset_id: string | null;
   source_idea_id: string | null;
   source_title: string | null;
@@ -1270,10 +1271,13 @@ function mapEmailContact(row: EmailContactRow): EmailContact {
 }
 
 function mapEmailCampaign(row: EmailCampaignRow): EmailCampaign {
+  const listIds = parseJsonArray<string>(row.list_ids_json);
+
   return {
     id: row.id,
     businessId: row.business_id,
     listId: row.list_id ?? undefined,
+    listIds: listIds.length > 0 ? listIds : row.list_id ? [row.list_id] : [],
     sourceAssetId: row.source_asset_id ?? undefined,
     sourceIdeaId: row.source_idea_id ?? undefined,
     sourceTitle: row.source_title ?? undefined,
@@ -1300,6 +1304,25 @@ function mapEmailCampaign(row: EmailCampaignRow): EmailCampaign {
     uniqueClicks: toNumber(row.unique_clicks),
     totalClicks: toNumber(row.total_clicks),
   };
+}
+
+function normalizeCampaignAudienceListIds(input: CreateEmailCampaignRequest | UpdateEmailCampaignRequest): string[] {
+  const candidates = [
+    ...(Array.isArray(input.listIds) ? input.listIds : []),
+    input.listId,
+  ];
+  const seen = new Set<string>();
+
+  return candidates.flatMap((listId) => {
+    const normalized = typeof listId === "string" ? listId.trim() : "";
+
+    if (!normalized || seen.has(normalized)) {
+      return [];
+    }
+
+    seen.add(normalized);
+    return [normalized];
+  });
 }
 
 function mapEmailCampaignLink(row: EmailCampaignLinkAggregateRow): EmailCampaignLink {
@@ -3332,6 +3355,7 @@ async function loadEmailCampaignOrThrow(
         c.id,
         c.business_id,
         c.list_id,
+        coalesce(campaign_lists.list_ids_json, '[]'::json) as list_ids_json,
         c.source_asset_id,
         c.source_idea_id,
         c.source_title,
@@ -3365,10 +3389,15 @@ async function loadEmailCampaignOrThrow(
         order by s.created_at desc, s.id desc
         limit 1
       ) latest_send on true
+      left join lateral (
+        select json_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
+        from email_campaign_audience_lists cal
+        where cal.campaign_id = c.id
+      ) campaign_lists on true
       left join email_campaign_recipients r on r.send_id = latest_send.id
       where c.business_id = $1::uuid
         and c.id = $2::uuid
-      group by c.id, latest_send.id
+      group by c.id, latest_send.id, campaign_lists.list_ids_json
       limit 1
     `,
     [businessId, campaignId],
@@ -3495,6 +3524,79 @@ async function loadEmailListScopeById(
     memberListIds: memberListIds.length > 0 ? memberListIds : [selectedList.id],
     normalizedNameKey,
   };
+}
+
+async function resolveCampaignAudienceLists(
+  businessId: string,
+  input: CreateEmailCampaignRequest | UpdateEmailCampaignRequest,
+  client?: PoolClient,
+): Promise<{
+  primaryList: EmailListRow;
+  selectedListIds: string[];
+}> {
+  const requestedListIds = normalizeCampaignAudienceListIds(input);
+
+  if (requestedListIds.length === 0) {
+    throw new HttpError(400, "email_campaign_audience_required", "Select at least one audience list.");
+  }
+
+  const selectedListIds: string[] = [];
+  let primaryList: EmailListRow | null = null;
+
+  for (const listId of requestedListIds) {
+    const listScope = await loadEmailListScopeById(businessId, listId, client);
+
+    if (!primaryList) {
+      primaryList = listScope.canonicalList;
+    }
+
+    if (!selectedListIds.includes(listScope.canonicalList.id)) {
+      selectedListIds.push(listScope.canonicalList.id);
+    }
+  }
+
+  return {
+    primaryList: primaryList!,
+    selectedListIds,
+  };
+}
+
+async function replaceCampaignAudienceLists(
+  campaignId: string,
+  listIds: string[],
+  client?: PoolClient,
+): Promise<void> {
+  await executeQuery(
+    `
+      delete from email_campaign_audience_lists
+      where campaign_id = $1::uuid
+    `,
+    [campaignId],
+    client,
+  );
+
+  if (listIds.length === 0) {
+    return;
+  }
+
+  await executeQuery(
+    `
+      insert into email_campaign_audience_lists (
+        campaign_id,
+        list_id,
+        position_index
+      )
+      select
+        $1::uuid,
+        list_id,
+        position_index::int
+      from unnest($2::uuid[]) with ordinality as selected(list_id, position_index)
+      on conflict (campaign_id, list_id) do update
+      set position_index = excluded.position_index
+    `,
+    [campaignId, listIds],
+    client,
+  );
 }
 
 async function ensureEmailListByName(
@@ -3734,6 +3836,18 @@ async function loadCampaignContacts(
     EmailContactRow & { campaign_id: string | null }
   >(
     `
+      with selected_campaign_lists as (
+        select
+          ec.business_id,
+          ec.id as campaign_id,
+          coalesce(cal.list_id, ec.list_id) as list_id,
+          coalesce(cal.position_index, 0) as position_index
+        from email_campaigns ec
+        left join email_campaign_audience_lists cal on cal.campaign_id = ec.id
+        where ec.business_id = $1::uuid
+          and ec.id = $2::uuid
+          and coalesce(cal.list_id, ec.list_id) is not null
+      )
       select *
       from (
         select distinct on (c.id)
@@ -3743,6 +3857,7 @@ async function loadCampaignContacts(
           c.first_name,
           c.last_name,
           c.tags_json,
+          c.attributes_json,
           c.status,
           c.unsubscribe_token,
           c.unsubscribed_at,
@@ -3751,7 +3866,7 @@ async function loadCampaignContacts(
           c.last_provider_event_at,
           c.created_at,
           c.updated_at
-        from email_campaigns ec
+        from selected_campaign_lists ec
         inner join email_lists selected_list on selected_list.id = ec.list_id
         inner join email_lists scoped_list
           on scoped_list.business_id = selected_list.business_id
@@ -3762,7 +3877,6 @@ async function loadCampaignContacts(
           on eu.business_id = c.business_id
          and lower(eu.email) = lower(c.email)
         where ec.business_id = $1::uuid
-          and ec.id = $2::uuid
           and c.status = 'active'
           and eu.id is null
         order by c.id, c.created_at asc
@@ -5345,7 +5459,7 @@ export async function createEmailCampaign(
   }
 
   return withDbTransaction(async (client) => {
-    const listScope = await loadEmailListScopeById(businessId, input.listId, client);
+    const audienceLists = await resolveCampaignAudienceLists(businessId, input, client);
     const settingsRow = await ensureEmailSettingsRow(businessId, client);
     const footerBranding = await loadEmailFooterBranding(businessId, client);
     const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow), footerBranding);
@@ -5412,7 +5526,7 @@ export async function createEmailCampaign(
       `,
       [
         businessId,
-        listScope.canonicalList.id,
+        audienceLists.primaryList.id,
         campaignSource.sourceAssetId,
         campaignSource.sourceIdeaId,
         campaignSource.sourceTitle,
@@ -5425,9 +5539,13 @@ export async function createEmailCampaign(
       ],
       client,
     );
+    await replaceCampaignAudienceLists(result.rows[0].id, audienceLists.selectedListIds, client);
 
     return {
-      campaign: mapEmailCampaign(result.rows[0]),
+      campaign: mapEmailCampaign({
+        ...result.rows[0],
+        list_ids_json: audienceLists.selectedListIds,
+      }),
     };
   });
 }
@@ -5446,7 +5564,7 @@ export async function updateEmailCampaign(
     const campaign = await loadEmailCampaignOrThrow(businessId, campaignId, client);
     assertEmailCampaignEditable(campaign, "edit");
     const latestSend = await loadLatestCampaignSend(campaignId, client);
-    const listScope = await loadEmailListScopeById(businessId, input.listId, client);
+    const audienceLists = await resolveCampaignAudienceLists(businessId, input, client);
     const settingsRow = await ensureEmailSettingsRow(businessId, client);
     const footerBranding = await loadEmailFooterBranding(businessId, client);
     const renderedBody = buildEmailCampaignBodies(input, mapEmailSettings(settingsRow), footerBranding);
@@ -5517,7 +5635,7 @@ export async function updateEmailCampaign(
       `,
       [
         campaignId,
-        listScope.canonicalList.id,
+        audienceLists.primaryList.id,
         campaignSource.sourceAssetId,
         campaignSource.sourceIdeaId,
         campaignSource.sourceTitle,
@@ -5530,9 +5648,13 @@ export async function updateEmailCampaign(
       ],
       client,
     );
+    await replaceCampaignAudienceLists(campaignId, audienceLists.selectedListIds, client);
 
     return {
-      campaign: mapEmailCampaign(result.rows[0]),
+      campaign: mapEmailCampaign({
+        ...result.rows[0],
+        list_ids_json: audienceLists.selectedListIds,
+      }),
     };
   });
 }
@@ -5718,6 +5840,7 @@ export async function listEmailCampaigns(businessId: string): Promise<EmailCampa
         c.id,
         c.business_id,
         c.list_id,
+        coalesce(campaign_lists.list_ids_json, '[]'::json) as list_ids_json,
         c.source_asset_id,
         c.source_idea_id,
         c.source_title,
@@ -5751,9 +5874,14 @@ export async function listEmailCampaigns(businessId: string): Promise<EmailCampa
         order by s.created_at desc, s.id desc
         limit 1
       ) latest_send on true
+      left join lateral (
+        select json_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
+        from email_campaign_audience_lists cal
+        where cal.campaign_id = c.id
+      ) campaign_lists on true
       left join email_campaign_recipients r on r.send_id = latest_send.id
       where c.business_id = $1::uuid
-      group by c.id, latest_send.id
+      group by c.id, latest_send.id, campaign_lists.list_ids_json
       order by c.created_at desc
     `,
     [businessId],
@@ -5831,6 +5959,7 @@ export async function processQueuedEmailCampaigns(
         c.id,
         c.business_id,
         c.list_id,
+        coalesce(campaign_lists.list_ids_json, '[]'::json) as list_ids_json,
         c.source_asset_id,
         c.source_idea_id,
         c.source_title,
@@ -5852,11 +5981,16 @@ export async function processQueuedEmailCampaigns(
         count(r.id) filter (where r.status = 'failed')::int as failed_count,
         count(r.id) filter (where r.status = 'unsubscribed')::int as unsubscribed_count
       from email_campaigns c
+      left join lateral (
+        select json_agg(cal.list_id order by cal.position_index, cal.created_at) as list_ids_json
+        from email_campaign_audience_lists cal
+        where cal.campaign_id = c.id
+      ) campaign_lists on true
       left join email_campaign_recipients r on r.campaign_id = c.id
       where c.status in ('queued', 'sending')
         and ($1::uuid is null or c.business_id = $1::uuid)
         and ($2::uuid is null or c.id = $2::uuid)
-      group by c.id
+      group by c.id, campaign_lists.list_ids_json
       order by c.created_at asc
     `,
     [options.businessId ?? null, options.campaignId ?? null],

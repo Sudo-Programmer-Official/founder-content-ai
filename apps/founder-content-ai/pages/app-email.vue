@@ -1144,7 +1144,7 @@ const selectedLibraryDraftId = ref("");
 const campaignRouteSyncKey = ref("");
 
 const campaignForm = ref({
-  listId: "",
+  listIds: [] as string[],
   name: "First Campaign",
   subject: "Quick thought for founders trying to stay consistent",
   bodyText:
@@ -1540,15 +1540,34 @@ function findEmailListByReference(listId: string | undefined | null): EmailList 
   );
 }
 
-const selectedCampaignList = computed(() => findEmailListByReference(campaignForm.value.listId));
-const selectedCampaignAudienceCount = computed(() => selectedCampaignList.value?.contactCount ?? 0);
+const selectedCampaignLists = computed(() =>
+  campaignForm.value.listIds
+    .map((listId) => findEmailListByReference(listId))
+    .filter((list): list is EmailList => Boolean(list)),
+);
+const selectedCampaignAudienceCount = computed(() => {
+  const selectedContactTotal = selectedCampaignLists.value.reduce((total, list) => total + list.contactCount, 0);
+  return selectedContactTotal;
+});
+const selectedCampaignAudienceLabel = computed(() => {
+  if (selectedCampaignLists.value.length === 0) {
+    return "Choose lists to target";
+  }
+
+  if (selectedCampaignLists.value.length === 1) {
+    return selectedCampaignLists.value[0].name;
+  }
+
+  return `${selectedCampaignLists.value.length} lists selected`;
+});
 const selectedCampaignAudienceSummary = computed(() => {
-  if (!selectedCampaignList.value) {
-    return "Pick a list to define who this campaign reaches.";
+  if (selectedCampaignLists.value.length === 0) {
+    return "Pick one or more lists to define who this campaign reaches.";
   }
 
   const count = selectedCampaignAudienceCount.value;
-  return `${selectedCampaignList.value.name} · ${count.toLocaleString()} contact${count === 1 ? "" : "s"} in this audience before suppressions.`;
+  const listNames = selectedCampaignLists.value.map((list) => list.name).join(", ");
+  return `${listNames} · ${count.toLocaleString()} contact${count === 1 ? "" : "s"} before dedupe and suppressions.`;
 });
 const isEditingCampaign = computed(() => Boolean(editingCampaignId.value));
 const campaignComposerTitle = computed(() =>
@@ -2226,8 +2245,8 @@ const hasPendingDomainSetupChanges = computed(() => {
   );
 });
 const campaignSendBlockReason = computed(() => {
-  if (!campaignForm.value.listId) {
-    return "Select an audience before sending.";
+  if (campaignForm.value.listIds.length === 0) {
+    return "Select at least one audience before sending.";
   }
 
   if (!campaignForm.value.subject.trim()) {
@@ -2445,11 +2464,17 @@ function loadCampaignIntoComposer(
   campaignEditorMode.value = "preview";
   campaignAdvancedOpen.value = false;
   errorMessage.value = "";
-  campaignForm.value.listId =
-    findEmailListByReference(campaign.listId)?.id
-    || campaign.listId
-    || emailLists.value[0]?.id
-    || campaignForm.value.listId;
+  const campaignListIds = campaign.listIds && campaign.listIds.length > 0
+    ? campaign.listIds
+    : campaign.listId
+      ? [campaign.listId]
+      : [];
+  campaignForm.value.listIds = campaignListIds
+    .map((listId) => findEmailListByReference(listId)?.id || listId)
+    .filter((listId) => Boolean(findEmailListByReference(listId)));
+  if (campaignForm.value.listIds.length === 0 && emailLists.value[0]) {
+    campaignForm.value.listIds = [emailLists.value[0].id];
+  }
   campaignForm.value.name = options.duplicate ? buildDuplicateCampaignName(campaign.name) : campaign.name;
   campaignForm.value.subject = campaign.subject;
   campaignForm.value.bodyText = campaign.bodyText || htmlToPreviewText(campaign.bodyHtml);
@@ -3114,7 +3139,24 @@ function getCampaignActionLabel(campaign: EmailCampaign): string {
 }
 
 function resolveCampaignListName(campaign: EmailCampaign): string {
-  return findEmailListByReference(campaign.listId)?.name || "Selected audience";
+  const campaignListIds = campaign.listIds && campaign.listIds.length > 0
+    ? campaign.listIds
+    : campaign.listId
+      ? [campaign.listId]
+      : [];
+  const campaignLists = campaignListIds
+    .map((listId) => findEmailListByReference(listId))
+    .filter((list): list is EmailList => Boolean(list));
+
+  if (campaignLists.length === 0) {
+    return "Selected audience";
+  }
+
+  if (campaignLists.length === 1) {
+    return campaignLists[0].name;
+  }
+
+  return `${campaignLists.length} lists`;
 }
 
 function buildCampaignStatsFallback(campaign: EmailCampaign): EmailCampaignStats {
@@ -3784,13 +3826,17 @@ async function loadEmailState(options: { syncDomainForm?: boolean } = {}): Promi
   startCampaignProgressPolling();
   startImportJobPolling();
 
-  if (!campaignForm.value.listId && emailLists.value[0]) {
-    campaignForm.value.listId = emailLists.value[0].id;
+  if (campaignForm.value.listIds.length === 0 && emailLists.value[0]) {
+    campaignForm.value.listIds = [emailLists.value[0].id];
   } else {
-    const canonicalList = findEmailListByReference(campaignForm.value.listId);
+    const canonicalListIds = campaignForm.value.listIds
+      .map((listId) => findEmailListByReference(listId)?.id)
+      .filter((listId): listId is string => Boolean(listId));
 
-    if (canonicalList && campaignForm.value.listId !== canonicalList.id) {
-      campaignForm.value.listId = canonicalList.id;
+    if (canonicalListIds.length > 0) {
+      campaignForm.value.listIds = [...new Set(canonicalListIds)];
+    } else if (emailLists.value[0]) {
+      campaignForm.value.listIds = [emailLists.value[0].id];
     }
   }
 
@@ -3967,8 +4013,8 @@ async function deleteContact(contact: EmailContact): Promise<void> {
 }
 
 async function createCampaign(sendNow = false): Promise<void> {
-  if (!selectedBusinessId.value || !campaignForm.value.listId) {
-    errorMessage.value = "Import contacts first so a list exists for this campaign.";
+  if (!selectedBusinessId.value || campaignForm.value.listIds.length === 0) {
+    errorMessage.value = "Import contacts first, then select at least one list for this campaign.";
     return;
   }
 
@@ -4001,7 +4047,8 @@ async function createCampaign(sendNow = false): Promise<void> {
     }
 
     const payload = {
-      listId: campaignForm.value.listId,
+      listId: campaignForm.value.listIds[0],
+      listIds: campaignForm.value.listIds,
       name:
         campaignForm.value.name.trim()
         || campaignForm.value.subject.trim()
@@ -4152,8 +4199,15 @@ function resolveCampaignAudienceSize(campaign: EmailCampaign): number {
     return campaign.recipientCount;
   }
 
-  const matchingList = findEmailListByReference(campaign.listId);
-  return matchingList?.contactCount ?? 0;
+  const campaignListIds = campaign.listIds && campaign.listIds.length > 0
+    ? campaign.listIds
+    : campaign.listId
+      ? [campaign.listId]
+      : [];
+  const campaignLists = campaignListIds
+    .map((listId) => findEmailListByReference(listId))
+    .filter((list): list is EmailList => Boolean(list));
+  return campaignLists.reduce((total, list) => total + list.contactCount, 0);
 }
 
 function resolveDefaultReportCampaign(campaignList: EmailCampaign[]): EmailCampaign | null {
@@ -4973,20 +5027,23 @@ onBeforeUnmount(() => {
 
             <div class="email-composer-grid">
               <div class="email-composer-main">
-                <select v-model="campaignForm.listId" class="workspace-select full-width">
-                  <option value="" disabled>Select audience</option>
-                  <option v-for="list in emailLists" :key="list.id" :value="list.id">
-                    {{ list.name }}
-                  </option>
-                </select>
+                <div class="campaign-audience-picker" role="group" aria-label="Campaign audiences">
+                  <label v-for="list in emailLists" :key="list.id" class="campaign-audience-option">
+                    <input v-model="campaignForm.listIds" type="checkbox" :value="list.id" />
+                    <span>
+                      <strong>{{ list.name }}</strong>
+                      <small>{{ list.contactCount.toLocaleString() }} contacts</small>
+                    </span>
+                  </label>
+                </div>
 
                 <div class="campaign-audience-card">
                   <div class="campaign-audience-header">
                     <div>
-                      <strong>{{ selectedCampaignList?.name || "Choose a list to target" }}</strong>
+                      <strong>{{ selectedCampaignAudienceLabel }}</strong>
                       <p class="panel-note">{{ selectedCampaignAudienceSummary }}</p>
                     </div>
-                    <span v-if="selectedCampaignList" class="workspace-chip">
+                    <span v-if="selectedCampaignLists.length > 0" class="workspace-chip">
                       {{ selectedCampaignAudienceCount.toLocaleString() }} contacts
                     </span>
                   </div>
@@ -8429,6 +8486,51 @@ Daycare Spots"
   border: 1px solid var(--fc-border);
   border-radius: 20px;
   background: color-mix(in srgb, var(--fc-surface) 90%, white 10%);
+}
+
+.campaign-audience-picker {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--fc-surface) 88%, white 12%);
+}
+
+.campaign-audience-option {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.campaign-audience-option:has(input:checked) {
+  border-color: color-mix(in srgb, var(--fc-accent) 35%, transparent);
+  background: color-mix(in srgb, var(--fc-accent) 10%, white 90%);
+}
+
+.campaign-audience-option input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fc-accent);
+}
+
+.campaign-audience-option span {
+  display: grid;
+  gap: 2px;
+}
+
+.campaign-audience-option strong {
+  font-size: 0.95rem;
+}
+
+.campaign-audience-option small {
+  color: var(--fc-muted);
 }
 
 .campaign-audience-header {
