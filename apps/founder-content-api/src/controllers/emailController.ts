@@ -690,6 +690,7 @@ export async function postEmailCampaignSend(
     });
     const actor = await ensureCurrentUser(request.auth);
     const result = await sendEmailCampaign(businessId, request.params.campaignId, actor.id, {
+      sendMode: request.body?.sendMode === "scheduled" ? "scheduled" : "now",
       scheduledAt: typeof request.body?.scheduledAt === "string" ? request.body.scheduledAt.trim() : undefined,
     });
     response.json(result);

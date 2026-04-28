@@ -1325,10 +1325,21 @@ function normalizeCampaignAudienceListIds(input: CreateEmailCampaignRequest | Up
   });
 }
 
-function parseEmailCampaignScheduledAt(value: string | undefined): Date | null {
+function parseEmailCampaignScheduledAt(
+  value: string | undefined,
+  options: { requireScheduledAt?: boolean } = {},
+): Date | null {
   const normalized = value?.trim();
 
   if (!normalized) {
+    if (options.requireScheduledAt) {
+      throw new HttpError(
+        400,
+        "email_campaign_schedule_required",
+        "Pick a future time before scheduling this email campaign.",
+      );
+    }
+
     return null;
   }
 
@@ -6342,12 +6353,15 @@ async function sendEmailCampaignInternal(input: {
   campaignId: string;
   actorUserId?: string;
   contactIds?: string[];
+  sendMode?: "now" | "scheduled";
   scheduledAt?: string;
 }): Promise<SendEmailCampaignResponse> {
   await ensureBusinessEmailSendingPreconditions(input.businessId);
   let billingWarnings: string[] = [];
   let emailAddon: SendEmailCampaignResponse["emailAddon"] | undefined;
-  const scheduledAt = parseEmailCampaignScheduledAt(input.scheduledAt);
+  const scheduledAt = parseEmailCampaignScheduledAt(input.scheduledAt, {
+    requireScheduledAt: input.sendMode === "scheduled",
+  });
 
   await withDbTransaction(async (client) => {
     const campaign = await loadEmailCampaignOrThrow(input.businessId, input.campaignId, client);
@@ -6446,12 +6460,13 @@ export async function sendEmailCampaign(
   businessId: string,
   campaignId: string,
   actorUserId?: string,
-  options: { scheduledAt?: string } = {},
+  options: { sendMode?: "now" | "scheduled"; scheduledAt?: string } = {},
 ): Promise<SendEmailCampaignResponse> {
   return sendEmailCampaignInternal({
     businessId,
     campaignId,
     actorUserId,
+    sendMode: options.sendMode,
     scheduledAt: options.scheduledAt,
   });
 }

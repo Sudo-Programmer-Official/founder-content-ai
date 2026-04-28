@@ -213,13 +213,13 @@ export async function requestEmailCampaignDelete(
 export async function requestEmailCampaignSend(
   businessId: string,
   campaignId: string,
-  options: { scheduledAt?: string } = {},
+  options: { sendMode?: SendEmailCampaignRequest["sendMode"]; scheduledAt?: string } = {},
 ): Promise<SendEmailCampaignResponse> {
   const encodedBusinessId = encodeURIComponent(businessId);
   const encodedCampaignId = encodeURIComponent(campaignId);
   return apiPost<SendEmailCampaignRequest, SendEmailCampaignResponse>(
     `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}/send`,
-    { businessId, scheduledAt: options.scheduledAt },
+    { businessId, sendMode: options.sendMode, scheduledAt: options.scheduledAt },
   );
 }
 

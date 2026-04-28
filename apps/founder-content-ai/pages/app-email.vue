@@ -4088,6 +4088,11 @@ async function createCampaign(sendNow = false): Promise<void> {
     return;
   }
 
+  if (sendNow && campaignSendBlockReason.value) {
+    errorMessage.value = campaignSendBlockReason.value;
+    return;
+  }
+
   isCreatingCampaign.value = true;
   errorMessage.value = "";
 
@@ -4127,6 +4132,7 @@ async function createCampaign(sendNow = false): Promise<void> {
     if (sendNow) {
       const scheduledAt = campaignSendMode.value === "scheduled" ? campaignScheduledAtIso.value : undefined;
       const sendResponse = await requestEmailCampaignSend(selectedBusinessId.value, response.campaign.id, {
+        sendMode: campaignSendMode.value,
         scheduledAt,
       });
       latestStatsCampaignId.value = response.campaign.id;
