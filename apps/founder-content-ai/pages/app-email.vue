@@ -102,6 +102,20 @@ function dedupeStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value !== ""))];
 }
 
+function toDatetimeLocalValue(date: Date): string {
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function formatCampaignScheduledAt(value: string): string {
+  return new Date(value).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -759,6 +773,7 @@ type EmailTabKey = "campaigns" | "contacts" | "settings";
 type CampaignSourceMode = "current" | "draft-library" | "fresh";
 type CampaignToneMode = "direct" | "story" | "educational";
 type CampaignEditorMode = "edit" | "preview";
+type CampaignSendMode = "now" | "scheduled";
 
 const autopilotForm = ref<{
   goal: string;
@@ -1142,6 +1157,7 @@ const campaignStatusFilter = ref<EmailCampaign["status"] | "all">("all");
 const campaignSort = ref<"updated_desc" | "name_asc" | "last_send_desc" | "status">("updated_desc");
 const selectedLibraryDraftId = ref("");
 const campaignRouteSyncKey = ref("");
+const campaignSendMode = ref<CampaignSendMode>("now");
 
 const campaignForm = ref({
   listIds: [] as string[],
@@ -1154,6 +1170,7 @@ const campaignForm = ref({
   inlineImageUrls: [] as string[],
   includeSignature: true,
   mediaUrlInput: "",
+  scheduledAtLocal: "",
 });
 const campaignBlocks = ref<EmailComposerBlockDraft[]>([]);
 const syncedPreviewEmailHtml = ref("");
@@ -1569,6 +1586,15 @@ const selectedCampaignAudienceSummary = computed(() => {
   const listNames = selectedCampaignLists.value.map((list) => list.name).join(", ");
   return `${listNames} · ${count.toLocaleString()} contact${count === 1 ? "" : "s"} before dedupe and suppressions.`;
 });
+const minimumCampaignScheduleLocal = computed(() => toDatetimeLocalValue(new Date(Date.now() + 5 * 60 * 1000)));
+const campaignScheduledAtIso = computed(() => {
+  if (campaignSendMode.value !== "scheduled" || !campaignForm.value.scheduledAtLocal) {
+    return "";
+  }
+
+  const scheduledAt = new Date(campaignForm.value.scheduledAtLocal);
+  return Number.isNaN(scheduledAt.getTime()) ? "" : scheduledAt.toISOString();
+});
 const isEditingCampaign = computed(() => Boolean(editingCampaignId.value));
 const campaignComposerTitle = computed(() =>
   isEditingCampaign.value ? "Edit email" : "New email",
@@ -1579,7 +1605,9 @@ const campaignComposerIntentSelection = computed(
     ?? CAMPAIGN_INTENT_OPTIONS[0],
 );
 const campaignComposerPrimaryLabel = computed(() =>
-  isCreatingCampaign.value ? "Sending..." : "Send now",
+  isCreatingCampaign.value
+    ? campaignSendMode.value === "scheduled" ? "Scheduling..." : "Sending..."
+    : campaignSendMode.value === "scheduled" ? "Schedule" : "Send now",
 );
 const campaignComposerSecondaryLabel = computed(() =>
   isEditingCampaign.value
@@ -2257,6 +2285,16 @@ const campaignSendBlockReason = computed(() => {
     return "Write the email before sending.";
   }
 
+  if (campaignSendMode.value === "scheduled") {
+    if (!campaignScheduledAtIso.value) {
+      return "Pick a send time before scheduling.";
+    }
+
+    if (new Date(campaignScheduledAtIso.value).getTime() <= Date.now()) {
+      return "Pick a future send time.";
+    }
+  }
+
   if (!hasConfiguredDomain.value) {
     return "Finish sender setup before sending.";
   }
@@ -2451,6 +2489,8 @@ function startFreshCampaign(): void {
   campaignForm.value.bodyText = template.bodyText;
   campaignForm.value.replyToEmail = domainSettings.value?.replyToEmail || "";
   campaignForm.value.includeSignature = true;
+  campaignForm.value.scheduledAtLocal = minimumCampaignScheduleLocal.value;
+  campaignSendMode.value = "now";
   resetSelectedMedia();
   campaignEditorMode.value = "preview";
 }
@@ -2480,6 +2520,10 @@ function loadCampaignIntoComposer(
   campaignForm.value.bodyText = campaign.bodyText || htmlToPreviewText(campaign.bodyHtml);
   campaignForm.value.replyToEmail = campaign.replyToEmail || domainSettings.value?.replyToEmail || "";
   campaignForm.value.includeSignature = true;
+  campaignForm.value.scheduledAtLocal = campaign.scheduledAt
+    ? toDatetimeLocalValue(new Date(campaign.scheduledAt))
+    : minimumCampaignScheduleLocal.value;
+  campaignSendMode.value = campaign.status === "queued" && campaign.scheduledAt ? "scheduled" : "now";
   resetSelectedMedia();
 }
 
@@ -3110,6 +3154,14 @@ function getCampaignProgressPercent(campaign: EmailCampaign): number {
   return Math.min(100, Math.round((processedCount / campaign.recipientCount) * 100));
 }
 
+function isScheduledCampaign(campaign: EmailCampaign): boolean {
+  return (
+    campaign.status === "queued" &&
+    Boolean(campaign.scheduledAt) &&
+    new Date(campaign.scheduledAt || "").getTime() > Date.now()
+  );
+}
+
 function formatCampaignProgress(campaign: EmailCampaign): string {
   if (campaign.recipientCount <= 0) {
     return "No recipients";
@@ -3119,6 +3171,10 @@ function formatCampaignProgress(campaign: EmailCampaign): string {
 }
 
 function getCampaignActionLabel(campaign: EmailCampaign): string {
+  if (isScheduledCampaign(campaign)) {
+    return "Scheduled";
+  }
+
   if (campaign.status === "queued") {
     return "Queued";
   }
@@ -3251,6 +3307,10 @@ function resolveCampaignLinkBarWidth(link: EmailCampaignLink): string {
 }
 
 function formatCampaignStatusChipLabel(campaign: EmailCampaign): string {
+  if (isScheduledCampaign(campaign) && campaign.scheduledAt) {
+    return "Scheduled";
+  }
+
   if (campaign.status === "queued") {
     return "Queued";
   }
@@ -4065,12 +4125,17 @@ async function createCampaign(sendNow = false): Promise<void> {
       ? await requestEmailCampaignUpdate(selectedBusinessId.value, editingCampaignId.value, payload)
       : await requestEmailCampaignCreate(selectedBusinessId.value, payload);
     if (sendNow) {
-      const sendResponse = await requestEmailCampaignSend(selectedBusinessId.value, response.campaign.id);
+      const scheduledAt = campaignSendMode.value === "scheduled" ? campaignScheduledAtIso.value : undefined;
+      const sendResponse = await requestEmailCampaignSend(selectedBusinessId.value, response.campaign.id, {
+        scheduledAt,
+      });
       latestStatsCampaignId.value = response.campaign.id;
       latestStats.value = sendResponse.stats;
       latestAnalytics.value = buildCampaignAnalyticsFallback(sendResponse.campaign);
       latestCampaignLinks.value = [];
-      feedbackMessage.value = `Campaign queued: ${response.campaign.name}. Processing ${sendResponse.stats.recipientCount} recipients in the background.`;
+      feedbackMessage.value = scheduledAt
+        ? `Campaign scheduled: ${response.campaign.name} for ${formatCampaignScheduledAt(scheduledAt)}.`
+        : `Campaign queued: ${response.campaign.name}. Processing ${sendResponse.stats.recipientCount} recipients in the background.`;
       await Promise.all([
         loadEmailState(),
         refreshProductAccess(selectedBusinessId.value),
@@ -4178,6 +4243,10 @@ function canDeleteCampaign(campaign: EmailCampaign): boolean {
 }
 
 function formatCampaignLifecycleLabel(campaign: EmailCampaign): string {
+  if (isScheduledCampaign(campaign) && campaign.scheduledAt) {
+    return `Scheduled ${formatCampaignScheduledAt(campaign.scheduledAt)}`;
+  }
+
   if (campaign.status === "sent" && campaign.sendCompletedAt) {
     return `Sent ${new Date(campaign.sendCompletedAt).toLocaleDateString()}`;
   }
@@ -5154,6 +5223,34 @@ onBeforeUnmount(() => {
                     </article>
                   </div>
                 </section>
+
+                <div class="campaign-send-scheduler">
+                  <div class="campaign-send-mode-row">
+                    <button
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      :class="{ active: campaignSendMode === 'now' }"
+                      @click="campaignSendMode = 'now'"
+                    >
+                      Send now
+                    </button>
+                    <button
+                      type="button"
+                      class="workspace-secondary-button compact"
+                      :class="{ active: campaignSendMode === 'scheduled' }"
+                      @click="campaignSendMode = 'scheduled'"
+                    >
+                      Schedule
+                    </button>
+                  </div>
+                  <input
+                    v-if="campaignSendMode === 'scheduled'"
+                    v-model="campaignForm.scheduledAtLocal"
+                    class="workspace-input"
+                    type="datetime-local"
+                    :min="minimumCampaignScheduleLocal"
+                  />
+                </div>
 
                 <div class="workspace-actions">
                   <p v-if="campaignSendBlockReason" class="inline-form-message warning">
@@ -8531,6 +8628,17 @@ Daycare Spots"
 
 .campaign-audience-option small {
   color: var(--fc-muted);
+}
+
+.campaign-send-scheduler {
+  display: grid;
+  gap: 10px;
+}
+
+.campaign-send-mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .campaign-audience-header {

@@ -559,6 +559,7 @@ export interface DeleteEmailCampaignResponse {
 
 export interface SendEmailCampaignRequest {
   businessId: string;
+  scheduledAt?: string;
 }
 
 export interface EmailPreviewSenderSettings {

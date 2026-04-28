@@ -32,6 +32,7 @@ import type {
   RecordEmailDeliveredEventRequest,
   RecordEmailDeliveredEventResponse,
   ResubscribeEmailResponse,
+  SendEmailCampaignRequest,
   SendEmailCampaignResponse,
   SendTestEmailCampaignRequest,
   SendTestEmailCampaignResponse,
@@ -666,7 +667,7 @@ export async function postEmailCampaignTestSend(
 }
 
 export async function postEmailCampaignSend(
-  request: Request<{ businessId: string; campaignId: string }>,
+  request: Request<{ businessId: string; campaignId: string }, unknown, SendEmailCampaignRequest>,
   response: Response<SendEmailCampaignResponse | ApiError>,
 ): Promise<void> {
   if (!request.auth) {
@@ -688,7 +689,9 @@ export async function postEmailCampaignSend(
       featureKey: "email_campaigns",
     });
     const actor = await ensureCurrentUser(request.auth);
-    const result = await sendEmailCampaign(businessId, request.params.campaignId, actor.id);
+    const result = await sendEmailCampaign(businessId, request.params.campaignId, actor.id, {
+      scheduledAt: typeof request.body?.scheduledAt === "string" ? request.body.scheduledAt.trim() : undefined,
+    });
     response.json(result);
   } catch (error) {
     void safeCreateSystemErrorLog({

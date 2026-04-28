@@ -1325,6 +1325,26 @@ function normalizeCampaignAudienceListIds(input: CreateEmailCampaignRequest | Up
   });
 }
 
+function parseEmailCampaignScheduledAt(value: string | undefined): Date | null {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const scheduledAt = new Date(normalized);
+
+  if (Number.isNaN(scheduledAt.getTime())) {
+    throw new HttpError(400, "email_campaign_schedule_invalid", "scheduledAt must be a valid ISO timestamp.");
+  }
+
+  if (scheduledAt.getTime() <= Date.now()) {
+    throw new HttpError(400, "email_campaign_schedule_in_past", "Pick a future time for scheduled email sends.");
+  }
+
+  return scheduledAt;
+}
+
 function mapEmailCampaignLink(row: EmailCampaignLinkAggregateRow): EmailCampaignLink {
   return {
     id: row.id,
@@ -5596,6 +5616,7 @@ export async function updateEmailCampaign(
           reply_to_email = $10,
           created_by_user_id = coalesce($11::uuid, created_by_user_id),
           status = 'draft',
+          scheduled_at = null,
           send_started_at = null,
           send_completed_at = null,
           start_notification_sent_at = null,
@@ -5990,6 +6011,7 @@ export async function processQueuedEmailCampaigns(
       where c.status in ('queued', 'sending')
         and ($1::uuid is null or c.business_id = $1::uuid)
         and ($2::uuid is null or c.id = $2::uuid)
+        and (c.scheduled_at is null or c.scheduled_at <= now())
       group by c.id, campaign_lists.list_ids_json
       order by c.created_at asc
     `,
@@ -6320,10 +6342,12 @@ async function sendEmailCampaignInternal(input: {
   campaignId: string;
   actorUserId?: string;
   contactIds?: string[];
+  scheduledAt?: string;
 }): Promise<SendEmailCampaignResponse> {
   await ensureBusinessEmailSendingPreconditions(input.businessId);
   let billingWarnings: string[] = [];
   let emailAddon: SendEmailCampaignResponse["emailAddon"] | undefined;
+  const scheduledAt = parseEmailCampaignScheduledAt(input.scheduledAt);
 
   await withDbTransaction(async (client) => {
     const campaign = await loadEmailCampaignOrThrow(input.businessId, input.campaignId, client);
@@ -6362,6 +6386,7 @@ async function sendEmailCampaignInternal(input: {
         update email_campaigns
         set
           status = 'queued',
+          scheduled_at = $2::timestamptz,
           send_started_at = null,
           send_completed_at = null,
           start_notification_sent_at = null,
@@ -6370,37 +6395,41 @@ async function sendEmailCampaignInternal(input: {
           updated_at = now()
         where id = $1::uuid
       `,
-      [input.campaignId],
+      [input.campaignId, scheduledAt?.toISOString() ?? null],
       client,
     );
   });
 
-  void drainQueuedEmailCampaigns({
-    businessId: input.businessId,
-    campaignId: input.campaignId,
-  }).catch((error) => {
-    logWarn("Background email campaign drain failed after enqueue.", {
+  if (!scheduledAt) {
+    void drainQueuedEmailCampaigns({
       businessId: input.businessId,
       campaignId: input.campaignId,
-      message: error instanceof Error ? error.message : "Unknown error",
+    }).catch((error) => {
+      logWarn("Background email campaign drain failed after enqueue.", {
+        businessId: input.businessId,
+        campaignId: input.campaignId,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
     });
-  });
+  }
 
   void safeLogEvent("content_selected", input.actorUserId, input.businessId, {
     source: "email_campaign",
     campaignId: input.campaignId,
   });
 
-  void sendEmailCampaignLifecycleNotification({
-    campaignId: input.campaignId,
-    eventType: "started",
-  }).catch((notificationError) => {
-    logWarn("Email campaign start notification failed.", {
-      businessId: input.businessId,
+  if (!scheduledAt) {
+    void sendEmailCampaignLifecycleNotification({
       campaignId: input.campaignId,
-      message: notificationError instanceof Error ? notificationError.message : "Unknown error",
+      eventType: "started",
+    }).catch((notificationError) => {
+      logWarn("Email campaign start notification failed.", {
+        businessId: input.businessId,
+        campaignId: input.campaignId,
+        message: notificationError instanceof Error ? notificationError.message : "Unknown error",
+      });
     });
-  });
+  }
 
   const campaign = mapEmailCampaign(await loadEmailCampaignOrThrow(input.businessId, input.campaignId));
   const stats = await getCampaignStats(input.businessId, input.campaignId);
@@ -6417,11 +6446,13 @@ export async function sendEmailCampaign(
   businessId: string,
   campaignId: string,
   actorUserId?: string,
+  options: { scheduledAt?: string } = {},
 ): Promise<SendEmailCampaignResponse> {
   return sendEmailCampaignInternal({
     businessId,
     campaignId,
     actorUserId,
+    scheduledAt: options.scheduledAt,
   });
 }
 

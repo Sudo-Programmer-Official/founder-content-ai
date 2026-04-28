@@ -25,6 +25,7 @@ import type {
   PreviewEmailCampaignResponse,
   QueueEmailContactsImportRequest,
   QueueEmailContactsImportResponse,
+  SendEmailCampaignRequest,
   SendEmailCampaignResponse,
   SendTestEmailCampaignRequest,
   SendTestEmailCampaignResponse,
@@ -212,12 +213,13 @@ export async function requestEmailCampaignDelete(
 export async function requestEmailCampaignSend(
   businessId: string,
   campaignId: string,
+  options: { scheduledAt?: string } = {},
 ): Promise<SendEmailCampaignResponse> {
   const encodedBusinessId = encodeURIComponent(businessId);
   const encodedCampaignId = encodeURIComponent(campaignId);
-  return apiPost<{ businessId: string }, SendEmailCampaignResponse>(
+  return apiPost<SendEmailCampaignRequest, SendEmailCampaignResponse>(
     `/businesses/${encodedBusinessId}/email/campaigns/${encodedCampaignId}/send`,
-    { businessId },
+    { businessId, scheduledAt: options.scheduledAt },
   );
 }
 
