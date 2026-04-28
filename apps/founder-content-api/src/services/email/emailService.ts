@@ -4237,8 +4237,11 @@ async function claimQueuedCampaignRecipients(
       with candidate_ids as (
         select r.id
         from email_campaign_recipients r
+        inner join email_campaign_sends s on s.id = r.send_id
+        inner join email_campaigns c on c.id = s.campaign_id
         where r.send_id = $1::uuid
           and r.status = 'queued'
+          and (c.scheduled_at is null or c.scheduled_at <= now())
         order by r.created_at asc
         limit $2
         for update skip locked
