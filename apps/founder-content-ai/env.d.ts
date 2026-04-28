@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_DEV_USER_EMAIL?: string;
   readonly VITE_DEV_USER_NAME?: string;
   readonly VITE_DEV_SUPER_ADMIN?: string;
+  readonly VITE_MIXPANEL_TOKEN?: string;
+  readonly VITE_MIXPANEL_MARKETING_HOSTS?: string;
 }
 
 interface ImportMeta {
