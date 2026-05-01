@@ -125,6 +125,7 @@ export interface RepurposeContentRequest {
   sourceUrls?: RepurposeSourceUrlInput[];
   tone?: string;
   businessId?: string;
+  preserveInputText?: boolean;
 }
 
 export interface RepurposeContentResponse {

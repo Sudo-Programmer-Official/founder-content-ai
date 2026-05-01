@@ -586,6 +586,7 @@ const input = ref("");
 const tone = ref<GenerationToneMode>(DEFAULT_GENERATION_TONE);
 const generationStrategy = ref<RepurposeStrategy>(DEFAULT_REPURPOSE_STRATEGY);
 const hasToneOverride = ref(false);
+const preserveInputText = ref(false);
 const isLoading = ref(false);
 const errorMessage = ref("");
 const helperMessage = ref("Add a starting direction, offer, or rough note. Voice works too.");
@@ -677,6 +678,13 @@ const shouldShowAdvancedComposerControls = computed(
     || showAdvancedComposerControls.value
     || sourceMode.value === "feed",
 );
+const canPreserveInputText = computed(
+  () =>
+    !isEditMode.value
+    && !isBusinessWorkspace.value
+    && sourceMode.value === "fresh"
+    && seededRepurposeSource.value === "",
+);
 const advancedComposerSummary = computed(() => {
   if (isBusinessWorkspace.value) {
     return "Using workspace defaults for tone, brand context, and delivery channels. Open advanced controls only when this draft needs a different setup.";
@@ -719,6 +727,10 @@ const submitLabel = computed(() => {
 
   if (creatorContentType.value === "promo_post") {
     return "Generate promotion";
+  }
+
+  if (canPreserveInputText.value && preserveInputText.value) {
+    return "Use exact post";
   }
 
   return isStrategyFlow.value
@@ -835,6 +847,10 @@ const generationStatusDescription = computed(() => {
       : "The engine is shaping one campaign idea into channel-ready assets with CTA, visual direction, and delivery-specific copy.";
   }
 
+  if (canPreserveInputText.value && preserveInputText.value) {
+    return "Keeping your copy unchanged and preparing it for review. No hook rewrite, tone pass, or post restructuring will run.";
+  }
+
   return "The engine is structuring the idea, matching the chosen tone and format, and preparing a cleaner draft for the result page.";
 });
 const generationStatusSteps = computed<GenerationStatusStep[]>(() => {
@@ -913,6 +929,26 @@ const generationStatusSteps = computed<GenerationStatusStep[]>(() => {
         ];
   }
 
+  if (canPreserveInputText.value && preserveInputText.value) {
+    return [
+      {
+        id: "read",
+        label: "Reading your exact copy",
+        detail: "The submitted post stays as the source of truth.",
+      },
+      {
+        id: "package",
+        label: "Packaging for review",
+        detail: "Result metadata is prepared without changing your words.",
+      },
+      {
+        id: "finish",
+        label: "Opening the result",
+        detail: "You can still add visuals, reorder media, or publish from the next screen.",
+      },
+    ];
+  }
+
   return [
     {
       id: "angle",
@@ -973,7 +1009,9 @@ const generationStatusContextChips = computed(() => {
   return [
     `Intent: ${activeIntentSelection.value.label}`,
     `Format: ${creatorContentTypeSelection.value.label}`,
-    `Tone: ${toneOptions.find((option) => option.value === tone.value)?.label ?? "Creator"}`,
+    canPreserveInputText.value && preserveInputText.value
+      ? "Writing mode: Keep exact copy"
+      : `Tone: ${toneOptions.find((option) => option.value === tone.value)?.label ?? "Creator"}`,
     sourceMode.value === "feed" ? "Source mode: Repurpose" : "Source mode: Fresh",
   ];
 });
@@ -991,6 +1029,14 @@ const generationStatusWhatHappeningNotes = computed(() => {
       "Brand profile, tone, location, and offer are being folded into the draft automatically.",
       "Channel-specific copy is being sized separately so social and email do not all inherit the same length.",
       "The result page is where you will still review, edit, preview, and publish.",
+    ];
+  }
+
+  if (canPreserveInputText.value && preserveInputText.value) {
+    return [
+      "Your post text is not rewritten, shortened, expanded, or reformatted.",
+      "The result page still gives you media, preview, scheduling, and publishing controls.",
+      "Switch back to Shape with AI when you want hooks, variants, or a stronger structure.",
     ];
   }
 
@@ -1022,6 +1068,8 @@ const sourceInputLabel = computed(() =>
     ? activeIntentSelection.value.inputLabel
     : isStrategyFlow.value
       ? activeStrategyOption.value.label
+      : canPreserveInputText.value && preserveInputText.value
+        ? "Paste the finished post you want to keep"
       : activeIntentSelection.value.inputLabel,
 );
 const sourceInputPlaceholder = computed(() =>
@@ -1033,6 +1081,8 @@ const sourceInputPlaceholder = computed(() =>
       ? "Review the seeded post, tighten the framing if needed, then generate the next move."
       : sourceMode.value === "feed"
         ? (activeIntentSelection.value.feedPlaceholder ?? activeIntentSelection.value.freshPlaceholder)
+        : canPreserveInputText.value && preserveInputText.value
+          ? "Paste your final post here. We will keep the wording, line breaks, and structure unchanged."
         : activeIntentSelection.value.freshPlaceholder,
 );
 const hasFeedSources = computed(() => buildFeedSourceUrls().length > 0);
@@ -1644,6 +1694,10 @@ function setSourceMode(nextMode: GenerationSourceMode): void {
     return;
   }
 
+  if (nextMode !== "fresh") {
+    preserveInputText.value = false;
+  }
+
   if (nextMode !== "fresh" || seededRepurposeSource.value) {
     seededRepurposeSource.value = "";
     generationStrategy.value = DEFAULT_REPURPOSE_STRATEGY;
@@ -1959,6 +2013,7 @@ async function generatePost(selectedSuggestion?: RepurposeSuggestionSelection): 
       creatorContentType: creatorContentType.value,
       creatorVisualStyle: creatorVisualStyle.value,
       businessId: bootstrap.value?.activeBusinessId ?? undefined,
+      preserveInputText: canPreserveInputText.value && preserveInputText.value,
     });
     const draft = saveActivationDraft({
       input:
@@ -2218,6 +2273,7 @@ function selectCreatorContentType(contentType: CreatorContentType): void {
 
 async function runSuggestedGeneration(suggestion: ContentGenerationSuggestion): Promise<void> {
   sourceMode.value = "fresh";
+  preserveInputText.value = false;
   seededRepurposeSource.value = "dashboard";
   generationStrategy.value = suggestion.strategy;
   input.value = suggestion.sourceText;
@@ -2935,6 +2991,40 @@ onBeforeUnmount(() => {
               {{ option.label }}
             </button>
           </div>
+        </div>
+      </div>
+
+      <div v-if="canPreserveInputText" class="writing-mode-panel">
+        <div class="strategy-panel-copy">
+          <p class="panel-meta">Writing mode</p>
+          <h3>{{ preserveInputText ? "Keep this post exactly as written" : "Let AI shape the draft" }}</h3>
+          <p class="activation-helper">
+            {{
+              preserveInputText
+                ? "Best for polished copy. We keep your wording, line breaks, and structure unchanged."
+                : "Best for rough ideas. We rewrite the note into a cleaner post with hooks and variants."
+            }}
+          </p>
+        </div>
+        <div class="writing-mode-actions" role="group" aria-label="Writing mode">
+          <button
+            type="button"
+            class="writing-mode-card"
+            :data-active="!preserveInputText"
+            @click="preserveInputText = false"
+          >
+            <strong>Shape with AI</strong>
+            <span>Rewrite and improve the idea.</span>
+          </button>
+          <button
+            type="button"
+            class="writing-mode-card"
+            :data-active="preserveInputText"
+            @click="preserveInputText = true"
+          >
+            <strong>Do not touch my text</strong>
+            <span>Use the post as-is.</span>
+          </button>
         </div>
       </div>
 
@@ -3706,6 +3796,53 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--fc-accent) 6%, var(--fc-surface));
 }
 
+.writing-mode-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.8fr);
+  gap: 16px;
+  align-items: center;
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--fc-info-text) 18%, var(--fc-border));
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--fc-info-bg) 48%, var(--fc-surface)) 0%, var(--fc-surface) 100%);
+}
+
+.writing-mode-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.writing-mode-card {
+  display: grid;
+  gap: 6px;
+  min-height: 92px;
+  padding: 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: var(--fc-surface);
+  color: var(--fc-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.writing-mode-card[data-active="true"] {
+  border-color: color-mix(in srgb, var(--fc-info-text) 34%, var(--fc-border));
+  background: color-mix(in srgb, var(--fc-info-bg) 62%, var(--fc-surface));
+}
+
+.writing-mode-card strong {
+  font-size: 0.96rem;
+}
+
+.writing-mode-card span {
+  color: var(--fc-text-muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
 .editor-mode-panel,
 .editor-ai-panel {
   display: grid;
@@ -4072,6 +4209,8 @@ onBeforeUnmount(() => {
   }
 
   .generation-suggestion-grid,
+  .writing-mode-panel,
+  .writing-mode-actions,
   .brand-context-grid,
   .source-grid {
     grid-template-columns: 1fr;

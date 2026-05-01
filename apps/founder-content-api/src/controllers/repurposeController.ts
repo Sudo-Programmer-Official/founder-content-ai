@@ -36,6 +36,7 @@ export async function repurposeContentController(
         sourceUrls: request.body?.sourceUrls,
         tone: request.body?.tone,
         businessId: request.body?.businessId,
+        preserveInputText: request.body?.preserveInputText === true,
       },
       request.auth,
     );

@@ -191,6 +191,83 @@ function resolveQuickSignals(
   };
 }
 
+function buildPreservedIdea(sourceText: string): RepurposeContentResponse["idea"] {
+  const firstLine =
+    sourceText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean) ?? "Polished post";
+  const title = truncateText(firstLine.replace(/^[-*\d.)\s]+/, ""), 86) || "Polished post";
+
+  return {
+    title,
+    angle: "Original copy preserved exactly as submitted.",
+  };
+}
+
+function buildPreservedHooks(sourceText: string, ideaTitle: string): string[] {
+  const lines = sourceText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return Array.from(new Set([lines[0] || ideaTitle, lines[1] || ideaTitle, ideaTitle]))
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function buildPreservedVariations(sourceText: string): RepurposeContentResponse["variations"] {
+  return [
+    {
+      angle: "lesson",
+      content: sourceText,
+    },
+    {
+      angle: "story",
+      content: sourceText,
+    },
+    {
+      angle: "build-in-public",
+      content: sourceText,
+    },
+  ];
+}
+
+function buildPreservedCreatorTextVariants(sourceText: string): CreatorTextVariant[] {
+  return [
+    {
+      id: "original-post",
+      kind: "insight_post",
+      label: "Original post",
+      description: "Your submitted copy, unchanged.",
+      content: sourceText,
+      recommendedChannels: ["linkedin", "facebook"],
+      length: "medium",
+      ctaStyle: "soft",
+    },
+    {
+      id: "original-story",
+      kind: "story_version",
+      label: "Original story version",
+      description: "Same wording preserved for review.",
+      content: sourceText,
+      recommendedChannels: ["linkedin", "email"],
+      length: "medium",
+      ctaStyle: "soft",
+    },
+    {
+      id: "original-authority",
+      kind: "authority_version",
+      label: "Original authority version",
+      description: "Same wording preserved for review.",
+      content: sourceText,
+      recommendedChannels: ["linkedin", "facebook"],
+      length: "medium",
+      ctaStyle: "soft",
+    },
+  ];
+}
+
 function resolveCreatorGenerationIntent(
   intent: CreatorGenerationIntent | undefined,
 ): CreatorGenerationIntent {
@@ -671,8 +748,17 @@ export async function repurposeContent(
   });
   const startedAt = Date.now();
 
-  const structuredContent =
-    intent === "reference"
+  const shouldPreserveInputText =
+    input.preserveInputText === true && intent === "capture" && inputType === "text";
+  const preservedIdea = shouldPreserveInputText ? buildPreservedIdea(sourceText) : null;
+  const preservedHooks = preservedIdea ? buildPreservedHooks(sourceText, preservedIdea.title) : [];
+  const structuredContent = shouldPreserveInputText && preservedIdea
+    ? {
+        idea: preservedIdea,
+        hooks: preservedHooks,
+        post: sourceText,
+      }
+    : intent === "reference"
       ? await generateRemixedContentWithAI({
           rawInputText: sourceText,
           tone,
@@ -692,17 +778,19 @@ export async function repurposeContent(
           businessId,
         });
 
-  const variations = await generatePostsWithAI({
-    topic: structuredContent.idea.title,
-    tone,
-    strategy,
-    generationIntent: input.generationIntent,
-    creatorContentType: input.creatorContentType,
-    creatorVisualStyle: input.creatorVisualStyle,
-    length: "medium",
-    selectedHook: structuredContent.hooks[0],
-    businessId,
-  });
+  const variations = shouldPreserveInputText
+    ? { variations: buildPreservedVariations(sourceText) }
+    : await generatePostsWithAI({
+        topic: structuredContent.idea.title,
+        tone,
+        strategy,
+        generationIntent: input.generationIntent,
+        creatorContentType: input.creatorContentType,
+        creatorVisualStyle: input.creatorVisualStyle,
+        length: "medium",
+        selectedHook: structuredContent.hooks[0],
+        businessId,
+      });
 
   const visualNarrative = generateNarrative({
     sourceText: variations.variations[0]?.content || structuredContent.post,
@@ -712,20 +800,42 @@ export async function repurposeContent(
   });
   const carouselDraft = buildCarouselDraft(visualNarrative);
   const quickSignals = resolveQuickSignals(inputType, carouselDraft, sourceCount);
-  const generationOutput = buildCreatorGenerationOutput({
-    generationIntent: input.generationIntent,
-    creatorContentType: input.creatorContentType,
-    creatorVisualStyle: input.creatorVisualStyle,
-    post: structuredContent.post,
-    hooks: structuredContent.hooks.slice(0, 5),
-    variations: variations.variations,
-    visualNarrative,
-    carouselDraft,
-    quickSignals,
-    ideaTitle: structuredContent.idea.title,
-    ideaAngle: structuredContent.idea.angle,
-    sourceText,
-  });
+  const preservedGenerationIntent = resolveCreatorGenerationIntent(input.generationIntent);
+  const preservedCreatorContentType = resolveCreatorContentType(input.creatorContentType);
+  const generationOutput = shouldPreserveInputText
+    ? {
+        kind: "creator_post" as const,
+        intent: preservedGenerationIntent === "weekly_plan"
+          ? "post_idea" as const
+          : preservedGenerationIntent as Exclude<CreatorGenerationIntent, "weekly_plan">,
+        primaryChannel: "linkedin" as const,
+        contentType: preservedCreatorContentType,
+        visualStyle: resolveCreatorVisualStyle(
+          input.creatorVisualStyle,
+          preservedCreatorContentType,
+        ),
+        post: sourceText,
+        hooks: structuredContent.hooks.slice(0, 5),
+        variants: buildPreservedCreatorTextVariants(sourceText),
+        variations: variations.variations,
+        visualNarrative,
+        carouselDraft,
+        quickSignals,
+      }
+    : buildCreatorGenerationOutput({
+        generationIntent: input.generationIntent,
+        creatorContentType: input.creatorContentType,
+        creatorVisualStyle: input.creatorVisualStyle,
+        post: structuredContent.post,
+        hooks: structuredContent.hooks.slice(0, 5),
+        variations: variations.variations,
+        visualNarrative,
+        carouselDraft,
+        quickSignals,
+        ideaTitle: structuredContent.idea.title,
+        ideaAngle: structuredContent.idea.angle,
+        sourceText,
+      });
   const responseBase: Omit<RepurposeContentResponse, "asset"> = {
     inputType,
     intent,
@@ -780,6 +890,7 @@ export async function repurposeContent(
           strategy,
           sourceText,
           sourceCount,
+          preserveInputText: shouldPreserveInputText,
         },
       outputPayload: responseBase,
       success: true,
@@ -798,6 +909,7 @@ export async function repurposeContent(
           intent,
           strategy,
           inputType,
+          preserveInputText: shouldPreserveInputText,
         })
       : Promise.resolve(null),
   ]);

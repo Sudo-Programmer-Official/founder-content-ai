@@ -416,19 +416,30 @@ onMounted(() => {
   <main class="landing-shell">
     <section class="hero-section">
       <div class="hero-copy">
-        <h1>Turn your ideas into content that grows your brand.</h1>
+        <p class="hero-kicker">Founder content engine</p>
+        <h1>Capture one idea. Publish everywhere.</h1>
         <p class="hero-description">
-          Capture topics, generate engaging posts, and schedule across LinkedIn, Instagram, and
-          Facebook, all in one streamlined platform.
+          Turn founder notes into polished posts, platform-ready variations, and scheduled content
+          without rebuilding your workflow every week.
         </p>
 
         <div class="cta-row">
           <router-link class="primary-cta" :to="appRoutes.signup">Get started, it's free</router-link>
           <a class="secondary-cta" href="/#how-it-works">See how it works</a>
         </div>
+
+        <div class="hero-proof-row" aria-label="Founder Content workflow highlights">
+          <span>Idea capture</span>
+          <span>AI drafts</span>
+          <span>Multi-platform scheduling</span>
+        </div>
       </div>
 
-      <div class="hero-visual" aria-hidden="true"></div>
+      <div class="hero-product-card" aria-hidden="true">
+        <span>Today's queue</span>
+        <strong>7 posts ready</strong>
+        <small>LinkedIn - Instagram - Facebook</small>
+      </div>
     </section>
 
     <section v-if="trustedBrands.length > 0" class="content-section trusted-by-section">
@@ -1005,20 +1016,18 @@ onMounted(() => {
 
 .hero-section {
   --hero-space: clamp(44px, 5vw, 78px);
-  --hero-gap: clamp(18px, 2.2vw, 34px);
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
-  align-items: stretch;
-  gap: var(--hero-gap);
-  min-height: clamp(620px, 52vw, 780px);
-  padding: var(--hero-space) 0 var(--hero-space) var(--hero-space);
+  display: flex;
+  align-items: center;
+  min-height: clamp(610px, 50vw, 760px);
+  padding: var(--hero-space);
   margin-bottom: 36px;
   border: 1px solid rgba(112, 84, 62, 0.12);
   border-radius: 40px;
   background:
-    radial-gradient(circle at 12% 18%, rgba(223, 126, 69, 0.14) 0%, rgba(223, 126, 69, 0) 28%),
-    linear-gradient(180deg, rgba(255, 250, 246, 0.94) 0%, rgba(255, 247, 242, 0.9) 100%);
+    linear-gradient(90deg, rgba(255, 248, 242, 0.98) 0%, rgba(255, 248, 242, 0.92) 29%, rgba(255, 248, 242, 0.36) 53%, rgba(255, 248, 242, 0.08) 76%),
+    linear-gradient(180deg, rgba(255, 251, 247, 0.3) 0%, rgba(255, 238, 226, 0.18) 100%),
+    url("/images/landing-page/founder-content-hero-background.png") 68% center / cover no-repeat;
   box-shadow: 0 28px 70px rgba(68, 44, 20, 0.08);
   overflow: hidden;
   isolation: isolate;
@@ -1038,9 +1047,7 @@ onMounted(() => {
   position: relative;
   z-index: 2;
   width: 100%;
-  max-width: 540px;
-  align-self: center;
-  padding-right: clamp(8px, 1.4vw, 18px);
+  max-width: 600px;
 }
 
 .site-footer {
@@ -1080,11 +1087,10 @@ onMounted(() => {
 .hero-section::before {
   content: "";
   position: absolute;
-  inset: -18% auto auto -8%;
-  width: clamp(260px, 24vw, 420px);
-  height: clamp(260px, 24vw, 420px);
-  border-radius: 999px;
-  background: radial-gradient(circle, rgba(223, 126, 69, 0.18) 0%, rgba(223, 126, 69, 0) 72%);
+  inset: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  border-radius: 30px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0) 54%);
   z-index: 0;
   pointer-events: none;
 }
@@ -1092,35 +1098,90 @@ onMounted(() => {
 .hero-section::after {
   content: "";
   position: absolute;
-  inset: auto -10% -22% auto;
-  width: clamp(320px, 28vw, 460px);
-  height: clamp(320px, 28vw, 460px);
-  border-radius: 999px;
-  background: radial-gradient(circle, rgba(231, 158, 103, 0.16) 0%, rgba(231, 158, 103, 0) 72%);
-  z-index: 0;
-  pointer-events: none;
-}
-
-.hero-visual {
-  position: relative;
+  inset: auto 0 0 0;
+  height: 34%;
+  background:
+    linear-gradient(180deg, rgba(255, 250, 246, 0) 0%, rgba(255, 244, 236, 0.76) 100%);
   z-index: 1;
-  align-self: stretch;
-  min-height: auto;
-  margin: calc(var(--hero-space) * -1) calc(var(--hero-space) * -1) calc(var(--hero-space) * -1) 0;
-  background:
-    linear-gradient(90deg, rgba(255, 249, 244, 0.18) 0%, rgba(255, 249, 244, 0.08) 18%, rgba(255, 249, 244, 0) 38%),
-    url("/images/landing-page/founder-content-hero-background.png") 56% center / cover no-repeat;
-  filter: saturate(1.04);
+  pointer-events: none;
 }
 
-.hero-visual::after {
-  content: "";
+.hero-kicker {
+  display: inline-flex;
+  margin: 0 0 18px;
+  padding: 8px 13px;
+  border: 1px solid rgba(185, 75, 36, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
+  color: #9b4d2f;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  box-shadow: 0 14px 34px rgba(71, 46, 24, 0.06);
+}
+
+.hero-proof-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.hero-proof-row span,
+.hero-product-card {
+  border: 1px solid rgba(116, 86, 64, 0.15);
+  background: rgba(255, 255, 255, 0.68);
+  box-shadow: 0 16px 34px rgba(76, 49, 26, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+.hero-proof-row span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: #4d4038;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.hero-product-card {
   position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(circle at 84% 82%, rgba(231, 158, 103, 0.14) 0%, rgba(231, 158, 103, 0) 24%),
-    linear-gradient(180deg, rgba(255, 251, 247, 0.06) 0%, rgba(255, 251, 247, 0.18) 100%);
-  pointer-events: none;
+  right: clamp(34px, 6vw, 94px);
+  bottom: clamp(34px, 5vw, 74px);
+  z-index: 2;
+  width: min(270px, 24vw);
+  padding: 18px;
+  border-radius: 24px;
+}
+
+.hero-product-card span,
+.hero-product-card small {
+  display: block;
+  color: #6d5d52;
+  font-weight: 700;
+}
+
+.hero-product-card span {
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.hero-product-card strong {
+  display: block;
+  margin-top: 6px;
+  color: #1f1814;
+  font-family: "Fraunces", "Iowan Old Style", "Palatino Linotype", serif;
+  font-size: clamp(1.5rem, 2.2vw, 2.1rem);
+  line-height: 1.05;
+}
+
+.hero-product-card small {
+  margin-top: 8px;
+  font-size: 0.86rem;
 }
 
 .trusted-by-section {
@@ -1918,9 +1979,9 @@ h3 {
 }
 
 h1 {
-  max-width: 8.2ch;
-  font-size: clamp(3.7rem, 6.4vw, 6rem);
-  line-height: 0.9;
+  max-width: 9.8ch;
+  font-size: clamp(3.4rem, 5.7vw, 5.7rem);
+  line-height: 0.92;
 }
 
 .hero-description,
@@ -1934,7 +1995,7 @@ h1 {
 }
 
 .hero-description {
-  max-width: 25ch;
+  max-width: 32ch;
   margin-top: 22px;
   font-size: clamp(1.12rem, 1.55vw, 1.38rem);
   line-height: 1.6;
@@ -2584,11 +2645,12 @@ h1 {
   }
 
   .hero-section {
-    grid-template-columns: 1fr;
     align-items: flex-start;
-    gap: 24px;
-    min-height: 0;
+    min-height: 680px;
     padding: 40px 34px 36px;
+    background:
+      linear-gradient(180deg, rgba(255, 248, 242, 0.96) 0%, rgba(255, 248, 242, 0.82) 44%, rgba(255, 248, 242, 0.16) 72%),
+      url("/images/landing-page/founder-content-hero-background.png") 63% bottom / cover no-repeat;
   }
 
   .hero-copy {
@@ -2596,15 +2658,10 @@ h1 {
     padding-right: 0;
   }
 
-  .hero-visual {
-    min-height: clamp(320px, 46vw, 480px);
-    margin: 0;
-    background-position: 58% center;
-    background-size: cover;
-  }
-
-  .hero-visual::after {
-    background: radial-gradient(circle at 78% 82%, rgba(231, 158, 103, 0.12) 0%, rgba(231, 158, 103, 0) 26%);
+  .hero-product-card {
+    right: 34px;
+    bottom: 34px;
+    width: min(270px, 42vw);
   }
 
   .publish-flow-grid,
@@ -2752,18 +2809,13 @@ h1 {
   }
 
   .hero-section {
-    gap: 18px;
-    min-height: 0;
+    min-height: 660px;
     padding: 26px 22px 24px;
     border-radius: 28px;
-  }
-
-  .hero-visual {
-    min-height: 280px;
-    margin: 0;
-    background-position: center center;
-    background-size: cover;
-    border-radius: 22px;
+    background:
+      linear-gradient(180deg, rgba(255, 248, 242, 0.98) 0%, rgba(255, 248, 242, 0.9) 48%, rgba(255, 248, 242, 0.2) 72%),
+      url("/images/landing-page/founder-content-hero-background.png") 61% bottom / auto 54% no-repeat,
+      linear-gradient(180deg, rgba(255, 250, 246, 0.98) 0%, rgba(255, 240, 229, 0.9) 100%);
   }
 
   .content-section,
@@ -2787,12 +2839,31 @@ h1 {
 
   h1 {
     max-width: none;
-    font-size: clamp(2.9rem, 13vw, 4.2rem);
+    font-size: clamp(2.85rem, 12vw, 4rem);
   }
 
   .hero-description {
-    max-width: 22ch;
+    max-width: 30ch;
     font-size: 1rem;
+  }
+
+  .hero-proof-row {
+    gap: 8px;
+  }
+
+  .hero-proof-row span {
+    min-height: 34px;
+    padding: 0 11px;
+    font-size: 0.8rem;
+  }
+
+  .hero-product-card {
+    left: 22px;
+    right: 22px;
+    bottom: 22px;
+    width: auto;
+    padding: 14px;
+    border-radius: 18px;
   }
 
   .final-cta-copy {

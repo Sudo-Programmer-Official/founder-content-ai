@@ -495,6 +495,48 @@ const pipelineSummaryCards = computed(() => [
     copy: "Use history to verify what shipped.",
   },
 ]);
+const publishingRadarBars = computed(() => {
+  const consistency = weeklyConsistencyPercent.value;
+  const baseBars = [38, 58, 46, 76, 52, 68, 44];
+
+  return baseBars.map((height, index) => {
+    if (index === 3) {
+      return Math.max(34, Math.min(92, consistency));
+    }
+
+    return height;
+  });
+});
+const dashboardSignalCards = computed(() => [
+  {
+    id: "streak",
+    label: "Streak",
+    value: `${dashboard.value?.today.streakDays ?? 0}d`,
+    copy: "Keep the habit alive",
+    tone: "amber",
+  },
+  {
+    id: "consistency",
+    label: "Consistency",
+    value: `${weeklyConsistencyPercent.value}%`,
+    copy: consistencyDeltaLabel.value,
+    tone: "green",
+  },
+  {
+    id: "inbox",
+    label: "Inbox",
+    value: `${ideaInboxItems.value.length}`,
+    copy: ideaInboxItems.value.length === 1 ? "capture waiting" : "captures waiting",
+    tone: "blue",
+  },
+  {
+    id: "timing",
+    label: "Timing",
+    value: bestTimeSlots.value[0] ? "Live" : "Learning",
+    copy: bestTimeCountdownLabel.value,
+    tone: inactivityActive.value ? "warning" : "violet",
+  },
+]);
 
 function resolveFallbackDashboardRoute(action: string): string {
   switch (action) {
@@ -1719,28 +1761,76 @@ onBeforeUnmount(() => {
             <strong>{{ ideaFeedback }}</strong>
           </div>
 
-          <section class="dashboard-intro">
-            <div>
-              <p class="dashboard-eyebrow">/dashboard</p>
+          <section class="os-command-center" aria-label="Social media OS overview">
+            <div class="os-command-copy">
+              <p class="dashboard-eyebrow">Social media OS</p>
               <h1>{{ currentBusiness?.business.name ?? "Control Dashboard" }}</h1>
               <p class="dashboard-description">
-                Stay focused on the next move. Capture, refine, schedule, and post without losing the thread.
+                Capture signals, shape posts, schedule the next move, and keep every channel moving from one command center.
               </p>
+
+              <div class="os-command-actions">
+                <button
+                  type="button"
+                  class="dashboard-button"
+                  @click="openDashboardNextAction"
+                >
+                  {{ dashboardNextAction.primaryLabel }}
+                </button>
+                <router-link class="dashboard-button secondary" :to="appRoutes.appPlanner">
+                  Open planner
+                </router-link>
+              </div>
             </div>
 
-            <div class="intro-stats">
-              <span class="topbar-pill">Streak {{ dashboard.today.streakDays }}</span>
-              <span class="topbar-pill">Consistency {{ weeklyConsistencyPercent }}%</span>
-              <span class="topbar-pill muted">
-                {{
-                  dashboard.today.lastActivityAt
-                    ? `Last activity ${new Date(dashboard.today.lastActivityAt).toLocaleString()}`
-                    : "No recent activity yet"
-                }}
-              </span>
-              <span v-if="productAccess?.access?.readOnly" class="topbar-pill warning">Read-only</span>
-              <span class="profile-chip">{{ profileInitial }}</span>
-            </div>
+            <aside class="os-radar-panel" aria-label="Publishing radar">
+              <div class="os-radar-header">
+                <div>
+                  <span>Publishing radar</span>
+                  <strong>{{ bestTimeCountdownLabel }}</strong>
+                </div>
+                <span class="profile-chip">{{ profileInitial }}</span>
+              </div>
+
+              <div class="os-radar-grid">
+                <button
+                  v-for="card in pipelineSummaryCards"
+                  :key="`radar-${card.id}`"
+                  type="button"
+                  :data-stage="card.id"
+                  @click="handlePipelineSummaryClick(card.id)"
+                >
+                  <strong>{{ card.count }}</strong>
+                  <span>{{ card.label }}</span>
+                </button>
+              </div>
+
+              <div class="os-signal-bars" aria-hidden="true">
+                <span
+                  v-for="(height, index) in publishingRadarBars"
+                  :key="index"
+                  :style="{ '--bar-height': `${height}%` }"
+                ></span>
+              </div>
+            </aside>
+          </section>
+
+          <section class="os-signal-strip" aria-label="Workspace signals">
+            <article
+              v-for="signal in dashboardSignalCards"
+              :key="signal.id"
+              class="os-signal-card"
+              :data-tone="signal.tone"
+            >
+              <span>{{ signal.label }}</span>
+              <strong>{{ signal.value }}</strong>
+              <p>{{ signal.copy }}</p>
+            </article>
+            <article v-if="productAccess?.access?.readOnly" class="os-signal-card" data-tone="warning">
+              <span>Access</span>
+              <strong>Read-only</strong>
+              <p>This workspace is temporarily locked.</p>
+            </article>
           </section>
 
           <section class="dashboard-grid-two dashboard-grid-two--capture">
@@ -1979,6 +2069,7 @@ onBeforeUnmount(() => {
                   v-for="card in pipelineSummaryCards"
                   :key="card.id"
                   type="button"
+                  :data-stage="card.id"
                   class="dashboard-card summary-card"
                   @click="handlePipelineSummaryClick(card.id)"
                 >
@@ -2095,7 +2186,14 @@ onBeforeUnmount(() => {
 .workspace-dashboard {
   display: grid;
   gap: 24px;
-  max-width: 1380px;
+  max-width: 1460px;
+  --os-blue: #2563eb;
+  --os-cyan: #0891b2;
+  --os-green: #16a34a;
+  --os-violet: #6d28d9;
+  --os-amber: #d97706;
+  --os-rose: #be123c;
+  --fc-accent-soft: color-mix(in srgb, var(--fc-accent) 14%, var(--fc-panel-bg));
 }
 
 .workspace-frame {
@@ -2116,19 +2214,17 @@ onBeforeUnmount(() => {
 
 .workspace-content {
   display: grid;
-  gap: 24px;
+  gap: 26px;
 }
 
 .dashboard-panel,
 .dashboard-card,
 .dashboard-topbar,
-.dashboard-intro,
 .refined-today-panel {
   padding: 24px;
 }
 
 .dashboard-topbar,
-.dashboard-intro,
 .refined-today-panel {
   border: 1px solid var(--fc-border);
   border-radius: var(--fc-radius-panel);
@@ -2252,19 +2348,239 @@ onBeforeUnmount(() => {
   background: var(--fc-warning-bg);
 }
 
-.dashboard-intro {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: start;
-  justify-content: space-between;
-  gap: 20px 24px;
+.os-command-center {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 0.8fr);
+  gap: 24px;
+  overflow: hidden;
+  padding: 28px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 72%, transparent);
+  border-radius: calc(var(--fc-radius-panel) + 6px);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--fc-panel-bg) 92%, white 8%) 0%, color-mix(in srgb, var(--fc-surface) 68%, var(--fc-panel-bg)) 100%);
+  box-shadow: var(--fc-panel-shadow);
 }
 
-.dashboard-intro h1 {
+.os-command-center::before {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--os-blue) 12%, transparent) 0 1px, transparent 1px 100%),
+    linear-gradient(180deg, color-mix(in srgb, var(--os-blue) 10%, transparent) 0 1px, transparent 1px 100%);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(90deg, transparent 0%, black 16%, black 72%, transparent 100%);
+  opacity: 0.35;
+}
+
+.os-command-copy,
+.os-radar-panel {
+  position: relative;
+  z-index: 1;
+}
+
+.os-command-copy {
+  display: grid;
+  gap: 18px;
+  align-content: center;
+  min-height: 260px;
+}
+
+.os-command-copy h1 {
   margin: 0;
   font-family: var(--fc-font-family-display);
-  font-size: clamp(2rem, 5vw, 3rem);
-  line-height: 1.02;
+  font-size: clamp(2.35rem, 5vw, 4.5rem);
+  line-height: 0.98;
+  max-width: 760px;
+}
+
+.os-command-copy .dashboard-description {
+  max-width: 720px;
+  font-size: 1.05rem;
+}
+
+.os-command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.os-radar-panel {
+  display: grid;
+  gap: 18px;
+  align-content: stretch;
+  padding: 20px;
+  border: 1px solid color-mix(in srgb, var(--fc-border) 74%, transparent);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--fc-input-bg) 88%, white 12%) 0%, color-mix(in srgb, var(--fc-panel-bg) 86%, var(--fc-surface-muted)) 100%);
+}
+
+.os-radar-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+}
+
+.os-radar-header div {
+  display: grid;
+  gap: 4px;
+}
+
+.os-radar-header span,
+.os-signal-card span {
+  color: var(--fc-text-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.os-radar-header strong {
+  font-size: 1rem;
+}
+
+.os-radar-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.os-radar-grid button {
+  display: grid;
+  gap: 4px;
+  min-height: 82px;
+  padding: 14px 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 16px;
+  background: var(--fc-input-bg);
+  color: var(--fc-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.os-radar-grid button:hover,
+.summary-card:hover {
+  transform: translateY(-1px);
+}
+
+.os-radar-grid strong {
+  font-size: 1.7rem;
+  line-height: 1;
+}
+
+.os-radar-grid span {
+  color: var(--fc-text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.os-radar-grid button[data-stage="draft"],
+.summary-card[data-stage="draft"] {
+  --stage-color: var(--os-blue);
+}
+
+.os-radar-grid button[data-stage="review"],
+.summary-card[data-stage="review"] {
+  --stage-color: var(--os-violet);
+}
+
+.os-radar-grid button[data-stage="scheduled"],
+.summary-card[data-stage="scheduled"] {
+  --stage-color: var(--os-cyan);
+}
+
+.os-radar-grid button[data-stage="posted"],
+.summary-card[data-stage="posted"] {
+  --stage-color: var(--os-green);
+}
+
+.os-radar-grid button,
+.summary-card {
+  border-top-color: color-mix(in srgb, var(--stage-color, var(--fc-accent)) 36%, var(--fc-border));
+}
+
+.os-signal-bars {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 9px;
+  align-items: end;
+  min-height: 116px;
+  padding: 14px;
+  border: 1px solid var(--fc-border);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--os-blue) 7%, transparent) 0%, transparent 72%),
+    var(--fc-input-bg);
+}
+
+.os-signal-bars span {
+  min-height: 18px;
+  height: var(--bar-height);
+  border-radius: 999px 999px 6px 6px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--os-violet) 82%, white 18%) 0%, var(--os-blue) 100%);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--os-blue) 18%, transparent);
+}
+
+.os-signal-bars span:nth-child(2n) {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--os-cyan) 80%, white 20%) 0%, var(--os-blue) 100%);
+}
+
+.os-signal-bars span:nth-child(3n) {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--os-green) 74%, white 26%) 0%, var(--os-cyan) 100%);
+}
+
+.os-signal-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.os-signal-card {
+  display: grid;
+  gap: 8px;
+  min-height: 132px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--signal-color, var(--fc-accent)) 20%, var(--fc-border));
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--signal-color, var(--fc-accent)) 10%, var(--fc-panel-bg)) 0%, var(--fc-panel-bg) 100%);
+  box-shadow: 0 14px 30px color-mix(in srgb, var(--signal-color, var(--fc-accent)) 8%, transparent);
+}
+
+.os-signal-card[data-tone="amber"] {
+  --signal-color: var(--os-amber);
+}
+
+.os-signal-card[data-tone="green"] {
+  --signal-color: var(--os-green);
+}
+
+.os-signal-card[data-tone="blue"] {
+  --signal-color: var(--os-blue);
+}
+
+.os-signal-card[data-tone="violet"] {
+  --signal-color: var(--os-violet);
+}
+
+.os-signal-card[data-tone="warning"] {
+  --signal-color: var(--os-rose);
+}
+
+.os-signal-card strong {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.os-signal-card p {
+  margin: 0;
+  color: var(--fc-text-muted);
+  line-height: 1.45;
 }
 
 .dashboard-main-grid {
@@ -2313,17 +2629,30 @@ onBeforeUnmount(() => {
 }
 
 .summary-card {
+  position: relative;
+  overflow: hidden;
   width: 100%;
   border: 1px solid var(--fc-border);
   border-radius: 18px;
-  background: var(--fc-panel-bg);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--stage-color, var(--fc-accent)) 7%, var(--fc-panel-bg)) 0%, var(--fc-panel-bg) 100%);
   color: var(--fc-text);
   text-align: left;
   cursor: pointer;
 }
 
+.summary-card::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+  content: "";
+  background: var(--stage-color, var(--fc-accent));
+}
+
 .summary-card:hover {
-  border-color: color-mix(in srgb, var(--fc-accent) 24%, var(--fc-border));
+  border-color: color-mix(in srgb, var(--stage-color, var(--fc-accent)) 28%, var(--fc-border));
 }
 
 .dashboard-card strong {
@@ -2862,6 +3191,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1240px) {
+  .os-command-center {
+    grid-template-columns: 1fr;
+  }
+
   .dashboard-topbar {
     grid-template-columns: 1fr;
     grid-template-areas:
@@ -2875,6 +3208,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1280px) {
+  .os-signal-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .today-signal-grid {
     grid-template-columns: 1fr;
   }
@@ -2958,6 +3295,8 @@ onBeforeUnmount(() => {
 
   .pipeline-grid,
   .action-preview-diff,
+  .os-radar-grid,
+  .os-signal-strip,
   .dashboard-grid-two {
     grid-template-columns: 1fr;
   }
@@ -2967,10 +3306,21 @@ onBeforeUnmount(() => {
   }
 
   .pipeline-item-header,
-  .panel-header,
-  .dashboard-intro {
+  .panel-header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .os-command-center {
+    padding: 22px;
+  }
+
+  .os-command-copy {
+    min-height: auto;
+  }
+
+  .os-command-copy h1 {
+    font-size: clamp(2.15rem, 12vw, 3.2rem);
   }
 
   .capture-mode-row {
