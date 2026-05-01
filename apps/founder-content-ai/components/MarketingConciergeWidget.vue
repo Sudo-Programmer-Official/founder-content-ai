@@ -73,7 +73,7 @@ const currentTopicLabel = computed(() => {
     case "service_fit":
       return "Best-fit guidance";
     default:
-      return "24/7 lead concierge";
+      return "24/7 growth concierge";
   }
 });
 
@@ -172,7 +172,7 @@ onMounted(() => {
         <div class="marketing-concierge-header">
           <div class="marketing-concierge-header-copy">
             <p class="marketing-concierge-eyebrow">{{ currentTopicLabel }}</p>
-            <h2>Let’s figure out the best next step for your content engine.</h2>
+            <h2>Let’s find the best next step for your content system.</h2>
             <p>
               Ask about founder content automation, publishing systems, or the other growth
               workflows you want to tighten.
@@ -190,48 +190,49 @@ onMounted(() => {
         </div>
 
         <div class="marketing-concierge-body">
-          <div class="marketing-concierge-signal-row">
-            <span>Founder Content team</span>
-            <span>Email-first reply</span>
-            <span>No login required</span>
-          </div>
-
-          <div class="marketing-concierge-thread">
-            <article class="marketing-bubble marketing-bubble-assistant intro">
-              I’m the Founder Content Growth Concierge. Tell me what is slowing down your social
-              pipeline or founder-led content system, and I’ll help route it to the right next step.
-            </article>
-
-            <article v-if="selectedPrompt" class="marketing-concierge-context-card">
-              <p class="marketing-concierge-context-label">Selected question</p>
-              <strong>{{ selectedPrompt.label }}</strong>
-              <p>{{ selectedPrompt.response }}</p>
-            </article>
-
-            <article v-if="successMessage" class="marketing-bubble marketing-bubble-assistant success">
-              {{ successMessage }}
-            </article>
-          </div>
-
-          <div class="marketing-concierge-prompt-header">
-            <strong>Start with a common question</strong>
-            <span>or skip this and type your own note below.</span>
-          </div>
-
-          <div class="marketing-concierge-prompts">
-            <button
-              v-for="prompt in prompts"
-              :key="prompt.id"
-              type="button"
-              class="marketing-prompt"
-              :class="{ active: selectedPromptId === prompt.id }"
-              @click="applyPrompt(prompt)"
-            >
-              {{ prompt.label }}
-            </button>
-          </div>
-
           <form class="marketing-concierge-form" @submit.prevent="submitInquiry">
+            <div class="marketing-concierge-scroll">
+              <div class="marketing-concierge-signal-row">
+                <span>Founder Content team</span>
+                <span>Email-first reply</span>
+                <span>No login required</span>
+              </div>
+
+              <div class="marketing-concierge-thread">
+                <article class="marketing-bubble marketing-bubble-assistant intro">
+                  I’m the Founder Content Growth Concierge. Tell me what is slowing down your social
+                  pipeline or founder-led content system, and I’ll help route it to the right next step.
+                </article>
+
+                <article v-if="selectedPrompt" class="marketing-concierge-context-card">
+                  <p class="marketing-concierge-context-label">Selected question</p>
+                  <strong>{{ selectedPrompt.label }}</strong>
+                  <p>{{ selectedPrompt.response }}</p>
+                </article>
+
+                <article v-if="successMessage" class="marketing-bubble marketing-bubble-assistant success">
+                  {{ successMessage }}
+                </article>
+              </div>
+
+              <div class="marketing-concierge-prompt-header">
+                <strong>Start with a common question</strong>
+                <span>or skip this and type your own note below.</span>
+              </div>
+
+              <div class="marketing-concierge-prompts">
+                <button
+                  v-for="prompt in prompts"
+                  :key="prompt.id"
+                  type="button"
+                  class="marketing-prompt"
+                  :class="{ active: selectedPromptId === prompt.id }"
+                  @click="applyPrompt(prompt)"
+                >
+                  {{ prompt.label }}
+                </button>
+              </div>
+
             <div class="marketing-concierge-form-grid">
               <label class="marketing-field">
                 <span>Name</span>
@@ -282,6 +283,7 @@ onMounted(() => {
             </p>
 
             <p v-if="submissionError" class="marketing-concierge-error">{{ submissionError }}</p>
+            </div>
 
             <div class="marketing-concierge-actions">
               <span>Usually answered by email after review, not routed into a generic sales queue.</span>
@@ -331,6 +333,7 @@ onMounted(() => {
   width: min(420px, calc(100vw - 28px));
   max-height: min(74vh, 740px);
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid rgba(123, 90, 64, 0.14);
   border-radius: 28px;
@@ -386,15 +389,22 @@ onMounted(() => {
 }
 
 .marketing-concierge-body {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.marketing-concierge-scroll {
+  display: grid;
+  gap: 14px;
+  min-height: 0;
   overflow-y: auto;
-  padding: 16px 20px 20px;
+  padding: 16px 20px 18px;
 }
 
 .marketing-concierge-signal-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-bottom: 14px;
 }
 
 .marketing-concierge-signal-row span {
@@ -472,7 +482,6 @@ onMounted(() => {
 .marketing-concierge-prompt-header {
   display: grid;
   gap: 4px;
-  margin-top: 16px;
 }
 
 .marketing-concierge-prompt-header strong {
@@ -488,7 +497,6 @@ onMounted(() => {
 .marketing-concierge-prompts {
   display: grid;
   gap: 10px;
-  margin-top: 12px;
 }
 
 .marketing-prompt {
@@ -518,13 +526,15 @@ onMounted(() => {
 
 .marketing-concierge-form {
   display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 14px;
-  margin-top: 18px;
-  padding-top: 18px;
-  border-top: 1px solid rgba(123, 90, 64, 0.08);
+  height: 100%;
+  min-height: 0;
 }
 
 .marketing-concierge-form-grid {
+  padding-top: 18px;
+  border-top: 1px solid rgba(123, 90, 64, 0.08);
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
@@ -587,6 +597,11 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+  padding: 14px 20px calc(16px + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(123, 90, 64, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 251, 247, 0.92) 0%, rgba(255, 248, 241, 0.98) 100%);
+  box-shadow: 0 -18px 34px rgba(59, 39, 20, 0.08);
 }
 
 .marketing-concierge-actions span {
@@ -665,7 +680,8 @@ onMounted(() => {
   }
 
   .marketing-concierge-header,
-  .marketing-concierge-body {
+  .marketing-concierge-scroll,
+  .marketing-concierge-actions {
     padding-left: 18px;
     padding-right: 18px;
   }
