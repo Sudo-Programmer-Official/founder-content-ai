@@ -132,6 +132,18 @@ interface ResultPreviewNotice {
   detail: string;
 }
 
+interface VisualStoryRecommendationCard {
+  id: string;
+  mediaType: Exclude<VisualStoryMediaType, "clean_carousel">;
+  title: string;
+  description: string;
+  reason: string;
+  panelCount: 3 | 5;
+  tone: VisualStoryTone;
+  character: VisualStoryCharacter;
+  buttonLabel: string;
+}
+
 interface ResultPlatformPreviewCard {
   surface: ResultPreviewSurface;
   label: string;
@@ -222,9 +234,6 @@ const selectedMotionAudioPreset = ref<MotionAudioPreset>("clean_modern");
 const selectedPromoVisualLayout = ref<PromoVisualLayoutId>("logo_headline");
 const selectedCustomImageTemplateType = ref<CustomImageTemplateType>("insight");
 const customImageStylePrompt = ref("");
-const selectedVisualStoryPanelCount = ref<3 | 5>(5);
-const selectedVisualStoryTone = ref<VisualStoryTone>("educational");
-const selectedVisualStoryCharacter = ref<VisualStoryCharacter>("friendly_developer");
 const editablePostContent = ref("");
 const isSavingManualEdit = ref(false);
 const manualEditFeedback = ref("");
@@ -360,12 +369,7 @@ type VisualStylePreference =
   | "photo_overlay"
   | "stat_card"
   | "quote_card"
-  | "framework_card"
-  | "comic_strip"
-  | "cartoon_explainer"
-  | "founder_doodle"
-  | "tech_meme"
-  | "minimal_infographic";
+  | "framework_card";
 const selectedVisualStylePreference = ref<VisualStylePreference>("auto");
 const aiEditInstruction = ref("");
 const aiEditPreview = ref<ContentAiEditPreview | null>(null);
@@ -1505,10 +1509,6 @@ function matchesVisualStylePreference(
   suggestion: MediaRecommendationSuggestion,
   preference: VisualStylePreference,
 ): boolean {
-  if (isVisualStoryStylePreference(preference)) {
-    return suggestion.actionType === "generate_visual" && suggestion.visualTemplateType === "carousel";
-  }
-
   return preference !== "auto"
     && suggestion.actionType === "generate_visual"
     && suggestion.suggestedMediaType === preference;
@@ -1527,39 +1527,7 @@ function getVisualStyleOptionLabel(preference: Exclude<VisualStylePreference, "a
     return "Quote card";
   }
 
-  if (preference === "comic_strip") {
-    return "Comic strip";
-  }
-
-  if (preference === "cartoon_explainer") {
-    return "Cartoon explainer";
-  }
-
-  if (preference === "founder_doodle") {
-    return "Founder doodle";
-  }
-
-  if (preference === "tech_meme") {
-    return "Tech meme";
-  }
-
-  if (preference === "minimal_infographic") {
-    return "Minimal infographic";
-  }
-
   return isBusinessMode.value ? "Feature visual" : "Carousel";
-}
-
-function isVisualStoryStylePreference(
-  value: VisualStylePreference,
-): value is Exclude<VisualStoryMediaType, "clean_carousel"> {
-  return (
-    value === "comic_strip" ||
-    value === "cartoon_explainer" ||
-    value === "founder_doodle" ||
-    value === "tech_meme" ||
-    value === "minimal_infographic"
-  );
 }
 
 const postScore = computed(() =>
@@ -3213,6 +3181,92 @@ const displayedMediaRecommendations = computed(() => {
       return leftPriority - rightPriority;
     });
 });
+const visualStoryRecommendationCards = computed<VisualStoryRecommendationCard[]>(() => {
+  if (isBusinessMode.value) {
+    return [
+      {
+        id: "story-minimal-infographic",
+        mediaType: "minimal_infographic",
+        title: "Minimal infographic",
+        description: "Turn the post into a clean 3-panel explainer with simple visual hierarchy.",
+        reason: "Best for business posts that need clarity before personality.",
+        panelCount: 3,
+        tone: "professional",
+        character: "abstract_mascot",
+        buttonLabel: "Generate infographic",
+      },
+      {
+        id: "story-cartoon-explainer",
+        mediaType: "cartoon_explainer",
+        title: "Cartoon explainer",
+        description: "Create a friendly visual lesson from the campaign or product idea.",
+        reason: "Useful when the post teaches a problem, mechanism, or before-and-after.",
+        panelCount: 5,
+        tone: "educational",
+        character: "office_team",
+        buttonLabel: "Generate explainer",
+      },
+    ];
+  }
+
+  return [
+    {
+      id: "story-comic-strip",
+      mediaType: "comic_strip",
+      title: "Comic strip",
+      description: "Turn the post into a 5-panel mini story with a character, conflict, and takeaway.",
+      reason: "Best for posts with a hard lesson, mistake, founder story, or sharp contrast.",
+      panelCount: 5,
+      tone: "funny",
+      character: "friendly_developer",
+      buttonLabel: "Generate comic",
+    },
+    {
+      id: "story-cartoon-explainer",
+      mediaType: "cartoon_explainer",
+      title: "Cartoon explainer",
+      description: "Explain the idea with a friendly illustrated character and clear sequence.",
+      reason: "Best when readers need to understand the concept faster than text alone.",
+      panelCount: 5,
+      tone: "educational",
+      character: "robot_assistant",
+      buttonLabel: "Generate explainer",
+    },
+    {
+      id: "story-tech-meme",
+      mediaType: "tech_meme",
+      title: "Tech meme",
+      description: "Make the point more shareable with a brand-safe meme-style visual story.",
+      reason: "Best for technical pain points, workflow jokes, and relatable builder moments.",
+      panelCount: 3,
+      tone: "funny",
+      character: "friendly_developer",
+      buttonLabel: "Generate meme",
+    },
+    {
+      id: "story-founder-doodle",
+      mediaType: "founder_doodle",
+      title: "Founder doodle",
+      description: "Create a simple sketch-style founder lesson that feels personal and low-friction.",
+      reason: "Best when the post is reflective, tactical, or lesson-led.",
+      panelCount: 3,
+      tone: "motivational",
+      character: "founder_creator",
+      buttonLabel: "Generate doodle",
+    },
+    {
+      id: "story-minimal-infographic",
+      mediaType: "minimal_infographic",
+      title: "Minimal infographic",
+      description: "Convert the idea into a clean diagram-like carousel for fast scanning.",
+      reason: "Best for frameworks, systems, checklists, and proof-heavy posts.",
+      panelCount: 3,
+      tone: "professional",
+      character: "abstract_mascot",
+      buttonLabel: "Generate infographic",
+    },
+  ];
+});
 const selectableVisualStyleOptions = computed(() => [
   {
     value: "auto" as const,
@@ -3233,26 +3287,6 @@ const selectableVisualStyleOptions = computed(() => [
   {
     value: "framework_card" as const,
     label: getVisualStyleOptionLabel("framework_card"),
-  },
-  {
-    value: "comic_strip" as const,
-    label: getVisualStyleOptionLabel("comic_strip"),
-  },
-  {
-    value: "cartoon_explainer" as const,
-    label: getVisualStyleOptionLabel("cartoon_explainer"),
-  },
-  {
-    value: "founder_doodle" as const,
-    label: getVisualStyleOptionLabel("founder_doodle"),
-  },
-  {
-    value: "tech_meme" as const,
-    label: getVisualStyleOptionLabel("tech_meme"),
-  },
-  {
-    value: "minimal_infographic" as const,
-    label: getVisualStyleOptionLabel("minimal_infographic"),
   },
 ]);
 const preferredMediaSuggestion = computed<MediaRecommendationSuggestion | null>(() => {
@@ -5539,6 +5573,7 @@ async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
 
 async function generateRecommendedMedia(
   suggestion: MediaRecommendationSuggestion,
+  visualStoryCard?: VisualStoryRecommendationCard,
 ): Promise<void> {
   if (!activeBusinessId.value || !suggestion.visualTemplateType) {
     return;
@@ -5562,9 +5597,6 @@ async function generateRecommendedMedia(
       });
     const coverSlide = currentVisualNarrative.slides[0];
     const isPhotoOverlay = suggestion.suggestedMediaType === "photo_overlay";
-    const selectedStoryStyle = isVisualStoryStylePreference(selectedVisualStylePreference.value)
-      ? selectedVisualStylePreference.value
-      : null;
     const creatorOverlayFooterText =
       !isBusinessMode.value && workspaceBrandLabel.value
         ? workspaceBrandLabel.value
@@ -5620,21 +5652,21 @@ async function generateRecommendedMedia(
             }
           : undefined,
       carousel:
-        suggestion.visualTemplateType === "carousel" && selectedStoryStyle
+        suggestion.visualTemplateType === "carousel" && visualStoryCard
           ? {
               narrativeType: currentVisualNarrative.type,
-              slideCount: selectedVisualStoryPanelCount.value,
+              slideCount: visualStoryCard.panelCount,
               sourceText: postContent.value,
               title: currentVisualNarrative.title,
               subtitle: currentVisualNarrative.subtitle,
             }
           : undefined,
-      visualStory: selectedStoryStyle
+      visualStory: visualStoryCard
         ? {
-            mediaType: selectedStoryStyle,
-            panelCount: selectedVisualStoryPanelCount.value,
-            tone: selectedVisualStoryTone.value,
-            character: selectedVisualStoryCharacter.value,
+            mediaType: visualStoryCard.mediaType,
+            panelCount: visualStoryCard.panelCount,
+            tone: visualStoryCard.tone,
+            character: visualStoryCard.character,
           }
         : undefined,
       mediaPresetId: suggestion.mediaPresetId,
@@ -5729,6 +5761,34 @@ async function generateRecommendedMedia(
   } finally {
     isGeneratingRecommendationId.value = "";
   }
+}
+
+async function generateVisualStoryFromCard(card: VisualStoryRecommendationCard): Promise<void> {
+  const carouselSuggestion =
+    displayedMediaRecommendations.value.find((suggestion) =>
+      suggestion.actionType === "generate_visual" && suggestion.visualTemplateType === "carousel",
+    )
+    ?? fallbackMediaRecommendations.value.find((suggestion) =>
+      suggestion.actionType === "generate_visual" && suggestion.visualTemplateType === "carousel",
+    );
+
+  if (!carouselSuggestion) {
+    mediaFeedback.value = "No carousel generation path is available for this post yet.";
+    return;
+  }
+
+  await generateRecommendedMedia(
+    {
+      ...carouselSuggestion,
+      id: card.id,
+      title: card.title,
+      description: card.description,
+      reason: card.reason,
+      visualTemplateType: "carousel",
+      suggestedMediaType: "framework_card",
+    },
+    card,
+  );
 }
 
 async function applyMediaRecommendation(
@@ -8424,44 +8484,6 @@ onBeforeUnmount(() => {
                       </option>
                     </select>
                   </label>
-                  <label
-                    v-if="isVisualStoryStylePreference(selectedVisualStylePreference)"
-                    class="media-style-select-wrap"
-                  >
-                    <span class="panel-meta media-style-select-label">Panels</span>
-                    <select v-model="selectedVisualStoryPanelCount" class="media-style-select">
-                      <option :value="3">3 panels</option>
-                      <option :value="5">5 panels</option>
-                    </select>
-                  </label>
-                  <label
-                    v-if="isVisualStoryStylePreference(selectedVisualStylePreference)"
-                    class="media-style-select-wrap"
-                  >
-                    <span class="panel-meta media-style-select-label">Tone</span>
-                    <select v-model="selectedVisualStoryTone" class="media-style-select">
-                      <option value="educational">Educational</option>
-                      <option value="funny">Funny</option>
-                      <option value="professional">Professional</option>
-                      <option value="motivational">Motivational</option>
-                      <option value="serious">Serious</option>
-                      <option value="dramatic">Dramatic</option>
-                    </select>
-                  </label>
-                  <label
-                    v-if="isVisualStoryStylePreference(selectedVisualStylePreference)"
-                    class="media-style-select-wrap"
-                  >
-                    <span class="panel-meta media-style-select-label">Character</span>
-                    <select v-model="selectedVisualStoryCharacter" class="media-style-select">
-                      <option value="friendly_developer">Friendly developer</option>
-                      <option value="founder_creator">Founder / creator</option>
-                      <option value="student">Student</option>
-                      <option value="robot_assistant">Robot assistant</option>
-                      <option value="office_team">Office team</option>
-                      <option value="abstract_mascot">Abstract mascot</option>
-                    </select>
-                  </label>
                   <button
                     type="button"
                     class="primary-action media-generate-button"
@@ -8825,6 +8847,27 @@ onBeforeUnmount(() => {
                             ? "Use existing"
                             : "Skip media"
                       }}
+                    </button>
+                  </article>
+                  <article
+                    v-for="storyCard in visualStoryRecommendationCards"
+                    :key="storyCard.id"
+                    class="media-recommendation-card"
+                    data-recommended="true"
+                  >
+                    <div>
+                      <p class="panel-meta">Visual story mode</p>
+                      <strong>{{ storyCard.title }}</strong>
+                      <p>{{ storyCard.description }}</p>
+                      <small>{{ storyCard.reason }}</small>
+                    </div>
+                    <button
+                      type="button"
+                      class="secondary-action"
+                      :disabled="isGeneratingRecommendationId === storyCard.id || isUploadingPostAssets"
+                      @click="void generateVisualStoryFromCard(storyCard)"
+                    >
+                      {{ isGeneratingRecommendationId === storyCard.id ? "Generating..." : storyCard.buttonLabel }}
                     </button>
                   </article>
                 </div>
