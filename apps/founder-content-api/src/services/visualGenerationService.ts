@@ -2039,7 +2039,7 @@ function resolveVisualStoryStylePrompt(input: {
     `Create a premium, image-led ${toneLabel} social-media visual with a consistent ${characterLabel}.`,
     "Make it colorful, polished, expressive, and scroll-stopping, with cinematic lighting and a clear visual metaphor.",
     input.mediaType === "tech_meme"
-      ? "Make the visual witty and brand-safe, with a relatable developer reaction, modern workspace details, and no offensive stereotypes."
+      ? "Make it feel like a premium single-panel developer meme: exaggerated facial expression, obvious visual joke, absurd-but-relatable software chaos, punchline energy, and no educational slide layout. Do not render platform names like LinkedIn, Instagram, Twitter, or Facebook."
       : undefined,
     input.mediaType === "cartoon_explainer"
       ? "Use a high-quality cartoon explainer style with dimensional characters, vivid props, and a bright modern palette."
@@ -2073,6 +2073,70 @@ function buildShortStoryCaption(value: string | undefined, fallback: string): st
   return sanitizePhrase(words.slice(0, 5).join(" "), 38) || fallback;
 }
 
+function buildTechMemePunchline(value: string | undefined, fallback: string): string {
+  const normalized = collapseWhitespace(value).toLowerCase();
+
+  if (/\bsecurity\b/.test(normalized)) {
+    return "Fix it later?";
+  }
+
+  if (/\bbug|bugs|debug|error|crash\b/.test(normalized)) {
+    return "Works locally";
+  }
+
+  if (/\bdeploy|ship|shipping|release\b/.test(normalized)) {
+    return "Ship it?";
+  }
+
+  if (/\bai|agent|automation\b/.test(normalized)) {
+    return "Autopilot, sure";
+  }
+
+  return fallback;
+}
+
+function buildTechMemePanels(input: {
+  content: VisualPromptContent;
+  characterLabel: string;
+  mediaLabel: string;
+  toneLabel: string;
+}): GeneratedVisualStoryPanel[] {
+  const coreIdea = sanitizePhrase(input.content.headline, 86) || "The risky shortcut";
+  const supportingText = sanitizePhrase(input.content.supportingText, 118);
+  const punchline = buildTechMemePunchline(`${coreIdea} ${supportingText}`, "What could go wrong?");
+  const beats = [
+    {
+      caption: punchline,
+      scene: `${input.characterLabel} at a laptop, nervous smile, about to ignore an obvious security warning while colorful alert icons glow behind the screen. The joke is the developer pretending the risk is fine.`,
+      role: "setup",
+    },
+    {
+      caption: "Tiny shortcut",
+      scene: `${input.characterLabel} proudly points at a messy whiteboard labeled only with simple squiggles while a giant bug-shaped warning light looms in the background. The scene should feel funny and chaotic, not instructional.`,
+      role: "escalation",
+    },
+    {
+      caption: "Future me",
+      scene: `${input.characterLabel} looks dramatically betrayed by their own old code while a glowing shield icon saves the laptop. Exaggerated meme reaction, expressive face, colorful modern workspace, punchline ending.`,
+      role: "punchline",
+    },
+  ];
+
+  return beats.map((beat, index) => ({
+    panelNumber: index + 1,
+    caption: beat.caption,
+    scenePrompt: [
+      `${input.mediaLabel}, ${input.toneLabel} tone.`,
+      beat.scene,
+      `Underlying post idea, for visual context only: ${coreIdea}.`,
+      "Make this a meme image first: humorous reaction, visual punchline, minimal text, no paragraph copy.",
+      `Narrative role: ${beat.role}.`,
+    ].join(" "),
+    style: "tech_meme",
+    status: "generated",
+  }));
+}
+
 function buildVisualStoryPanels(input: {
   content: VisualPromptContent;
   mediaType: VisualStoryMediaType;
@@ -2089,6 +2153,16 @@ function buildVisualStoryPanels(input: {
   const characterLabel = formatVisualStoryCharacter(input.character);
   const toneLabel = formatVisualStoryTone(input.tone);
   const mediaLabel = formatVisualStoryMediaType(input.mediaType).toLowerCase();
+
+  if (input.mediaType === "tech_meme") {
+    return buildTechMemePanels({
+      content: input.content,
+      characterLabel,
+      mediaLabel,
+      toneLabel,
+    });
+  }
+
   const beats =
     input.panelCount === 3
       ? [

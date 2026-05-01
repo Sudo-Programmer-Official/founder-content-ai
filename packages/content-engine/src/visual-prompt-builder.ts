@@ -313,11 +313,11 @@ function resolveLayoutBlock(
       comic_strip: "premium comic panel with expressive character acting inside a vivid scene, cinematic framing, colorful background, modern editorial illustration, not a flat text card",
       cartoon_explainer: "high-quality cartoon explainer scene with a friendly character, clear props, dimensional lighting, rich color, modern product-education style, not a flat text card",
       founder_doodle: "polished founder doodle scene with hand-drawn warmth, lively character pose, subtle texture, expressive environment, high craft, not a plain quote card",
-      tech_meme: "premium tech meme scene with a funny relatable developer moment, expressive character reaction, vibrant modern workspace, colorful lighting, high-quality editorial cartoon finish, not a black text slide",
+      tech_meme: "premium single-panel tech meme image with an exaggerated developer reaction, absurd-but-relatable software situation, clear visual joke, vibrant modern workspace, colorful cinematic lighting, high-quality editorial cartoon finish, not an explainer slide and not a text poster",
       minimal_infographic: "image-led minimal infographic with colorful dimensional objects, icons, arrows, and one clear visual metaphor, not a paragraph-heavy slide",
     };
 
-    return `${storyLayouts[options.visualStoryMediaType]}, square social composition, strong focal subject, rich visual storytelling, minimal readable overlay text only if needed, keep any text large and under 6 words, use a small bottom-right brand signature only, avoid dense typography, avoid black-only backgrounds, avoid generic stock art`;
+    return `${storyLayouts[options.visualStoryMediaType]}, square social composition, strong focal subject, rich visual storytelling, minimal readable overlay text only if needed, keep any text large and under 6 words, use a small bottom-right brand signature only, avoid dense typography, avoid black-only backgrounds, avoid generic stock art, do not write platform names such as LinkedIn, Instagram, Twitter, or Facebook inside the image`;
   }
 
   switch (templateType) {
