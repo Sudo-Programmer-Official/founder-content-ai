@@ -114,7 +114,7 @@ export interface CarouselGenerationInput {
 
 export interface VisualStoryGenerationInput {
   mediaType: VisualStoryMediaType;
-  panelCount?: 3 | 5;
+  panelCount?: 1 | 3 | 5;
   tone?: VisualStoryTone;
   character?: VisualStoryCharacter;
 }

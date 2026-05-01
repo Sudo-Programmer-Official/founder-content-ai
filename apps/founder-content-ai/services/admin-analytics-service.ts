@@ -11,6 +11,8 @@ import type {
   MyBusinessesResponse,
   TrackAnalyticsEventRequest,
   TrackAnalyticsEventResponse,
+  UpdateAdminMediaGenerationSettingsRequest,
+  UpdateAdminMediaGenerationSettingsResponse,
   UpdateAdminWorkspaceAccessRequest,
   UpdateAdminWorkspaceAccessResponse,
   UpsertAdminDecisionRuleRequest,
@@ -63,6 +65,15 @@ export async function requestAdminFeatureFlags(): Promise<AdminFeatureFlagsRespo
 
 export async function requestAdminMediaRegistry(): Promise<AdminMediaRegistryResponse> {
   return apiGet<AdminMediaRegistryResponse>("/admin/media-registry");
+}
+
+export async function requestAdminMediaGenerationSettingsUpdate(
+  payload: UpdateAdminMediaGenerationSettingsRequest,
+): Promise<UpdateAdminMediaGenerationSettingsResponse> {
+  return apiPatch<UpdateAdminMediaGenerationSettingsRequest, UpdateAdminMediaGenerationSettingsResponse>(
+    "/admin/media-registry/generation-settings",
+    payload,
+  );
 }
 
 export async function requestAdminFeatureFlagUpsert(

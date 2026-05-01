@@ -9,6 +9,7 @@ import {
   getAdminUsage,
   getAdminUsers,
   getAdminWorkspaces,
+  patchAdminMediaGenerationSettings,
   patchAdminWorkspaceAccess,
   postAdminDecisionRule,
   postAdminFeatureFlag,
@@ -32,6 +33,7 @@ adminRoute.get("/api/admin/feature-flags", requireAuth(), requireSuperAdmin(), g
 adminRoute.post("/api/admin/feature-flags", requireAuth(), requireSuperAdmin(), postAdminFeatureFlag);
 adminRoute.post("/api/admin/feature-flags/targets", requireAuth(), requireSuperAdmin(), postAdminFeatureFlagTarget);
 adminRoute.get("/api/admin/media-registry", requireAuth(), requireSuperAdmin(), getAdminMediaRegistry);
+adminRoute.patch("/api/admin/media-registry/generation-settings", requireAuth(), requireSuperAdmin(), patchAdminMediaGenerationSettings);
 adminRoute.post("/api/admin/media-registry/presets", requireAuth(), requireSuperAdmin(), postAdminMediaPreset);
 adminRoute.post("/api/admin/media-registry/prompt-templates", requireAuth(), requireSuperAdmin(), postAdminPromptTemplate);
 adminRoute.post("/api/admin/media-registry/decision-rules", requireAuth(), requireSuperAdmin(), postAdminDecisionRule);

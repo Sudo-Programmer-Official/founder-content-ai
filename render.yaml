@@ -36,6 +36,8 @@ services:
         sync: false
       - key: OPENAI_IMAGE_MODEL
         sync: false
+      - key: OPENAI_IMAGE_QUALITY
+        sync: false
       - key: LINKEDIN_API_VERSION
         sync: false
       - key: LINKEDIN_CLIENT_ID
@@ -135,6 +137,8 @@ services:
       - key: OPENAI_TRANSCRIBE_FALLBACKS
         sync: false
       - key: OPENAI_IMAGE_MODEL
+        sync: false
+      - key: OPENAI_IMAGE_QUALITY
         sync: false
       - key: LINKEDIN_API_VERSION
         sync: false

@@ -17,6 +17,8 @@ import type {
   UpsertAdminFeatureFlagResponse,
   UpsertAdminFeatureFlagTargetRequest,
   UpsertAdminFeatureFlagTargetResponse,
+  UpdateAdminMediaGenerationSettingsRequest,
+  UpdateAdminMediaGenerationSettingsResponse,
   UpsertAdminMediaPresetRequest,
   UpsertAdminMediaPresetResponse,
   UpsertAdminPromptTemplateRequest,
@@ -31,6 +33,7 @@ import {
 import { ensureCurrentUser } from "../services/authBusinessService.ts";
 import {
   listAdminMediaRegistry,
+  updateAdminMediaGenerationSettings,
   upsertAdminDecisionRule,
   upsertAdminMediaPreset,
   upsertAdminPromptTemplate,
@@ -264,6 +267,29 @@ export async function postAdminMediaPreset(
       code: "admin_media_preset_upsert_failed",
       message: "Unable to save the media preset.",
       logMessage: "Failed to save admin media preset.",
+    });
+  }
+}
+
+export async function patchAdminMediaGenerationSettings(
+  request: Request<unknown, unknown, UpdateAdminMediaGenerationSettingsRequest>,
+  response: Response<UpdateAdminMediaGenerationSettingsResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const actor = await ensureCurrentUser(request.auth);
+    const generationSettings = await updateAdminMediaGenerationSettings(request.body, actor.id);
+    response.json({ generationSettings });
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_media_generation_settings_update_failed",
+      message: "Unable to update media generation settings.",
+      logMessage: "Failed to update admin media generation settings.",
     });
   }
 }

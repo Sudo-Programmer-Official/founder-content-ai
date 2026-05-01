@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import type {
   AdminDecisionRuleRecord,
   AdminDecisionRuleScope,
+  AdminMediaGenerationSettings,
   AdminMediaPresetRecord,
   AdminMediaRegistryOptions,
   AdminPromptTemplateRecord,
@@ -14,6 +15,7 @@ import type {
 } from "../../../packages/shared-types";
 import {
   requestAdminDecisionRuleUpsert,
+  requestAdminMediaGenerationSettingsUpdate,
   requestAdminMediaPresetUpsert,
   requestAdminMediaRegistry,
   requestAdminPromptTemplateUpsert,
@@ -24,11 +26,13 @@ const registryOptions = ref<AdminMediaRegistryOptions | null>(null);
 const presets = ref<AdminMediaPresetRecord[]>([]);
 const promptTemplates = ref<AdminPromptTemplateRecord[]>([]);
 const decisionRules = ref<AdminDecisionRuleRecord[]>([]);
+const generationSettings = ref<AdminMediaGenerationSettings | null>(null);
 const workspaces = ref<AdminWorkspaceListItem[]>([]);
 const isLoading = ref(true);
 const isSavingPreset = ref(false);
 const isSavingPromptTemplate = ref(false);
 const isSavingDecisionRule = ref(false);
+const isSavingGenerationSettings = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 
@@ -74,6 +78,14 @@ const decisionRuleForm = reactive<UpsertAdminDecisionRuleRequest>({
 });
 const decisionRuleConditionsInput = ref("{}");
 const decisionRuleOutputsInput = ref("{}");
+const generationSettingsForm = reactive<AdminMediaGenerationSettings>({
+  imageQuality: "medium",
+  techMemePanelCount: 1,
+  comicStripPanelCount: 3,
+  cartoonExplainerPanelCount: 3,
+  founderDoodlePanelCount: 3,
+  minimalInfographicPanelCount: 3,
+});
 
 const mediaPromptTemplates = computed(() =>
   promptTemplates.value.filter((template) => template.category === "media"),
@@ -155,6 +167,16 @@ function resetDecisionRuleForm(): void {
   decisionRuleForm.isActive = true;
   decisionRuleConditionsInput.value = "{}";
   decisionRuleOutputsInput.value = "{}";
+}
+
+function editGenerationSettings(settings: AdminMediaGenerationSettings): void {
+  generationSettings.value = settings;
+  generationSettingsForm.imageQuality = settings.imageQuality;
+  generationSettingsForm.techMemePanelCount = settings.techMemePanelCount;
+  generationSettingsForm.comicStripPanelCount = settings.comicStripPanelCount;
+  generationSettingsForm.cartoonExplainerPanelCount = settings.cartoonExplainerPanelCount;
+  generationSettingsForm.founderDoodlePanelCount = settings.founderDoodlePanelCount;
+  generationSettingsForm.minimalInfographicPanelCount = settings.minimalInfographicPanelCount;
 }
 
 function editPromptTemplate(template: AdminPromptTemplateRecord): void {
@@ -247,6 +269,7 @@ async function loadRegistryState(): Promise<void> {
     ]);
 
     registryOptions.value = registryResponse.options;
+    editGenerationSettings(registryResponse.generationSettings);
     presets.value = registryResponse.presets;
     promptTemplates.value = registryResponse.promptTemplates;
     decisionRules.value = registryResponse.decisionRules;
@@ -321,6 +344,29 @@ async function saveDecisionRule(): Promise<void> {
   }
 }
 
+async function saveGenerationSettings(): Promise<void> {
+  resetFeedback();
+  isSavingGenerationSettings.value = true;
+
+  try {
+    const response = await requestAdminMediaGenerationSettingsUpdate({
+      imageQuality: generationSettingsForm.imageQuality,
+      techMemePanelCount: generationSettingsForm.techMemePanelCount,
+      comicStripPanelCount: generationSettingsForm.comicStripPanelCount,
+      cartoonExplainerPanelCount: generationSettingsForm.cartoonExplainerPanelCount,
+      founderDoodlePanelCount: generationSettingsForm.founderDoodlePanelCount,
+      minimalInfographicPanelCount: generationSettingsForm.minimalInfographicPanelCount,
+    });
+    editGenerationSettings(response.generationSettings);
+    feedbackMessage.value = "Updated global media generation controls.";
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to update media generation controls.";
+  } finally {
+    isSavingGenerationSettings.value = false;
+  }
+}
+
 watch(
   () => [...presetForm.mediaTypes],
   (mediaTypes) => {
@@ -382,6 +428,87 @@ onMounted(() => {
           <strong>{{ card.value }}</strong>
           <span class="dashboard-card-meta">{{ card.meta }}</span>
         </article>
+      </section>
+
+      <section class="dashboard-panel registry-section">
+        <div class="panel-header">
+          <div>
+            <p class="panel-meta">Global generation controls</p>
+            <h2>Image spend and story defaults</h2>
+            <p class="dashboard-description">
+              Tune image quality and default story panel counts globally without changing code.
+            </p>
+          </div>
+          <button
+            type="button"
+            class="dashboard-button"
+            :disabled="isSavingGenerationSettings"
+            @click="void saveGenerationSettings()"
+          >
+            {{ isSavingGenerationSettings ? "Saving..." : "Save controls" }}
+          </button>
+        </div>
+
+        <div class="registry-form-grid three">
+          <label class="dashboard-field">
+            <span>Image quality</span>
+            <select v-model="generationSettingsForm.imageQuality">
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="auto">Auto</option>
+            </select>
+          </label>
+
+          <label class="dashboard-field">
+            <span>Tech meme panels</span>
+            <select v-model.number="generationSettingsForm.techMemePanelCount">
+              <option :value="1">1</option>
+              <option :value="3">3</option>
+              <option :value="5">5</option>
+            </select>
+          </label>
+
+          <label class="dashboard-field">
+            <span>Comic strip panels</span>
+            <select v-model.number="generationSettingsForm.comicStripPanelCount">
+              <option :value="1">1</option>
+              <option :value="3">3</option>
+              <option :value="5">5</option>
+            </select>
+          </label>
+
+          <label class="dashboard-field">
+            <span>Cartoon explainer panels</span>
+            <select v-model.number="generationSettingsForm.cartoonExplainerPanelCount">
+              <option :value="1">1</option>
+              <option :value="3">3</option>
+              <option :value="5">5</option>
+            </select>
+          </label>
+
+          <label class="dashboard-field">
+            <span>Founder doodle panels</span>
+            <select v-model.number="generationSettingsForm.founderDoodlePanelCount">
+              <option :value="1">1</option>
+              <option :value="3">3</option>
+              <option :value="5">5</option>
+            </select>
+          </label>
+
+          <label class="dashboard-field">
+            <span>Minimal infographic panels</span>
+            <select v-model.number="generationSettingsForm.minimalInfographicPanelCount">
+              <option :value="1">1</option>
+              <option :value="3">3</option>
+              <option :value="5">5</option>
+            </select>
+          </label>
+        </div>
+
+        <p class="feature-empty-copy">
+          Current backend cache refreshes within 60 seconds. Keep quality at Medium for the usual cost/quality balance; High should be reserved for premium campaigns.
+        </p>
       </section>
 
       <section class="dashboard-panel registry-section">

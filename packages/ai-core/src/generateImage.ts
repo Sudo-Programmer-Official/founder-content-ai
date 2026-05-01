@@ -2,6 +2,7 @@ export interface GenerateImageRequest {
   prompt: string;
   model?: string;
   size?: "1024x1024" | "1536x1024" | "1024x1536";
+  quality?: "low" | "medium" | "high" | "auto";
 }
 
 export interface GenerateImageResponse {
@@ -22,6 +23,20 @@ interface ImageGenerationApiResponse {
 
 const OPENAI_IMAGE_GENERATIONS_URL = "https://api.openai.com/v1/images/generations";
 
+function resolveImageQuality(inputQuality: GenerateImageRequest["quality"]): GenerateImageRequest["quality"] {
+  const envQuality = process.env.OPENAI_IMAGE_QUALITY?.trim().toLowerCase();
+
+  if (inputQuality) {
+    return inputQuality;
+  }
+
+  if (envQuality === "low" || envQuality === "medium" || envQuality === "high" || envQuality === "auto") {
+    return envQuality;
+  }
+
+  return "medium";
+}
+
 export async function generateImage(input: GenerateImageRequest): Promise<GenerateImageResponse> {
   const apiKey = process.env.OPENAI_API_KEY?.trim();
 
@@ -31,6 +46,7 @@ export async function generateImage(input: GenerateImageRequest): Promise<Genera
 
   const model = input.model ?? process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-1";
   const size = input.size ?? "1024x1024";
+  const quality = resolveImageQuality(input.quality);
 
   const response = await fetch(OPENAI_IMAGE_GENERATIONS_URL, {
     method: "POST",
@@ -42,6 +58,7 @@ export async function generateImage(input: GenerateImageRequest): Promise<Genera
       model,
       prompt: input.prompt,
       size,
+      quality,
     }),
   });
 

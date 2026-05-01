@@ -138,7 +138,7 @@ interface VisualStoryRecommendationCard {
   title: string;
   description: string;
   reason: string;
-  panelCount: 3 | 5;
+  panelCount: 1 | 3 | 5;
   tone: VisualStoryTone;
   character: VisualStoryCharacter;
   buttonLabel: string;
@@ -3210,7 +3210,7 @@ const visualStoryRecommendationCards = computed<VisualStoryRecommendationCard[]>
         title: "Cartoon explainer",
         description: "Create a friendly visual lesson from the campaign or product idea.",
         reason: "Useful when the post teaches a problem, mechanism, or before-and-after.",
-        panelCount: 5,
+        panelCount: 3,
         tone: "educational",
         character: "office_team",
         buttonLabel: "Generate explainer",
@@ -3225,7 +3225,7 @@ const visualStoryRecommendationCards = computed<VisualStoryRecommendationCard[]>
       title: "Comic strip",
       description: "Turn the post into a 5-panel mini story with a character, conflict, and takeaway.",
       reason: "Best for posts with a hard lesson, mistake, founder story, or sharp contrast.",
-      panelCount: 5,
+      panelCount: 3,
       tone: "funny",
       character: "friendly_developer",
       buttonLabel: "Generate comic",
@@ -3236,7 +3236,7 @@ const visualStoryRecommendationCards = computed<VisualStoryRecommendationCard[]>
       title: "Cartoon explainer",
       description: "Explain the idea with a friendly illustrated character and clear sequence.",
       reason: "Best when readers need to understand the concept faster than text alone.",
-      panelCount: 5,
+      panelCount: 3,
       tone: "educational",
       character: "robot_assistant",
       buttonLabel: "Generate explainer",
@@ -3245,9 +3245,9 @@ const visualStoryRecommendationCards = computed<VisualStoryRecommendationCard[]>
       id: "story-tech-meme",
       mediaType: "tech_meme",
       title: "Tech meme",
-      description: "Make the point more shareable with a brand-safe meme-style visual story.",
+      description: "Make the point more shareable with one punchy brand-safe meme visual.",
       reason: "Best for technical pain points, workflow jokes, and relatable builder moments.",
-      panelCount: 3,
+      panelCount: 1,
       tone: "funny",
       character: "friendly_developer",
       buttonLabel: "Generate meme",

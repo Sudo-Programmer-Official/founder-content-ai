@@ -19,6 +19,7 @@ import type {
 import type { QueryResultRow } from "pg";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { resolveBrandKitForGeneration } from "./brandIntelligence/brandKitService.ts";
+import { getGlobalMediaGenerationSettings } from "./adminMediaRegistryService.ts";
 import { resolveBrandingPolicy } from "./brandingService.ts";
 import { queryDb } from "./db/client.ts";
 import { HttpError, toErrorContext } from "../utils/http.ts";
@@ -60,6 +61,16 @@ interface AccentMarkupResult {
 
 type BrandSignatureMode = "subtle" | "closing";
 type CarouselSlideVisualRole = "hook" | "problem" | "story" | "breakdown" | "takeaway";
+type ImageGenerationQuality = "low" | "medium" | "high" | "auto";
+
+interface RuntimeMediaGenerationSettings {
+  imageQuality: ImageGenerationQuality;
+  techMemePanelCount: 1 | 3 | 5;
+  comicStripPanelCount: 1 | 3 | 5;
+  cartoonExplainerPanelCount: 1 | 3 | 5;
+  founderDoodlePanelCount: 1 | 3 | 5;
+  minimalInfographicPanelCount: 1 | 3 | 5;
+}
 
 interface CarouselSlideRenderProfile {
   visualRole: CarouselSlideVisualRole;
@@ -96,6 +107,79 @@ interface CarouselSvgLayoutProfile {
 interface ResolvedBrandSignatureLabel {
   label: string;
   source: "domain" | "brand_name" | "footer" | "watermark" | "fallback";
+}
+
+const DEFAULT_RUNTIME_MEDIA_GENERATION_SETTINGS: RuntimeMediaGenerationSettings = {
+  imageQuality: "medium",
+  techMemePanelCount: 1,
+  comicStripPanelCount: 3,
+  cartoonExplainerPanelCount: 3,
+  founderDoodlePanelCount: 3,
+  minimalInfographicPanelCount: 3,
+};
+let cachedRuntimeMediaGenerationSettings: {
+  expiresAt: number;
+  value: RuntimeMediaGenerationSettings;
+} | null = null;
+
+function normalizeRuntimeImageQuality(value: string | undefined): ImageGenerationQuality {
+  return value === "low" || value === "medium" || value === "high" || value === "auto"
+    ? value
+    : DEFAULT_RUNTIME_MEDIA_GENERATION_SETTINGS.imageQuality;
+}
+
+async function resolveRuntimeMediaGenerationSettings(): Promise<RuntimeMediaGenerationSettings> {
+  const now = Date.now();
+
+  if (cachedRuntimeMediaGenerationSettings && cachedRuntimeMediaGenerationSettings.expiresAt > now) {
+    return cachedRuntimeMediaGenerationSettings.value;
+  }
+
+  try {
+    const settings = await getGlobalMediaGenerationSettings();
+    const value: RuntimeMediaGenerationSettings = {
+      imageQuality: settings.imageQuality,
+      techMemePanelCount: settings.techMemePanelCount,
+      comicStripPanelCount: settings.comicStripPanelCount,
+      cartoonExplainerPanelCount: settings.cartoonExplainerPanelCount,
+      founderDoodlePanelCount: settings.founderDoodlePanelCount,
+      minimalInfographicPanelCount: settings.minimalInfographicPanelCount,
+    };
+
+    cachedRuntimeMediaGenerationSettings = {
+      value,
+      expiresAt: now + 60_000,
+    };
+
+    return value;
+  } catch (error) {
+    logWarn("Unable to load global media generation settings. Falling back to environment defaults.", toErrorContext(error));
+    return {
+      ...DEFAULT_RUNTIME_MEDIA_GENERATION_SETTINGS,
+      imageQuality: normalizeRuntimeImageQuality(process.env.OPENAI_IMAGE_QUALITY),
+    };
+  }
+}
+
+function resolveDefaultVisualStoryPanelCount(
+  mediaType: VisualStoryMediaType,
+  settings: RuntimeMediaGenerationSettings,
+): 1 | 3 | 5 {
+  switch (mediaType) {
+    case "tech_meme":
+      return settings.techMemePanelCount;
+    case "comic_strip":
+      return settings.comicStripPanelCount;
+    case "cartoon_explainer":
+      return settings.cartoonExplainerPanelCount;
+    case "founder_doodle":
+      return settings.founderDoodlePanelCount;
+    case "minimal_infographic":
+      return settings.minimalInfographicPanelCount;
+    case "clean_carousel":
+    default:
+      return 3;
+  }
 }
 
 function collapseWhitespace(value: string | null | undefined): string {
@@ -1881,6 +1965,7 @@ async function generateSingleVisualAsset(input: {
     slideVisualRole?: CarouselSlideVisualRole;
     highlightMode?: "none" | "single";
     visualStoryMediaType?: VisualStoryMediaType;
+    imageQuality?: ImageGenerationQuality;
   };
 }): Promise<GenerateVisualResponse> {
   const basePrompt = buildVisualPrompt({
@@ -1906,6 +1991,7 @@ async function generateSingleVisualAsset(input: {
     const image = await generateImage({
       prompt,
       size: "1024x1024",
+      quality: input.renderContext?.imageQuality,
     });
     let imageDataUrl = image.imageDataUrl;
     let mimeType = image.mimeType;
@@ -2097,6 +2183,7 @@ function buildTechMemePunchline(value: string | undefined, fallback: string): st
 
 function buildTechMemePanels(input: {
   content: VisualPromptContent;
+  panelCount: number;
   characterLabel: string;
   mediaLabel: string;
   toneLabel: string;
@@ -2122,7 +2209,7 @@ function buildTechMemePanels(input: {
     },
   ];
 
-  return beats.map((beat, index) => ({
+  return beats.slice(0, input.panelCount === 1 ? 1 : 3).map((beat, index) => ({
     panelNumber: index + 1,
     caption: beat.caption,
     scenePrompt: [
@@ -2157,6 +2244,7 @@ function buildVisualStoryPanels(input: {
   if (input.mediaType === "tech_meme") {
     return buildTechMemePanels({
       content: input.content,
+      panelCount: input.panelCount,
       characterLabel,
       mediaLabel,
       toneLabel,
@@ -2451,14 +2539,16 @@ async function generateCarouselAsset(input: {
   brandKit: GenerateVisualResponse["brandKit"];
   brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
   businessContext: BusinessVisualContext | null;
+  generationSettings: RuntimeMediaGenerationSettings;
 }): Promise<GenerateVisualResponse> {
   const visualStoryInput =
     input.request.visualStory && input.request.visualStory.mediaType !== "clean_carousel"
       ? {
           mediaType: input.request.visualStory.mediaType,
-          panelCount: input.request.visualStory.panelCount === 3 || input.request.visualStory.panelCount === 5
-            ? input.request.visualStory.panelCount
-            : 5,
+          panelCount: resolveDefaultVisualStoryPanelCount(
+            input.request.visualStory.mediaType,
+            input.generationSettings,
+          ),
           tone: input.request.visualStory.tone ?? "educational",
           character: input.request.visualStory.character ?? "friendly_developer",
         }
@@ -2541,6 +2631,7 @@ async function generateCarouselAsset(input: {
           slideVisualRole: renderProfile.visualRole,
           highlightMode: renderProfile.highlightMode,
           visualStoryMediaType: visualStoryPanel?.style,
+          imageQuality: input.generationSettings.imageQuality,
         },
       });
 
@@ -2635,6 +2726,7 @@ function buildFallbackImage(
     slideVisualRole?: CarouselSlideVisualRole;
     highlightMode?: "none" | "single";
     visualStoryMediaType?: VisualStoryMediaType;
+    imageQuality?: ImageGenerationQuality;
   },
 ): GenerateVisualResponse {
   const brandMarkLabel = buildBrandMarkLabel(businessContext, brandingPolicy);
@@ -2715,6 +2807,7 @@ export async function generateVisualAsset(
     }),
     loadBusinessVisualContext(businessId),
   ]);
+  const generationSettings = await resolveRuntimeMediaGenerationSettings();
   const brandingPolicy = resolveBrandingPolicy({
     principal,
     businessId,
@@ -2732,6 +2825,7 @@ export async function generateVisualAsset(
       brandKit,
       brandingPolicy,
       businessContext,
+      generationSettings,
     });
   }
 
@@ -2744,6 +2838,7 @@ export async function generateVisualAsset(
     captionFooterCredit: input.captionFooterCredit,
     renderContext: {
       generatedMediaType: input.generatedMediaType,
+      imageQuality: generationSettings.imageQuality,
     },
   });
 }

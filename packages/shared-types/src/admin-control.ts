@@ -149,9 +149,35 @@ export interface AdminMediaRegistryOptions {
 
 export interface AdminMediaRegistryResponse {
   options: AdminMediaRegistryOptions;
+  generationSettings: AdminMediaGenerationSettings;
   presets: AdminMediaPresetRecord[];
   promptTemplates: AdminPromptTemplateRecord[];
   decisionRules: AdminDecisionRuleRecord[];
+}
+
+export type AdminImageGenerationQuality = "low" | "medium" | "high" | "auto";
+
+export interface AdminMediaGenerationSettings {
+  imageQuality: AdminImageGenerationQuality;
+  techMemePanelCount: 1 | 3 | 5;
+  comicStripPanelCount: 1 | 3 | 5;
+  cartoonExplainerPanelCount: 1 | 3 | 5;
+  founderDoodlePanelCount: 1 | 3 | 5;
+  minimalInfographicPanelCount: 1 | 3 | 5;
+  updatedAt?: string;
+}
+
+export interface UpdateAdminMediaGenerationSettingsRequest {
+  imageQuality: AdminImageGenerationQuality;
+  techMemePanelCount: 1 | 3 | 5;
+  comicStripPanelCount: 1 | 3 | 5;
+  cartoonExplainerPanelCount: 1 | 3 | 5;
+  founderDoodlePanelCount: 1 | 3 | 5;
+  minimalInfographicPanelCount: 1 | 3 | 5;
+}
+
+export interface UpdateAdminMediaGenerationSettingsResponse {
+  generationSettings: AdminMediaGenerationSettings;
 }
 
 export interface UpsertAdminMediaPresetRequest {

@@ -64,7 +64,7 @@ function normalizeVisualStory(input: Partial<GenerateVisualRequest>["visualStory
 
   return {
     mediaType,
-    panelCount: input.panelCount === 3 || input.panelCount === 5 ? input.panelCount : 5,
+    panelCount: input.panelCount === 1 || input.panelCount === 3 || input.panelCount === 5 ? input.panelCount : 3,
     tone: VALID_VISUAL_STORY_TONES.includes(input.tone as VisualStoryTone)
       ? input.tone
       : "educational",

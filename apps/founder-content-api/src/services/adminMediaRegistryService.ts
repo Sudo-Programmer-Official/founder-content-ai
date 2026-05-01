@@ -2,6 +2,8 @@ import type { PoolClient, QueryResultRow } from "pg";
 import type {
   AdminDecisionRuleRecord,
   AdminDecisionRuleScope,
+  AdminImageGenerationQuality,
+  AdminMediaGenerationSettings,
   AdminMediaPresetRecord,
   AdminMediaRegistryOptions,
   AdminMediaRegistryResponse,
@@ -11,6 +13,7 @@ import type {
   MediaRecommendationGoal,
   MediaSuggestionType,
   UpsertAdminDecisionRuleRequest,
+  UpdateAdminMediaGenerationSettingsRequest,
   UpsertAdminMediaPresetRequest,
   UpsertAdminPromptTemplateRequest,
 } from "../../../../packages/shared-types/index.ts";
@@ -86,6 +89,25 @@ interface BusinessLookupRow extends QueryResultRow {
   id: string;
 }
 
+interface GlobalMediaGenerationSettingsRow extends QueryResultRow {
+  image_quality: AdminImageGenerationQuality;
+  tech_meme_panel_count: number;
+  comic_strip_panel_count: number;
+  cartoon_explainer_panel_count: number;
+  founder_doodle_panel_count: number;
+  minimal_infographic_panel_count: number;
+  updated_at: Date | string;
+}
+
+const DEFAULT_MEDIA_GENERATION_SETTINGS: AdminMediaGenerationSettings = {
+  imageQuality: "medium",
+  techMemePanelCount: 1,
+  comicStripPanelCount: 3,
+  cartoonExplainerPanelCount: 3,
+  founderDoodlePanelCount: 3,
+  minimalInfographicPanelCount: 3,
+};
+
 function toIsoString(value: Date | string): string {
   return new Date(value).toISOString();
 }
@@ -125,6 +147,17 @@ function normalizePositiveInteger(value: number, fallback: number): number {
   }
 
   return Math.max(1, Math.round(parsed));
+}
+
+function normalizePanelCount(value: unknown, fallback: 1 | 3 | 5): 1 | 3 | 5 {
+  const parsed = Number(value);
+  return parsed === 1 || parsed === 3 || parsed === 5 ? parsed : fallback;
+}
+
+function normalizeImageQuality(value: unknown, fallback: AdminImageGenerationQuality): AdminImageGenerationQuality {
+  return value === "low" || value === "medium" || value === "high" || value === "auto"
+    ? value
+    : fallback;
 }
 
 function assertAllowedArray<T extends string>(
@@ -210,6 +243,48 @@ function mapPromptTemplate(
     createdAt: toIsoString(row.created_at),
     updatedAt: toIsoString(row.updated_at),
   };
+}
+
+function mapMediaGenerationSettings(
+  row: GlobalMediaGenerationSettingsRow | undefined,
+): AdminMediaGenerationSettings {
+  if (!row) {
+    return DEFAULT_MEDIA_GENERATION_SETTINGS;
+  }
+
+  return {
+    imageQuality: normalizeImageQuality(row.image_quality, DEFAULT_MEDIA_GENERATION_SETTINGS.imageQuality),
+    techMemePanelCount: normalizePanelCount(row.tech_meme_panel_count, DEFAULT_MEDIA_GENERATION_SETTINGS.techMemePanelCount),
+    comicStripPanelCount: normalizePanelCount(row.comic_strip_panel_count, DEFAULT_MEDIA_GENERATION_SETTINGS.comicStripPanelCount),
+    cartoonExplainerPanelCount: normalizePanelCount(row.cartoon_explainer_panel_count, DEFAULT_MEDIA_GENERATION_SETTINGS.cartoonExplainerPanelCount),
+    founderDoodlePanelCount: normalizePanelCount(row.founder_doodle_panel_count, DEFAULT_MEDIA_GENERATION_SETTINGS.founderDoodlePanelCount),
+    minimalInfographicPanelCount: normalizePanelCount(row.minimal_infographic_panel_count, DEFAULT_MEDIA_GENERATION_SETTINGS.minimalInfographicPanelCount),
+    updatedAt: toIsoString(row.updated_at),
+  };
+}
+
+export async function getGlobalMediaGenerationSettings(
+  client?: PoolClient,
+): Promise<AdminMediaGenerationSettings> {
+  const result = await executeQuery<GlobalMediaGenerationSettingsRow>(
+    `
+      select
+        image_quality,
+        tech_meme_panel_count,
+        comic_strip_panel_count,
+        cartoon_explainer_panel_count,
+        founder_doodle_panel_count,
+        minimal_infographic_panel_count,
+        updated_at
+      from global_media_generation_settings
+      where id = true
+      limit 1
+    `,
+    [],
+    client,
+  );
+
+  return mapMediaGenerationSettings(result.rows[0]);
 }
 
 function mapDecisionRule(
@@ -364,14 +439,16 @@ async function loadPresets(client?: PoolClient): Promise<AdminMediaPresetRecord[
 }
 
 async function loadRegistry(client?: PoolClient): Promise<AdminMediaRegistryResponse> {
-  const [presets, promptTemplates, decisionRules] = await Promise.all([
+  const [presets, promptTemplates, decisionRules, generationSettings] = await Promise.all([
     loadPresets(client),
     loadPromptTemplates(client),
     loadDecisionRules(client),
+    getGlobalMediaGenerationSettings(client),
   ]);
 
   return {
     options: buildOptions(promptTemplates),
+    generationSettings,
     presets,
     promptTemplates,
     decisionRules,
@@ -420,6 +497,82 @@ async function ensureBusinessExists(businessId: string, client?: PoolClient): Pr
 
 export async function listAdminMediaRegistry(): Promise<AdminMediaRegistryResponse> {
   return loadRegistry();
+}
+
+export async function updateAdminMediaGenerationSettings(
+  input: UpdateAdminMediaGenerationSettingsRequest,
+  actorUserId?: string,
+): Promise<AdminMediaGenerationSettings> {
+  const imageQuality = normalizeImageQuality(input.imageQuality, DEFAULT_MEDIA_GENERATION_SETTINGS.imageQuality);
+  const techMemePanelCount = normalizePanelCount(input.techMemePanelCount, DEFAULT_MEDIA_GENERATION_SETTINGS.techMemePanelCount);
+  const comicStripPanelCount = normalizePanelCount(input.comicStripPanelCount, DEFAULT_MEDIA_GENERATION_SETTINGS.comicStripPanelCount);
+  const cartoonExplainerPanelCount = normalizePanelCount(input.cartoonExplainerPanelCount, DEFAULT_MEDIA_GENERATION_SETTINGS.cartoonExplainerPanelCount);
+  const founderDoodlePanelCount = normalizePanelCount(input.founderDoodlePanelCount, DEFAULT_MEDIA_GENERATION_SETTINGS.founderDoodlePanelCount);
+  const minimalInfographicPanelCount = normalizePanelCount(input.minimalInfographicPanelCount, DEFAULT_MEDIA_GENERATION_SETTINGS.minimalInfographicPanelCount);
+
+  return withDbTransaction(async (client) => {
+    const result = await executeQuery<GlobalMediaGenerationSettingsRow>(
+      `
+        insert into global_media_generation_settings (
+          id,
+          image_quality,
+          tech_meme_panel_count,
+          comic_strip_panel_count,
+          cartoon_explainer_panel_count,
+          founder_doodle_panel_count,
+          minimal_infographic_panel_count,
+          updated_by
+        ) values (
+          true,
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7
+        )
+        on conflict (id) do update set
+          image_quality = excluded.image_quality,
+          tech_meme_panel_count = excluded.tech_meme_panel_count,
+          comic_strip_panel_count = excluded.comic_strip_panel_count,
+          cartoon_explainer_panel_count = excluded.cartoon_explainer_panel_count,
+          founder_doodle_panel_count = excluded.founder_doodle_panel_count,
+          minimal_infographic_panel_count = excluded.minimal_infographic_panel_count,
+          updated_by = excluded.updated_by,
+          updated_at = now()
+        returning
+          image_quality,
+          tech_meme_panel_count,
+          comic_strip_panel_count,
+          cartoon_explainer_panel_count,
+          founder_doodle_panel_count,
+          minimal_infographic_panel_count,
+          updated_at
+      `,
+      [
+        imageQuality,
+        techMemePanelCount,
+        comicStripPanelCount,
+        cartoonExplainerPanelCount,
+        founderDoodlePanelCount,
+        minimalInfographicPanelCount,
+        actorUserId ?? null,
+      ],
+      client,
+    );
+
+    await logAdminAction(actorUserId, "media_generation_settings", "global", "update_media_generation_settings", {
+      imageQuality,
+      techMemePanelCount,
+      comicStripPanelCount,
+      cartoonExplainerPanelCount,
+      founderDoodlePanelCount,
+      minimalInfographicPanelCount,
+    }, client);
+
+    return mapMediaGenerationSettings(result.rows[0]);
+  });
 }
 
 export async function upsertAdminPromptTemplate(
