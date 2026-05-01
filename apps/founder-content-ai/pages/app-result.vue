@@ -29,6 +29,9 @@ import type {
   RepurposeStrategy,
   SchedulingSafetyWarning,
   SocialAccount,
+  VisualStoryCharacter,
+  VisualStoryMediaType,
+  VisualStoryTone,
   VisualPromptContent,
   VisualTemplateType,
   WorkspaceAsset,
@@ -219,6 +222,9 @@ const selectedMotionAudioPreset = ref<MotionAudioPreset>("clean_modern");
 const selectedPromoVisualLayout = ref<PromoVisualLayoutId>("logo_headline");
 const selectedCustomImageTemplateType = ref<CustomImageTemplateType>("insight");
 const customImageStylePrompt = ref("");
+const selectedVisualStoryPanelCount = ref<3 | 5>(5);
+const selectedVisualStoryTone = ref<VisualStoryTone>("educational");
+const selectedVisualStoryCharacter = ref<VisualStoryCharacter>("friendly_developer");
 const editablePostContent = ref("");
 const isSavingManualEdit = ref(false);
 const manualEditFeedback = ref("");
@@ -349,7 +355,17 @@ const mediaRecommendations = ref<MediaRecommendationSuggestion[]>([]);
 const isLoadingMediaRecommendations = ref(false);
 const isGeneratingRecommendationId = ref("");
 const mediaRecommendationPanelRef = ref<HTMLElement | null>(null);
-type VisualStylePreference = "auto" | "photo_overlay" | "stat_card" | "quote_card" | "framework_card";
+type VisualStylePreference =
+  | "auto"
+  | "photo_overlay"
+  | "stat_card"
+  | "quote_card"
+  | "framework_card"
+  | "comic_strip"
+  | "cartoon_explainer"
+  | "founder_doodle"
+  | "tech_meme"
+  | "minimal_infographic";
 const selectedVisualStylePreference = ref<VisualStylePreference>("auto");
 const aiEditInstruction = ref("");
 const aiEditPreview = ref<ContentAiEditPreview | null>(null);
@@ -1489,6 +1505,10 @@ function matchesVisualStylePreference(
   suggestion: MediaRecommendationSuggestion,
   preference: VisualStylePreference,
 ): boolean {
+  if (isVisualStoryStylePreference(preference)) {
+    return suggestion.actionType === "generate_visual" && suggestion.visualTemplateType === "carousel";
+  }
+
   return preference !== "auto"
     && suggestion.actionType === "generate_visual"
     && suggestion.suggestedMediaType === preference;
@@ -1507,7 +1527,39 @@ function getVisualStyleOptionLabel(preference: Exclude<VisualStylePreference, "a
     return "Quote card";
   }
 
+  if (preference === "comic_strip") {
+    return "Comic strip";
+  }
+
+  if (preference === "cartoon_explainer") {
+    return "Cartoon explainer";
+  }
+
+  if (preference === "founder_doodle") {
+    return "Founder doodle";
+  }
+
+  if (preference === "tech_meme") {
+    return "Tech meme";
+  }
+
+  if (preference === "minimal_infographic") {
+    return "Minimal infographic";
+  }
+
   return isBusinessMode.value ? "Feature visual" : "Carousel";
+}
+
+function isVisualStoryStylePreference(
+  value: VisualStylePreference,
+): value is Exclude<VisualStoryMediaType, "clean_carousel"> {
+  return (
+    value === "comic_strip" ||
+    value === "cartoon_explainer" ||
+    value === "founder_doodle" ||
+    value === "tech_meme" ||
+    value === "minimal_infographic"
+  );
 }
 
 const postScore = computed(() =>
@@ -3181,6 +3233,26 @@ const selectableVisualStyleOptions = computed(() => [
   {
     value: "framework_card" as const,
     label: getVisualStyleOptionLabel("framework_card"),
+  },
+  {
+    value: "comic_strip" as const,
+    label: getVisualStyleOptionLabel("comic_strip"),
+  },
+  {
+    value: "cartoon_explainer" as const,
+    label: getVisualStyleOptionLabel("cartoon_explainer"),
+  },
+  {
+    value: "founder_doodle" as const,
+    label: getVisualStyleOptionLabel("founder_doodle"),
+  },
+  {
+    value: "tech_meme" as const,
+    label: getVisualStyleOptionLabel("tech_meme"),
+  },
+  {
+    value: "minimal_infographic" as const,
+    label: getVisualStyleOptionLabel("minimal_infographic"),
   },
 ]);
 const preferredMediaSuggestion = computed<MediaRecommendationSuggestion | null>(() => {
@@ -5490,6 +5562,9 @@ async function generateRecommendedMedia(
       });
     const coverSlide = currentVisualNarrative.slides[0];
     const isPhotoOverlay = suggestion.suggestedMediaType === "photo_overlay";
+    const selectedStoryStyle = isVisualStoryStylePreference(selectedVisualStylePreference.value)
+      ? selectedVisualStylePreference.value
+      : null;
     const creatorOverlayFooterText =
       !isBusinessMode.value && workspaceBrandLabel.value
         ? workspaceBrandLabel.value
@@ -5544,6 +5619,24 @@ async function generateRecommendedMedia(
               sourceText: postContent.value,
             }
           : undefined,
+      carousel:
+        suggestion.visualTemplateType === "carousel" && selectedStoryStyle
+          ? {
+              narrativeType: currentVisualNarrative.type,
+              slideCount: selectedVisualStoryPanelCount.value,
+              sourceText: postContent.value,
+              title: currentVisualNarrative.title,
+              subtitle: currentVisualNarrative.subtitle,
+            }
+          : undefined,
+      visualStory: selectedStoryStyle
+        ? {
+            mediaType: selectedStoryStyle,
+            panelCount: selectedVisualStoryPanelCount.value,
+            tone: selectedVisualStoryTone.value,
+            character: selectedVisualStoryCharacter.value,
+          }
+        : undefined,
       mediaPresetId: suggestion.mediaPresetId,
       promptTemplateId: suggestion.promptTemplateId,
       generatedMediaType: suggestion.suggestedMediaType,
@@ -8329,6 +8422,44 @@ onBeforeUnmount(() => {
                       >
                         {{ option.label }}
                       </option>
+                    </select>
+                  </label>
+                  <label
+                    v-if="isVisualStoryStylePreference(selectedVisualStylePreference)"
+                    class="media-style-select-wrap"
+                  >
+                    <span class="panel-meta media-style-select-label">Panels</span>
+                    <select v-model="selectedVisualStoryPanelCount" class="media-style-select">
+                      <option :value="3">3 panels</option>
+                      <option :value="5">5 panels</option>
+                    </select>
+                  </label>
+                  <label
+                    v-if="isVisualStoryStylePreference(selectedVisualStylePreference)"
+                    class="media-style-select-wrap"
+                  >
+                    <span class="panel-meta media-style-select-label">Tone</span>
+                    <select v-model="selectedVisualStoryTone" class="media-style-select">
+                      <option value="educational">Educational</option>
+                      <option value="funny">Funny</option>
+                      <option value="professional">Professional</option>
+                      <option value="motivational">Motivational</option>
+                      <option value="serious">Serious</option>
+                      <option value="dramatic">Dramatic</option>
+                    </select>
+                  </label>
+                  <label
+                    v-if="isVisualStoryStylePreference(selectedVisualStylePreference)"
+                    class="media-style-select-wrap"
+                  >
+                    <span class="panel-meta media-style-select-label">Character</span>
+                    <select v-model="selectedVisualStoryCharacter" class="media-style-select">
+                      <option value="friendly_developer">Friendly developer</option>
+                      <option value="founder_creator">Founder / creator</option>
+                      <option value="student">Student</option>
+                      <option value="robot_assistant">Robot assistant</option>
+                      <option value="office_team">Office team</option>
+                      <option value="abstract_mascot">Abstract mascot</option>
                     </select>
                   </label>
                   <button
