@@ -8,6 +8,11 @@ import type {
   ContentNarrativeType,
   GenerateVisualRequest,
   GenerateVisualResponse,
+  GeneratedVisualStory,
+  GeneratedVisualStoryPanel,
+  VisualStoryCharacter,
+  VisualStoryMediaType,
+  VisualStoryTone,
   VisualPromptContent,
   VisualTemplateType,
 } from "../../../../packages/shared-types/index.ts";
@@ -1962,6 +1967,211 @@ function formatCarouselNarrativeLabel(value: ContentNarrativeType): string {
   return "Story";
 }
 
+function formatVisualStoryMediaType(value: VisualStoryMediaType): string {
+  switch (value) {
+    case "comic_strip":
+      return "Comic strip";
+    case "cartoon_explainer":
+      return "Cartoon explainer";
+    case "founder_doodle":
+      return "Founder doodle";
+    case "tech_meme":
+      return "Tech meme";
+    case "minimal_infographic":
+      return "Minimal infographic";
+    case "clean_carousel":
+    default:
+      return "Clean carousel";
+  }
+}
+
+function formatVisualStoryTone(value: VisualStoryTone): string {
+  switch (value) {
+    case "funny":
+      return "funny";
+    case "serious":
+      return "serious";
+    case "motivational":
+      return "motivational";
+    case "dramatic":
+      return "dramatic";
+    case "professional":
+      return "professional";
+    case "educational":
+    default:
+      return "educational";
+  }
+}
+
+function formatVisualStoryCharacter(value: VisualStoryCharacter): string {
+  switch (value) {
+    case "founder_creator":
+      return "founder or creator";
+    case "student":
+      return "student";
+    case "robot_assistant":
+      return "robot assistant";
+    case "office_team":
+      return "small office team";
+    case "abstract_mascot":
+      return "abstract mascot";
+    case "friendly_developer":
+    default:
+      return "friendly developer";
+  }
+}
+
+function resolveVisualStoryStylePrompt(input: {
+  mediaType: VisualStoryMediaType;
+  tone: VisualStoryTone;
+  character: VisualStoryCharacter;
+  panelNumber: number;
+  panelCount: number;
+  scenePrompt: string;
+}): string {
+  const mediaLabel = formatVisualStoryMediaType(input.mediaType).toLowerCase();
+  const characterLabel = formatVisualStoryCharacter(input.character);
+  const toneLabel = formatVisualStoryTone(input.tone);
+
+  return [
+    `${mediaLabel} panel ${input.panelNumber} of ${input.panelCount}.`,
+    `Use a ${toneLabel} social-media editorial tone with a consistent ${characterLabel}.`,
+    input.mediaType === "tech_meme"
+      ? "Make the visual witty and brand-safe, with expressive reactions and no offensive stereotypes."
+      : undefined,
+    input.mediaType === "minimal_infographic"
+      ? "Use a simple illustrated diagram style with icons, arrows, and one clear idea."
+      : undefined,
+    "Keep it clean, readable, modern, square, and suitable for LinkedIn or Instagram carousel posting.",
+    "Avoid speech bubbles with tiny text; keep any visible words large and minimal.",
+    `Scene: ${input.scenePrompt}`,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join(" ");
+}
+
+function buildVisualStoryPanels(input: {
+  content: VisualPromptContent;
+  mediaType: VisualStoryMediaType;
+  panelCount: number;
+  tone: VisualStoryTone;
+  character: VisualStoryCharacter;
+}): GeneratedVisualStoryPanel[] {
+  const coreIdea = sanitizePhrase(input.content.headline, 86) || "The idea";
+  const supportingText = sanitizePhrase(input.content.supportingText, 118);
+  const lesson = sanitizePhrase(input.content.closingText || input.content.highlightText || supportingText || coreIdea, 86);
+  const characterLabel = formatVisualStoryCharacter(input.character);
+  const toneLabel = formatVisualStoryTone(input.tone);
+  const mediaLabel = formatVisualStoryMediaType(input.mediaType).toLowerCase();
+  const beats =
+    input.panelCount === 3
+      ? [
+          {
+            caption: coreIdea,
+            scene: `${characterLabel} notices a practical problem connected to: ${coreIdea}`,
+            role: "hook",
+          },
+          {
+            caption: supportingText || "The old way creates friction.",
+            scene: `${characterLabel} compares the messy old way with a clearer smarter path.`,
+            role: "story",
+          },
+          {
+            caption: lesson || "Build the lesson into the workflow.",
+            scene: `${characterLabel} shows the takeaway as a simple win the reader can remember.`,
+            role: "takeaway",
+          },
+        ]
+      : [
+          {
+            caption: coreIdea,
+            scene: `${characterLabel} opens with a relatable moment around: ${coreIdea}`,
+            role: "hook",
+          },
+          {
+            caption: supportingText || "The hidden problem shows up fast.",
+            scene: `${characterLabel} sees the problem becoming visible in a work setting.`,
+            role: "problem",
+          },
+          {
+            caption: "The tempting shortcut looks easier.",
+            scene: `${characterLabel} considers the shortcut while small warning signs appear around the workspace.`,
+            role: "story",
+          },
+          {
+            caption: "The better system prevents the scramble.",
+            scene: `${characterLabel} rebuilds the workflow with a calmer, more intentional process.`,
+            role: "breakdown",
+          },
+          {
+            caption: lesson || "Design the lesson in from day one.",
+            scene: `${characterLabel} presents the memorable lesson with a confident finish.`,
+            role: "takeaway",
+          },
+        ];
+
+  return beats.map((beat, index) => ({
+    panelNumber: index + 1,
+    caption: sanitizePhrase(beat.caption, 86) || `Panel ${index + 1}`,
+    scenePrompt: [
+      `${mediaLabel}, ${toneLabel} tone.`,
+      beat.scene,
+      `Narrative role: ${beat.role}.`,
+      input.content.sceneDescription ? `Context: ${sanitizePhrase(input.content.sceneDescription, 120)}.` : undefined,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join(" "),
+    style: input.mediaType,
+    status: "generated",
+  }));
+}
+
+function buildVisualStoryNarrative(input: {
+  content: VisualPromptContent;
+  sourceText: string;
+  mediaType: VisualStoryMediaType;
+  panelCount: number;
+  tone: VisualStoryTone;
+  character: VisualStoryCharacter;
+}): { narrative: ContentNarrative; visualStory: GeneratedVisualStory } {
+  const panels = buildVisualStoryPanels(input);
+  const narrative: ContentNarrative = {
+    format: "carousel",
+    type: "story",
+    title: sanitizePhrase(input.content.headline, 84) || "Visual story",
+    subtitle: sanitizePhrase(input.content.supportingText, 140) || formatVisualStoryMediaType(input.mediaType),
+    sourceText: input.sourceText,
+    slides: panels.map((panel) => ({
+      role:
+        panel.panelNumber === 1
+          ? "hook"
+          : panel.panelNumber === panels.length
+            ? "cta"
+            : panel.panelNumber === 2
+              ? "challenge"
+              : "lesson",
+      headline: panel.caption,
+      supportingText: panel.panelNumber === panels.length
+        ? sanitizePhrase(input.content.supportingText, 112) || undefined
+        : undefined,
+      highlightText: panel.panelNumber === 1 || panel.panelNumber === panels.length
+        ? sanitizePhrase(input.content.highlightText || panel.caption, 64) || undefined
+        : undefined,
+    })),
+  };
+
+  return {
+    narrative,
+    visualStory: {
+      mediaType: input.mediaType,
+      panelCount: panels.length,
+      tone: input.tone,
+      character: input.character,
+      panels,
+    },
+  };
+}
+
 function normalizeNarrativeSlide(
   slide: ContentNarrativeSlide,
   fallbackRole: ContentNarrativeSlide["role"],
@@ -2126,7 +2336,9 @@ function resolveContentNarrative(
 
   return generateNarrative({
     narrativeType: input.carousel?.narrativeType,
-    slideCount: 5,
+    slideCount: input.carousel?.slideCount === 3 || input.carousel?.slideCount === 5
+      ? input.carousel.slideCount
+      : 5,
     sourceText,
     title: input.carousel?.title?.trim() || content.headline,
     subtitle: input.carousel?.subtitle?.trim() || content.supportingText,
@@ -2140,7 +2352,38 @@ async function generateCarouselAsset(input: {
   brandingPolicy: ReturnType<typeof resolveBrandingPolicy>;
   businessContext: BusinessVisualContext | null;
 }): Promise<GenerateVisualResponse> {
-  const narrative = resolveContentNarrative(input.request, input.content);
+  const visualStoryInput =
+    input.request.visualStory && input.request.visualStory.mediaType !== "clean_carousel"
+      ? {
+          mediaType: input.request.visualStory.mediaType,
+          panelCount: input.request.visualStory.panelCount === 3 || input.request.visualStory.panelCount === 5
+            ? input.request.visualStory.panelCount
+            : 5,
+          tone: input.request.visualStory.tone ?? "educational",
+          character: input.request.visualStory.character ?? "friendly_developer",
+        }
+      : null;
+  const visualStoryPlan = visualStoryInput
+    ? buildVisualStoryNarrative({
+        content: input.content,
+        sourceText:
+          input.request.carousel?.sourceText?.trim()
+          || input.request.narrative?.sourceText?.trim()
+          || [
+            input.content.headline,
+            input.content.supportingText,
+            ...(input.content.bulletPoints ?? []),
+            input.content.closingText,
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
+        mediaType: visualStoryInput.mediaType,
+        panelCount: visualStoryInput.panelCount,
+        tone: visualStoryInput.tone,
+        character: visualStoryInput.character,
+      })
+    : null;
+  const narrative = visualStoryPlan?.narrative ?? resolveContentNarrative(input.request, input.content);
   const footerText =
     resolveBrandSignatureLabel({
       content: input.content,
@@ -2152,6 +2395,7 @@ async function generateCarouselAsset(input: {
     || input.brandingPolicy.watermarkText;
   const renderedNarrativeSlides = await Promise.all(
     narrative.slides.map(async (slide, index) => {
+      const visualStoryPanel = visualStoryPlan?.visualStory.panels[index];
       const renderProfile = resolveCarouselSlideRenderProfile(slide, index, narrative.slides.length);
       const eyebrowText = slide.eyebrowText || `${renderProfile.eyebrowLabel} ${index + 1}/${narrative.slides.length}`;
       const normalizedSlideContent = normalizeContent(
@@ -2159,6 +2403,17 @@ async function generateCarouselAsset(input: {
           ...slide,
           eyebrowText,
           footerText,
+          sceneDescription: visualStoryPanel?.scenePrompt,
+          customStylePrompt: visualStoryPanel
+            ? resolveVisualStoryStylePrompt({
+                mediaType: visualStoryPanel.style,
+                tone: visualStoryPlan.visualStory.tone,
+                character: visualStoryPlan.visualStory.character,
+                panelNumber: visualStoryPanel.panelNumber,
+                panelCount: visualStoryPlan.visualStory.panelCount,
+                scenePrompt: visualStoryPanel.scenePrompt,
+              })
+            : undefined,
         },
         {
           eyebrowText,
@@ -2262,6 +2517,7 @@ async function generateCarouselAsset(input: {
     watermarkText: input.brandingPolicy.watermarkApplied ? input.brandingPolicy.watermarkText : undefined,
     captionFooterCredit: input.request.captionFooterCredit?.trim() || input.brandingPolicy.captionFooterCredit,
     narrative: renderedNarrative,
+    visualStory: visualStoryPlan?.visualStory,
     carousel: legacyCarousel,
   };
 }
@@ -2367,7 +2623,7 @@ export async function generateVisualAsset(
     footerText: businessContext?.domainLabel || businessContext?.brandName,
   });
 
-  if (input.templateType === "carousel") {
+  if (input.templateType === "carousel" || input.visualStory) {
     return generateCarouselAsset({
       request: input,
       content,

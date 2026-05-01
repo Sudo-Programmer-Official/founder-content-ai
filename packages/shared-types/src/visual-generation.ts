@@ -10,6 +10,21 @@ export type VisualTemplateType = "quote" | "insight" | "contrarian" | "carousel"
 export type VisualGenerationProvider = "openai" | "svg_fallback";
 export type VisualWatermarkMode = "auto" | "on" | "off";
 export type CarouselNarrativeType = ContentNarrativeType;
+export type VisualStoryMediaType =
+  | "clean_carousel"
+  | "comic_strip"
+  | "cartoon_explainer"
+  | "founder_doodle"
+  | "tech_meme"
+  | "minimal_infographic";
+export type VisualStoryTone = "funny" | "serious" | "motivational" | "educational" | "dramatic" | "professional";
+export type VisualStoryCharacter =
+  | "friendly_developer"
+  | "founder_creator"
+  | "student"
+  | "robot_assistant"
+  | "office_team"
+  | "abstract_mascot";
 
 export interface BrandKitInput {
   brandName?: string;
@@ -97,12 +112,20 @@ export interface CarouselGenerationInput {
   slides?: CarouselSlideContent[];
 }
 
+export interface VisualStoryGenerationInput {
+  mediaType: VisualStoryMediaType;
+  panelCount?: 3 | 5;
+  tone?: VisualStoryTone;
+  character?: VisualStoryCharacter;
+}
+
 export interface GenerateVisualRequest {
   businessId?: string;
   templateType: VisualTemplateType;
   content: VisualPromptContent;
   narrative?: ContentNarrative;
   carousel?: CarouselGenerationInput;
+  visualStory?: VisualStoryGenerationInput;
   brandKit?: BrandKitInput;
   watermarkMode?: VisualWatermarkMode;
   captionFooterCredit?: string;
@@ -120,6 +143,22 @@ export interface GeneratedVisualSlide {
   imageDataUrl: string;
   mimeType: string;
   content: CarouselSlideContent;
+}
+
+export interface GeneratedVisualStoryPanel {
+  panelNumber: number;
+  caption: string;
+  scenePrompt: string;
+  style: VisualStoryMediaType;
+  status: "generated";
+}
+
+export interface GeneratedVisualStory {
+  mediaType: VisualStoryMediaType;
+  panelCount: number;
+  tone: VisualStoryTone;
+  character: VisualStoryCharacter;
+  panels: GeneratedVisualStoryPanel[];
 }
 
 export type VisualBrandConsistencyTone = "strong" | "review";
@@ -152,6 +191,7 @@ export interface GenerateVisualResponse {
   watermarkText?: string;
   captionFooterCredit?: string;
   narrative?: ContentNarrative;
+  visualStory?: GeneratedVisualStory;
   carousel?: {
     narrativeType: CarouselNarrativeType;
     slides: GeneratedVisualSlide[];

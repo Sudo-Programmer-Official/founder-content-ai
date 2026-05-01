@@ -2,6 +2,9 @@ import type {
   ApiError,
   GenerateVisualRequest,
   GenerateVisualResponse,
+  VisualStoryCharacter,
+  VisualStoryMediaType,
+  VisualStoryTone,
   VisualTemplateType,
 } from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
@@ -17,9 +20,58 @@ const VALID_TEMPLATE_TYPES: VisualTemplateType[] = [
   "contrarian",
   "carousel",
 ];
+const VALID_VISUAL_STORY_MEDIA_TYPES: VisualStoryMediaType[] = [
+  "clean_carousel",
+  "comic_strip",
+  "cartoon_explainer",
+  "founder_doodle",
+  "tech_meme",
+  "minimal_infographic",
+];
+const VALID_VISUAL_STORY_TONES: VisualStoryTone[] = [
+  "funny",
+  "serious",
+  "motivational",
+  "educational",
+  "dramatic",
+  "professional",
+];
+const VALID_VISUAL_STORY_CHARACTERS: VisualStoryCharacter[] = [
+  "friendly_developer",
+  "founder_creator",
+  "student",
+  "robot_assistant",
+  "office_team",
+  "abstract_mascot",
+];
 
 function isValidTemplateType(value: string | undefined): value is VisualTemplateType {
   return VALID_TEMPLATE_TYPES.includes((value ?? "") as VisualTemplateType);
+}
+
+function normalizeVisualStory(input: Partial<GenerateVisualRequest>["visualStory"]): GenerateVisualRequest["visualStory"] {
+  if (!input) {
+    return undefined;
+  }
+
+  const mediaType = VALID_VISUAL_STORY_MEDIA_TYPES.includes(input.mediaType)
+    ? input.mediaType
+    : "clean_carousel";
+
+  if (mediaType === "clean_carousel") {
+    return undefined;
+  }
+
+  return {
+    mediaType,
+    panelCount: input.panelCount === 3 || input.panelCount === 5 ? input.panelCount : 5,
+    tone: VALID_VISUAL_STORY_TONES.includes(input.tone as VisualStoryTone)
+      ? input.tone
+      : "educational",
+    character: VALID_VISUAL_STORY_CHARACTERS.includes(input.character as VisualStoryCharacter)
+      ? input.character
+      : "friendly_developer",
+  };
 }
 
 export async function generateVisualController(
@@ -116,6 +168,7 @@ export async function generateVisualController(
               : undefined,
           }
         : undefined,
+      visualStory: normalizeVisualStory(request.body.visualStory),
       brandKit: request.body.brandKit
         ? {
             primaryColor: request.body.brandKit.primaryColor?.trim(),

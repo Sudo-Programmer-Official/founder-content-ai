@@ -35,6 +35,9 @@ import type {
   ScheduledPost,
   SchedulingSafetyWarning,
   SocialAccount,
+  VisualStoryCharacter,
+  VisualStoryMediaType,
+  VisualStoryTone,
   VisualTemplateType,
 } from "../../../packages/shared-types";
 import { DEFAULT_GENERATION_TONE } from "../../../packages/shared-types";
@@ -154,6 +157,10 @@ const isConnectingLinkedIn = ref(false);
 
 const visualSelections = ref<Record<string, VisualTemplateType>>({});
 const visualStyleSelections = ref<Record<string, VisualStylePreset>>({});
+const visualStoryMediaSelections = ref<Record<string, VisualStoryMediaType>>({});
+const visualStoryPanelSelections = ref<Record<string, 3 | 5>>({});
+const visualStoryToneSelections = ref<Record<string, VisualStoryTone>>({});
+const visualStoryCharacterSelections = ref<Record<string, VisualStoryCharacter>>({});
 const visualHighlightModes = ref<Record<string, VisualHighlightMode>>({});
 const manualVisualHighlights = ref<Record<string, string>>({});
 const generatedVisuals = ref<Record<string, GenerateVisualResponse>>({});
@@ -206,6 +213,39 @@ function isVisualStylePreset(value: string): value is VisualStylePreset {
   return value === "brand-signal" || value === "editorial-light" || value === "high-contrast";
 }
 
+function isVisualStoryMediaType(value: string): value is VisualStoryMediaType {
+  return (
+    value === "clean_carousel" ||
+    value === "comic_strip" ||
+    value === "cartoon_explainer" ||
+    value === "founder_doodle" ||
+    value === "tech_meme" ||
+    value === "minimal_infographic"
+  );
+}
+
+function isVisualStoryTone(value: string): value is VisualStoryTone {
+  return (
+    value === "funny" ||
+    value === "serious" ||
+    value === "motivational" ||
+    value === "educational" ||
+    value === "dramatic" ||
+    value === "professional"
+  );
+}
+
+function isVisualStoryCharacter(value: string): value is VisualStoryCharacter {
+  return (
+    value === "friendly_developer" ||
+    value === "founder_creator" ||
+    value === "student" ||
+    value === "robot_assistant" ||
+    value === "office_team" ||
+    value === "abstract_mascot"
+  );
+}
+
 function isVisualHighlightMode(value: string): value is VisualHighlightMode {
   return value === "auto" || value === "manual";
 }
@@ -217,6 +257,10 @@ function isPublishableImageMimeType(value: string | undefined): boolean {
 function resetVisualState() {
   visualSelections.value = {};
   visualStyleSelections.value = {};
+  visualStoryMediaSelections.value = {};
+  visualStoryPanelSelections.value = {};
+  visualStoryToneSelections.value = {};
+  visualStoryCharacterSelections.value = {};
   visualHighlightModes.value = {};
   manualVisualHighlights.value = {};
   generatedVisuals.value = {};
@@ -371,6 +415,22 @@ function resolveVisualTemplateSelection(key: string): VisualTemplateType {
   return visualSelections.value[key] ?? "quote";
 }
 
+function resolveVisualStoryMediaSelection(key: string): VisualStoryMediaType {
+  return visualStoryMediaSelections.value[key] ?? "clean_carousel";
+}
+
+function resolveVisualStoryPanelSelection(key: string): 3 | 5 {
+  return visualStoryPanelSelections.value[key] ?? 5;
+}
+
+function resolveVisualStoryToneSelection(key: string): VisualStoryTone {
+  return visualStoryToneSelections.value[key] ?? "educational";
+}
+
+function resolveVisualStoryCharacterSelection(key: string): VisualStoryCharacter {
+  return visualStoryCharacterSelections.value[key] ?? "friendly_developer";
+}
+
 function resolveVisualHighlightMode(key: string): VisualHighlightMode {
   return visualHighlightModes.value[key] ?? "auto";
 }
@@ -393,6 +453,52 @@ function updateVisualStylePreset(key: string, value: string) {
 
   visualStyleSelections.value = {
     ...visualStyleSelections.value,
+    [key]: value,
+  };
+}
+
+function updateVisualStoryMediaSelection(key: string, value: string) {
+  if (!isVisualStoryMediaType(value)) {
+    return;
+  }
+
+  visualStoryMediaSelections.value = {
+    ...visualStoryMediaSelections.value,
+    [key]: value,
+  };
+}
+
+function updateVisualStoryPanelSelection(key: string, value: string) {
+  const parsedValue = Number(value);
+
+  if (parsedValue !== 3 && parsedValue !== 5) {
+    return;
+  }
+
+  visualStoryPanelSelections.value = {
+    ...visualStoryPanelSelections.value,
+    [key]: parsedValue,
+  };
+}
+
+function updateVisualStoryToneSelection(key: string, value: string) {
+  if (!isVisualStoryTone(value)) {
+    return;
+  }
+
+  visualStoryToneSelections.value = {
+    ...visualStoryToneSelections.value,
+    [key]: value,
+  };
+}
+
+function updateVisualStoryCharacterSelection(key: string, value: string) {
+  if (!isVisualStoryCharacter(value)) {
+    return;
+  }
+
+  visualStoryCharacterSelections.value = {
+    ...visualStoryCharacterSelections.value,
     [key]: value,
   };
 }
@@ -502,26 +608,46 @@ function buildVisualRequest(
   const footerText = resolveVisualFooter();
   const eyebrowText = resolveVisualEyebrow(variation);
   const highlightText = resolveVisualHighlight(key, headline, supportingText);
+  const visualStoryMediaType = resolveVisualStoryMediaSelection(key);
+  const usesVisualStory = visualStoryMediaType !== "clean_carousel";
+  const resolvedTemplateType = usesVisualStory ? "carousel" : templateType;
   const closingText =
-    templateType === "quote"
+    resolvedTemplateType === "quote"
       ? summarizeSentence(lines[1] ?? lines[2] ?? "I was wrong.", 68)
       : undefined;
 
   return {
     businessId: selectedBusinessId.value || undefined,
-    templateType,
+    templateType: resolvedTemplateType,
     content: {
       headline,
       supportingText:
-        templateType === "carousel" || templateType === "contrarian"
+        resolvedTemplateType === "carousel" || resolvedTemplateType === "contrarian"
           ? supportingText
           : undefined,
-      bulletPoints: templateType === "insight" ? deriveBulletPoints(variation.content) : undefined,
+      bulletPoints: resolvedTemplateType === "insight" ? deriveBulletPoints(variation.content) : undefined,
       highlightText,
       eyebrowText,
       footerText,
       closingText,
     },
+    carousel: usesVisualStory
+      ? {
+          narrativeType: "story",
+          slideCount: resolveVisualStoryPanelSelection(key),
+          sourceText: variation.content,
+          title: headline,
+          subtitle: supportingText,
+        }
+      : undefined,
+    visualStory: usesVisualStory
+      ? {
+          mediaType: visualStoryMediaType,
+          panelCount: resolveVisualStoryPanelSelection(key),
+          tone: resolveVisualStoryToneSelection(key),
+          character: resolveVisualStoryCharacterSelection(key),
+        }
+      : undefined,
     brandKit: resolveBrandKitPreset(preset),
     watermarkMode: "auto",
     captionFooterCredit: activeCaptionFooterCredit.value,
@@ -640,6 +766,18 @@ const generatedVisualEntries = computed<GeneratedVisualEntry[]>(() =>
 
     if (!visual) {
       return [];
+    }
+
+    if (visual.carousel?.slides.length) {
+      return visual.carousel.slides.map((slide) => ({
+        key: `${key}-${slide.index}`,
+        variation,
+        visual: {
+          ...visual,
+          imageDataUrl: slide.imageDataUrl,
+          mimeType: slide.mimeType,
+        },
+      }));
     }
 
     return [{ key, variation, visual }];
@@ -1854,6 +1992,26 @@ onMounted(async () => {
 
         <div class="visual-controls">
           <label>
+            <span>Visual style</span>
+            <select
+              :value="resolveVisualStoryMediaSelection(getVariationKey(variation))"
+              @change="
+                updateVisualStoryMediaSelection(
+                  getVariationKey(variation),
+                  ($event.target as HTMLSelectElement).value,
+                )
+              "
+            >
+              <option value="clean_carousel">Clean carousel</option>
+              <option value="comic_strip">Comic strip</option>
+              <option value="cartoon_explainer">Cartoon explainer</option>
+              <option value="founder_doodle">Founder doodle</option>
+              <option value="tech_meme">Tech meme</option>
+              <option value="minimal_infographic">Minimal infographic</option>
+            </select>
+          </label>
+
+          <label v-if="resolveVisualStoryMediaSelection(getVariationKey(variation)) === 'clean_carousel'">
             <span>Template</span>
             <select
               :value="resolveVisualTemplateSelection(getVariationKey(variation))"
@@ -1868,6 +2026,62 @@ onMounted(async () => {
               <option value="contrarian">Split Emphasis</option>
               <option value="carousel">Minimal Brand Card</option>
               <option value="insight">Insight Framework</option>
+            </select>
+          </label>
+
+          <label v-if="resolveVisualStoryMediaSelection(getVariationKey(variation)) !== 'clean_carousel'">
+            <span>Panels</span>
+            <select
+              :value="resolveVisualStoryPanelSelection(getVariationKey(variation))"
+              @change="
+                updateVisualStoryPanelSelection(
+                  getVariationKey(variation),
+                  ($event.target as HTMLSelectElement).value,
+                )
+              "
+            >
+              <option value="3">3 panels</option>
+              <option value="5">5 panels</option>
+            </select>
+          </label>
+
+          <label v-if="resolveVisualStoryMediaSelection(getVariationKey(variation)) !== 'clean_carousel'">
+            <span>Tone</span>
+            <select
+              :value="resolveVisualStoryToneSelection(getVariationKey(variation))"
+              @change="
+                updateVisualStoryToneSelection(
+                  getVariationKey(variation),
+                  ($event.target as HTMLSelectElement).value,
+                )
+              "
+            >
+              <option value="educational">Educational</option>
+              <option value="funny">Funny</option>
+              <option value="professional">Professional</option>
+              <option value="motivational">Motivational</option>
+              <option value="serious">Serious</option>
+              <option value="dramatic">Dramatic</option>
+            </select>
+          </label>
+
+          <label v-if="resolveVisualStoryMediaSelection(getVariationKey(variation)) !== 'clean_carousel'">
+            <span>Character</span>
+            <select
+              :value="resolveVisualStoryCharacterSelection(getVariationKey(variation))"
+              @change="
+                updateVisualStoryCharacterSelection(
+                  getVariationKey(variation),
+                  ($event.target as HTMLSelectElement).value,
+                )
+              "
+            >
+              <option value="friendly_developer">Friendly developer</option>
+              <option value="founder_creator">Founder / creator</option>
+              <option value="student">Student</option>
+              <option value="robot_assistant">Robot assistant</option>
+              <option value="office_team">Office team</option>
+              <option value="abstract_mascot">Abstract mascot</option>
             </select>
           </label>
 
@@ -1928,8 +2142,12 @@ onMounted(async () => {
           >
             {{
               visualLoading[getVariationKey(variation)]
-                ? "Generating image..."
-                : "Generate image"
+                ? resolveVisualStoryMediaSelection(getVariationKey(variation)) === 'clean_carousel'
+                  ? "Generating image..."
+                  : "Generating story..."
+                : resolveVisualStoryMediaSelection(getVariationKey(variation)) === 'clean_carousel'
+                  ? "Generate image"
+                  : "Generate story"
             }}
           </button>
         </div>
@@ -1939,7 +2157,26 @@ onMounted(async () => {
         </p>
 
         <section v-if="generatedVisuals[getVariationKey(variation)]" class="visual-preview">
+          <div
+            v-if="generatedVisuals[getVariationKey(variation)].carousel?.slides.length"
+            class="story-panel-grid"
+          >
+            <figure
+              v-for="slide in generatedVisuals[getVariationKey(variation)].carousel?.slides"
+              :key="slide.index"
+              class="story-panel"
+            >
+              <img
+                :src="slide.imageDataUrl"
+                :alt="`${variation.angle} panel ${slide.index + 1}`"
+              />
+              <figcaption>
+                {{ generatedVisuals[getVariationKey(variation)].visualStory?.panels[slide.index]?.caption || slide.content.headline }}
+              </figcaption>
+            </figure>
+          </div>
           <img
+            v-else
             :src="generatedVisuals[getVariationKey(variation)].imageDataUrl"
             :alt="`${variation.angle} visual preview`"
           />
@@ -2400,6 +2637,25 @@ pre {
 
 .visual-preview {
   margin-top: 20px;
+}
+
+.story-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.story-panel {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.story-panel figcaption {
+  min-height: 2.8em;
+  color: var(--fc-muted-text);
+  font-size: 0.85rem;
+  line-height: 1.4;
 }
 
 .visual-preview img,
