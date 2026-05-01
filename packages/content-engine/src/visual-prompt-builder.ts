@@ -9,6 +9,7 @@ import type {
   BrandKitVisualStyle,
   MediaSuggestionType,
   VisualPromptContent,
+  VisualStoryMediaType,
   VisualTemplateType,
 } from "../../shared-types/index.ts";
 
@@ -266,6 +267,7 @@ function resolveLayoutBlock(
     generatedMediaType?: MediaSuggestionType;
     brandSignatureMode?: "subtle" | "closing";
     slideVisualRole?: "hook" | "problem" | "story" | "breakdown" | "takeaway";
+    visualStoryMediaType?: VisualStoryMediaType;
   },
 ): string {
   const brandPlacement = sanitizeEnum<BrandKitBrandPlacement>(
@@ -305,6 +307,19 @@ function resolveLayoutBlock(
     return `realistic social photography background, authentic environment, clean negative space reserved for a later headline card, no typography baked into the photo, no interface chrome, no caption paragraphs, mobile-first crop, trustworthy and polished`;
   }
 
+  if (options?.visualStoryMediaType) {
+    const storyLayouts: Record<VisualStoryMediaType, string> = {
+      clean_carousel: "premium image-led carousel frame with one clear visual subject",
+      comic_strip: "premium comic panel with expressive character acting inside a vivid scene, cinematic framing, colorful background, modern editorial illustration, not a flat text card",
+      cartoon_explainer: "high-quality cartoon explainer scene with a friendly character, clear props, dimensional lighting, rich color, modern product-education style, not a flat text card",
+      founder_doodle: "polished founder doodle scene with hand-drawn warmth, lively character pose, subtle texture, expressive environment, high craft, not a plain quote card",
+      tech_meme: "premium tech meme scene with a funny relatable developer moment, expressive character reaction, vibrant modern workspace, colorful lighting, high-quality editorial cartoon finish, not a black text slide",
+      minimal_infographic: "image-led minimal infographic with colorful dimensional objects, icons, arrows, and one clear visual metaphor, not a paragraph-heavy slide",
+    };
+
+    return `${storyLayouts[options.visualStoryMediaType]}, square social composition, strong focal subject, rich visual storytelling, minimal readable overlay text only if needed, keep any text large and under 6 words, use a small bottom-right brand signature only, avoid dense typography, avoid black-only backgrounds, avoid generic stock art`;
+  }
+
   switch (templateType) {
     case "quote":
       return `contrast quote card, ${brandPlacementDescription[brandPlacement]}, neutral intro line, ${accentDescription[accentStyle]}, optional closing line below, maximum 4 text blocks, keep content padding and brand padding aligned`;
@@ -324,6 +339,7 @@ function resolveContentBlock(
   content: VisualPromptContent,
   options?: {
     generatedMediaType?: MediaSuggestionType;
+    visualStoryMediaType?: VisualStoryMediaType;
   },
 ): string {
   const headline = toPunchyLine(content.headline, 120);
@@ -352,6 +368,20 @@ function resolveContentBlock(
       "Generate the background photo only.",
       "Do not render any words, logos, labels, UI chrome, CTA buttons, watermark text, or paragraph copy into the photo itself.",
       "Protect a clean lower-third safe area so post-production overlay text fits comfortably inside the frame.",
+    ]
+      .filter(Boolean)
+      .join(" ");
+  }
+
+  if (options?.visualStoryMediaType) {
+    return [
+      sceneDescription ? `Primary scene to illustrate, not render as text: "${truncateAtWordBoundary(sceneDescription, 260)}"` : undefined,
+      `Core idea to communicate visually: "${truncateAtWordBoundary(headline, 110)}"`,
+      supportingText ? `Context for the illustration only: "${truncateAtWordBoundary(supportingText, 110)}"` : undefined,
+      highlightText ? `Optional tiny overlay phrase, maximum 6 words: "${truncateAtWordBoundary(highlightText, 38)}"` : undefined,
+      footerText ? `Small bottom-right brand label only: "${footerText}"` : undefined,
+      "Prioritize the scene, character expression, props, color, and visual metaphor over typography.",
+      "Do not create a quote card, do not render paragraphs, do not use the full headline as large text.",
     ]
       .filter(Boolean)
       .join(" ");
@@ -426,6 +456,7 @@ function resolveBrandBlock(
   options?: {
     brandSignatureMode?: "subtle" | "closing";
     slideVisualRole?: "hook" | "problem" | "story" | "breakdown" | "takeaway";
+    visualStoryMediaType?: VisualStoryMediaType;
   },
 ): string {
   const backgroundStyle = sanitizeEnum<BrandKitBackgroundStyle>(
@@ -497,7 +528,9 @@ function resolveBrandBlock(
     brandKit.logoUrl
       ? "include a small restrained brand mark or logo in the chosen placement"
       : "use a tiny brand mark rather than a large logo",
-    options?.brandSignatureMode === "closing"
+    options?.visualStoryMediaType
+      ? "keep brand presence tiny and premium; the illustration must carry the post, not the brand footer"
+      : options?.brandSignatureMode === "closing"
       ? "keep branding consistent with the rest of the deck, but let this closing slide carry a slightly stronger bottom-right footer signature"
       : "keep branding low-prominence, consistent, and present on every slide as a subtle bottom-right footer rather than a watermark",
     options?.slideVisualRole === "story"
@@ -577,6 +610,7 @@ export function buildVisualPrompt(input: {
     brandSignatureMode?: "subtle" | "closing";
     slideVisualRole?: "hook" | "problem" | "story" | "breakdown" | "takeaway";
     highlightMode?: "none" | "single";
+    visualStoryMediaType?: VisualStoryMediaType;
   };
 }): string {
   const resolvedBrandKit = resolveBrandKit(input.brandKit);
@@ -599,6 +633,9 @@ export function buildVisualPrompt(input: {
     "QUALITY:",
     input.renderContext?.generatedMediaType === "photo_overlay"
       ? "ultra sharp, high resolution, visually balanced, realistic photography, authentic lighting, natural textures, trustworthy expressions, clean overlay space, mobile-friendly framing, no uncanny faces or hands, no generic stock-business look, no bottom-centered branding"
+      :
+    input.renderContext?.visualStoryMediaType
+      ? "ultra sharp, high resolution, colorful, vibrant, image-led, scroll-stopping, polished editorial illustration quality, cinematic lighting, expressive characters, rich background detail, strong focal point, mobile-friendly framing, premium social media creative, minimal text, no dense text blocks, no plain quote-card layout, no black-only template, no washed-out low-contrast design, no uncanny faces or hands"
       :
     input.templateType === "carousel"
       ? `ultra sharp, high resolution, visually balanced, social media ready, crisp typography, mobile-friendly framing, high hierarchy, strong contrast, intentional restraint, text-first composition, no bottom-centered branding, subtle branding on every slide, maximum one accent phrase per slide${input.renderContext?.highlightMode === "none" ? ", do not add a highlight treatment on this slide" : ""}`

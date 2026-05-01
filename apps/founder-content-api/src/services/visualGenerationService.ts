@@ -1880,6 +1880,7 @@ async function generateSingleVisualAsset(input: {
     brandSignatureMode?: BrandSignatureMode;
     slideVisualRole?: CarouselSlideVisualRole;
     highlightMode?: "none" | "single";
+    visualStoryMediaType?: VisualStoryMediaType;
   };
 }): Promise<GenerateVisualResponse> {
   const basePrompt = buildVisualPrompt({
@@ -2035,19 +2036,41 @@ function resolveVisualStoryStylePrompt(input: {
 
   return [
     `${mediaLabel} panel ${input.panelNumber} of ${input.panelCount}.`,
-    `Use a ${toneLabel} social-media editorial tone with a consistent ${characterLabel}.`,
+    `Create a premium, image-led ${toneLabel} social-media visual with a consistent ${characterLabel}.`,
+    "Make it colorful, polished, expressive, and scroll-stopping, with cinematic lighting and a clear visual metaphor.",
     input.mediaType === "tech_meme"
-      ? "Make the visual witty and brand-safe, with expressive reactions and no offensive stereotypes."
+      ? "Make the visual witty and brand-safe, with a relatable developer reaction, modern workspace details, and no offensive stereotypes."
+      : undefined,
+    input.mediaType === "cartoon_explainer"
+      ? "Use a high-quality cartoon explainer style with dimensional characters, vivid props, and a bright modern palette."
+      : undefined,
+    input.mediaType === "comic_strip"
+      ? "Use a premium comic-panel style with dramatic staging, expressive faces, and colorful scene detail."
       : undefined,
     input.mediaType === "minimal_infographic"
-      ? "Use a simple illustrated diagram style with icons, arrows, and one clear idea."
+      ? "Use a colorful illustrated diagram style with dimensional icons, arrows, and one clear visual idea."
       : undefined,
-    "Keep it clean, readable, modern, square, and suitable for LinkedIn or Instagram carousel posting.",
-    "Avoid speech bubbles with tiny text; keep any visible words large and minimal.",
+    "Keep it square and suitable for LinkedIn or Instagram carousel posting.",
+    "Avoid text-card layouts, large paragraphs, black-only templates, tiny speech bubbles, and generic flat vector art.",
+    "Any visible words must be optional, large, and under six words.",
     `Scene: ${input.scenePrompt}`,
   ]
     .filter((line): line is string => Boolean(line))
     .join(" ");
+}
+
+function buildShortStoryCaption(value: string | undefined, fallback: string): string {
+  const candidate =
+    sanitizePhrase(extractHighlightCandidate(value ?? ""), 38)
+    || sanitizePhrase(value, 38)
+    || fallback;
+  const words = candidate.split(/\s+/).filter(Boolean);
+
+  if (words.length <= 5) {
+    return candidate;
+  }
+
+  return sanitizePhrase(words.slice(0, 5).join(" "), 38) || fallback;
 }
 
 function buildVisualStoryPanels(input: {
@@ -2060,6 +2083,9 @@ function buildVisualStoryPanels(input: {
   const coreIdea = sanitizePhrase(input.content.headline, 86) || "The idea";
   const supportingText = sanitizePhrase(input.content.supportingText, 118);
   const lesson = sanitizePhrase(input.content.closingText || input.content.highlightText || supportingText || coreIdea, 86);
+  const hookCaption = buildShortStoryCaption(input.content.highlightText || coreIdea, "The hidden problem");
+  const supportCaption = buildShortStoryCaption(supportingText, "Why it matters");
+  const lessonCaption = buildShortStoryCaption(lesson, "The better way");
   const characterLabel = formatVisualStoryCharacter(input.character);
   const toneLabel = formatVisualStoryTone(input.tone);
   const mediaLabel = formatVisualStoryMediaType(input.mediaType).toLowerCase();
@@ -2067,44 +2093,44 @@ function buildVisualStoryPanels(input: {
     input.panelCount === 3
       ? [
           {
-            caption: coreIdea,
-            scene: `${characterLabel} notices a practical problem connected to: ${coreIdea}`,
+            caption: hookCaption,
+            scene: `${characterLabel} notices a practical problem connected to this idea: ${coreIdea}`,
             role: "hook",
           },
           {
-            caption: supportingText || "The old way creates friction.",
+            caption: supportCaption || "Old way friction",
             scene: `${characterLabel} compares the messy old way with a clearer smarter path.`,
             role: "story",
           },
           {
-            caption: lesson || "Build the lesson into the workflow.",
+            caption: lessonCaption || "Build it in",
             scene: `${characterLabel} shows the takeaway as a simple win the reader can remember.`,
             role: "takeaway",
           },
         ]
       : [
           {
-            caption: coreIdea,
+            caption: hookCaption,
             scene: `${characterLabel} opens with a relatable moment around: ${coreIdea}`,
             role: "hook",
           },
           {
-            caption: supportingText || "The hidden problem shows up fast.",
+            caption: supportCaption || "Hidden problem",
             scene: `${characterLabel} sees the problem becoming visible in a work setting.`,
             role: "problem",
           },
           {
-            caption: "The tempting shortcut looks easier.",
+            caption: "Shortcut looks easier",
             scene: `${characterLabel} considers the shortcut while small warning signs appear around the workspace.`,
             role: "story",
           },
           {
-            caption: "The better system prevents the scramble.",
+            caption: "Better system wins",
             scene: `${characterLabel} rebuilds the workflow with a calmer, more intentional process.`,
             role: "breakdown",
           },
           {
-            caption: lesson || "Design the lesson in from day one.",
+            caption: lessonCaption || "Build it in",
             scene: `${characterLabel} presents the memorable lesson with a confident finish.`,
             role: "takeaway",
           },
@@ -2440,6 +2466,7 @@ async function generateCarouselAsset(input: {
           brandSignatureMode: renderProfile.brandSignatureMode,
           slideVisualRole: renderProfile.visualRole,
           highlightMode: renderProfile.highlightMode,
+          visualStoryMediaType: visualStoryPanel?.style,
         },
       });
 
@@ -2533,6 +2560,7 @@ function buildFallbackImage(
     brandSignatureMode?: BrandSignatureMode;
     slideVisualRole?: CarouselSlideVisualRole;
     highlightMode?: "none" | "single";
+    visualStoryMediaType?: VisualStoryMediaType;
   },
 ): GenerateVisualResponse {
   const brandMarkLabel = buildBrandMarkLabel(businessContext, brandingPolicy);

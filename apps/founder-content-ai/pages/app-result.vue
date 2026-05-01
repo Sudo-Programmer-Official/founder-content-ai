@@ -178,6 +178,7 @@ type CustomImageTemplateType = Exclude<VisualTemplateType, "carousel">;
 const CONTENT_AUTOSAVE_DELAY_MS = 900;
 const CTA_AUTOSAVE_DELAY_MS = 700;
 const PROMO_VIDEO_VISUALS_ENABLED = false;
+const MAX_POST_MEDIA_ASSETS = 10;
 const SCHEDULED_DISPATCH_DELAYS_BY_PLATFORM: Record<
   PublishableSocialPlatform,
   { minDelaySeconds: number; maxDelaySeconds: number }
@@ -475,6 +476,14 @@ function extractScheduledQueueLimitMessage(error: unknown): string | null {
   }
 
   return error.message || "Plan your week in advance and stay consistent. Upgrade to unlock scheduling queue.";
+}
+
+function extractPostAssetLimitMessage(error: unknown): string | null {
+  if (!(error instanceof ApiRequestError) || error.code !== "post_asset_limit_reached") {
+    return null;
+  }
+
+  return error.message || `A post can have up to ${MAX_POST_MEDIA_ASSETS} media assets right now.`;
 }
 
 function splitPostParagraphs(value: string): string[] {
@@ -3329,6 +3338,17 @@ const mediaRecommendationStatusLabel = computed(() => {
 
   return isUsingFallbackMediaRecommendations.value ? "Manual generation" : "Text-first draft";
 });
+const mediaAssetSlotsRemaining = computed(() =>
+  Math.max(0, MAX_POST_MEDIA_ASSETS - postAssets.value.length),
+);
+const isPostAssetLimitReached = computed(() => mediaAssetSlotsRemaining.value === 0);
+const postAssetLimitNotice = computed(() => {
+  if (!isPostAssetLimitReached.value) {
+    return "";
+  }
+
+  return `This post already has ${MAX_POST_MEDIA_ASSETS} media assets. Remove one below before generating, uploading, or attaching another visual.`;
+});
 const selectedAudienceTimeLabel = computed(() => {
   if (!scheduleDateKey.value || !scheduleTime.value || !audienceTimezone.value) {
     return "";
@@ -5103,6 +5123,20 @@ async function uploadGeneratedBlobToPost(input: {
   return response.asset;
 }
 
+function hasMediaAssetCapacity(requiredSlots = 1): boolean {
+  if (mediaAssetSlotsRemaining.value >= requiredSlots) {
+    return true;
+  }
+
+  const requiredCopy =
+    requiredSlots <= 1
+      ? "one open media slot"
+      : `${requiredSlots} open media slots`;
+  mediaFeedback.value =
+    `This post already has ${postAssets.value.length}/${MAX_POST_MEDIA_ASSETS} media assets. Remove media below until you have ${requiredCopy}, then generate or attach again.`;
+  return false;
+}
+
 async function loadMediaRecommendations(): Promise<void> {
   if (!activeBusinessId.value || !postContent.value.trim()) {
     mediaRecommendations.value = [];
@@ -5168,6 +5202,10 @@ async function createPromoVisualFromBrand(): Promise<void> {
     return;
   }
 
+  if (!hasMediaAssetCapacity()) {
+    return;
+  }
+
   isCreatingPromoVisual.value = true;
   mediaFeedback.value = "";
 
@@ -5217,7 +5255,8 @@ async function createPromoVisualFromBrand(): Promise<void> {
     mediaFeedback.value = `Promo visual created and attached to this draft. ${layoutMessage} ${brandMessage}`;
   } catch (error) {
     mediaFeedback.value =
-      error instanceof Error ? error.message : "Unable to create a promo visual right now.";
+      extractPostAssetLimitMessage(error)
+      ?? (error instanceof Error ? error.message : "Unable to create a promo visual right now.");
   } finally {
     isCreatingPromoVisual.value = false;
   }
@@ -5238,6 +5277,10 @@ async function generateCustomStyledImage(): Promise<void> {
 
   if (!normalizedStylePrompt) {
     mediaFeedback.value = "Describe the image style first.";
+    return;
+  }
+
+  if (!hasMediaAssetCapacity()) {
     return;
   }
 
@@ -5287,7 +5330,8 @@ async function generateCustomStyledImage(): Promise<void> {
     );
   } catch (error) {
     mediaFeedback.value =
-      error instanceof Error ? error.message : "Unable to generate a custom image right now.";
+      extractPostAssetLimitMessage(error)
+      ?? (error instanceof Error ? error.message : "Unable to generate a custom image right now.");
   } finally {
     isGeneratingCustomImage.value = false;
   }
@@ -5455,6 +5499,11 @@ async function handleMediaSelection(event: Event): Promise<void> {
     return;
   }
 
+  if (!hasMediaAssetCapacity(supportedFiles.length)) {
+    input.value = "";
+    return;
+  }
+
   isUploadingPostAssets.value = true;
   mediaFeedback.value = "";
 
@@ -5506,7 +5555,8 @@ async function handleMediaSelection(event: Event): Promise<void> {
     }
   } catch (error) {
     mediaFeedback.value =
-      error instanceof Error ? error.message : "Unable to attach media right now.";
+      extractPostAssetLimitMessage(error)
+      ?? (error instanceof Error ? error.message : "Unable to attach media right now.");
   } finally {
     isUploadingPostAssets.value = false;
     input.value = "";
@@ -5516,6 +5566,12 @@ async function handleMediaSelection(event: Event): Promise<void> {
 async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
   if (!activeBusinessId.value) {
     mediaFeedback.value = "Select a workspace before attaching workspace assets.";
+    return;
+  }
+
+  const attachableAssets = assets.filter((asset) => asset.storageKey && isSupportedComposerMediaMimeType(asset.mimeType));
+
+  if (!hasMediaAssetCapacity(attachableAssets.length || 1)) {
     return;
   }
 
@@ -5565,7 +5621,8 @@ async function attachWorkspaceAssets(assets: WorkspaceAsset[]): Promise<void> {
     isWorkspaceAssetPickerOpen.value = false;
   } catch (error) {
     mediaFeedback.value =
-      error instanceof Error ? error.message : "Unable to attach workspace assets right now.";
+      extractPostAssetLimitMessage(error)
+      ?? (error instanceof Error ? error.message : "Unable to attach workspace assets right now.");
   } finally {
     isUploadingPostAssets.value = false;
   }
@@ -5597,6 +5654,15 @@ async function generateRecommendedMedia(
       });
     const coverSlide = currentVisualNarrative.slides[0];
     const isPhotoOverlay = suggestion.suggestedMediaType === "photo_overlay";
+    const requiredAssetSlots =
+      suggestion.visualTemplateType === "carousel"
+        ? visualStoryCard?.panelCount ?? currentVisualNarrative.slides.length
+        : 1;
+
+    if (!hasMediaAssetCapacity(requiredAssetSlots)) {
+      return;
+    }
+
     const creatorOverlayFooterText =
       !isBusinessMode.value && workspaceBrandLabel.value
         ? workspaceBrandLabel.value
@@ -5757,7 +5823,8 @@ async function generateRecommendedMedia(
     );
   } catch (error) {
     mediaFeedback.value =
-      error instanceof Error ? error.message : "Unable to generate media right now.";
+      extractPostAssetLimitMessage(error)
+      ?? (error instanceof Error ? error.message : "Unable to generate media right now.");
   } finally {
     isGeneratingRecommendationId.value = "";
   }
@@ -8487,7 +8554,7 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     class="primary-action media-generate-button"
-                    :disabled="isLoadingMediaRecommendations || isUploadingPostAssets"
+                    :disabled="isLoadingMediaRecommendations || isUploadingPostAssets || isPostAssetLimitReached"
                     @click="void triggerPreferredMediaGeneration()"
                   >
                     {{ mediaPrimaryActionLabel }}
@@ -8495,6 +8562,7 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     class="secondary-action"
+                    :disabled="isPostAssetLimitReached"
                     @click="isWorkspaceAssetPickerOpen = true"
                   >
                     Use existing
@@ -8504,13 +8572,17 @@ onBeforeUnmount(() => {
                       type="file"
                       accept="image/png,image/jpeg,image/gif,image/webp"
                       multiple
-                      :disabled="isUploadingPostAssets"
+                      :disabled="isUploadingPostAssets || isPostAssetLimitReached"
                       @change="void handleMediaSelection($event)"
                     />
                     {{ isUploadingPostAssets ? "Uploading..." : "Upload" }}
                   </label>
                 </div>
               </div>
+
+              <p v-if="postAssetLimitNotice" class="result-feedback" data-tone="warning">
+                {{ postAssetLimitNotice }}
+              </p>
 
               <div class="promo-visual-panel">
                 <div>
@@ -8559,7 +8631,7 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     class="secondary-action media-generate-button"
-                    :disabled="isCreatingPromoVisual || isUploadingPostAssets"
+                    :disabled="isCreatingPromoVisual || isUploadingPostAssets || isPostAssetLimitReached"
                     @click="void createPromoVisualFromBrand()"
                   >
                     {{ isCreatingPromoVisual ? "Creating..." : "Create promo visual" }}
@@ -8610,7 +8682,7 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     class="secondary-action media-generate-button"
-                    :disabled="isGeneratingCustomImage || isUploadingPostAssets || customImageStylePrompt.trim() === ''"
+                    :disabled="isGeneratingCustomImage || isUploadingPostAssets || isPostAssetLimitReached || customImageStylePrompt.trim() === ''"
                     @click="void generateCustomStyledImage()"
                   >
                     {{ isGeneratingCustomImage ? "Generating..." : "Generate custom image" }}
@@ -8827,7 +8899,7 @@ onBeforeUnmount(() => {
                     <button
                       type="button"
                       class="secondary-action"
-                      :disabled="isGeneratingRecommendationId === suggestion.id || isUploadingPostAssets"
+                      :disabled="isGeneratingRecommendationId === suggestion.id || isUploadingPostAssets || isPostAssetLimitReached"
                       @click="void applyMediaRecommendation(suggestion)"
                     >
                       {{
@@ -8860,11 +8932,14 @@ onBeforeUnmount(() => {
                       <strong>{{ storyCard.title }}</strong>
                       <p>{{ storyCard.description }}</p>
                       <small>{{ storyCard.reason }}</small>
+                      <small v-if="mediaAssetSlotsRemaining < storyCard.panelCount">
+                        Needs {{ storyCard.panelCount }} open slots. Remove {{ storyCard.panelCount - mediaAssetSlotsRemaining }} media asset{{ storyCard.panelCount - mediaAssetSlotsRemaining === 1 ? "" : "s" }} below first.
+                      </small>
                     </div>
                     <button
                       type="button"
                       class="secondary-action"
-                      :disabled="isGeneratingRecommendationId === storyCard.id || isUploadingPostAssets"
+                      :disabled="isGeneratingRecommendationId === storyCard.id || isUploadingPostAssets || mediaAssetSlotsRemaining < storyCard.panelCount"
                       @click="void generateVisualStoryFromCard(storyCard)"
                     >
                       {{ isGeneratingRecommendationId === storyCard.id ? "Generating..." : storyCard.buttonLabel }}
