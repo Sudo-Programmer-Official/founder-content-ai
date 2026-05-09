@@ -47,6 +47,18 @@ interface ExportPost {
   pipelineStage: string;
   updatedAt: string;
   body: string;
+  fingerprint: string;
+}
+
+interface ScheduledPostExportRow extends QueryResultRow {
+  id: string;
+  business_id: string;
+  content_text: string;
+  status: string;
+  scheduled_at: Date | string | null;
+  published_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -149,6 +161,10 @@ function extractSummary(text: string): string {
     .filter((line) => line !== "" && !line.startsWith("#"));
 
   return (clean[0] || text.slice(0, 180)).slice(0, 220).trim();
+}
+
+function normalizeForFingerprint(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").replace(/[^a-z0-9 ]+/g, "").trim();
 }
 
 function extractHashtagTags(text: string): string[] {
@@ -290,6 +306,29 @@ async function loadPostAssets(businessId: string): Promise<Map<string, PostAsset
   return byPostId;
 }
 
+async function loadScheduledPosts(businessId: string): Promise<ScheduledPostExportRow[]> {
+  const result = await queryDb<ScheduledPostExportRow>(
+    `
+      select
+        id,
+        business_id,
+        content_text,
+        status,
+        scheduled_at,
+        published_at,
+        created_at,
+        updated_at
+      from scheduled_posts
+      where business_id = $1
+        and status in ('scheduled', 'processing', 'published')
+      order by coalesce(published_at, scheduled_at, updated_at, created_at) desc
+    `,
+    [businessId],
+  );
+
+  return result.rows.filter((row) => normalizeText(row.content_text) !== "");
+}
+
 function buildExportPost(
   workspace: WorkspaceRow,
   row: ContentAssetRow,
@@ -331,7 +370,58 @@ function buildExportPost(
     pipelineStage: row.pipeline_stage || "draft",
     updatedAt: toIso(row.updated_at),
     body: toMarkdownBody(textContent, title),
+    fingerprint: normalizeForFingerprint(textContent).slice(0, 280),
   };
+}
+
+function buildScheduledExportPost(workspace: WorkspaceRow, row: ScheduledPostExportRow): ExportPost | null {
+  const textContent = normalizeText(row.content_text);
+  if (!textContent) {
+    return null;
+  }
+
+  const title = guessTitleFromBody(textContent);
+  const slug = toSlug(`${title}-${row.id.slice(0, 8)}`);
+  const summary = extractSummary(textContent);
+  const tags = extractHashtagTags(textContent).slice(0, 12);
+  const publishDate = row.published_at || row.scheduled_at || row.created_at;
+
+  return {
+    id: row.id,
+    title,
+    slug,
+    date: toIso(publishDate),
+    summary,
+    tags,
+    keywords: [],
+    image: null,
+    aiSummary: null,
+    author: workspace.brand_name || workspace.name,
+    sourceKind: "scheduled_post",
+    pipelineStage: row.status || "scheduled",
+    updatedAt: toIso(row.updated_at),
+    body: toMarkdownBody(textContent, title),
+    fingerprint: normalizeForFingerprint(textContent).slice(0, 280),
+  };
+}
+
+function stageScore(stage: string): number {
+  const normalized = normalizeText(stage).toLowerCase();
+  if (normalized === "published" || normalized === "posted") return 4;
+  if (normalized === "processing") return 3;
+  if (normalized === "scheduled") return 2;
+  return 1;
+}
+
+function pickPreferredPost(current: ExportPost, candidate: ExportPost): ExportPost {
+  const currentScore = stageScore(current.pipelineStage);
+  const candidateScore = stageScore(candidate.pipelineStage);
+  if (candidateScore > currentScore) return candidate;
+  if (candidateScore < currentScore) return current;
+
+  const currentUpdated = new Date(current.updatedAt).getTime();
+  const candidateUpdated = new Date(candidate.updatedAt).getTime();
+  return candidateUpdated > currentUpdated ? candidate : current;
 }
 
 async function writeWorkspaceExport(workspace: WorkspaceRow, posts: ExportPost[], outputRoot: string): Promise<void> {
@@ -388,14 +478,34 @@ export async function exportWorkspaceBlogs(options: ExportWorkspaceBlogsOptions 
   let totalPosts = 0;
 
   for (const workspace of workspaces) {
-    const [assets, postAssets] = await Promise.all([
+    const [assets, postAssets, scheduledPosts] = await Promise.all([
       loadContentAssets(workspace.id),
       loadPostAssets(workspace.id),
+      loadScheduledPosts(workspace.id),
     ]);
 
-    const posts = assets
+    const exportedFromAssets = assets
       .map((row) => buildExportPost(workspace, row, postAssets))
       .filter((entry): entry is ExportPost => Boolean(entry));
+    const exportedFromScheduled = scheduledPosts
+      .map((row) => buildScheduledExportPost(workspace, row))
+      .filter((entry): entry is ExportPost => Boolean(entry));
+
+    const mergedByFingerprint = new Map<string, ExportPost>();
+    for (const post of [...exportedFromAssets, ...exportedFromScheduled]) {
+      const key = post.fingerprint || post.id;
+      const existing = mergedByFingerprint.get(key);
+      if (!existing) {
+        mergedByFingerprint.set(key, post);
+        continue;
+      }
+
+      mergedByFingerprint.set(key, pickPreferredPost(existing, post));
+    }
+
+    const posts = Array.from(mergedByFingerprint.values()).sort(
+      (left, right) => new Date(right.date).getTime() - new Date(left.date).getTime(),
+    );
 
     await writeWorkspaceExport(workspace, posts, outputRoot);
     totalPosts += posts.length;

@@ -50,6 +50,10 @@ import {
   publishWorkspaceBlogToWebsite,
   type PublishWorkspaceBlogResponse,
 } from "../services/workspaceBlogPublishingService.ts";
+import {
+  publishWorkspaceBlogs,
+  unpublishWorkspaceBlogBySlug,
+} from "../services/publicBlogService.ts";
 import { evaluateAlerts } from "../services/analytics/alertService.ts";
 import { getAICostSummary } from "../services/analytics/costService.ts";
 import { getAdminOpsOverview as loadAdminOpsOverview } from "../services/opsService.ts";
@@ -207,6 +211,50 @@ export async function postAdminWorkspaceBlogPublish(
       code: "admin_workspace_blog_publish_failed",
       message: "Unable to publish workspace blog to website.",
       logMessage: "Failed to publish workspace blog to website.",
+    });
+  }
+}
+
+export async function postAdminWorkspaceBlogsPublishState(
+  request: Request<{ workspaceId: string }>,
+  response: Response<{ workspaceId: string; workspaceSlug: string; updatedCount: number } | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const result = await publishWorkspaceBlogs(request.params.workspaceId);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_workspace_blog_state_publish_failed",
+      message: "Unable to mark workspace blogs as published.",
+      logMessage: "Failed to mark workspace blogs as published.",
+    });
+  }
+}
+
+export async function postAdminWorkspaceBlogUnpublishBySlug(
+  request: Request<{ workspaceId: string; slug: string }>,
+  response: Response<{ workspaceId: string; workspaceSlug: string; slug: string; updatedCount: number } | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const result = await unpublishWorkspaceBlogBySlug(request.params.workspaceId, request.params.slug);
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_workspace_blog_state_unpublish_failed",
+      message: "Unable to unpublish workspace blog.",
+      logMessage: "Failed to unpublish workspace blog.",
     });
   }
 }

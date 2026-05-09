@@ -10,7 +10,9 @@ import {
   getAdminUsers,
   getAdminWorkspaces,
   patchAdminMediaGenerationSettings,
+  postAdminWorkspaceBlogsPublishState,
   postAdminWorkspaceBlogPublish,
+  postAdminWorkspaceBlogUnpublishBySlug,
   patchAdminWorkspaceAccess,
   postAdminDecisionRule,
   postAdminFeatureFlag,
@@ -31,6 +33,8 @@ adminRoute.delete("/api/admin/users/:userId", requireAuth(), requireSuperAdmin()
 adminRoute.get("/api/admin/workspaces", requireAuth(), requireSuperAdmin(), getAdminWorkspaces);
 adminRoute.patch("/api/admin/workspaces/:workspaceId/access", requireAuth(), requireSuperAdmin(), patchAdminWorkspaceAccess);
 adminRoute.post("/api/admin/workspaces/:workspaceId/publish-blog", requireAuth(), requireSuperAdmin(), postAdminWorkspaceBlogPublish);
+adminRoute.post("/api/admin/workspaces/:workspaceId/blogs/publish", requireAuth(), requireSuperAdmin(), postAdminWorkspaceBlogsPublishState);
+adminRoute.post("/api/admin/workspaces/:workspaceId/blogs/:slug/unpublish", requireAuth(), requireSuperAdmin(), postAdminWorkspaceBlogUnpublishBySlug);
 adminRoute.get("/api/admin/feature-flags", requireAuth(), requireSuperAdmin(), getAdminFeatureFlags);
 adminRoute.post("/api/admin/feature-flags", requireAuth(), requireSuperAdmin(), postAdminFeatureFlag);
 adminRoute.post("/api/admin/feature-flags/targets", requireAuth(), requireSuperAdmin(), postAdminFeatureFlagTarget);

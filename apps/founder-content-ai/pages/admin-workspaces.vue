@@ -8,6 +8,7 @@ import type {
 import { onMounted, reactive, ref } from "vue";
 import {
   requestAdminWorkspaceBlogPublish,
+  requestAdminWorkspaceBlogUnpublishBySlug,
   requestAdminWorkspaceAccessUpdate,
   requestAdminWorkspaces,
 } from "../services/admin-analytics-service";
@@ -19,8 +20,10 @@ const errorMessage = ref("");
 const feedbackMessage = ref("");
 const isMutating = ref(false);
 const publishingWorkspaceId = ref<string | null>(null);
+const unpublishingWorkspaceId = ref<string | null>(null);
 const selectedPlanByWorkspace = reactive<Record<string, BusinessPlanCode>>({});
 const selectedEmailTierByWorkspace = reactive<Record<string, BillingEmailAddonTierCode>>({});
+const unpublishSlugByWorkspace = reactive<Record<string, string>>({});
 
 async function loadWorkspaces() {
   isLoading.value = true;
@@ -83,6 +86,29 @@ async function publishWorkspaceBlog(workspace: AdminWorkspaceListItem, runBuild:
       error instanceof Error ? error.message : "Unable to publish workspace blog.";
   } finally {
     publishingWorkspaceId.value = null;
+  }
+}
+
+async function unpublishWorkspaceBlog(workspace: AdminWorkspaceListItem) {
+  const slug = (unpublishSlugByWorkspace[workspace.id] || "").trim();
+  if (!slug) {
+    errorMessage.value = "Enter a blog slug to unpublish.";
+    return;
+  }
+
+  unpublishingWorkspaceId.value = workspace.id;
+  errorMessage.value = "";
+  feedbackMessage.value = "";
+
+  try {
+    const result = await requestAdminWorkspaceBlogUnpublishBySlug(workspace.id, slug);
+    feedbackMessage.value = `${workspace.name} unpublish applied for slug '${result.slug}'.`;
+    unpublishSlugByWorkspace[workspace.id] = "";
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to unpublish workspace blog.";
+  } finally {
+    unpublishingWorkspaceId.value = null;
   }
 }
 </script>
@@ -265,6 +291,23 @@ async function publishWorkspaceBlog(workspace: AdminWorkspaceListItem, runBuild:
             @click="publishWorkspaceBlog(workspace, true)"
           >
             {{ publishingWorkspaceId === workspace.id ? "Publishing..." : "Publish + Build" }}
+          </button>
+          <label class="dashboard-field unpublish-field">
+            <span>Unpublish slug</span>
+            <input
+              v-model="unpublishSlugByWorkspace[workspace.id]"
+              type="text"
+              placeholder="blog-slug"
+              :disabled="unpublishingWorkspaceId === workspace.id"
+            />
+          </label>
+          <button
+            type="button"
+            class="dashboard-button secondary"
+            :disabled="isMutating || unpublishingWorkspaceId === workspace.id"
+            @click="unpublishWorkspaceBlog(workspace)"
+          >
+            {{ unpublishingWorkspaceId === workspace.id ? "Unpublishing..." : "Unpublish" }}
           </button>
           <button
             type="button"

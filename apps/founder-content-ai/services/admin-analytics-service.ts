@@ -79,6 +79,25 @@ export async function requestAdminWorkspaceBlogPublish(
   );
 }
 
+export interface AdminWorkspaceBlogUnpublishResponse {
+  workspaceId: string;
+  workspaceSlug: string;
+  slug: string;
+  updatedCount: number;
+}
+
+export async function requestAdminWorkspaceBlogUnpublishBySlug(
+  workspaceId: string,
+  slug: string,
+): Promise<AdminWorkspaceBlogUnpublishResponse> {
+  const encodedWorkspaceId = encodeURIComponent(workspaceId);
+  const encodedSlug = encodeURIComponent(slug);
+  return apiPost<undefined, AdminWorkspaceBlogUnpublishResponse>(
+    `/admin/workspaces/${encodedWorkspaceId}/blogs/${encodedSlug}/unpublish`,
+    undefined,
+  );
+}
+
 export async function requestAdminFeatureFlags(): Promise<AdminFeatureFlagsResponse> {
   return apiGet<AdminFeatureFlagsResponse>("/admin/feature-flags");
 }

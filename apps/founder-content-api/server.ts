@@ -23,6 +23,7 @@ import { mediaIntelligenceRoute } from "./src/routes/mediaIntelligence.ts";
 import { onboardingRoute } from "./src/routes/onboarding.ts";
 import { outreachAdminRoute, outreachRoute } from "./src/routes/outreach.ts";
 import { postAssetsRoute } from "./src/routes/postAssets.ts";
+import { publicBlogsRoute } from "./src/routes/publicBlogs.ts";
 import { publicMarketingRoute } from "./src/routes/publicMarketing.ts";
 import { remixRoute } from "./src/routes/remix.ts";
 import { repurposeRoute } from "./src/routes/repurpose.ts";
@@ -55,6 +56,8 @@ function buildAllowedOrigins(): Set<string> {
     "https://foundercontent.ai",
     "https://www.foundercontent.ai",
     "https://founder-content-ai.vercel.app",
+    "https://sudoprogrammer.com",
+    "https://www.sudoprogrammer.com",
     ...configuredOrigins,
   ]);
 }
@@ -131,6 +134,7 @@ export function createServerApp(): Express {
   app.use(transcribeRoute);
   app.use(generateVisualRoute);
   app.use(publicMarketingRoute);
+  app.use(publicBlogsRoute);
   app.use(growthRoute);
   app.use(growthIntelligenceRoute);
   app.use(ingestionRoute);

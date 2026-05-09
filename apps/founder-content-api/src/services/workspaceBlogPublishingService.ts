@@ -5,6 +5,7 @@ import { exportWorkspaceBlogs } from "../../scripts/exportWorkspaceBlogs.ts";
 import { HttpError } from "../utils/http.ts";
 import { logInfo } from "../utils/logger.ts";
 import { queryDb } from "./db/client.ts";
+import { publishWorkspaceBlogs } from "./publicBlogService.ts";
 
 interface WorkspaceLookupRow extends QueryResultRow {
   id: string;
@@ -94,6 +95,7 @@ export async function publishWorkspaceBlogToWebsite(
   const websiteRoot = resolveWebsiteRoot();
   const websiteAppDir = path.resolve(websiteRoot, "apps", "website");
 
+  await publishWorkspaceBlogs(workspace.id);
   await exportWorkspaceBlogs({ workspace: workspace.slug });
 
   await runCommand({
