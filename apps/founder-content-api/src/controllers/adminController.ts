@@ -46,6 +46,10 @@ import {
   upsertAdminFeatureFlag,
   upsertAdminFeatureFlagTarget,
 } from "../services/adminControlService.ts";
+import {
+  publishWorkspaceBlogToWebsite,
+  type PublishWorkspaceBlogResponse,
+} from "../services/workspaceBlogPublishingService.ts";
 import { evaluateAlerts } from "../services/analytics/alertService.ts";
 import { getAICostSummary } from "../services/analytics/costService.ts";
 import { getAdminOpsOverview as loadAdminOpsOverview } from "../services/opsService.ts";
@@ -177,6 +181,32 @@ export async function patchAdminWorkspaceAccess(
       code: "admin_workspace_access_update_failed",
       message: "Unable to update workspace access.",
       logMessage: "Failed to update workspace access.",
+    });
+  }
+}
+
+export async function postAdminWorkspaceBlogPublish(
+  request: Request<{ workspaceId: string }, unknown, { runBuild?: boolean }>,
+  response: Response<PublishWorkspaceBlogResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const result = await publishWorkspaceBlogToWebsite({
+      workspaceId: request.params.workspaceId,
+      runBuild: request.body?.runBuild === true,
+    });
+
+    response.json(result);
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_workspace_blog_publish_failed",
+      message: "Unable to publish workspace blog to website.",
+      logMessage: "Failed to publish workspace blog to website.",
     });
   }
 }

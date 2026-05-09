@@ -59,6 +59,26 @@ export async function requestAdminWorkspaceAccessUpdate(
   );
 }
 
+export interface AdminWorkspaceBlogPublishResponse {
+  workspaceId: string;
+  workspaceSlug: string;
+  workspaceName: string;
+  synced: boolean;
+  built: boolean;
+  websiteRoot: string;
+}
+
+export async function requestAdminWorkspaceBlogPublish(
+  workspaceId: string,
+  payload?: { runBuild?: boolean },
+): Promise<AdminWorkspaceBlogPublishResponse> {
+  const encodedWorkspaceId = encodeURIComponent(workspaceId);
+  return apiPost<{ runBuild?: boolean }, AdminWorkspaceBlogPublishResponse>(
+    `/admin/workspaces/${encodedWorkspaceId}/publish-blog`,
+    payload ?? {},
+  );
+}
+
 export async function requestAdminFeatureFlags(): Promise<AdminFeatureFlagsResponse> {
   return apiGet<AdminFeatureFlagsResponse>("/admin/feature-flags");
 }

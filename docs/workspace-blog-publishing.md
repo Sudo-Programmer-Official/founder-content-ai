@@ -142,3 +142,33 @@ This command sequence is:
 1. Export from Founder Content AI (`exports/workspaces/{workspace}/blogs`)
 2. Sync into website blog folder (`apps/website/src/content/blogs`)
 3. Optional website build
+
+## UI one-click publish (admin)
+
+Super admins can trigger publishing directly from Founder Content UI:
+
+1. Open `/admin/workspaces`.
+2. Select the target workspace card.
+3. Click:
+- `Publish Blog` for export + sync
+- `Publish + Build` for export + sync + website build
+
+Backend endpoint used:
+
+- `POST /api/admin/workspaces/:workspaceId/publish-blog`
+
+Request body:
+
+```json
+{
+  "runBuild": true
+}
+```
+
+## Deploy/runtime requirements
+
+For API-server triggered publish to work, the API runtime must have filesystem/process access to the website repo.
+
+Set this env var in API runtime if website path is not the default sibling path:
+
+- `BLOG_WEBSITE_ROOT=/abs/path/to/sudo-programmer-official-website`

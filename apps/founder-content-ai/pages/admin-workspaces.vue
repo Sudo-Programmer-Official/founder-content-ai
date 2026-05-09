@@ -7,6 +7,7 @@ import type {
 } from "../../../packages/shared-types";
 import { onMounted, reactive, ref } from "vue";
 import {
+  requestAdminWorkspaceBlogPublish,
   requestAdminWorkspaceAccessUpdate,
   requestAdminWorkspaces,
 } from "../services/admin-analytics-service";
@@ -17,6 +18,7 @@ const isLoading = ref(true);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
 const isMutating = ref(false);
+const publishingWorkspaceId = ref<string | null>(null);
 const selectedPlanByWorkspace = reactive<Record<string, BusinessPlanCode>>({});
 const selectedEmailTierByWorkspace = reactive<Record<string, BillingEmailAddonTierCode>>({});
 
@@ -65,6 +67,24 @@ async function applyWorkspaceAction(
 onMounted(() => {
   void loadWorkspaces();
 });
+
+async function publishWorkspaceBlog(workspace: AdminWorkspaceListItem, runBuild: boolean) {
+  publishingWorkspaceId.value = workspace.id;
+  errorMessage.value = "";
+  feedbackMessage.value = "";
+
+  try {
+    const result = await requestAdminWorkspaceBlogPublish(workspace.id, { runBuild });
+    feedbackMessage.value = runBuild
+      ? `${result.workspaceName} blog published and website built.`
+      : `${result.workspaceName} blog published to website sync target.`;
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to publish workspace blog.";
+  } finally {
+    publishingWorkspaceId.value = null;
+  }
+}
 </script>
 
 <template>
@@ -230,6 +250,22 @@ onMounted(() => {
         </div>
 
         <div class="workspace-action-row">
+          <button
+            type="button"
+            class="dashboard-button secondary"
+            :disabled="isMutating || publishingWorkspaceId === workspace.id"
+            @click="publishWorkspaceBlog(workspace, false)"
+          >
+            {{ publishingWorkspaceId === workspace.id ? "Publishing..." : "Publish Blog" }}
+          </button>
+          <button
+            type="button"
+            class="dashboard-button secondary"
+            :disabled="isMutating || publishingWorkspaceId === workspace.id"
+            @click="publishWorkspaceBlog(workspace, true)"
+          >
+            {{ publishingWorkspaceId === workspace.id ? "Publishing..." : "Publish + Build" }}
+          </button>
           <button
             type="button"
             class="dashboard-button secondary"
