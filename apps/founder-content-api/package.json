@@ -28,6 +28,10 @@
     "worker:scheduled-posts": "tsx src/workers/scheduledPostWorker.ts",
     "worker:email-campaigns": "tsx src/workers/emailCampaignWorker.ts",
     "worker:email-deliverability": "tsx src/workers/emailDeliverabilityWorker.ts",
-    "worker:growth-automation": "tsx src/workers/growthAutomationWorker.ts"
+    "worker:growth-automation": "tsx src/workers/growthAutomationWorker.ts",
+    "export:workspace-blogs": "tsx scripts/exportWorkspaceBlogs.ts",
+    "export:workspace-blogs:all": "tsx scripts/exportWorkspaceBlogs.ts --all",
+    "worker:blog-exports": "tsx src/workers/workspaceBlogExportWorker.ts",
+    "worker:blog-exports:once": "BLOG_EXPORT_WORKER_RUN_ONCE=true tsx src/workers/workspaceBlogExportWorker.ts"
   }
 }
