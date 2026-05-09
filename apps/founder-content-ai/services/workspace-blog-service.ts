@@ -29,6 +29,14 @@ export interface WorkspaceBlogUnpublishResponse {
   updatedCount: number;
 }
 
+export interface WorkspaceBlogDraftCreateResponse {
+  workspaceId: string;
+  workspaceSlug: string;
+  assetId: string;
+  slug: string;
+  pipelineStage: "draft" | "posted";
+}
+
 export async function requestWorkspacePublishedBlogs(
   businessId: string,
 ): Promise<WorkspacePublishedBlogsResponse> {
@@ -57,5 +65,22 @@ export async function requestWorkspaceBlogUnpublishBySlug(
   return apiPost<{ businessId: string }, WorkspaceBlogUnpublishResponse>(
     `/workspace/blogs/${encodedSlug}/unpublish`,
     { businessId },
+  );
+}
+
+export async function requestWorkspaceBlogDraftCreate(input: {
+  businessId: string;
+  title: string;
+  content: string;
+  summary?: string;
+  slug?: string;
+  tags?: string[];
+  keywords?: string[];
+  image?: string;
+  publishNow?: boolean;
+}): Promise<WorkspaceBlogDraftCreateResponse> {
+  return apiPost<typeof input, WorkspaceBlogDraftCreateResponse>(
+    "/workspace/blogs/drafts",
+    input,
   );
 }

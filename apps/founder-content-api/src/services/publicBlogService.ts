@@ -13,6 +13,10 @@ interface PublishUpdateCountRow extends QueryResultRow {
   total: string | number;
 }
 
+interface CreatedDraftRow extends QueryResultRow {
+  id: string;
+}
+
 interface ContentAssetRow extends QueryResultRow {
   id: string;
   title: string | null;
@@ -525,5 +529,91 @@ export async function listPublishedWorkspaceBlogs(
       date: post.date,
       source: post.source,
     })),
+  };
+}
+
+export async function createWorkspaceBlogDraft(input: {
+  workspaceId: string;
+  title: string;
+  content: string;
+  summary?: string;
+  slug?: string;
+  tags?: string[];
+  keywords?: string[];
+  image?: string;
+  publishNow?: boolean;
+}): Promise<{
+  workspaceId: string;
+  workspaceSlug: string;
+  assetId: string;
+  slug: string;
+  pipelineStage: "draft" | "posted";
+}> {
+  const workspace = await loadWorkspaceById(input.workspaceId);
+  const normalizedTitle = normalizeText(input.title);
+  const normalizedContent = normalizeText(input.content);
+
+  if (!normalizedTitle || !normalizedContent) {
+    throw new HttpError(400, "bad_request", "title and content are required.");
+  }
+
+  const normalizedSlug = toSlug(normalizeText(input.slug) || normalizedTitle);
+  const summary = normalizeText(input.summary) || extractSummary(normalizedContent);
+  const tags = Array.from(new Set((input.tags ?? []).map((entry) => normalizeText(entry)).filter(Boolean)));
+  const keywords = Array.from(
+    new Set((input.keywords ?? []).map((entry) => normalizeText(entry)).filter(Boolean)),
+  );
+  const pipelineStage = input.publishNow ? "posted" : "draft";
+  const websitePublished = Boolean(input.publishNow);
+
+  const insertResult = await queryDb<CreatedDraftRow>(
+    `
+      insert into content_assets (
+        business_id,
+        user_id,
+        content_type,
+        title,
+        content_body,
+        status,
+        source_kind,
+        pipeline_stage,
+        content_metadata
+      )
+      values (
+        $1,
+        null,
+        'post',
+        $2,
+        $3::jsonb,
+        $4,
+        'manual',
+        $5,
+        $6::jsonb
+      )
+      returning id
+    `,
+    [
+      workspace.id,
+      normalizedTitle,
+      JSON.stringify({ content: normalizedContent }),
+      input.publishNow ? "posted" : "draft",
+      pipelineStage,
+      JSON.stringify({
+        slug: normalizedSlug,
+        summary,
+        tags,
+        keywords,
+        image: normalizeText(input.image) || null,
+        website_published: websitePublished,
+      }),
+    ],
+  );
+
+  return {
+    workspaceId: workspace.id,
+    workspaceSlug: workspace.slug,
+    assetId: insertResult.rows[0]?.id ?? "",
+    slug: normalizedSlug,
+    pipelineStage,
   };
 }
