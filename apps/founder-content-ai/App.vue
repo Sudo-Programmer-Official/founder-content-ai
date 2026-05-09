@@ -65,6 +65,7 @@ const visibleAppLinks = computed(() => {
   const canUseBrandStudio = hasWorkspaceContext && isFeatureEnabled("brand_intelligence");
   const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
   const canUseEmail = hasWorkspaceContext && isFeatureEnabled("email_campaigns");
+  const canUseBlogPublishing = hasWorkspaceContext && isFeatureEnabled("blog_publishing");
 
   return [
     { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
@@ -76,6 +77,7 @@ const visibleAppLinks = computed(() => {
     { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
     { to: appRoutes.appOutreach, label: "Outreach", shortLabel: "O", visible: canUseOutreach },
     { to: appRoutes.appEmail, label: "Email", shortLabel: "E", visible: canUseEmail },
+    { to: appRoutes.appBlog, label: "Blog", shortLabel: "BL", visible: canUseBlogPublishing },
     { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", visible: canUseDashboard },
     { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", visible: true },
     { to: appRoutes.admin, label: "Admin", shortLabel: "AD", visible: canAccessAdmin.value },
@@ -92,6 +94,7 @@ const pageTitleMap: Record<string, string> = {
   "admin-workspaces": "Admin workspaces",
   "app-dashboard": "Dashboard",
   "app-assets": "Assets",
+  "app-blog": "Blog publishing",
   "app-billing": "Billing",
   "app-brand-studio": "Brand Studio",
   "app-email": "Email",
@@ -144,6 +147,10 @@ const currentPageSubtitle = computed(() => {
 
   if (route.name === "app-billing") {
     return "Upgrade through Stripe, monitor usage, and keep plan enforcement visible.";
+  }
+
+  if (route.name === "app-blog") {
+    return "Publish workspace blogs and keep website visibility in sync.";
   }
 
   return "Keep navigation persistent, content focused, and actions obvious.";

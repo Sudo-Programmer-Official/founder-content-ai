@@ -1,6 +1,7 @@
 export const appRoutes = {
   appCreate: "/app/create",
   appAssets: "/app/assets",
+  appBlog: "/app/blog",
   appBilling: "/app/billing",
   appBrandStudio: "/app/brand-studio",
   appEmail: "/app/email",

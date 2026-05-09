@@ -172,3 +172,20 @@ For API-server triggered publish to work, the API runtime must have filesystem/p
 Set this env var in API runtime if website path is not the default sibling path:
 
 - `BLOG_WEBSITE_ROOT=/abs/path/to/sudo-programmer-official-website`
+
+## Workspace user flow (new)
+
+Blog publishing is now available in workspace UI (not admin-only), but gated by feature flag.
+
+1. Super admin enables `blog_publishing` for a workspace in `/admin/features`.
+2. Workspace member opens `/app/blog`.
+3. Use:
+- `Publish blog` (publish-state + export + sync)
+- `Publish + build` (publish-state + export + sync + website build)
+- `Unpublish` by slug
+
+Workspace endpoints:
+
+- `GET /api/workspace/blogs?businessId=<workspace-id>`
+- `POST /api/workspace/blogs/publish`
+- `POST /api/workspace/blogs/:slug/unpublish`

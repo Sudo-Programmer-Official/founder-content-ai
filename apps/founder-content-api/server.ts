@@ -32,6 +32,7 @@ import { socialAuthRoute } from "./src/routes/socialAuth.ts";
 import { transcribeRoute } from "./src/routes/transcribe.ts";
 import { userPreferencesRoute } from "./src/routes/userPreferences.ts";
 import { workspaceAnalyticsRoute } from "./src/routes/workspaceAnalytics.ts";
+import { workspaceBlogsRoute } from "./src/routes/workspaceBlogs.ts";
 import { workspaceAssetsRoute } from "./src/routes/workspaceAssets.ts";
 import { workspaceInsightsRoute } from "./src/routes/workspaceInsights.ts";
 import { workspaceKnowledgeRoute } from "./src/routes/workspaceKnowledge.ts";
@@ -162,6 +163,7 @@ export function createServerApp(): Express {
   app.use(outreachAdminRoute);
   app.use(outreachRoute);
   app.use(workspaceAnalyticsRoute);
+  app.use(workspaceBlogsRoute);
   app.use(competitiveIntelligenceRoute);
 
   app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {

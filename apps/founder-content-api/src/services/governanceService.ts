@@ -17,7 +17,8 @@ export type WorkspaceFeatureKey =
   | "control_dashboard"
   | "brand_intelligence"
   | "outreach"
-  | "email_campaigns";
+  | "email_campaigns"
+  | "blog_publishing";
 
 export type WorkspaceUsageMetric = "generations" | "posts" | "emails" | "outreach";
 

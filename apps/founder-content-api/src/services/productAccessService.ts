@@ -27,6 +27,7 @@ const PRODUCT_FEATURE_KEYS: ProductFeatureKey[] = [
   "brand_intelligence",
   "outreach",
   "email_campaigns",
+  "blog_publishing",
   "system_read_only",
 ];
 
@@ -45,6 +46,7 @@ function buildDisabledFeatureMap(): ProductFeatureMap {
       brand_intelligence: false,
       outreach: false,
       email_campaigns: false,
+      blog_publishing: false,
       system_read_only: false,
     },
   );

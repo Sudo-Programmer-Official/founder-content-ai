@@ -9,6 +9,7 @@ export type ProductFeatureKey =
   | "brand_intelligence"
   | "outreach"
   | "email_campaigns"
+  | "blog_publishing"
   | "system_read_only";
 
 export type ProductFeatureMap = Record<ProductFeatureKey, boolean>;
