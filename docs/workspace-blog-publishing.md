@@ -110,3 +110,35 @@ Environment variables:
 - `BLOG_EXPORT_OUT_DIR`: custom output root.
 - `BLOG_EXPORT_WORKER_INTERVAL_MS`: polling interval for long-running mode (default 900000 = 15 minutes).
 - `BLOG_EXPORT_WORKER_RUN_ONCE`: set `true` to run once and exit.
+
+## One-click publish to website
+
+For local operator flow, use the publish orchestrator from `apps/founder-content-api`.
+
+Sudo Programmer (export + sync):
+
+```bash
+npm run publish:sudo-programmer-blog
+```
+
+Sudo Programmer (export + sync + website build):
+
+```bash
+npm run publish:sudo-programmer-blog:build
+```
+
+Generic command:
+
+```bash
+npm run publish:workspace-blog -- --workspace=<workspace-slug>
+```
+
+Optional overrides:
+
+- `--websiteRoot=/abs/path/to/website-repo`
+- `--build`
+
+This command sequence is:
+1. Export from Founder Content AI (`exports/workspaces/{workspace}/blogs`)
+2. Sync into website blog folder (`apps/website/src/content/blogs`)
+3. Optional website build

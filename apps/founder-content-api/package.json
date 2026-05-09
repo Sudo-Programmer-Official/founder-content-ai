@@ -32,6 +32,9 @@
     "export:workspace-blogs": "tsx scripts/exportWorkspaceBlogs.ts",
     "export:workspace-blogs:all": "tsx scripts/exportWorkspaceBlogs.ts --all",
     "worker:blog-exports": "tsx src/workers/workspaceBlogExportWorker.ts",
-    "worker:blog-exports:once": "BLOG_EXPORT_WORKER_RUN_ONCE=true tsx src/workers/workspaceBlogExportWorker.ts"
+    "worker:blog-exports:once": "BLOG_EXPORT_WORKER_RUN_ONCE=true tsx src/workers/workspaceBlogExportWorker.ts",
+    "publish:workspace-blog": "tsx scripts/publishWorkspaceBlogToWebsite.ts",
+    "publish:sudo-programmer-blog": "tsx scripts/publishWorkspaceBlogToWebsite.ts --workspace=sudo-programmer",
+    "publish:sudo-programmer-blog:build": "tsx scripts/publishWorkspaceBlogToWebsite.ts --workspace=sudo-programmer --build"
   }
 }
