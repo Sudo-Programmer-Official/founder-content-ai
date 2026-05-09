@@ -107,6 +107,36 @@ function toDatetimeLocalValue(date: Date): string {
   return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
+function parseDatetimeLocalToDate(value: string): Date | null {
+  const normalized = value.trim();
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const [, yearText, monthText, dayText, hourText, minuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
+
+  if (
+    Number.isNaN(parsed.getTime()) ||
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day ||
+    parsed.getHours() !== hour ||
+    parsed.getMinutes() !== minute
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function formatCampaignScheduledAt(value: string): string {
   return new Date(value).toLocaleString([], {
     month: "short",
@@ -1592,7 +1622,11 @@ const campaignScheduledAtIso = computed(() => {
     return "";
   }
 
-  const scheduledAt = new Date(campaignForm.value.scheduledAtLocal);
+  const scheduledAt = parseDatetimeLocalToDate(campaignForm.value.scheduledAtLocal);
+  if (!scheduledAt) {
+    return "";
+  }
+
   return Number.isNaN(scheduledAt.getTime()) ? "" : scheduledAt.toISOString();
 });
 const isEditingCampaign = computed(() => Boolean(editingCampaignId.value));

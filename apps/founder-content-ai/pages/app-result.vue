@@ -1456,7 +1456,7 @@ function getMediaSuggestionTitle(suggestion: MediaRecommendationSuggestion): str
   }
 
   if (isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
-    return "Generate brand image";
+    return "Generate image post";
   }
 
   if (!isBusinessDraft() && suggestion.suggestedMediaType === "photo_overlay") {
@@ -3001,7 +3001,7 @@ const fallbackMediaRecommendations = computed<MediaRecommendationSuggestion[]>((
         {
           id: "fallback-brand-image",
           actionType: "generate_visual" as const,
-          title: "Generate brand image",
+          title: "Generate image post",
           description: "Create a realistic promotional image that feels local, trustworthy, and campaign-ready.",
           reason: "Business mode benefits from photo-led creative that supports the offer before it asks for the click.",
           suggestedMediaType: "photo_overlay" as const,
@@ -8911,7 +8911,7 @@ onBeforeUnmount(() => {
                             : suggestion.id === "creative-tech-explainer"
                               ? "Generate explainer"
                             : suggestion.suggestedMediaType === "photo_overlay"
-                              ? "Generate image"
+                              ? "Generate image post"
                             : suggestion.visualTemplateType === "carousel"
                               ? "Generate carousel"
                               : "Generate visual"

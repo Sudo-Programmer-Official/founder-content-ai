@@ -759,6 +759,40 @@ function extractContactAttributesFromRaw(
   return attributes;
 }
 
+function normalizeCustomContactAttributeKey(value: string): string {
+  return value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function extractUnmappedContactAttributesFromRaw(
+  raw: Record<string, string>,
+  mapping: EmailContactImportMapping,
+): EmailContactAttributes {
+  const attributes: EmailContactAttributes = {};
+  const mappedColumns = new Set(Object.values(mapping).filter(Boolean));
+
+  for (const [columnName, rawValue] of Object.entries(raw)) {
+    if (mappedColumns.has(columnName)) {
+      continue;
+    }
+
+    const key = normalizeCustomContactAttributeKey(columnName);
+    const value = normalizeContactAttributeValue(rawValue);
+
+    if (!key || !value || key.length > 80) {
+      continue;
+    }
+
+    attributes[key] = value.slice(0, 5000);
+  }
+
+  return attributes;
+}
+
 function normalizeEmail(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -1341,6 +1375,14 @@ function parseEmailCampaignScheduledAt(
     }
 
     return null;
+  }
+
+  if (!/(Z|[+-]\d{2}:\d{2})$/i.test(normalized)) {
+    throw new HttpError(
+      400,
+      "email_campaign_schedule_timezone_required",
+      "scheduledAt must include a timezone offset (for example, UTC ISO format ending with Z).",
+    );
   }
 
   const scheduledAt = new Date(normalized);
@@ -2284,14 +2326,21 @@ function buildEmailCampaignBodies(
   };
 }
 
-function personalizeTemplate(template: string, contact: Pick<EmailContact, "firstName" | "lastName" | "email">): string {
+function personalizeTemplate(
+  template: string,
+  contact: Pick<EmailContact, "firstName" | "lastName" | "email" | "attributes">,
+): string {
   const sanitizedNames = sanitizeContactNameParts(contact);
   const fullName = [sanitizedNames.firstName, sanitizedNames.lastName].filter(Boolean).join(" ").trim();
   const friendlyFirstName = sanitizedNames.firstName || "there";
   return template
     .replace(/{{\s*name\s*}}/gi, fullName || friendlyFirstName)
     .replace(/{{\s*first_name\s*}}/gi, friendlyFirstName)
-    .replace(/{{\s*last_name\s*}}/gi, sanitizedNames.lastName || "");
+    .replace(/{{\s*last_name\s*}}/gi, sanitizedNames.lastName || "")
+    .replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (match, rawKey: string) => {
+      const attributeKey = normalizeCustomContactAttributeKey(rawKey);
+      return contact.attributes?.[attributeKey] ?? match;
+    });
 }
 
 function appendUnsubscribeFooter(html: string, text: string, unsubscribeUrl: string): {
@@ -2960,7 +3009,10 @@ function parseContactImportPayload(
 
     const lists = splitListNames(sanitizedMapping.lists ? raw[sanitizedMapping.lists] : undefined);
     const tags = splitTags(sanitizedMapping.tags ? raw[sanitizedMapping.tags] : undefined);
-    const attributes = extractContactAttributesFromRaw(raw, sanitizedMapping);
+    const attributes = {
+      ...extractUnmappedContactAttributesFromRaw(raw, sanitizedMapping),
+      ...extractContactAttributesFromRaw(raw, sanitizedMapping),
+    };
     const importedStatus = resolveImportedEmailContactStatus({
       emailStatus: emailStatusValue,
       emailPermissionStatus: emailPermissionStatusValue,
