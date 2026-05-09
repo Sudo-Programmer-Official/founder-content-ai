@@ -52,6 +52,7 @@ import {
 } from "../services/workspaceBlogPublishingService.ts";
 import {
   publishWorkspaceBlogs,
+  listWorkspacePublishedBlogsForAdmin,
   unpublishWorkspaceBlogBySlug,
 } from "../services/publicBlogService.ts";
 import { evaluateAlerts } from "../services/analytics/alertService.ts";
@@ -255,6 +256,31 @@ export async function postAdminWorkspaceBlogUnpublishBySlug(
       code: "admin_workspace_blog_state_unpublish_failed",
       message: "Unable to unpublish workspace blog.",
       logMessage: "Failed to unpublish workspace blog.",
+    });
+  }
+}
+
+export async function getAdminWorkspacePublishedBlogs(
+  request: Request<{ workspaceId: string }>,
+  response: Response<{ workspaceId: string; posts: Array<{ slug: string; title: string; date: string; source: "content_asset" | "scheduled_post"; pipelineStage: string }> } | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  try {
+    const posts = await listWorkspacePublishedBlogsForAdmin(request.params.workspaceId);
+    response.json({
+      workspaceId: request.params.workspaceId,
+      posts,
+    });
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "admin_workspace_blog_list_failed",
+      message: "Unable to load published blog entries for this workspace.",
+      logMessage: "Failed to load published blog entries for workspace.",
     });
   }
 }

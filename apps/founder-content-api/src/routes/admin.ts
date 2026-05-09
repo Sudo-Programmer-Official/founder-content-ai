@@ -8,6 +8,7 @@ import {
   getAdminOpsOverview,
   getAdminUsage,
   getAdminUsers,
+  getAdminWorkspacePublishedBlogs,
   getAdminWorkspaces,
   patchAdminMediaGenerationSettings,
   postAdminWorkspaceBlogsPublishState,
@@ -31,6 +32,7 @@ adminRoute.get("/api/admin/errors", requireAuth(), requireSuperAdmin(), getAdmin
 adminRoute.get("/api/admin/users", requireAuth(), requireSuperAdmin(), getAdminUsers);
 adminRoute.delete("/api/admin/users/:userId", requireAuth(), requireSuperAdmin(), deleteAdminUser);
 adminRoute.get("/api/admin/workspaces", requireAuth(), requireSuperAdmin(), getAdminWorkspaces);
+adminRoute.get("/api/admin/workspaces/:workspaceId/blogs", requireAuth(), requireSuperAdmin(), getAdminWorkspacePublishedBlogs);
 adminRoute.patch("/api/admin/workspaces/:workspaceId/access", requireAuth(), requireSuperAdmin(), patchAdminWorkspaceAccess);
 adminRoute.post("/api/admin/workspaces/:workspaceId/publish-blog", requireAuth(), requireSuperAdmin(), postAdminWorkspaceBlogPublish);
 adminRoute.post("/api/admin/workspaces/:workspaceId/blogs/publish", requireAuth(), requireSuperAdmin(), postAdminWorkspaceBlogsPublishState);

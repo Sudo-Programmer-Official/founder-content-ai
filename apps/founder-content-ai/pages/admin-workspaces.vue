@@ -5,9 +5,11 @@ import type {
   BusinessPlanCode,
   UpdateAdminWorkspaceAccessRequest,
 } from "../../../packages/shared-types";
+import type { AdminWorkspacePublishedBlogEntry } from "../services/admin-analytics-service";
 import { onMounted, reactive, ref } from "vue";
 import {
   requestAdminWorkspaceBlogPublish,
+  requestAdminWorkspacePublishedBlogs,
   requestAdminWorkspaceBlogUnpublishBySlug,
   requestAdminWorkspaceAccessUpdate,
   requestAdminWorkspaces,
@@ -21,9 +23,11 @@ const feedbackMessage = ref("");
 const isMutating = ref(false);
 const publishingWorkspaceId = ref<string | null>(null);
 const unpublishingWorkspaceId = ref<string | null>(null);
+const loadingPublishedBlogsWorkspaceId = ref<string | null>(null);
 const selectedPlanByWorkspace = reactive<Record<string, BusinessPlanCode>>({});
 const selectedEmailTierByWorkspace = reactive<Record<string, BillingEmailAddonTierCode>>({});
 const unpublishSlugByWorkspace = reactive<Record<string, string>>({});
+const publishedBlogsByWorkspace = reactive<Record<string, AdminWorkspacePublishedBlogEntry[]>>({});
 
 async function loadWorkspaces() {
   isLoading.value = true;
@@ -110,6 +114,25 @@ async function unpublishWorkspaceBlog(workspace: AdminWorkspaceListItem) {
   } finally {
     unpublishingWorkspaceId.value = null;
   }
+}
+
+async function loadPublishedBlogs(workspace: AdminWorkspaceListItem) {
+  loadingPublishedBlogsWorkspaceId.value = workspace.id;
+  errorMessage.value = "";
+
+  try {
+    const result = await requestAdminWorkspacePublishedBlogs(workspace.id);
+    publishedBlogsByWorkspace[workspace.id] = result.posts;
+  } catch (error) {
+    errorMessage.value =
+      error instanceof Error ? error.message : "Unable to load published blog slugs.";
+  } finally {
+    loadingPublishedBlogsWorkspaceId.value = null;
+  }
+}
+
+function pickSlugForUnpublish(workspaceId: string, slug: string) {
+  unpublishSlugByWorkspace[workspaceId] = slug;
 }
 </script>
 
@@ -312,6 +335,14 @@ async function unpublishWorkspaceBlog(workspace: AdminWorkspaceListItem) {
           <button
             type="button"
             class="dashboard-button secondary"
+            :disabled="loadingPublishedBlogsWorkspaceId === workspace.id"
+            @click="loadPublishedBlogs(workspace)"
+          >
+            {{ loadingPublishedBlogsWorkspaceId === workspace.id ? "Loading slugs..." : "Load Published Slugs" }}
+          </button>
+          <button
+            type="button"
+            class="dashboard-button secondary"
             :disabled="isMutating"
             @click="
               applyWorkspaceAction(
@@ -422,6 +453,24 @@ async function unpublishWorkspaceBlog(workspace: AdminWorkspaceListItem) {
           >
             {{ workspace.access.isActive ? "Disable" : "Enable" }}
           </button>
+        </div>
+
+        <div
+          v-if="publishedBlogsByWorkspace[workspace.id]?.length"
+          class="workspace-published-blogs"
+        >
+          <p class="panel-meta">Currently public blog slugs (click to use in unpublish)</p>
+          <div class="workspace-published-slugs">
+            <button
+              v-for="entry in publishedBlogsByWorkspace[workspace.id]"
+              :key="`${workspace.id}-${entry.slug}`"
+              type="button"
+              class="slug-chip"
+              @click="pickSlugForUnpublish(workspace.id, entry.slug)"
+            >
+              {{ entry.slug }}
+            </button>
+          </div>
         </div>
 
         <p v-if="workspace.access.adminOverrideNote" class="workspace-note">

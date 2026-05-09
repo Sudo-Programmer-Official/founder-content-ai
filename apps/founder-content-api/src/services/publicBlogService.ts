@@ -156,6 +156,12 @@ function pickPreferredPost(current: PublicBlogPost, candidate: PublicBlogPost): 
   return new Date(candidate.updatedAt).getTime() > new Date(current.updatedAt).getTime() ? candidate : current;
 }
 
+function isWebsitePublished(value: unknown): boolean | null {
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return null;
+}
+
 async function loadWorkspace(workspaceSlug: string): Promise<WorkspaceRow | null> {
   const result = await queryDb<WorkspaceRow>(
     `
@@ -196,6 +202,31 @@ async function loadScheduledPosts(workspaceId: string): Promise<ScheduledPostRow
     [workspaceId],
   );
   return result.rows.filter((row) => normalizeText(row.content_text) !== "");
+}
+
+async function loadWebsiteUnpublishedSlugSet(workspaceId: string): Promise<Set<string>> {
+  const result = await queryDb<{ content_metadata: unknown }>(
+    `
+      select content_metadata
+      from content_assets
+      where business_id = $1
+        and content_type = 'post'
+        and coalesce(content_metadata, '{}'::jsonb)->>'website_published' = 'false'
+    `,
+    [workspaceId],
+  );
+
+  const slugs = new Set<string>();
+
+  for (const row of result.rows) {
+    const metadata = unwrapObject(row.content_metadata);
+    const slug = toSlug(normalizeText(metadata.slug));
+    if (slug) {
+      slugs.add(slug);
+    }
+  }
+
+  return slugs;
 }
 
 function fromContentAsset(workspace: WorkspaceRow, row: ContentAssetRow): PublicBlogPost | null {
@@ -263,15 +294,30 @@ async function loadWorkspacePosts(workspaceSlug: string): Promise<PublicBlogPost
   const workspace = await loadWorkspace(workspaceSlug);
   if (!workspace) return [];
 
-  const [assetRows, scheduledRows] = await Promise.all([
+  const [assetRows, scheduledRows, unpublishedSlugSet] = await Promise.all([
     loadPublishedContentAssets(workspace.id),
     loadScheduledPosts(workspace.id),
+    loadWebsiteUnpublishedSlugSet(workspace.id),
   ]);
 
-  const posts = [
+  const rawPosts = [
     ...assetRows.map((row) => fromContentAsset(workspace, row)).filter((row): row is PublicBlogPost => Boolean(row)),
     ...scheduledRows.map((row) => fromScheduledPost(workspace, row)),
   ];
+
+  const posts = rawPosts.filter((post) => {
+    if (!unpublishedSlugSet.has(post.slug)) {
+      return true;
+    }
+
+    // Explicit content-asset publish flag should still win.
+    if (post.source === "content_asset") {
+      const metadata = unwrapObject((assetRows.find((row) => row.id === post.id)?.content_metadata) ?? {});
+      return isWebsitePublished(metadata.website_published) === true;
+    }
+
+    return false;
+  });
 
   const dedupedByFingerprint = new Map<string, PublicBlogPost>();
   for (const post of posts) {
@@ -304,6 +350,27 @@ export async function getPublicBlogBySlug(
   if (!post) return null;
   const { fingerprint: _fingerprint, ...rest } = post;
   return rest;
+}
+
+export async function listWorkspacePublishedBlogsForAdmin(
+  workspaceId: string,
+): Promise<Array<{
+  slug: string;
+  title: string;
+  date: string;
+  source: "content_asset" | "scheduled_post";
+  pipelineStage: string;
+}>> {
+  const workspace = await loadWorkspaceById(workspaceId);
+  const posts = await loadWorkspacePosts(workspace.slug);
+
+  return posts.map((post) => ({
+    slug: post.slug,
+    title: post.title,
+    date: post.date,
+    source: post.source,
+    pipelineStage: post.pipelineStage,
+  }));
 }
 
 async function loadWorkspaceById(workspaceId: string): Promise<WorkspaceRow> {
@@ -363,10 +430,55 @@ export async function unpublishWorkspaceBlogBySlug(
   const workspace = await loadWorkspaceById(workspaceId);
   const normalizedSlug = toSlug(slug);
   const posts = await loadWorkspacePosts(workspace.slug);
-  const target = posts.find((entry) => entry.slug === normalizedSlug && entry.source === "content_asset");
+  const target = posts.find((entry) => entry.slug === normalizedSlug);
 
   if (!target) {
     throw new HttpError(404, "blog_not_found", "Published blog not found for this workspace/slug.");
+  }
+
+  if (target.source === "scheduled_post") {
+    const insertResult = await queryDb<PublishUpdateCountRow>(
+      `
+        with inserted as (
+          insert into content_assets (
+            business_id,
+            user_id,
+            content_type,
+            title,
+            content_body,
+            status,
+            source_kind,
+            pipeline_stage,
+            content_metadata
+          )
+          values (
+            $1,
+            null,
+            'post',
+            $2,
+            '{"content": ""}'::jsonb,
+            'draft',
+            'manual',
+            'draft',
+            jsonb_build_object(
+              'slug', $3,
+              'website_published', false,
+              'visibility_override', true
+            )
+          )
+          returning id
+        )
+        select count(*)::text as total from inserted
+      `,
+      [workspace.id, target.title, normalizedSlug],
+    );
+
+    return {
+      workspaceId: workspace.id,
+      workspaceSlug: workspace.slug,
+      slug: normalizedSlug,
+      updatedCount: Number(insertResult.rows[0]?.total ?? 0),
+    };
   }
 
   const result = await queryDb<PublishUpdateCountRow>(
@@ -395,5 +507,23 @@ export async function unpublishWorkspaceBlogBySlug(
     workspaceSlug: workspace.slug,
     slug: normalizedSlug,
     updatedCount: Number(result.rows[0]?.total ?? 0),
+  };
+}
+
+export async function listPublishedWorkspaceBlogs(
+  workspaceId: string,
+): Promise<{ workspaceId: string; workspaceSlug: string; posts: Array<{ slug: string; title: string; date: string; source: "content_asset" | "scheduled_post" }> }> {
+  const workspace = await loadWorkspaceById(workspaceId);
+  const posts = await loadWorkspacePosts(workspace.slug);
+
+  return {
+    workspaceId: workspace.id,
+    workspaceSlug: workspace.slug,
+    posts: posts.map((post) => ({
+      slug: post.slug,
+      title: post.title,
+      date: post.date,
+      source: post.source,
+    })),
   };
 }

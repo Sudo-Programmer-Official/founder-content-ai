@@ -86,6 +86,19 @@ export interface AdminWorkspaceBlogUnpublishResponse {
   updatedCount: number;
 }
 
+export interface AdminWorkspacePublishedBlogEntry {
+  slug: string;
+  title: string;
+  date: string;
+  source: "content_asset" | "scheduled_post";
+  pipelineStage: string;
+}
+
+export interface AdminWorkspacePublishedBlogsResponse {
+  workspaceId: string;
+  posts: AdminWorkspacePublishedBlogEntry[];
+}
+
 export async function requestAdminWorkspaceBlogUnpublishBySlug(
   workspaceId: string,
   slug: string,
@@ -96,6 +109,13 @@ export async function requestAdminWorkspaceBlogUnpublishBySlug(
     `/admin/workspaces/${encodedWorkspaceId}/blogs/${encodedSlug}/unpublish`,
     undefined,
   );
+}
+
+export async function requestAdminWorkspacePublishedBlogs(
+  workspaceId: string,
+): Promise<AdminWorkspacePublishedBlogsResponse> {
+  const encodedWorkspaceId = encodeURIComponent(workspaceId);
+  return apiGet<AdminWorkspacePublishedBlogsResponse>(`/admin/workspaces/${encodedWorkspaceId}/blogs`);
 }
 
 export async function requestAdminFeatureFlags(): Promise<AdminFeatureFlagsResponse> {
