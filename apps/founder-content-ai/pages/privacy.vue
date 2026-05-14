@@ -34,6 +34,12 @@ const sections = [
     ],
   },
   {
+    title: "Operator information",
+    points: [
+      "Founder Content AI is operated by Sudo Programmer, Inc., a U.S. registered corporation.",
+    ],
+  },
+  {
     title: "Contact",
     points: [
       "For privacy questions or requests, contact hello@foundercontent.ai.",

@@ -995,7 +995,10 @@ onMounted(() => {
     </section>
 
     <footer class="site-footer">
-      <p>Founder Content helps teams generate, organize, and distribute content without mixing workspace data.</p>
+      <div class="footer-copy">
+        <p>Founder Content helps teams generate, organize, and distribute content without mixing workspace data.</p>
+        <p>Founder Content AI is operated by Sudo Programmer, Inc., a U.S. registered corporation.</p>
+      </div>
       <div class="footer-links">
         <router-link :to="appRoutes.privacy">Privacy</router-link>
         <router-link :to="appRoutes.terms">Terms</router-link>
@@ -1066,6 +1069,11 @@ onMounted(() => {
   max-width: 54ch;
   color: #5b4f47;
   line-height: 1.7;
+}
+
+.footer-copy {
+  display: grid;
+  gap: 6px;
 }
 
 .footer-links {
