@@ -2844,6 +2844,38 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.capture-panel .action-row {
+  gap: 12px;
+  align-items: center;
+}
+
+.capture-panel .action-row .dashboard-button {
+  min-height: 46px;
+  min-width: 140px;
+  padding: 0 22px;
+  border-radius: 14px;
+  border-width: 1px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.capture-panel .action-row .dashboard-button.secondary {
+  background: var(--fc-input-bg);
+  border-color: color-mix(in srgb, var(--fc-border) 86%, transparent);
+  color: var(--fc-text);
+}
+
+.capture-panel .action-row .dashboard-button:hover {
+  transform: translateY(-1px);
+}
+
+.capture-panel .action-row .dashboard-button:disabled {
+  transform: none;
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .dashboard-button-row {
   display: flex;
   flex-wrap: wrap;
