@@ -6,10 +6,12 @@ import type {
   BrandKit,
   BrandStudioAssetKind,
   BrandStudioConsistencyMode,
+  BrandStudioGenerationMode,
   BrandStudioGeneration,
   BrandStudioHistoryQuery,
   BrandStudioHistoryResponse,
   BrandStudioIndustryTemplate,
+  CreativeCompositionInput,
   GenerateBrandStudioAssetRequest,
   GenerateBrandStudioAssetResponse,
 } from "../../../../packages/shared-types/index.ts";
@@ -74,6 +76,12 @@ interface AssetKindRule {
   size: "1024x1024" | "1536x1024" | "1024x1536";
   composition: string;
   outputInstruction: string;
+}
+
+interface CreativeTemplateRule {
+  direction: string;
+  camera: string;
+  layering: string;
 }
 
 const INDUSTRY_TEMPLATE_RULES: Record<BrandStudioIndustryTemplate, IndustryTemplateRule> = {
@@ -146,6 +154,34 @@ const INDUSTRY_TEMPLATE_RULES: Record<BrandStudioIndustryTemplate, IndustryTempl
       "maintain strong hierarchy and whitespace",
       "keep the asset ready for real UI placement",
     ],
+  },
+};
+
+const CREATIVE_TEMPLATE_RULES: Record<NonNullable<CreativeCompositionInput["template"]>, CreativeTemplateRule> = {
+  cinematic_saas: {
+    direction: "cinematic SaaS campaign visual with premium lighting and intentional depth",
+    camera: "dramatic perspective with foreground, midground, and background separation",
+    layering: "blend product context, abstract brand shapes, and conversion-focused framing",
+  },
+  dashboard_campaign: {
+    direction: "dashboard-style campaign visual with clear analytics hierarchy",
+    camera: "front-facing product framing with subtle perspective for dimension",
+    layering: "feature metric cards, trend charts, and structured campaign modules",
+  },
+  layered_promo_scene: {
+    direction: "layered promotional scene that feels editorial and conversion-ready",
+    camera: "studio-like composition with controlled focal depth",
+    layering: "use stacked surfaces, supporting callouts, and premium material accents",
+  },
+  social_ad_composition: {
+    direction: "social ad composition designed to stop scroll and communicate value fast",
+    camera: "bold central focal point optimized for social feed attention",
+    layering: "include punchy supporting panels and clean callout zones",
+  },
+  premium_hero_artwork: {
+    direction: "premium landing-page hero artwork with product and brand storytelling",
+    camera: "website hero composition with protected negative space for headline and CTA",
+    layering: "orchestrate product, atmosphere, and supporting UI cues with high polish",
   },
 };
 
@@ -327,7 +363,7 @@ function buildPrompt(input: {
   consistencyMode: BrandStudioConsistencyMode;
 }): string {
   const assetRule = resolveAssetKindRule(input.request.assetKind);
-  const templateRule = INDUSTRY_TEMPLATE_RULES[input.templateKey];
+  const industryTemplateRule = INDUSTRY_TEMPLATE_RULES[input.templateKey];
   const iconLabels = normalizeStringArray(input.request.iconLabels, 4, 28);
   const toneKeywords = normalizeStringArray(input.brandKit.toneKeywords, 6, 24);
   const referenceSnapshot = input.referenceGeneration
@@ -336,6 +372,28 @@ function buildPrompt(input: {
   const referenceMetadata = input.referenceGeneration
     ? normalizeRecord(input.referenceGeneration.asset_metadata)
     : {};
+  const generationMode: BrandStudioGenerationMode = input.request.generationMode === "creative_composition"
+    ? "creative_composition"
+    : "standard";
+  const composition = input.request.creativeComposition;
+  const creativeTemplateRule = composition?.template ? CREATIVE_TEMPLATE_RULES[composition.template] : null;
+  const scenePreset = composition?.scenePreset ?? "balanced_story";
+  const campaignGoal = truncate(composition?.campaignGoal, 140) ?? truncate(input.request.goal, 140);
+  const includeBrandAwareOverlays = generationMode === "creative_composition"
+    ? composition?.brandAwareOverlays !== false
+    : false;
+  const includeUiStyleElements = generationMode === "creative_composition"
+    ? composition?.uiStyleElements !== false
+    : false;
+  const includeAnalyticsCards = generationMode === "creative_composition"
+    ? composition?.analyticsMockCards === true
+    : false;
+  const includeDeviceMockups = generationMode === "creative_composition"
+    ? composition?.deviceMockups === true
+    : false;
+  const includeCtaBlocks = generationMode === "creative_composition"
+    ? composition?.ctaEmphasisBlocks === true
+    : false;
 
   return [
     `Create a ${assetRule.label.toLowerCase()} for a branded marketing system.`,
@@ -356,14 +414,53 @@ function buildPrompt(input: {
     input.brandKit.imageGuidelines ? `- Image guidelines: ${input.brandKit.imageGuidelines}` : undefined,
     "",
     "INDUSTRY SYSTEM:",
-    `- Imagery cues: ${templateRule.imagery.join(", ")}`,
-    `- Icon language: ${templateRule.iconLanguage}`,
-    `- Layout direction: ${templateRule.layoutDirection}`,
-    `- Guardrails: ${templateRule.visualGuardrails.join("; ")}`,
+    `- Imagery cues: ${industryTemplateRule.imagery.join(", ")}`,
+    `- Icon language: ${industryTemplateRule.iconLanguage}`,
+    `- Layout direction: ${industryTemplateRule.layoutDirection}`,
+    `- Guardrails: ${industryTemplateRule.visualGuardrails.join("; ")}`,
+    "",
+    "GENERATION MODE:",
+    generationMode === "creative_composition"
+      ? "- Use Advanced Creative Composition mode."
+      : "- Use standard Brand Studio generation mode.",
+    generationMode === "creative_composition"
+      ? `- Campaign goal: ${campaignGoal || "Drive a high-performing campaign creative with clear value framing."}`
+      : undefined,
+    generationMode === "creative_composition" && composition?.template
+      ? `- Creative template: ${composition.template}`
+      : undefined,
+    generationMode === "creative_composition" ? `- Scene preset: ${scenePreset}` : undefined,
+    generationMode === "creative_composition" && creativeTemplateRule
+      ? `- Direction: ${creativeTemplateRule.direction}`
+      : undefined,
+    generationMode === "creative_composition" && creativeTemplateRule
+      ? `- Camera: ${creativeTemplateRule.camera}`
+      : undefined,
+    generationMode === "creative_composition" && creativeTemplateRule
+      ? `- Layering: ${creativeTemplateRule.layering}`
+      : undefined,
+    generationMode === "creative_composition" && includeBrandAwareOverlays
+      ? "- Add brand-aware overlays that echo brand palette, shape language, and tone."
+      : undefined,
+    generationMode === "creative_composition" && includeUiStyleElements
+      ? "- Include UI-style visual elements (cards, panels, interface framing) with realistic product polish."
+      : undefined,
+    generationMode === "creative_composition" && includeAnalyticsCards
+      ? "- Include performance/analytics mock cards with believable KPI layout and chart rhythm."
+      : undefined,
+    generationMode === "creative_composition" && includeDeviceMockups
+      ? "- Include device mockups (laptop/phone/tablet as relevant) integrated naturally into the scene."
+      : undefined,
+    generationMode === "creative_composition" && includeCtaBlocks
+      ? "- Add CTA emphasis blocks with clear visual hierarchy and protected space for CTA copy."
+      : undefined,
+    generationMode === "creative_composition"
+      ? "- Keep composition layered, campaign-ready, and premium landing-page compatible."
+      : undefined,
     "",
     "ASSET SPEC:",
     `- Type: ${assetRule.label}`,
-    `- Goal: ${truncate(input.request.goal, 140) || "Create a polished on-brand asset."}`,
+    `- Goal: ${campaignGoal || "Create a polished on-brand asset."}`,
     input.request.context ? `- Context: ${truncate(input.request.context, 160)}` : undefined,
     input.request.layout ? `- Layout: ${truncate(input.request.layout, 120)}` : undefined,
     iconLabels.length > 0
@@ -398,6 +495,9 @@ function buildPrompt(input: {
     input.request.assetKind === "icon_set"
       ? "- Keep all four icons stylistically identical and do not add text labels."
       : "- Do not render typographic blocks or UI chrome unless explicitly required by the brief.",
+    generationMode === "creative_composition"
+      ? "- Preserve brand memory consistency: style language, tone, color intent, and system-level coherence must align with this workspace."
+      : undefined,
   ]
     .filter((entry): entry is string => Boolean(entry))
     .join("\n");
@@ -892,11 +992,13 @@ export async function generateBrandAsset(input: {
     request: {
       businessId: input.request.businessId,
       assetKind: mapBrandAssetTypeToStudioKind(input.request.assetType),
+      generationMode: input.request.generationMode,
       goal: input.request.goal,
       context: input.request.context,
       layout: input.request.layout,
       extraInstructions: input.request.extraInstructions,
       iconLabels: input.request.iconLabels,
+      creativeComposition: input.request.creativeComposition,
       brandKit: input.request.brandKit,
       referenceGenerationId: input.request.referenceGenerationId,
       matchPreviousStyle: input.request.matchPreviousStyle,

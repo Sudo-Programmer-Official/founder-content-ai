@@ -318,11 +318,13 @@ export async function requestGenerateBrandStudioAsset(
       const legacyPayload: GenerateBrandStudioAssetRequest = {
         businessId: input.businessId,
         assetKind: toLegacyAssetKind(input.assetType),
+        generationMode: input.generationMode,
         goal: input.goal,
         context: input.context,
         layout: input.layout,
         extraInstructions: input.extraInstructions,
         iconLabels: input.iconLabels,
+        creativeComposition: input.creativeComposition,
         brandKit: input.brandKit,
         referenceGenerationId: input.referenceGenerationId,
         matchPreviousStyle: input.matchPreviousStyle,

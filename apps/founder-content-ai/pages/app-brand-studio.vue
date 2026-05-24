@@ -12,6 +12,8 @@ import type {
   BrandKitVisualStyle,
   BrandStudioAssetKind,
   BrandStudioGeneration,
+  CreativeCompositionPreset,
+  CreativeCompositionTemplate,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import { requestUpdateBrandKit } from "../services/brand-kit-service";
@@ -57,6 +59,15 @@ type GeneratorDraft = {
   layout: string;
   extraInstructions: string;
   iconLabels: string;
+  generationMode: "standard" | "creative_composition";
+  creativeTemplate: CreativeCompositionTemplate;
+  campaignGoal: string;
+  scenePreset: CreativeCompositionPreset;
+  brandAwareOverlays: boolean;
+  uiStyleElements: boolean;
+  analyticsMockCards: boolean;
+  deviceMockups: boolean;
+  ctaEmphasisBlocks: boolean;
   matchPreviousStyle: boolean;
   referenceGenerationId: string;
 };
@@ -125,6 +136,15 @@ const generatorForm = reactive<{
   layout: string;
   extraInstructions: string;
   iconLabels: string;
+  generationMode: "standard" | "creative_composition";
+  creativeTemplate: CreativeCompositionTemplate;
+  campaignGoal: string;
+  scenePreset: CreativeCompositionPreset;
+  brandAwareOverlays: boolean;
+  uiStyleElements: boolean;
+  analyticsMockCards: boolean;
+  deviceMockups: boolean;
+  ctaEmphasisBlocks: boolean;
   matchPreviousStyle: boolean;
   referenceGenerationId: string;
 }>({
@@ -134,9 +154,34 @@ const generatorForm = reactive<{
   layout: "Website-ready composition with clean overlay space",
   extraInstructions: "",
   iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+  generationMode: "standard",
+  creativeTemplate: "cinematic_saas",
+  campaignGoal: "",
+  scenePreset: "balanced_story",
+  brandAwareOverlays: true,
+  uiStyleElements: true,
+  analyticsMockCards: false,
+  deviceMockups: true,
+  ctaEmphasisBlocks: true,
   matchPreviousStyle: false,
   referenceGenerationId: "",
 });
+
+const creativeTemplateOptions: Array<{ value: CreativeCompositionTemplate; label: string }> = [
+  { value: "cinematic_saas", label: "Cinematic SaaS" },
+  { value: "dashboard_campaign", label: "Dashboard Campaign" },
+  { value: "layered_promo_scene", label: "Layered Promo Scene" },
+  { value: "social_ad_composition", label: "Social Ad Composition" },
+  { value: "premium_hero_artwork", label: "Premium Hero Artwork" },
+];
+
+const creativeScenePresetOptions: Array<{ value: CreativeCompositionPreset; label: string }> = [
+  { value: "balanced_story", label: "Balanced Story" },
+  { value: "product_focus", label: "Product Focus" },
+  { value: "analytics_focus", label: "Analytics Focus" },
+  { value: "cta_focus", label: "CTA Focus" },
+  { value: "device_showcase", label: "Device Showcase" },
+];
 
 const assetKindOptions: Array<{ value: BrandStudioAssetKind; label: string; description: string }> = [
   {
@@ -497,6 +542,15 @@ function buildDefaultGeneratorDraft(assetKind: BrandStudioAssetKind): GeneratorD
         layout: "Website-ready hero composition with clean overlay space for headline and CTA",
         extraInstructions: "Match the saved brand colors and overall visual system. No text baked into the image.",
         iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        generationMode: "standard",
+        creativeTemplate: "cinematic_saas",
+        campaignGoal: "",
+        scenePreset: "balanced_story",
+        brandAwareOverlays: true,
+        uiStyleElements: true,
+        analyticsMockCards: false,
+        deviceMockups: true,
+        ctaEmphasisBlocks: true,
         matchPreviousStyle: false,
         referenceGenerationId: "",
       };
@@ -507,6 +561,15 @@ function buildDefaultGeneratorDraft(assetKind: BrandStudioAssetKind): GeneratorD
         layout: "Landscape section visual with clear focal point and room for adjacent copy",
         extraInstructions: "Keep it simple, polished, and brand-matched. Avoid clutter and generic stock-business scenes.",
         iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        generationMode: "standard",
+        creativeTemplate: "dashboard_campaign",
+        campaignGoal: "",
+        scenePreset: "product_focus",
+        brandAwareOverlays: true,
+        uiStyleElements: true,
+        analyticsMockCards: true,
+        deviceMockups: true,
+        ctaEmphasisBlocks: false,
         matchPreviousStyle: false,
         referenceGenerationId: "",
       };
@@ -517,6 +580,15 @@ function buildDefaultGeneratorDraft(assetKind: BrandStudioAssetKind): GeneratorD
         layout: "Wide website banner with a strong focal area and clean message space",
         extraInstructions: "Use the saved brand palette, keep the composition premium, and leave space for CTA copy.",
         iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        generationMode: "standard",
+        creativeTemplate: "layered_promo_scene",
+        campaignGoal: "",
+        scenePreset: "cta_focus",
+        brandAwareOverlays: true,
+        uiStyleElements: true,
+        analyticsMockCards: true,
+        deviceMockups: true,
+        ctaEmphasisBlocks: true,
         matchPreviousStyle: false,
         referenceGenerationId: "",
       };
@@ -527,6 +599,15 @@ function buildDefaultGeneratorDraft(assetKind: BrandStudioAssetKind): GeneratorD
         layout: "Four matching icons in a clean 2x2 system with consistent spacing and stroke weight",
         extraInstructions: "Keep icons simple, recognizable, rounded, and relevant. No labels, numbers, or decorative clutter.",
         iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        generationMode: "standard",
+        creativeTemplate: "dashboard_campaign",
+        campaignGoal: "",
+        scenePreset: "product_focus",
+        brandAwareOverlays: true,
+        uiStyleElements: true,
+        analyticsMockCards: false,
+        deviceMockups: false,
+        ctaEmphasisBlocks: false,
         matchPreviousStyle: false,
         referenceGenerationId: "",
       };
@@ -537,6 +618,15 @@ function buildDefaultGeneratorDraft(assetKind: BrandStudioAssetKind): GeneratorD
         layout: "Square social composition with one strong focal area and clean framing",
         extraInstructions: "Keep it scroll-stopping but brand-safe. Match saved colors and avoid generic stock-ad aesthetics.",
         iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        generationMode: "standard",
+        creativeTemplate: "social_ad_composition",
+        campaignGoal: "",
+        scenePreset: "cta_focus",
+        brandAwareOverlays: true,
+        uiStyleElements: true,
+        analyticsMockCards: true,
+        deviceMockups: true,
+        ctaEmphasisBlocks: true,
         matchPreviousStyle: false,
         referenceGenerationId: "",
       };
@@ -547,6 +637,15 @@ function buildDefaultGeneratorDraft(assetKind: BrandStudioAssetKind): GeneratorD
         layout: "Wide email header composition with safe crop zone and calm overlay area",
         extraInstructions: "Keep it polished, readable, and consistent with the saved brand rules. No text baked into the image.",
         iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        generationMode: "standard",
+        creativeTemplate: "premium_hero_artwork",
+        campaignGoal: "",
+        scenePreset: "balanced_story",
+        brandAwareOverlays: true,
+        uiStyleElements: true,
+        analyticsMockCards: false,
+        deviceMockups: true,
+        ctaEmphasisBlocks: true,
         matchPreviousStyle: false,
         referenceGenerationId: "",
       };
@@ -557,6 +656,15 @@ function buildDefaultGeneratorDraft(assetKind: BrandStudioAssetKind): GeneratorD
         layout: "Website-ready composition with clean overlay space",
         extraInstructions: "",
         iconLabels: "Choose plan, Add location, Manage listings, Grow business",
+        generationMode: "standard",
+        creativeTemplate: "cinematic_saas",
+        campaignGoal: "",
+        scenePreset: "balanced_story",
+        brandAwareOverlays: true,
+        uiStyleElements: true,
+        analyticsMockCards: false,
+        deviceMockups: true,
+        ctaEmphasisBlocks: true,
         matchPreviousStyle: false,
         referenceGenerationId: "",
       };
@@ -570,6 +678,15 @@ function captureCurrentGeneratorDraft(): GeneratorDraft {
     layout: generatorForm.layout,
     extraInstructions: generatorForm.extraInstructions,
     iconLabels: generatorForm.iconLabels,
+    generationMode: generatorForm.generationMode,
+    creativeTemplate: generatorForm.creativeTemplate,
+    campaignGoal: generatorForm.campaignGoal,
+    scenePreset: generatorForm.scenePreset,
+    brandAwareOverlays: generatorForm.brandAwareOverlays,
+    uiStyleElements: generatorForm.uiStyleElements,
+    analyticsMockCards: generatorForm.analyticsMockCards,
+    deviceMockups: generatorForm.deviceMockups,
+    ctaEmphasisBlocks: generatorForm.ctaEmphasisBlocks,
     matchPreviousStyle: generatorForm.matchPreviousStyle,
     referenceGenerationId: generatorForm.referenceGenerationId,
   };
@@ -584,6 +701,15 @@ function applyGeneratorDraft(assetKind: BrandStudioAssetKind): void {
   generatorForm.layout = draft.layout;
   generatorForm.extraInstructions = draft.extraInstructions;
   generatorForm.iconLabels = draft.iconLabels;
+  generatorForm.generationMode = draft.generationMode;
+  generatorForm.creativeTemplate = draft.creativeTemplate;
+  generatorForm.campaignGoal = draft.campaignGoal;
+  generatorForm.scenePreset = draft.scenePreset;
+  generatorForm.brandAwareOverlays = draft.brandAwareOverlays;
+  generatorForm.uiStyleElements = draft.uiStyleElements;
+  generatorForm.analyticsMockCards = draft.analyticsMockCards;
+  generatorForm.deviceMockups = draft.deviceMockups;
+  generatorForm.ctaEmphasisBlocks = draft.ctaEmphasisBlocks;
   generatorForm.matchPreviousStyle = draft.matchPreviousStyle;
   generatorForm.referenceGenerationId = draft.referenceGenerationId;
   isApplyingGeneratorDraft = false;
@@ -634,6 +760,21 @@ function normalizeGeneratorDraft(value: unknown): GeneratorDraft | null {
     layout: typeof candidate.layout === "string" ? candidate.layout : "",
     extraInstructions: typeof candidate.extraInstructions === "string" ? candidate.extraInstructions : "",
     iconLabels: typeof candidate.iconLabels === "string" ? candidate.iconLabels : buildDefaultGeneratorDraft("icon_set").iconLabels,
+    generationMode: candidate.generationMode === "creative_composition" ? "creative_composition" : "standard",
+    creativeTemplate: typeof candidate.creativeTemplate === "string"
+      && creativeTemplateOptions.some((option) => option.value === candidate.creativeTemplate)
+      ? candidate.creativeTemplate as CreativeCompositionTemplate
+      : "cinematic_saas",
+    campaignGoal: typeof candidate.campaignGoal === "string" ? candidate.campaignGoal : "",
+    scenePreset: typeof candidate.scenePreset === "string"
+      && creativeScenePresetOptions.some((option) => option.value === candidate.scenePreset)
+      ? candidate.scenePreset as CreativeCompositionPreset
+      : "balanced_story",
+    brandAwareOverlays: candidate.brandAwareOverlays !== false,
+    uiStyleElements: candidate.uiStyleElements !== false,
+    analyticsMockCards: candidate.analyticsMockCards === true,
+    deviceMockups: candidate.deviceMockups === true,
+    ctaEmphasisBlocks: candidate.ctaEmphasisBlocks === true,
     matchPreviousStyle: candidate.matchPreviousStyle === true,
     referenceGenerationId: typeof candidate.referenceGenerationId === "string" ? candidate.referenceGenerationId : "",
   };
@@ -911,6 +1052,19 @@ async function generateAsset(): Promise<void> {
       iconLabels: generatorForm.assetKind === "icon_set"
         ? splitCommaList(generatorForm.iconLabels)
         : undefined,
+      generationMode: generatorForm.generationMode,
+      creativeComposition: generatorForm.generationMode === "creative_composition"
+        ? {
+          template: generatorForm.creativeTemplate,
+          campaignGoal: generatorForm.campaignGoal,
+          scenePreset: generatorForm.scenePreset,
+          brandAwareOverlays: generatorForm.brandAwareOverlays,
+          uiStyleElements: generatorForm.uiStyleElements,
+          analyticsMockCards: generatorForm.analyticsMockCards,
+          deviceMockups: generatorForm.deviceMockups,
+          ctaEmphasisBlocks: generatorForm.ctaEmphasisBlocks,
+        }
+        : undefined,
       brandKit: buildBrandKitPayload(),
       referenceGenerationId: fallbackReferenceId || undefined,
       matchPreviousStyle: generatorForm.matchPreviousStyle,
@@ -964,6 +1118,15 @@ watch(
     generatorForm.layout,
     generatorForm.extraInstructions,
     generatorForm.iconLabels,
+    generatorForm.generationMode,
+    generatorForm.creativeTemplate,
+    generatorForm.campaignGoal,
+    generatorForm.scenePreset,
+    generatorForm.brandAwareOverlays,
+    generatorForm.uiStyleElements,
+    generatorForm.analyticsMockCards,
+    generatorForm.deviceMockups,
+    generatorForm.ctaEmphasisBlocks,
     generatorForm.matchPreviousStyle,
     generatorForm.referenceGenerationId,
   ],
@@ -1334,6 +1497,20 @@ watch(
         </p>
 
         <div class="form-grid">
+          <div class="field field-wide">
+            <span>Generation mode</span>
+            <div class="mode-toggle-row">
+              <label class="mode-option">
+                <input v-model="generatorForm.generationMode" type="radio" value="standard" />
+                <span>Standard</span>
+              </label>
+              <label class="mode-option">
+                <input v-model="generatorForm.generationMode" type="radio" value="creative_composition" />
+                <span>Creative Composition</span>
+              </label>
+            </div>
+          </div>
+
           <label class="field field-wide">
             <span>Goal</span>
             <textarea
@@ -1378,6 +1555,59 @@ watch(
               placeholder="Keep the style clean and premium. No text baked into the image."
             />
           </label>
+
+          <template v-if="generatorForm.generationMode === 'creative_composition'">
+            <label class="field">
+              <span>Creative template</span>
+              <select v-model="generatorForm.creativeTemplate">
+                <option v-for="option in creativeTemplateOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>Scene preset</span>
+              <select v-model="generatorForm.scenePreset">
+                <option v-for="option in creativeScenePresetOptions" :key="option.value" :value="option.value">
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+
+            <label class="field field-wide">
+              <span>Campaign goal</span>
+              <input
+                v-model="generatorForm.campaignGoal"
+                type="text"
+                placeholder="Drive qualified demo bookings from paid social traffic."
+              />
+            </label>
+
+            <div class="field field-wide composition-toggles">
+              <span>Composition elements</span>
+              <label class="toggle">
+                <input v-model="generatorForm.brandAwareOverlays" type="checkbox" />
+                <span>Brand-aware overlays</span>
+              </label>
+              <label class="toggle">
+                <input v-model="generatorForm.uiStyleElements" type="checkbox" />
+                <span>UI-style visual elements</span>
+              </label>
+              <label class="toggle">
+                <input v-model="generatorForm.analyticsMockCards" type="checkbox" />
+                <span>Performance/analytics mock cards</span>
+              </label>
+              <label class="toggle">
+                <input v-model="generatorForm.deviceMockups" type="checkbox" />
+                <span>Device mockups</span>
+              </label>
+              <label class="toggle">
+                <input v-model="generatorForm.ctaEmphasisBlocks" type="checkbox" />
+                <span>CTA emphasis blocks</span>
+              </label>
+            </div>
+          </template>
         </div>
 
         <div class="consistency-row">
@@ -1660,6 +1890,35 @@ watch(
   color: #64748b;
   font-size: 0.84rem;
   line-height: 1.45;
+}
+
+.mode-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 0.75rem;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.mode-option input {
+  margin: 0;
+}
+
+.composition-toggles {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem 1rem;
 }
 
 .color-input-row {
@@ -2105,6 +2364,7 @@ watch(
 
   .form-grid,
   .asset-kind-grid,
+  .composition-toggles,
   .saved-color-row,
   .saved-guideline-grid,
   .icon-slice-grid {

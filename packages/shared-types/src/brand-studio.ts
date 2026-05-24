@@ -24,6 +24,30 @@ export type BrandStudioAssetKind =
   | "email_header";
 
 export type BrandStudioConsistencyMode = "standard" | "match_previous_style";
+export type BrandStudioGenerationMode = "standard" | "creative_composition";
+export type CreativeCompositionTemplate =
+  | "cinematic_saas"
+  | "dashboard_campaign"
+  | "layered_promo_scene"
+  | "social_ad_composition"
+  | "premium_hero_artwork";
+export type CreativeCompositionPreset =
+  | "balanced_story"
+  | "product_focus"
+  | "analytics_focus"
+  | "cta_focus"
+  | "device_showcase";
+
+export interface CreativeCompositionInput {
+  template?: CreativeCompositionTemplate;
+  campaignGoal?: string;
+  scenePreset?: CreativeCompositionPreset;
+  brandAwareOverlays?: boolean;
+  uiStyleElements?: boolean;
+  analyticsMockCards?: boolean;
+  deviceMockups?: boolean;
+  ctaEmphasisBlocks?: boolean;
+}
 
 export interface BrandStudioHistoryQuery {
   businessId: string;
@@ -67,11 +91,13 @@ export interface BrandStudioHistoryResponse {
 export interface GenerateBrandStudioAssetRequest {
   businessId: string;
   assetKind: BrandStudioAssetKind;
+  generationMode?: BrandStudioGenerationMode;
   goal?: string;
   context?: string;
   layout?: string;
   extraInstructions?: string;
   iconLabels?: string[];
+  creativeComposition?: CreativeCompositionInput;
   brandKit?: BrandKitInput;
   referenceGenerationId?: string;
   matchPreviousStyle?: boolean;
@@ -84,11 +110,13 @@ export interface GenerateBrandStudioAssetResponse {
 export interface GenerateBrandAssetRequest {
   businessId: string;
   assetType: BrandAssetType;
+  generationMode?: BrandStudioGenerationMode;
   goal?: string;
   context?: string;
   layout?: string;
   extraInstructions?: string;
   iconLabels?: string[];
+  creativeComposition?: CreativeCompositionInput;
   brandKit?: BrandKitInput;
   referenceGenerationId?: string;
   matchPreviousStyle?: boolean;

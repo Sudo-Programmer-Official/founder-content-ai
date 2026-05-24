@@ -1,6 +1,10 @@
 import type {
   ApiError,
   BrandAssetType,
+  BrandStudioGenerationMode,
+  CreativeCompositionPreset,
+  CreativeCompositionTemplate,
+  CreativeCompositionInput,
   BrandStudioAssetKind,
   BrandStudioHistoryQuery,
   BrandStudioHistoryResponse,
@@ -39,6 +43,27 @@ const VALID_BRAND_ASSET_TYPES: BrandAssetType[] = [
   "email_header",
 ];
 
+const VALID_GENERATION_MODES: BrandStudioGenerationMode[] = [
+  "standard",
+  "creative_composition",
+];
+
+const VALID_CREATIVE_TEMPLATES = [
+  "cinematic_saas",
+  "dashboard_campaign",
+  "layered_promo_scene",
+  "social_ad_composition",
+  "premium_hero_artwork",
+] as const;
+
+const VALID_SCENE_PRESETS = [
+  "balanced_story",
+  "product_focus",
+  "analytics_focus",
+  "cta_focus",
+  "device_showcase",
+] as const;
+
 function normalizeStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -48,6 +73,49 @@ function normalizeStringArray(value: unknown): string[] | undefined {
     .filter((entry): entry is string => typeof entry === "string")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+function normalizeCreativeComposition(value: unknown): CreativeCompositionInput | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const campaignGoal = typeof record.campaignGoal === "string" ? record.campaignGoal.trim() : undefined;
+  const template = typeof record.template === "string"
+    && (VALID_CREATIVE_TEMPLATES as readonly string[]).includes(record.template)
+    ? record.template as CreativeCompositionTemplate
+    : undefined;
+  const scenePreset = typeof record.scenePreset === "string"
+    && (VALID_SCENE_PRESETS as readonly string[]).includes(record.scenePreset)
+    ? record.scenePreset as CreativeCompositionPreset
+    : undefined;
+
+  const normalized: CreativeCompositionInput = {
+    template,
+    campaignGoal: campaignGoal || undefined,
+    scenePreset,
+    brandAwareOverlays: record.brandAwareOverlays === true,
+    uiStyleElements: record.uiStyleElements === true,
+    analyticsMockCards: record.analyticsMockCards === true,
+    deviceMockups: record.deviceMockups === true,
+    ctaEmphasisBlocks: record.ctaEmphasisBlocks === true,
+  };
+
+  if (
+    !normalized.template
+    && !normalized.campaignGoal
+    && !normalized.scenePreset
+    && !normalized.brandAwareOverlays
+    && !normalized.uiStyleElements
+    && !normalized.analyticsMockCards
+    && !normalized.deviceMockups
+    && !normalized.ctaEmphasisBlocks
+  ) {
+    return undefined;
+  }
+
+  return normalized;
 }
 
 export async function getBrandStudioHistoryController(
@@ -129,11 +197,15 @@ export async function postBrandStudioGenerationController(
         request: {
           businessId,
           assetKind: request.body.assetKind,
+          generationMode: VALID_GENERATION_MODES.includes(request.body.generationMode as BrandStudioGenerationMode)
+            ? request.body.generationMode as BrandStudioGenerationMode
+            : undefined,
           goal: request.body.goal?.trim(),
           context: request.body.context?.trim(),
           layout: request.body.layout?.trim(),
           extraInstructions: request.body.extraInstructions?.trim(),
           iconLabels: normalizeStringArray(request.body.iconLabels),
+          creativeComposition: normalizeCreativeComposition(request.body.creativeComposition),
           brandKit: request.body.brandKit,
           referenceGenerationId: request.body.referenceGenerationId?.trim(),
           matchPreviousStyle: request.body.matchPreviousStyle === true,
@@ -190,11 +262,15 @@ export async function postBrandGenerateAssetController(
         request: {
           businessId,
           assetType: request.body.assetType,
+          generationMode: VALID_GENERATION_MODES.includes(request.body.generationMode as BrandStudioGenerationMode)
+            ? request.body.generationMode as BrandStudioGenerationMode
+            : undefined,
           goal: request.body.goal?.trim(),
           context: request.body.context?.trim(),
           layout: request.body.layout?.trim(),
           extraInstructions: request.body.extraInstructions?.trim(),
           iconLabels: normalizeStringArray(request.body.iconLabels),
+          creativeComposition: normalizeCreativeComposition(request.body.creativeComposition),
           brandKit: request.body.brandKit,
           referenceGenerationId: request.body.referenceGenerationId?.trim(),
           matchPreviousStyle: request.body.matchPreviousStyle === true,

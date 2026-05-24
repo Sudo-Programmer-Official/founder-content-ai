@@ -14,6 +14,8 @@ import type {
   CreatorPostGenerationOutput,
   CreatorTextVariant,
   CreatorVisualStyle,
+  CreativeCompositionPreset,
+  CreativeCompositionTemplate,
   GenerateVisualResponse,
   MediaRecommendationGoal,
   MediaRecommendationSuggestion,
@@ -75,6 +77,7 @@ import {
   requestPostAssets,
   requestReorderPostAssets,
 } from "../services/post-assets-service";
+import { requestGenerateBrandStudioAsset } from "../services/brand-studio-service";
 import { appRoutes } from "../utils/routes";
 import {
   convertZonedDateTimeToUtcIso,
@@ -233,6 +236,15 @@ const selectedMotionTemplateId = ref<MotionTemplateId>("subtle_zoom");
 const selectedMotionAudioEnabled = ref(true);
 const selectedMotionAudioPreset = ref<MotionAudioPreset>("clean_modern");
 const selectedPromoVisualLayout = ref<PromoVisualLayoutId>("logo_headline");
+const selectedPromoGenerationMode = ref<"promo_visual" | "creative_composition">("promo_visual");
+const selectedPromoCreativeTemplate = ref<CreativeCompositionTemplate>("social_ad_composition");
+const selectedPromoCreativePreset = ref<CreativeCompositionPreset>("cta_focus");
+const promoCreativeCampaignGoal = ref("");
+const promoCreativeBrandAwareOverlays = ref(true);
+const promoCreativeUiStyleElements = ref(true);
+const promoCreativeAnalyticsMockCards = ref(true);
+const promoCreativeDeviceMockups = ref(true);
+const promoCreativeCtaEmphasisBlocks = ref(true);
 const selectedCustomImageTemplateType = ref<CustomImageTemplateType>("insight");
 const customImageStylePrompt = ref("");
 const editablePostContent = ref("");
@@ -269,6 +281,32 @@ const PROMO_VISUAL_LAYOUT_OPTIONS: Array<{ value: PromoVisualLayoutId; label: st
     label: "Headline only",
     description: "Minimal promo visual with centered copy and brand styling only.",
   },
+];
+const PROMO_GENERATION_MODE_OPTIONS: Array<{ value: "promo_visual" | "creative_composition"; label: string; description: string }> = [
+  {
+    value: "promo_visual",
+    label: "Quick promo visual",
+    description: "Fast branded still using logo/headline layouts.",
+  },
+  {
+    value: "creative_composition",
+    label: "Creative composition",
+    description: "Cinematic multi-layer campaign creative powered by Brand Studio.",
+  },
+];
+const PROMO_CREATIVE_TEMPLATE_OPTIONS: Array<{ value: CreativeCompositionTemplate; label: string }> = [
+  { value: "cinematic_saas", label: "Cinematic SaaS" },
+  { value: "dashboard_campaign", label: "Dashboard Campaign" },
+  { value: "layered_promo_scene", label: "Layered Promo Scene" },
+  { value: "social_ad_composition", label: "Social Ad Composition" },
+  { value: "premium_hero_artwork", label: "Premium Hero Artwork" },
+];
+const PROMO_CREATIVE_PRESET_OPTIONS: Array<{ value: CreativeCompositionPreset; label: string }> = [
+  { value: "balanced_story", label: "Balanced Story" },
+  { value: "product_focus", label: "Product Focus" },
+  { value: "analytics_focus", label: "Analytics Focus" },
+  { value: "cta_focus", label: "CTA Focus" },
+  { value: "device_showcase", label: "Device Showcase" },
 ];
 const CUSTOM_IMAGE_TEMPLATE_OPTIONS: Array<{
   value: CustomImageTemplateType;
@@ -5075,6 +5113,15 @@ function buildCustomStyledMediaFileName(stylePrompt: string): string {
   return `${base}-${styleSlug}.png`;
 }
 
+function buildCreativeCompositionMediaFileName(template: CreativeCompositionTemplate): string {
+  const base =
+    (draft.value?.result.idea.title || "generated-visual")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "generated-visual";
+  return `${base}-creative-${template.replace(/_/g, "-")}.png`;
+}
+
 function buildVisualAttachmentFeedback(
   successMessage: string,
   generatedVisual: GenerateVisualResponse,
@@ -5214,6 +5261,57 @@ async function createPromoVisualFromBrand(): Promise<void> {
 
     if (!persistedId) {
       mediaFeedback.value = "Save this draft first, then create a promo visual.";
+      return;
+    }
+
+    if (selectedPromoGenerationMode.value === "creative_composition") {
+      const creative = await requestGenerateBrandStudioAsset({
+        businessId: activeBusinessId.value,
+        assetType: "social_post",
+        goal: promoVisualHeadline.value,
+        context: promoVisualSubheadline.value,
+        extraInstructions: promoVisualCta.value ? `CTA emphasis: ${promoVisualCta.value}` : undefined,
+        generationMode: "creative_composition",
+        creativeComposition: {
+          template: selectedPromoCreativeTemplate.value,
+          campaignGoal: promoCreativeCampaignGoal.value.trim() || undefined,
+          scenePreset: selectedPromoCreativePreset.value,
+          brandAwareOverlays: promoCreativeBrandAwareOverlays.value,
+          uiStyleElements: promoCreativeUiStyleElements.value,
+          analyticsMockCards: promoCreativeAnalyticsMockCards.value,
+          deviceMockups: promoCreativeDeviceMockups.value,
+          ctaEmphasisBlocks: promoCreativeCtaEmphasisBlocks.value,
+        },
+      });
+
+      const blob = await fetch(creative.generation.asset.previewUrl).then(async (uploadResponse) => {
+        if (!uploadResponse.ok) {
+          throw new Error("Unable to convert the creative composition output into an uploadable file.");
+        }
+
+        return uploadResponse.blob();
+      });
+
+      const asset = await uploadGeneratedBlobToPost({
+        persistedId,
+        fileName: buildCreativeCompositionMediaFileName(selectedPromoCreativeTemplate.value),
+        mimeType: blob.type || "image/png",
+        blob,
+      });
+
+      await loadPostAssets();
+      await persistDraftMediaPreferences(
+        {
+          primaryAssetId: asset.id,
+          posterAssetId: asset.id,
+          promoVisualLayout: selectedPromoVisualLayout.value,
+        },
+        {
+          silent: true,
+        },
+      );
+
+      mediaFeedback.value = "Creative composition visual generated and attached to this draft.";
       return;
     }
 
@@ -8603,6 +8701,22 @@ onBeforeUnmount(() => {
                 </div>
                 <div class="motion-lite-actions">
                   <label class="media-style-select-wrap">
+                    <span class="panel-meta media-style-select-label">Generation mode</span>
+                    <select v-model="selectedPromoGenerationMode" class="media-style-select">
+                      <option
+                        v-for="option in PROMO_GENERATION_MODE_OPTIONS"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                    <small class="ai-command-copy media-style-select-help">
+                      {{ PROMO_GENERATION_MODE_OPTIONS.find((option) => option.value === selectedPromoGenerationMode)?.description }}
+                    </small>
+                  </label>
+
+                  <label class="media-style-select-wrap">
                     <span class="panel-meta media-style-select-label">Layout</span>
                     <select v-model="selectedPromoVisualLayout" class="media-style-select">
                       <option
@@ -8617,6 +8731,68 @@ onBeforeUnmount(() => {
                       {{ PROMO_VISUAL_LAYOUT_OPTIONS.find((option) => option.value === selectedPromoVisualLayout)?.description }}
                     </small>
                   </label>
+
+                  <template v-if="selectedPromoGenerationMode === 'creative_composition'">
+                    <label class="media-style-select-wrap">
+                      <span class="panel-meta media-style-select-label">Creative template</span>
+                      <select v-model="selectedPromoCreativeTemplate" class="media-style-select">
+                        <option
+                          v-for="option in PROMO_CREATIVE_TEMPLATE_OPTIONS"
+                          :key="option.value"
+                          :value="option.value"
+                        >
+                          {{ option.label }}
+                        </option>
+                      </select>
+                    </label>
+
+                    <label class="media-style-select-wrap">
+                      <span class="panel-meta media-style-select-label">Scene preset</span>
+                      <select v-model="selectedPromoCreativePreset" class="media-style-select">
+                        <option
+                          v-for="option in PROMO_CREATIVE_PRESET_OPTIONS"
+                          :key="option.value"
+                          :value="option.value"
+                        >
+                          {{ option.label }}
+                        </option>
+                      </select>
+                    </label>
+
+                    <label class="media-style-select-wrap">
+                      <span class="panel-meta media-style-select-label">Campaign goal</span>
+                      <input
+                        v-model="promoCreativeCampaignGoal"
+                        class="media-style-select"
+                        type="text"
+                        placeholder="Drive demo bookings from this post."
+                      />
+                    </label>
+
+                    <div class="media-toggle-grid">
+                      <label class="toggle">
+                        <input v-model="promoCreativeBrandAwareOverlays" type="checkbox" />
+                        <span>Brand overlays</span>
+                      </label>
+                      <label class="toggle">
+                        <input v-model="promoCreativeUiStyleElements" type="checkbox" />
+                        <span>UI elements</span>
+                      </label>
+                      <label class="toggle">
+                        <input v-model="promoCreativeAnalyticsMockCards" type="checkbox" />
+                        <span>Analytics cards</span>
+                      </label>
+                      <label class="toggle">
+                        <input v-model="promoCreativeDeviceMockups" type="checkbox" />
+                        <span>Device mockups</span>
+                      </label>
+                      <label class="toggle">
+                        <input v-model="promoCreativeCtaEmphasisBlocks" type="checkbox" />
+                        <span>CTA emphasis</span>
+                      </label>
+                    </div>
+                  </template>
+
                   <div v-if="promoVisualPreviewAsset?.previewUrl" class="motion-lite-preview-card">
                     <p class="panel-meta">Source preview</p>
                     <img
@@ -8634,7 +8810,13 @@ onBeforeUnmount(() => {
                     :disabled="isCreatingPromoVisual || isUploadingPostAssets || isPostAssetLimitReached"
                     @click="void createPromoVisualFromBrand()"
                   >
-                    {{ isCreatingPromoVisual ? "Creating..." : "Create promo visual" }}
+                    {{
+                      isCreatingPromoVisual
+                        ? "Creating..."
+                        : selectedPromoGenerationMode === "creative_composition"
+                          ? "Create creative composition"
+                          : "Create promo visual"
+                    }}
                   </button>
                 </div>
               </div>
@@ -11110,6 +11292,13 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   align-items: end;
   gap: 12px;
+}
+
+.media-toggle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px;
+  min-width: min(100%, 360px);
 }
 
 .media-custom-panel {
