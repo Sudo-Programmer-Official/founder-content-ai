@@ -287,7 +287,7 @@ watch(
     <HistorySkeleton v-if="isLoading" />
 
     <div v-else class="history-layout">
-      <aside class="history-list-card">
+      <section class="history-list-card">
         <div class="history-list-header">
           <div>
             <p class="history-eyebrow">Attempts</p>
@@ -300,38 +300,40 @@ watch(
           <p>Once you publish or schedule content, the ledger will show each action and platform result here.</p>
         </div>
 
-        <button
-          v-for="attempt in publishAttempts"
-          :key="attempt.id"
-          type="button"
-          class="history-list-row"
-          :data-active="attempt.id === selectedAttemptId"
-          @click="selectAttempt(attempt.id)"
-        >
-          <div class="history-list-row-top">
-            <span class="history-source-chip">{{ resolveAttemptSourceLabel(attempt.sourceKind) }}</span>
-            <span class="history-status-chip" :data-tone="resolveAttemptStatusTone(attempt.status)">
-              {{ resolveAttemptStatusLabel(attempt.status) }}
-            </span>
-          </div>
+        <div v-else class="history-list-grid">
+          <button
+            v-for="attempt in publishAttempts"
+            :key="attempt.id"
+            type="button"
+            class="history-list-row"
+            :data-active="attempt.id === selectedAttemptId"
+            @click="selectAttempt(attempt.id)"
+          >
+            <div class="history-list-row-top">
+              <span class="history-source-chip">{{ resolveAttemptSourceLabel(attempt.sourceKind) }}</span>
+              <span class="history-status-chip" :data-tone="resolveAttemptStatusTone(attempt.status)">
+                {{ resolveAttemptStatusLabel(attempt.status) }}
+              </span>
+            </div>
 
-          <strong>{{ attempt.title || "Publish attempt" }}</strong>
-          <p>{{ formatExcerpt(attempt.contentText) }}</p>
+            <strong>{{ attempt.title || "Publish attempt" }}</strong>
+            <p>{{ formatExcerpt(attempt.contentText) }}</p>
 
-          <div class="history-platform-chip-row">
-            <span
-              v-for="platform in attempt.platforms"
-              :key="`${attempt.id}-${platform.platform}`"
-              class="history-platform-chip"
-              :data-status="platform.status"
-            >
-              {{ resolveSocialPlatformLabel(platform.platform) }} · {{ resolvePlatformStatusLabel(platform) }}
-            </span>
-          </div>
+            <div class="history-platform-chip-row">
+              <span
+                v-for="platform in attempt.platforms"
+                :key="`${attempt.id}-${platform.platform}`"
+                class="history-platform-chip"
+                :data-status="platform.status"
+              >
+                {{ resolveSocialPlatformLabel(platform.platform) }} · {{ resolvePlatformStatusLabel(platform) }}
+              </span>
+            </div>
 
-          <span class="history-timestamp">{{ formatTimestamp(attempt.createdAt) }}</span>
-        </button>
-      </aside>
+            <span class="history-timestamp">{{ formatTimestamp(attempt.createdAt) }}</span>
+          </button>
+        </div>
+      </section>
 
       <section class="history-detail-card">
         <div v-if="!selectedAttempt" class="history-empty-state history-detail-empty">
@@ -477,7 +479,7 @@ watch(
 
 .history-layout {
   display: grid;
-  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  grid-template-columns: 1fr;
   gap: 1.25rem;
 }
 
@@ -492,8 +494,14 @@ watch(
 .history-list-card {
   display: grid;
   gap: 0.85rem;
-  padding: 1rem;
+  padding: 1.1rem;
   align-content: start;
+}
+
+.history-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.9rem;
 }
 
 .history-list-header {
@@ -506,6 +514,7 @@ watch(
   display: grid;
   gap: 0.7rem;
   width: 100%;
+  min-height: 230px;
   border: 1px solid rgba(184, 151, 122, 0.22);
   border-radius: 1.2rem;
   padding: 1rem;
@@ -657,14 +666,17 @@ watch(
 
 @media (max-width: 960px) {
   .history-header,
-  .history-detail-header,
-  .history-layout {
+  .history-detail-header {
     grid-template-columns: 1fr;
     display: grid;
   }
 
   .history-retry-button {
     width: 100%;
+  }
+
+  .history-list-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>
