@@ -27,6 +27,10 @@ const isLoadingDetail = ref(false);
 const isRetrying = ref(false);
 const errorMessage = ref("");
 const feedbackMessage = ref("");
+const listViewMode = ref<"table" | "grid">("table");
+const currentPage = ref(1);
+const pageSize = ref(12);
+const PAGE_SIZE_OPTIONS = [12, 24, 48] as const;
 
 const resolvedBusinessId = computed(() => activeBusinessId.value || "");
 const selectedAttempt = computed<PublishAttempt | null>(() => {
@@ -45,6 +49,22 @@ const canRetryFailedPlatforms = computed(() =>
   && selectedFailedPlatforms.value.length > 0
   && !isRetrying.value,
 );
+const totalPages = computed(() =>
+  Math.max(1, Math.ceil(publishAttempts.value.length / pageSize.value)),
+);
+const paginatedAttempts = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  return publishAttempts.value.slice(start, start + pageSize.value);
+});
+const paginationSummary = computed(() => {
+  if (publishAttempts.value.length === 0) {
+    return "Showing 0 of 0";
+  }
+
+  const start = (currentPage.value - 1) * pageSize.value + 1;
+  const end = Math.min(currentPage.value * pageSize.value, publishAttempts.value.length);
+  return `Showing ${start}-${end} of ${publishAttempts.value.length}`;
+});
 
 function formatTimestamp(value: string | undefined): string {
   if (!value) {
@@ -123,6 +143,10 @@ function resolvePlatformStatusLabel(platform: PublishAttemptPlatform): string {
   return "Processing";
 }
 
+function countFailedPlatforms(platforms: PublishAttemptPlatform[]): number {
+  return platforms.filter((platform) => platform.status === "failed").length;
+}
+
 function selectAttempt(attemptId: string): void {
   selectedAttemptId.value = attemptId;
   selectedAttemptDetail.value = null;
@@ -133,6 +157,14 @@ function selectAttempt(attemptId: string): void {
       attempt: attemptId,
     },
   });
+}
+
+function goToPreviousPage(): void {
+  currentPage.value = Math.max(1, currentPage.value - 1);
+}
+
+function goToNextPage(): void {
+  currentPage.value = Math.min(totalPages.value, currentPage.value + 1);
 }
 
 function toFriendlyErrorMessage(error: unknown, fallback: string): string {
@@ -257,6 +289,15 @@ watch(
   },
   { immediate: true },
 );
+
+watch(
+  () => [publishAttempts.value.length, pageSize.value] as const,
+  () => {
+    if (currentPage.value > totalPages.value) {
+      currentPage.value = totalPages.value;
+    }
+  },
+);
 </script>
 
 <template>
@@ -293,6 +334,21 @@ watch(
             <p class="history-eyebrow">Attempts</p>
             <strong>{{ publishAttempts.length }} total</strong>
           </div>
+          <div class="history-list-controls">
+            <label class="history-control-field">
+              <span>View</span>
+              <select v-model="listViewMode">
+                <option value="table">Table</option>
+                <option value="grid">Grid</option>
+              </select>
+            </label>
+            <label class="history-control-field">
+              <span>Rows</span>
+              <select v-model.number="pageSize">
+                <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }}</option>
+              </select>
+            </label>
+          </div>
         </div>
 
         <div v-if="publishAttempts.length === 0" class="history-empty-state">
@@ -300,9 +356,9 @@ watch(
           <p>Once you publish or schedule content, the ledger will show each action and platform result here.</p>
         </div>
 
-        <div v-else class="history-list-grid">
+        <div v-else-if="listViewMode === 'grid'" class="history-list-grid">
           <button
-            v-for="attempt in publishAttempts"
+            v-for="attempt in paginatedAttempts"
             :key="attempt.id"
             type="button"
             class="history-list-row"
@@ -332,6 +388,60 @@ watch(
 
             <span class="history-timestamp">{{ formatTimestamp(attempt.createdAt) }}</span>
           </button>
+        </div>
+
+        <div v-else class="history-table-wrap">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Source</th>
+                <th>Status</th>
+                <th>Platforms</th>
+                <th>Title</th>
+                <th>Failures</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="attempt in paginatedAttempts"
+                :key="attempt.id"
+                :data-active="attempt.id === selectedAttemptId"
+                @click="selectAttempt(attempt.id)"
+              >
+                <td>{{ formatTimestamp(attempt.createdAt) }}</td>
+                <td>
+                  <span class="history-source-chip">{{ resolveAttemptSourceLabel(attempt.sourceKind) }}</span>
+                </td>
+                <td>
+                  <span class="history-status-chip" :data-tone="resolveAttemptStatusTone(attempt.status)">
+                    {{ resolveAttemptStatusLabel(attempt.status) }}
+                  </span>
+                </td>
+                <td>{{ attempt.platforms.map((platform) => resolveSocialPlatformLabel(platform.platform)).join(", ") }}</td>
+                <td>{{ attempt.title || "Publish attempt" }}</td>
+                <td>{{ countFailedPlatforms(attempt.platforms) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="publishAttempts.length > 0" class="history-pagination">
+          <span class="history-pagination-summary">{{ paginationSummary }}</span>
+          <div class="history-pagination-actions">
+            <button type="button" class="history-page-button" :disabled="currentPage === 1" @click="goToPreviousPage">
+              Previous
+            </button>
+            <span class="history-page-index">Page {{ currentPage }} / {{ totalPages }}</span>
+            <button
+              type="button"
+              class="history-page-button"
+              :disabled="currentPage === totalPages"
+              @click="goToNextPage"
+            >
+              Next
+            </button>
+          </div>
         </div>
       </section>
 
@@ -508,6 +618,103 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.8rem;
+}
+
+.history-list-controls {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.history-control-field {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: rgba(78, 45, 20, 0.72);
+}
+
+.history-control-field select {
+  min-height: 36px;
+  border: 1px solid rgba(184, 151, 122, 0.3);
+  border-radius: 0.65rem;
+  background: #fff;
+  color: #2a211b;
+  padding: 0 0.55rem;
+}
+
+.history-table-wrap {
+  overflow: auto;
+  border: 1px solid rgba(184, 151, 122, 0.2);
+  border-radius: 1rem;
+  background: #fff;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.history-table th,
+.history-table td {
+  padding: 0.72rem 0.75rem;
+  border-bottom: 1px solid rgba(184, 151, 122, 0.16);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.history-table th {
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(78, 45, 20, 0.68);
+  background: rgba(255, 250, 245, 0.92);
+}
+
+.history-table tbody tr {
+  cursor: pointer;
+}
+
+.history-table tbody tr:hover,
+.history-table tbody tr[data-active="true"] {
+  background: rgba(255, 106, 61, 0.07);
+}
+
+.history-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.history-pagination-summary,
+.history-page-index {
+  color: rgba(78, 45, 20, 0.68);
+  font-size: 0.84rem;
+}
+
+.history-pagination-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.history-page-button {
+  min-height: 36px;
+  border: 1px solid rgba(184, 151, 122, 0.32);
+  border-radius: 0.7rem;
+  padding: 0 0.8rem;
+  background: #fff;
+  color: #2a211b;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.history-page-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .history-list-row {
@@ -677,6 +884,10 @@ watch(
 
   .history-list-grid {
     grid-template-columns: 1fr;
+  }
+
+  .history-pagination {
+    align-items: stretch;
   }
 }
 </style>
