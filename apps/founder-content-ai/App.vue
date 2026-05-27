@@ -73,6 +73,7 @@ const visibleAppLinks = computed(() => {
     { to: appRoutes.appAssets, label: "Assets", shortLabel: "AS", visible: canUseDashboard },
     { to: appRoutes.appBrandStudio, label: "Brand", shortLabel: "B", visible: canUseBrandStudio },
     { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", visible: canUsePlanner },
+    { to: appRoutes.appAutomationStudio, label: "Automation", shortLabel: "AU", visible: canUsePlanner },
     { to: appRoutes.appHistory, label: "History", shortLabel: "H", visible: canUsePlanner },
     { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
     { to: appRoutes.appOutreach, label: "Outreach", shortLabel: "O", visible: canUseOutreach },
@@ -82,6 +83,18 @@ const visibleAppLinks = computed(() => {
     { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", visible: true },
     { to: appRoutes.admin, label: "Admin", shortLabel: "AD", visible: canAccessAdmin.value },
   ].filter((link) => link.visible);
+});
+
+const mobileDockLinks = computed(() => {
+  const findLink = (to: string) => visibleAppLinks.value.find((link) => link.to === to) ?? null;
+
+  return [
+    findLink(appRoutes.appIdeas),
+    { to: appRoutes.appGenerate, label: "Create", shortLabel: "C" },
+    findLink(appRoutes.appPlanner),
+    findLink(appRoutes.appEmail),
+    findLink(appRoutes.settingsPreferences),
+  ].filter((link): link is { to: string; label: string; shortLabel: string } => Boolean(link));
 });
 
 const pageTitleMap: Record<string, string> = {
@@ -94,6 +107,7 @@ const pageTitleMap: Record<string, string> = {
   "admin-workspaces": "Admin workspaces",
   "app-dashboard": "Dashboard",
   "app-assets": "Assets",
+  "app-automation-studio": "Automation Studio",
   "app-blog": "Blog publishing",
   "app-billing": "Billing",
   "app-brand-studio": "Brand Studio",
@@ -139,6 +153,10 @@ const currentPageSubtitle = computed(() => {
 
   if (route.name === "app-planner") {
     return "See the week, fill the gaps, and move saved drafts into real execution slots.";
+  }
+
+  if (route.name === "app-automation-studio") {
+    return "Run goal-driven campaign orchestration and feed approved output into planner.";
   }
 
   if (route.name === "app-history") {
@@ -682,6 +700,18 @@ async function goToAdmin(): Promise<void> {
         <div class="app-content">
           <router-view />
         </div>
+
+        <nav class="mobile-bottom-dock" aria-label="Primary app navigation">
+          <router-link
+            v-for="link in mobileDockLinks"
+            :key="`dock-${link.to}`"
+            :to="link.to"
+            class="mobile-bottom-dock-link"
+          >
+            <span>{{ link.shortLabel }}</span>
+            <small>{{ link.label }}</small>
+          </router-link>
+        </nav>
       </div>
     </template>
   </div>
@@ -1282,6 +1312,10 @@ async function goToAdmin(): Promise<void> {
   width: 100%;
 }
 
+.mobile-bottom-dock {
+  display: none;
+}
+
 .mobile-menu-button {
   display: none;
   flex-direction: column;
@@ -1534,7 +1568,49 @@ async function goToAdmin(): Promise<void> {
   }
 
   .app-content {
-    padding: 22px 16px 32px;
+    padding: 22px 16px 92px;
+  }
+
+  .mobile-bottom-dock {
+    position: sticky;
+    bottom: 0;
+    z-index: 25;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--fc-border);
+    background: color-mix(in srgb, var(--fc-header-bg) 88%, white 12%);
+    backdrop-filter: blur(12px);
+  }
+
+  .mobile-bottom-dock-link {
+    display: grid;
+    justify-items: center;
+    gap: 2px;
+    text-decoration: none;
+    color: var(--fc-text-muted);
+    border: 1px solid color-mix(in srgb, var(--fc-border) 72%, white 28%);
+    border-radius: 12px;
+    padding: 7px 4px;
+    background: color-mix(in srgb, var(--fc-panel-bg) 78%, white 22%);
+  }
+
+  .mobile-bottom-dock-link span {
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+
+  .mobile-bottom-dock-link small {
+    font-size: 0.64rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .mobile-bottom-dock-link.router-link-active {
+    color: var(--fc-text);
+    border-color: color-mix(in srgb, var(--fc-accent) 32%, var(--fc-border));
   }
 }
 

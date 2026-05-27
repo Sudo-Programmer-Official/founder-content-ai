@@ -892,55 +892,61 @@ watch(
       <p class="billing-panel-copy">
         Core workspace plans control generations, queue depth, and how much publishing headroom this workspace has.
       </p>
+      <details class="billing-advanced-details" :open="!paidWorkspace || showPromotionCodeField">
+        <summary>
+          <span>Workspace plan details</span>
+          <small>Compare plan limits, highlights, and checkout options</small>
+        </summary>
 
-      <label v-if="showPromotionCodeField" class="billing-promo-field">
-        <span class="billing-card-label">Promotion code</span>
-        <input
-          v-model="promotionCode"
-          type="text"
-          autocomplete="off"
-          placeholder="Enter Stripe promotion code"
-        />
-        <small>Applied at Stripe checkout. Leave blank to continue without a discount.</small>
-      </label>
+        <label v-if="showPromotionCodeField" class="billing-promo-field">
+          <span class="billing-card-label">Promotion code</span>
+          <input
+            v-model="promotionCode"
+            type="text"
+            autocomplete="off"
+            placeholder="Enter Stripe promotion code"
+          />
+          <small>Applied at Stripe checkout. Leave blank to continue without a discount.</small>
+        </label>
 
-      <div class="billing-plan-list core-plans">
-        <article
-          v-for="plan in planCards"
-          :key="plan.planCode"
-          class="billing-plan-card"
-          :class="{ current: plan.current, featured: isFeaturedCorePlan(plan) }"
-        >
-          <div class="billing-plan-head">
-            <div>
-              <p class="billing-card-label">{{ plan.label }}</p>
-              <strong>{{ plan.priceDisplay }}</strong>
-            </div>
-            <span v-if="plan.current" class="billing-current-badge">Current</span>
-            <span v-else-if="isFeaturedCorePlan(plan)" class="billing-current-badge featured">Recommended</span>
-          </div>
-
-          <p class="billing-plan-description">{{ plan.description }}</p>
-
-          <ul class="billing-highlight-list">
-            <li v-for="highlight in plan.highlights" :key="highlight">{{ highlight }}</li>
-          </ul>
-
-          <button
-            type="button"
-            class="billing-plan-button"
-            :class="{ secondary: plan.current || (paidWorkspace && !plan.current) }"
-            :disabled="planActionDisabled(plan) || activePlanAction === plan.planCode"
-            @click="void handlePlanAction(plan)"
+        <div class="billing-plan-list core-plans">
+          <article
+            v-for="plan in planCards"
+            :key="plan.planCode"
+            class="billing-plan-card"
+            :class="{ current: plan.current, featured: isFeaturedCorePlan(plan) }"
           >
-            {{
-              activePlanAction === plan.planCode
-                ? "Redirecting..."
-                : getPlanActionLabel(plan)
-            }}
-          </button>
-        </article>
-      </div>
+            <div class="billing-plan-head">
+              <div>
+                <p class="billing-card-label">{{ plan.label }}</p>
+                <strong>{{ plan.priceDisplay }}</strong>
+              </div>
+              <span v-if="plan.current" class="billing-current-badge">Current</span>
+              <span v-else-if="isFeaturedCorePlan(plan)" class="billing-current-badge featured">Recommended</span>
+            </div>
+
+            <p class="billing-plan-description">{{ plan.description }}</p>
+
+            <ul class="billing-highlight-list">
+              <li v-for="highlight in plan.highlights" :key="highlight">{{ highlight }}</li>
+            </ul>
+
+            <button
+              type="button"
+              class="billing-plan-button"
+              :class="{ secondary: plan.current || (paidWorkspace && !plan.current) }"
+              :disabled="planActionDisabled(plan) || activePlanAction === plan.planCode"
+              @click="void handlePlanAction(plan)"
+            >
+              {{
+                activePlanAction === plan.planCode
+                  ? "Redirecting..."
+                  : getPlanActionLabel(plan)
+              }}
+            </button>
+          </article>
+        </div>
+      </details>
     </section>
 
     <section class="billing-panel">
@@ -961,6 +967,12 @@ watch(
       <p class="billing-panel-copy">
         Email billing follows active mailable contacts and actual recipients sent in the current billing period. Daily email limits remain a background abuse guard.
       </p>
+
+      <details class="billing-advanced-details" :open="emailAddon?.usageState === 'over_limit' || emailAddon?.usageState === 'warning'">
+        <summary>
+          <span>Email add-on details</span>
+          <small>Inspect usage meters, configuration state, and plan options</small>
+        </summary>
 
       <div v-if="emailAddon" class="billing-email-top-grid">
         <article class="billing-email-summary-card" :class="`state-${emailAddon.usageState}`">
@@ -1083,6 +1095,7 @@ watch(
           </button>
         </article>
       </div>
+      </details>
     </section>
   </main>
 </template>
@@ -1154,6 +1167,32 @@ watch(
   display: grid;
   gap: 20px;
   padding: clamp(22px, 3vw, 30px);
+}
+
+.billing-advanced-details {
+  border: 1px solid color-mix(in srgb, var(--fc-border) 80%, white 20%);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px 12px 14px;
+}
+
+.billing-advanced-details summary {
+  display: grid;
+  gap: 3px;
+  cursor: pointer;
+}
+
+.billing-advanced-details summary span {
+  font-weight: 700;
+  color: var(--fc-text);
+}
+
+.billing-advanced-details summary small {
+  color: var(--fc-text-muted);
+}
+
+.billing-advanced-details[open] summary {
+  margin-bottom: 12px;
 }
 
 .billing-current-plan-card,

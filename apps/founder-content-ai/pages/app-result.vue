@@ -7375,6 +7375,11 @@ onBeforeUnmount(() => {
           Saved as a draft in this workspace. Improve it, send it, or publish it without creating a
           duplicate post.
         </p>
+        <div class="result-step-rail" aria-label="Post flow">
+          <span class="workspace-chip">1. Create content</span>
+          <span class="workspace-chip">2. Review</span>
+          <span class="workspace-chip" data-tone="success">3. Publish or schedule</span>
+        </div>
       </section>
 
       <section class="result-operator-panel">
@@ -9418,14 +9423,19 @@ onBeforeUnmount(() => {
                 >
                   {{ primaryScheduleActionLabel }}
                 </button>
-
-                <button type="button" class="secondary-action" @click="goToEmail">
-                  Convert to Email
-                </button>
-                <button type="button" class="secondary-action" @click="goToOutreach">
-                  Send via Outreach
-                </button>
               </div>
+
+              <details class="inline-advanced-actions">
+                <summary>Advanced routes</summary>
+                <div class="inline-advanced-actions-row">
+                  <button type="button" class="secondary-action" @click="goToEmail">
+                    Convert to Email
+                  </button>
+                  <button type="button" class="secondary-action" @click="goToOutreach">
+                    Send via Outreach
+                  </button>
+                </div>
+              </details>
 
               <p
                 v-if="feedbackMessage && feedbackTone === 'warning'"
@@ -9601,6 +9611,13 @@ onBeforeUnmount(() => {
   background: color-mix(in srgb, var(--fc-accent-soft) 72%, white 28%);
   color: var(--fc-text-muted);
   font-size: 0.95rem;
+}
+
+.result-step-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .result-eyebrow,
@@ -9918,6 +9935,33 @@ onBeforeUnmount(() => {
 
 .result-primary-actions-compact {
   margin-top: 18px;
+}
+
+.inline-advanced-actions {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--fc-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.inline-advanced-actions summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--fc-text-muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.inline-advanced-actions summary::-webkit-details-marker {
+  display: none;
+}
+
+.inline-advanced-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
 }
 
 .result-editor-stat-row,

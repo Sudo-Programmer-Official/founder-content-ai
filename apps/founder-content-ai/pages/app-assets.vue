@@ -60,6 +60,7 @@ const resolutionContentType = ref<MediaRecommendationContentType>("post");
 const resolutionGoal = ref<MediaRecommendationGoal>("authority");
 const hasUploadedAssetsMode = ref<"auto" | "yes" | "no">("auto");
 const presetTemplateSelections = ref<Record<string, string>>({});
+const showAdvancedMediaControls = ref(false);
 
 const BUSINESS_TYPE_OPTIONS: Array<{ value: BusinessMediaProfileType; label: string }> = [
   { value: "general", label: "General" },
@@ -692,7 +693,18 @@ watch(
       </div>
     </section>
 
-    <section v-if="mediaProfile" class="workspace-card media-intelligence-panel">
+    <section v-if="mediaProfile" class="workspace-card media-controls-summary">
+      <div>
+        <p class="page-eyebrow">Advanced controls</p>
+        <h2>Media intelligence and preset overrides</h2>
+        <p>Use this when tuning recommendation behavior or running deeper visual diagnostics.</p>
+      </div>
+      <button type="button" class="asset-link media-controls-toggle" @click="showAdvancedMediaControls = !showAdvancedMediaControls">
+        {{ showAdvancedMediaControls ? "Hide advanced controls" : "Show advanced controls" }}
+      </button>
+    </section>
+
+    <section v-if="mediaProfile && showAdvancedMediaControls" class="workspace-card media-intelligence-panel">
       <div class="media-panel-copy">
         <div>
           <p class="page-eyebrow">Media intelligence</p>
@@ -770,7 +782,7 @@ watch(
       <p v-if="mediaIntelligenceFeedback" class="assets-feedback">{{ mediaIntelligenceFeedback }}</p>
     </section>
 
-    <section v-if="mediaProfile" class="workspace-card media-resolution-panel">
+    <section v-if="mediaProfile && showAdvancedMediaControls" class="workspace-card media-resolution-panel">
       <div class="panel-header">
         <div>
           <p class="page-eyebrow">Resolution preview</p>
@@ -921,7 +933,7 @@ watch(
       </div>
     </section>
 
-    <section v-if="mediaPresets.length > 0" class="workspace-card media-preset-panel">
+    <section v-if="mediaPresets.length > 0 && showAdvancedMediaControls" class="workspace-card media-preset-panel">
       <div class="panel-header">
         <div>
           <p class="page-eyebrow">Preset overrides</p>
@@ -1106,6 +1118,7 @@ watch(
 
 .assets-header h1,
 .brand-kit-summary h2,
+.media-controls-summary h2,
 .media-intelligence-panel h2,
 .media-preset-panel h2 {
   margin: 0;
@@ -1114,6 +1127,7 @@ watch(
 
 .assets-header p,
 .brand-kit-summary p,
+.media-controls-summary p,
 .media-intelligence-panel p,
 .media-preset-panel p {
   margin: 0.5rem 0 0;
@@ -1213,6 +1227,22 @@ watch(
 .media-preset-panel {
   display: grid;
   gap: 1.25rem;
+}
+
+.media-controls-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.media-controls-toggle {
+  border: 1px solid rgba(214, 136, 64, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(83, 52, 36, 0.86);
+  font-weight: 700;
+  padding: 0.65rem 1rem;
 }
 
 .media-panel-copy,
@@ -1574,6 +1604,7 @@ watch(
 @media (max-width: 900px) {
   .assets-header,
   .assets-toolbar,
+  .media-controls-summary,
   .media-panel-copy,
   .panel-header,
   .media-panel-actions {

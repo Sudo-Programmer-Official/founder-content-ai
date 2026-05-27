@@ -195,6 +195,7 @@ const isLoadingBrandSources = ref(false);
 const isSavingBrandSources = ref(false);
 const brandSourcesFeedback = ref("");
 const brandSourcesError = ref("");
+const showAdvancedSettings = ref(false);
 const brandSourceWarnings = ref<string[]>([]);
 const workspaceKnowledgeProfile = ref<WorkspaceKnowledgeProfile | null>(null);
 const workspaceKnowledgeSources = ref<WorkspaceKnowledgeSource[]>([]);
@@ -1887,7 +1888,20 @@ watch(
       </div>
     </section>
 
-    <section class="dashboard-panel channels-panel">
+    <section class="dashboard-panel settings-advanced-toggle-panel">
+      <div>
+        <p class="panel-meta">Advanced setup</p>
+        <h2>Show or hide deeper workspace configuration.</h2>
+        <p class="dashboard-description">
+          Keep account and core interface controls visible. Expand advanced brand, channel, and knowledge setup only when needed.
+        </p>
+      </div>
+      <button type="button" class="dashboard-button secondary" @click="showAdvancedSettings = !showAdvancedSettings">
+        {{ showAdvancedSettings ? "Hide advanced setup" : "Show advanced setup" }}
+      </button>
+    </section>
+
+    <section v-if="showAdvancedSettings" class="dashboard-panel channels-panel">
       <div class="channels-panel-header">
         <div>
           <p class="panel-meta">Workspace Channels</p>
@@ -2046,7 +2060,7 @@ watch(
       />
     </section>
 
-    <section class="dashboard-panel brand-theme-panel">
+    <section v-if="showAdvancedSettings" class="dashboard-panel brand-theme-panel">
       <div class="brand-context-panel-header">
         <div>
           <p class="panel-meta">Brand Theme</p>
@@ -2269,7 +2283,7 @@ watch(
       </div>
     </section>
 
-    <section class="dashboard-panel brand-sources-panel">
+    <section v-if="showAdvancedSettings" class="dashboard-panel brand-sources-panel">
       <div class="brand-context-panel-header">
         <div>
           <p class="panel-meta">Brand Sources</p>
@@ -2406,7 +2420,7 @@ watch(
       </div>
     </section>
 
-    <section class="dashboard-panel brand-context-panel">
+    <section v-if="showAdvancedSettings" class="dashboard-panel brand-context-panel">
       <div class="brand-context-panel-header">
         <div>
           <p class="panel-meta">Brand Context</p>
@@ -2772,7 +2786,7 @@ watch(
       </div>
     </section>
 
-    <section class="dashboard-panel workspace-knowledge-panel">
+    <section v-if="showAdvancedSettings" class="dashboard-panel workspace-knowledge-panel">
       <div class="brand-context-panel-header">
         <div>
           <p class="panel-meta">Workspace Knowledge</p>
@@ -2973,7 +2987,7 @@ watch(
       </div>
     </section>
 
-    <section class="dashboard-panel usage-panel">
+    <section v-if="showAdvancedSettings" class="dashboard-panel usage-panel">
       <div class="usage-panel-header">
         <div>
           <p class="panel-meta">Usage & Billing</p>
@@ -3000,7 +3014,7 @@ watch(
       </p>
     </section>
 
-    <section class="dashboard-panel preference-preview-panel">
+    <section v-if="showAdvancedSettings" class="dashboard-panel preference-preview-panel">
       <p class="panel-meta">Live Preview</p>
       <div class="dashboard-card-grid">
         <article class="dashboard-card">
@@ -3115,6 +3129,15 @@ watch(
 .notification-panel {
   display: grid;
   gap: 18px;
+  margin-top: 18px;
+}
+
+.settings-advanced-toggle-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
   margin-top: 18px;
 }
 

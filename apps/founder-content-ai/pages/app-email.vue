@@ -234,6 +234,22 @@ function buildContactAttributeSummary(attributes: EmailContactAttributes): strin
     .join(" · ");
 }
 
+function resolveContactDisplayName(contact: {
+  firstName?: string | null;
+  lastName?: string | null;
+}): string {
+  const fullName = [contact.firstName, contact.lastName]
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .filter((value) => value.length > 0)
+    .join(" ");
+
+  if (fullName) {
+    return fullName;
+  }
+
+  return "Added by you";
+}
+
 function buildDuplicateCampaignName(value: string): string {
   const normalized = value.trim();
   return normalized ? `${normalized} Copy` : "Campaign Copy";
@@ -1158,6 +1174,7 @@ const contactStatusFilter = ref<EmailContactStatus | "all">("all");
 const contactStateFilter = ref("all");
 const contactPlanFilter = ref("all");
 const contactTagFilter = ref("all");
+const showAdvancedContactFilters = ref(false);
 const contactDirectoryPage = ref(1);
 const contactDirectoryPageSize = ref(50);
 const isLoadingContactDirectory = ref(false);
@@ -5869,39 +5886,44 @@ Daycare Spots"
                       <div class="campaign-table-actions">
                         <button
                           type="button"
-                          class="secondary-action"
-                          :disabled="!canEditCampaign(campaign)"
-                          @click="editCampaign(campaign)"
-                        >
-                          Edit
-                        </button>
-                        <button type="button" class="secondary-action" @click="duplicateCampaign(campaign)">
-                          Duplicate
-                        </button>
-                        <button
-                          type="button"
-                          class="secondary-action"
-                          @click="void viewCampaignReport(campaign)"
-                        >
-                          Report
-                        </button>
-                        <button
-                          type="button"
-                          class="secondary-action"
-                          :disabled="!canDeleteCampaign(campaign) || deletingCampaignId === campaign.id"
-                          @click="void deleteCampaign(campaign)"
-                        >
-                          {{ deletingCampaignId === campaign.id ? "Deleting..." : "Delete" }}
-                        </button>
-                        <button
-                          type="button"
-                          class="secondary-action"
+                          class="primary-action compact-action"
                           :disabled="isSending || !hasConfiguredDomain || campaign.status === 'queued' || campaign.status === 'sending' || campaign.status === 'sent'"
                           :title="!hasConfiguredDomain ? 'Finish sender setup before sending.' : undefined"
                           @click="sendCampaign(campaign)"
                         >
                           {{ getCampaignActionLabel(campaign) }}
                         </button>
+                        <button
+                          type="button"
+                          class="secondary-action"
+                          :disabled="!canEditCampaign(campaign)"
+                          @click="editCampaign(campaign)"
+                        >
+                          Edit
+                        </button>
+                        <details class="campaign-row-more-actions">
+                          <summary>More</summary>
+                          <div class="campaign-row-more-menu">
+                            <button type="button" class="secondary-action" @click="duplicateCampaign(campaign)">
+                              Duplicate
+                            </button>
+                            <button
+                              type="button"
+                              class="secondary-action"
+                              @click="void viewCampaignReport(campaign)"
+                            >
+                              Report
+                            </button>
+                            <button
+                              type="button"
+                              class="secondary-action"
+                              :disabled="!canDeleteCampaign(campaign) || deletingCampaignId === campaign.id"
+                              @click="void deleteCampaign(campaign)"
+                            >
+                              {{ deletingCampaignId === campaign.id ? "Deleting..." : "Delete" }}
+                            </button>
+                          </div>
+                        </details>
                       </div>
                     </td>
                   </tr>
@@ -6187,7 +6209,7 @@ Daycare Spots"
                   class="contact-preview-row"
                 >
                   <span>{{ row.email || "—" }}</span>
-                  <span>{{ [row.firstName, row.lastName].filter(Boolean).join(" ") || "—" }}</span>
+                  <span>{{ resolveContactDisplayName(row) }}</span>
                   <span>{{ row.lists.join(", ") || contactImport.listName || "—" }}</span>
                   <span>{{ buildContactAttributeSummary(row.attributes) || "—" }}</span>
                   <span>{{ row.tags.join(", ") || "—" }}</span>
@@ -6339,10 +6361,6 @@ Daycare Spots"
                 class="workspace-input toolbar-input"
                 placeholder="Search contacts"
               />
-              <select v-model="contactListFilter" class="workspace-select toolbar-select">
-                <option value="all">All lists</option>
-                <option v-for="list in emailLists" :key="`list-${list.id}`" :value="list.id">{{ list.name }}</option>
-              </select>
               <select v-model="contactStatusFilter" class="workspace-select toolbar-select">
                 <option value="all">All statuses</option>
                 <option value="active">Active</option>
@@ -6350,6 +6368,20 @@ Daycare Spots"
                 <option value="bounced">Bounced</option>
                 <option value="complained">Complained</option>
                 <option value="suppressed">Suppressed</option>
+              </select>
+              <button
+                type="button"
+                class="workspace-secondary-button compact"
+                @click="showAdvancedContactFilters = !showAdvancedContactFilters"
+              >
+                {{ showAdvancedContactFilters ? "Hide advanced filters" : "Advanced filters" }}
+              </button>
+            </div>
+
+            <div v-if="showAdvancedContactFilters" class="contact-directory-advanced-filters">
+              <select v-model="contactListFilter" class="workspace-select toolbar-select">
+                <option value="all">All lists</option>
+                <option v-for="list in emailLists" :key="`list-${list.id}`" :value="list.id">{{ list.name }}</option>
               </select>
               <select v-model="contactStateFilter" class="workspace-select toolbar-select">
                 <option value="all">All states</option>
@@ -6386,7 +6418,7 @@ Daycare Spots"
                 class="contact-directory-row"
               >
                 <span>{{ contact.email }}</span>
-                <span>{{ [contact.firstName, contact.lastName].filter(Boolean).join(" ") || "—" }}</span>
+                <span>{{ resolveContactDisplayName(contact) }}</span>
                 <span>{{ formatStatus(contact.status) }}</span>
                 <span>{{ contact.attributes.state || "—" }}</span>
                 <span>{{ contact.attributes.plan || "—" }}</span>
@@ -7337,6 +7369,41 @@ Daycare Spots"
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.campaign-row-more-actions {
+  position: relative;
+}
+
+.campaign-row-more-actions summary {
+  list-style: none;
+  cursor: pointer;
+  border: 1px solid var(--fc-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 9px 14px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--fc-text);
+}
+
+.campaign-row-more-actions summary::-webkit-details-marker {
+  display: none;
+}
+
+.campaign-row-more-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 8;
+  display: grid;
+  gap: 8px;
+  min-width: 150px;
+  padding: 10px;
+  border: 1px solid var(--fc-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--fc-panel-bg) 90%, white 10%);
+  box-shadow: 0 12px 24px rgba(40, 24, 14, 0.14);
 }
 
 .campaign-flow-panel {
@@ -8360,6 +8427,12 @@ Daycare Spots"
 }
 
 .contact-directory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.contact-directory-advanced-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;

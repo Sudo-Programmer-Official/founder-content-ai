@@ -1936,29 +1936,38 @@ onBeforeUnmount(() => {
               </p>
             </article>
 
-            <article class="dashboard-panel capture-panel">
-              <div class="panel-header">
-                <div>
-                  <p class="panel-meta">Inbox queue</p>
-                  <h2>{{ ideaInboxItems.length === 0 ? "No saved captures yet" : `${ideaInboxItems.length} saved capture${ideaInboxItems.length === 1 ? "" : "s"}` }}</h2>
-                  <p class="dashboard-description">
-                    This is the staging lane between raw input and generated drafts.
+            <details class="capture-queue-disclosure">
+              <summary>
+                <span class="panel-meta">Inbox queue</span>
+                <strong>{{ ideaInboxItems.length === 0 ? "No saved captures yet" : `${ideaInboxItems.length} saved capture${ideaInboxItems.length === 1 ? "" : "s"}` }}</strong>
+                <p class="dashboard-description">
+                  Open to review captured ideas and convert the best one into a draft.
+                </p>
+              </summary>
+
+              <article class="dashboard-panel capture-panel">
+                <div class="panel-header">
+                  <div>
+                    <p class="panel-meta">Inbox queue</p>
+                    <h2>{{ ideaInboxItems.length === 0 ? "No saved captures yet" : `${ideaInboxItems.length} saved capture${ideaInboxItems.length === 1 ? "" : "s"}` }}</h2>
+                    <p class="dashboard-description">
+                      This is the staging lane between raw input and generated drafts.
+                    </p>
+                  </div>
+                </div>
+
+                <div v-if="ideaInboxItems.length === 0" class="pipeline-empty-state">
+                  <p class="pipeline-empty">
+                    Save one thought, screenshot, voice note, or link and it will show up here.
                   </p>
                 </div>
-              </div>
 
-              <div v-if="ideaInboxItems.length === 0" class="pipeline-empty-state">
-                <p class="pipeline-empty">
-                  Save one thought, screenshot, voice note, or link and it will show up here.
-                </p>
-              </div>
-
-              <div v-else class="idea-inbox-list">
-                <article
-                  v-for="idea in ideaInboxItems"
-                  :key="idea.id"
-                  class="idea-item refined-idea-item"
-                >
+                <div v-else class="idea-inbox-list">
+                  <article
+                    v-for="idea in ideaInboxItems"
+                    :key="idea.id"
+                    class="idea-item refined-idea-item"
+                  >
                   <div class="pipeline-item-header">
                     <div class="pipeline-badges">
                       <span class="status-tag accent">{{ formatIdeaInputLabel(idea.inputType) }}</span>
@@ -2027,19 +2036,20 @@ onBeforeUnmount(() => {
                     </p>
                   </div>
 
-                  <div class="action-row">
-                    <button
-                      type="button"
-                      class="dashboard-button secondary small-button"
-                      :disabled="convertingIdeaId === idea.id || !canCreateContent"
-                      @click="convertIdeaToDraft(idea)"
-                    >
-                      {{ convertingIdeaId === idea.id ? "Generating..." : "Generate draft" }}
-                    </button>
-                  </div>
-                </article>
-              </div>
-            </article>
+                    <div class="action-row">
+                      <button
+                        type="button"
+                        class="dashboard-button secondary small-button"
+                        :disabled="convertingIdeaId === idea.id || !canCreateContent"
+                        @click="convertIdeaToDraft(idea)"
+                      >
+                        {{ convertingIdeaId === idea.id ? "Generating..." : "Generate draft" }}
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              </article>
+            </details>
           </section>
 
           <div class="dashboard-main-grid dashboard-main-grid--control">
@@ -2673,6 +2683,35 @@ onBeforeUnmount(() => {
 .capture-panel {
   display: grid;
   gap: 18px;
+}
+
+.capture-queue-disclosure {
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-panel);
+  background: var(--fc-panel-bg);
+  box-shadow: var(--fc-panel-shadow);
+  padding: 10px;
+}
+
+.capture-queue-disclosure > summary {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+}
+
+.capture-queue-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.capture-queue-disclosure > summary strong {
+  color: var(--fc-text);
+  font-size: 1.15rem;
+}
+
+.capture-queue-disclosure > .capture-panel {
+  margin-top: 4px;
 }
 
 .capture-mode-row {

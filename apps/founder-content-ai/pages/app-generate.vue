@@ -692,6 +692,17 @@ const advancedComposerSummary = computed(() => {
 
   return "Quick mode keeps this focused on idea, intent, and generation. Open advanced controls when you want repurpose, format, style, or tone overrides.";
 });
+
+function handleAdvancedComposerToggle(event: Event): void {
+  const target = event.target;
+
+  if (!(target instanceof HTMLDetailsElement)) {
+    return;
+  }
+
+  showAdvancedComposerControls.value = target.open;
+}
+
 const activeStrategyOption = computed(() => getRepurposeStrategyOption(generationStrategy.value));
 const recommendedGenerationSuggestion = computed(
   () => generationSuggestions.value.find((suggestion) => suggestion.recommended) ?? generationSuggestions.value[0] ?? null,
@@ -2554,16 +2565,17 @@ onBeforeUnmount(() => {
           {{ isEditMode ? "Cmd/Ctrl + Enter to save" : "Cmd/Ctrl + Enter to generate" }}
         </span>
       </div>
-      <div v-if="!isEditMode" class="composer-toggle-row">
+      <details
+        v-if="!isEditMode"
+        class="advanced-controls-disclosure"
+        :open="showAdvancedComposerControls"
+        @toggle="handleAdvancedComposerToggle"
+      >
+        <summary>
+          {{ showAdvancedComposerControls ? "Advanced setup open" : "Open advanced setup" }}
+        </summary>
         <p class="activation-helper">{{ advancedComposerSummary }}</p>
-        <button
-          type="button"
-          class="secondary-action"
-          @click="showAdvancedComposerControls = !showAdvancedComposerControls"
-        >
-          {{ showAdvancedComposerControls ? "Hide advanced controls" : "Adjust strategy, tone, and channels" }}
-        </button>
-      </div>
+      </details>
       <div
         v-if="shouldShowAdvancedComposerControls"
         class="channel-context-panel"
@@ -3438,21 +3450,27 @@ onBeforeUnmount(() => {
   margin-top: 22px;
 }
 
-.composer-toggle-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 16px;
+.advanced-controls-disclosure {
   margin-top: 18px;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--fc-border) 88%, var(--fc-accent) 12%);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--fc-surface-subtle) 80%, var(--fc-surface));
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--fc-surface-subtle) 84%, var(--fc-surface));
 }
 
-.composer-toggle-row .activation-helper {
-  margin: 0;
+.advanced-controls-disclosure summary {
+  cursor: pointer;
+  list-style: none;
+  font-weight: 700;
+  color: var(--fc-text);
+}
+
+.advanced-controls-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-controls-disclosure .activation-helper {
+  margin: 10px 0 0;
 }
 
 .channel-context-panel {

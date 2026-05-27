@@ -47,6 +47,8 @@ const brandKit = ref<BrandKit | null>(null);
 const history = ref<BrandStudioGeneration[]>([]);
 const latestGeneration = ref<BrandStudioGeneration | null>(null);
 const isPromptExpanded = ref(false);
+const showTemplateExamples = ref(false);
+const showAdvancedBrandFields = ref(false);
 const iconSetSlices = ref<IconSetSlicePreview[]>([]);
 const recentBrandColors = ref<string[]>([]);
 const generatorDrafts = reactive<Partial<Record<BrandStudioAssetKind, GeneratorDraft>>>({});
@@ -1165,7 +1167,10 @@ watch(
       </div>
 
       <div class="template-strip">
-        <article v-for="template in templateCards" :key="template.label" class="template-card">
+        <button type="button" class="ghost-button" @click="showTemplateExamples = !showTemplateExamples">
+          {{ showTemplateExamples ? "Hide template examples" : "Show template examples" }}
+        </button>
+        <article v-for="template in showTemplateExamples ? templateCards : []" :key="template.label" class="template-card">
           <p class="template-label">{{ template.label }}</p>
           <p class="template-details">{{ template.details }}</p>
         </article>
@@ -1285,6 +1290,13 @@ watch(
             </select>
           </label>
 
+          <div class="field field-wide advanced-toggle-row">
+            <button type="button" class="ghost-button" @click="showAdvancedBrandFields = !showAdvancedBrandFields">
+              {{ showAdvancedBrandFields ? "Hide advanced brand settings" : "Show advanced brand settings" }}
+            </button>
+          </div>
+
+          <template v-if="showAdvancedBrandFields">
           <label class="field">
             <span>Tone keywords</span>
             <input
@@ -1376,6 +1388,7 @@ watch(
               placeholder="Use welcoming daycare environments, avoid clutter, and keep composition website-ready."
             />
           </label>
+          </template>
         </div>
 
         <section v-if="brandKit" class="saved-guidelines">
@@ -1795,6 +1808,11 @@ watch(
   gap: 0.9rem;
 }
 
+.advanced-toggle-row {
+  display: flex;
+  justify-content: flex-start;
+}
+
 .template-card,
 .studio-panel,
 .history-card,
@@ -2153,7 +2171,8 @@ watch(
 }
 
 .primary-button,
-.secondary-button {
+.secondary-button,
+.ghost-button {
   border: none;
   border-radius: 999px;
   padding: 0.78rem 1.1rem;
@@ -2171,6 +2190,12 @@ watch(
 .secondary-button {
   background: #eff6ff;
   color: #1d4ed8;
+}
+
+.ghost-button {
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: #fff;
+  color: #334155;
 }
 
 .secondary-button.compact {
