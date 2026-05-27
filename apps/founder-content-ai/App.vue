@@ -130,50 +130,6 @@ const currentPageTitle = computed(() => {
   return pageTitleMap[routeName] ?? "FounderContent AI";
 });
 
-const currentPageSubtitle = computed(() => {
-  if (route.path.startsWith("/admin")) {
-    return "Operate the workspace system without crowding the content surface.";
-  }
-
-  if (route.name === "app-growth") {
-    return "Capture leads, run the nurture flow, and see what the engine is doing.";
-  }
-
-  if (route.name === "app-ideas") {
-    return "Capture ideas, shape angles, and move the best ones into real posts.";
-  }
-
-  if (route.name === "app-assets") {
-    return "Keep reusable media, logos, and supporting files in one workspace library.";
-  }
-
-  if (route.name === "app-brand-studio") {
-    return "Turn the workspace brand kit into repeatable website, icon, and campaign assets.";
-  }
-
-  if (route.name === "app-planner") {
-    return "See the week, fill the gaps, and move saved drafts into real execution slots.";
-  }
-
-  if (route.name === "app-automation-studio") {
-    return "Run goal-driven campaign orchestration and feed approved output into planner.";
-  }
-
-  if (route.name === "app-history") {
-    return "Verify what shipped, recover failures, and keep the publishing loop trustworthy.";
-  }
-
-  if (route.name === "app-billing") {
-    return "Upgrade through Stripe, monitor usage, and keep plan enforcement visible.";
-  }
-
-  if (route.name === "app-blog") {
-    return "Publish workspace blogs and keep website visibility in sync.";
-  }
-
-  return "Keep navigation persistent, content focused, and actions obvious.";
-});
-
 const userLabel = computed(
   () =>
     auth.currentUser.value?.fullName ||
@@ -688,7 +644,6 @@ async function goToAdmin(): Promise<void> {
             </button>
             <div>
               <p class="workspace-header-kicker">{{ currentPageTitle }}</p>
-              <strong>{{ currentPageSubtitle }}</strong>
             </div>
           </div>
 
@@ -892,12 +847,13 @@ async function goToAdmin(): Promise<void> {
   margin-left: auto;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
 }
 
 .workspace-header-switcher {
-  flex: 1 1 320px;
-  max-width: 380px;
-  min-width: 220px;
+  flex: 0 0 auto;
+  width: min(100%, 360px);
+  min-width: 240px;
 }
 
 .header-controls.public-controls {
@@ -1556,11 +1512,13 @@ async function goToAdmin(): Promise<void> {
 
   .workspace-header-actions {
     gap: 10px;
+    width: 100%;
+    justify-content: stretch;
   }
 
   .workspace-header-switcher {
-    flex: 1 1 260px;
-    max-width: none;
+    width: 100%;
+    min-width: 0;
   }
 
   .mobile-menu-button {

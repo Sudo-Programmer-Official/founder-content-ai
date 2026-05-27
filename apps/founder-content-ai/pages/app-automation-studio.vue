@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, reactive, ref } from "vue";
 import { appRoutes } from "../utils/routes";
 
 type CampaignGoal = "bookings" | "awareness" | "leads" | "event" | "services" | "education";
@@ -95,6 +95,7 @@ const agentFeed = ref<string[]>([
 ]);
 
 const dayCards = ref<CampaignDayPreview[]>([]);
+let pipelineRunTimer: number | null = null;
 
 const selectedGoalMeta = computed(
   () => GOAL_OPTIONS.find((option) => option.value === automationForm.goal) ?? GOAL_OPTIONS[0],
@@ -144,23 +145,79 @@ function buildDayCards(): CampaignDayPreview[] {
 
 function startCampaignRun(): void {
   isRunning.value = true;
-  progressDone.value = 3;
-  progressTotal.value = 8;
+  progressDone.value = 0;
+  progressTotal.value = pipelineSteps.value.length;
 
   pipelineSteps.value = pipelineSteps.value.map((step, index) => ({
     ...step,
-    state: index < 3 ? "completed" : index === 3 ? "running" : "pending",
+    state: index === 0 ? "running" : "pending",
   }));
 
   agentFeed.value = [
     "Brand analysis complete.",
     `Goal locked: ${selectedGoalMeta.value.label}.`,
     `Platform plan ready: ${selectedPlatformsLabel.value}.`,
-    "Generating Day 1 strategy and hooks...",
+    "Starting sequential pipeline execution...",
   ];
 
   dayCards.value = buildDayCards();
+
+  if (pipelineRunTimer !== null && typeof window !== "undefined") {
+    window.clearInterval(pipelineRunTimer);
+  }
+
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  let currentStepIndex = 0;
+  pipelineRunTimer = window.setInterval(() => {
+    if (currentStepIndex >= pipelineSteps.value.length) {
+      if (pipelineRunTimer !== null) {
+        window.clearInterval(pipelineRunTimer);
+        pipelineRunTimer = null;
+      }
+      progressDone.value = pipelineSteps.value.length;
+      pipelineSteps.value = pipelineSteps.value.map((step) => ({ ...step, state: "completed" }));
+      isRunning.value = false;
+      agentFeed.value = [
+        ...agentFeed.value,
+        "Campaign pack ready. Review day cards and push approved items into planner.",
+      ];
+      return;
+    }
+
+    pipelineSteps.value = pipelineSteps.value.map((step, index) => {
+      if (index < currentStepIndex) {
+        return { ...step, state: "completed" };
+      }
+      if (index === currentStepIndex) {
+        return { ...step, state: "running" };
+      }
+      return { ...step, state: "pending" };
+    });
+
+    const runningStep = pipelineSteps.value[currentStepIndex];
+    agentFeed.value = [
+      ...agentFeed.value,
+      `Day batch: ${runningStep.label}...`,
+    ].slice(-8);
+
+    progressDone.value = currentStepIndex;
+    currentStepIndex += 1;
+
+    if (currentStepIndex > pipelineSteps.value.length) {
+      progressDone.value = pipelineSteps.value.length;
+    }
+  }, 1100);
 }
+
+onBeforeUnmount(() => {
+  if (pipelineRunTimer !== null && typeof window !== "undefined") {
+    window.clearInterval(pipelineRunTimer);
+    pipelineRunTimer = null;
+  }
+});
 </script>
 
 <template>
