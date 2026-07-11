@@ -22,6 +22,7 @@ import { meRoute } from "./src/routes/me.ts";
 import { mediaIntelligenceRoute } from "./src/routes/mediaIntelligence.ts";
 import { onboardingRoute } from "./src/routes/onboarding.ts";
 import { outreachAdminRoute, outreachRoute } from "./src/routes/outreach.ts";
+import { revenueAgentRoute } from "./src/routes/revenue-agent.ts";
 import { postAssetsRoute } from "./src/routes/postAssets.ts";
 import { publicBlogsRoute } from "./src/routes/publicBlogs.ts";
 import { publicMarketingRoute } from "./src/routes/publicMarketing.ts";
@@ -36,6 +37,7 @@ import { workspaceBlogsRoute } from "./src/routes/workspaceBlogs.ts";
 import { workspaceAssetsRoute } from "./src/routes/workspaceAssets.ts";
 import { workspaceInsightsRoute } from "./src/routes/workspaceInsights.ts";
 import { workspaceKnowledgeRoute } from "./src/routes/workspaceKnowledge.ts";
+import { googleCalendarRoute } from "./src/routes/googleCalendar.ts";
 import { sendApiError, toErrorContext } from "./src/utils/http.ts";
 import { logError, logInfo } from "./src/utils/logger.ts";
 
@@ -150,6 +152,7 @@ export function createServerApp(): Express {
   app.use(userPreferencesRoute);
   app.use(businessesRoute);
   app.use(socialAuthRoute);
+  app.use(googleCalendarRoute);
   app.use(scheduledPostsRoute);
   app.use(brandKitRoute);
   app.use(brandStudioRoute);
@@ -162,6 +165,7 @@ export function createServerApp(): Express {
   app.use(emailRoute);
   app.use(outreachAdminRoute);
   app.use(outreachRoute);
+  app.use(revenueAgentRoute);
   app.use(workspaceAnalyticsRoute);
   app.use(workspaceBlogsRoute);
   app.use(competitiveIntelligenceRoute);

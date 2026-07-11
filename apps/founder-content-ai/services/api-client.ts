@@ -118,15 +118,15 @@ function createRequestTimeout(timeoutMs: number | undefined): {
   };
 }
 
-async function requestJson<TResponse>(
+async function sendRequest(
   method: "GET" | "POST" | "PATCH" | "DELETE",
   endpoint: string,
   payload?: unknown,
   options?: ApiRequestOptions,
-): Promise<TResponse> {
+): Promise<Response> {
   const apiBaseUrl = resolveApiBaseUrl();
 
-  async function send(requestBaseUrl: string, allowAuthRetry: boolean): Promise<TResponse> {
+  async function send(requestBaseUrl: string, allowAuthRetry: boolean): Promise<Response> {
     const requestUrl = `${requestBaseUrl}${endpoint}`;
     let response: Response;
     const timeout = createRequestTimeout(options?.timeoutMs);
@@ -149,9 +149,6 @@ async function requestJson<TResponse>(
       timeout.cleanup();
     }
 
-    const responseText = await response.text();
-    const responseBody = parseJsonSafely<TResponse | ApiError>(responseText);
-
     if (!response.ok) {
       if (response.status === 401) {
         if (allowAuthRetry) {
@@ -162,35 +159,51 @@ async function requestJson<TResponse>(
           }
         }
       }
-
-      const message =
-        responseBody && typeof responseBody === "object" && "error" in responseBody
-          ? responseBody.error.message
-          : `Request failed with status ${response.status}.`;
-      const code =
-        responseBody && typeof responseBody === "object" && "error" in responseBody
-          ? responseBody.error.code
-          : undefined;
-      const details =
-        responseBody && typeof responseBody === "object" && "error" in responseBody
-          ? responseBody.error.details
-          : undefined;
-      throw new ApiRequestError({
-        message,
-        statusCode: response.status,
-        code,
-        details,
-      });
+      return response;
     }
 
-    if (!responseBody) {
-      throw new Error("API returned a non-JSON response.");
-    }
-
-    return responseBody as TResponse;
+    return response;
   }
 
   return send(apiBaseUrl, true);
+}
+
+async function requestJson<TResponse>(
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  endpoint: string,
+  payload?: unknown,
+  options?: ApiRequestOptions,
+): Promise<TResponse> {
+  const response = await sendRequest(method, endpoint, payload, options);
+  const responseText = await response.text();
+  const responseBody = parseJsonSafely<TResponse | ApiError>(responseText);
+
+  if (!response.ok) {
+    const message =
+      responseBody && typeof responseBody === "object" && "error" in responseBody
+        ? responseBody.error.message
+        : `Request failed with status ${response.status}.`;
+    const code =
+      responseBody && typeof responseBody === "object" && "error" in responseBody
+        ? responseBody.error.code
+        : undefined;
+    const details =
+      responseBody && typeof responseBody === "object" && "error" in responseBody
+        ? responseBody.error.details
+        : undefined;
+    throw new ApiRequestError({
+      message,
+      statusCode: response.status,
+      code,
+      details,
+    });
+  }
+
+  if (!responseBody) {
+    throw new Error("API returned a non-JSON response.");
+  }
+
+  return responseBody as TResponse;
 }
 
 export async function apiGet<TResponse>(
@@ -221,4 +234,36 @@ export async function apiDelete<TResponse>(
   options?: ApiRequestOptions,
 ): Promise<TResponse> {
   return requestJson<TResponse>("DELETE", endpoint, undefined, options);
+}
+
+export async function apiGetText(
+  endpoint: string,
+  options?: ApiRequestOptions,
+): Promise<string> {
+  const response = await sendRequest("GET", endpoint, undefined, options);
+  const responseText = await response.text();
+  const responseBody = parseJsonSafely<ApiError>(responseText);
+
+  if (!response.ok) {
+    const message =
+      responseBody && typeof responseBody === "object" && "error" in responseBody
+        ? responseBody.error.message
+        : `Request failed with status ${response.status}.`;
+    const code =
+      responseBody && typeof responseBody === "object" && "error" in responseBody
+        ? responseBody.error.code
+        : undefined;
+    const details =
+      responseBody && typeof responseBody === "object" && "error" in responseBody
+        ? responseBody.error.details
+        : undefined;
+    throw new ApiRequestError({
+      message,
+      statusCode: response.status,
+      code,
+      details,
+    });
+  }
+
+  return responseText;
 }

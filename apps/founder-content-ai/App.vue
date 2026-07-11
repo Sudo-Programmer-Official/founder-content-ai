@@ -58,32 +58,33 @@ const shouldHoldWorkspaceRoute = computed(
         !hasWorkspaceMemberships.value)),
 );
 
-const visibleAppLinks = computed(() => {
-  const hasWorkspaceContext = Boolean(currentWorkspaceId.value);
-  const canUsePlanner = hasWorkspaceContext && isFeatureEnabled("scheduler");
-  const canUseDashboard = hasWorkspaceContext && isFeatureEnabled("control_dashboard");
-  const canUseBrandStudio = hasWorkspaceContext && isFeatureEnabled("brand_intelligence");
-  const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
-  const canUseEmail = hasWorkspaceContext && isFeatureEnabled("email_campaigns");
-  const canUseBlogPublishing = hasWorkspaceContext && isFeatureEnabled("blog_publishing");
+  const visibleAppLinks = computed(() => {
+    const hasWorkspaceContext = Boolean(currentWorkspaceId.value);
+    const canUsePlanner = hasWorkspaceContext && isFeatureEnabled("scheduler");
+    const canUseDashboard = hasWorkspaceContext && isFeatureEnabled("control_dashboard");
+    const canUseBrandStudio = hasWorkspaceContext && isFeatureEnabled("brand_intelligence");
+    const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
+    const canUseEmail = hasWorkspaceContext && isFeatureEnabled("email_campaigns");
+    const canUseBlogPublishing = hasWorkspaceContext && isFeatureEnabled("blog_publishing");
 
-  return [
-    { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
-    { to: appRoutes.appIdeas, label: "Ideas", shortLabel: "I", visible: canUseDashboard },
-    { to: appRoutes.appAssets, label: "Assets", shortLabel: "AS", visible: canUseDashboard },
-    { to: appRoutes.appBrandStudio, label: "Brand", shortLabel: "B", visible: canUseBrandStudio },
-    { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", visible: canUsePlanner },
-    { to: appRoutes.appAutomationStudio, label: "Automation", shortLabel: "AU", visible: canUsePlanner },
-    { to: appRoutes.appHistory, label: "History", shortLabel: "H", visible: canUsePlanner },
-    { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
-    { to: appRoutes.appOutreach, label: "Outreach", shortLabel: "O", visible: canUseOutreach },
-    { to: appRoutes.appEmail, label: "Email", shortLabel: "E", visible: canUseEmail },
-    { to: appRoutes.appBlog, label: "Blog", shortLabel: "BL", visible: canUseBlogPublishing },
-    { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", visible: canUseDashboard },
-    { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", visible: true },
-    { to: appRoutes.admin, label: "Admin", shortLabel: "AD", visible: canAccessAdmin.value },
-  ].filter((link) => link.visible);
-});
+    return [
+      { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
+      { to: appRoutes.appIdeas, label: "Ideas", shortLabel: "I", visible: canUseDashboard },
+      { to: appRoutes.appAssets, label: "Assets", shortLabel: "AS", visible: canUseDashboard },
+      { to: appRoutes.appBrandStudio, label: "Brand", shortLabel: "B", visible: canUseBrandStudio },
+      { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", visible: canUsePlanner },
+      { to: appRoutes.appAutomationStudio, label: "Automation", shortLabel: "AU", visible: canUsePlanner },
+      { to: appRoutes.appHistory, label: "History", shortLabel: "H", visible: canUsePlanner },
+      { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
+      { to: appRoutes.appOutreach, label: "Outreach", shortLabel: "O", visible: canUseOutreach },
+      { to: appRoutes.appRevenueAgent, label: "Revenue", shortLabel: "R", visible: hasWorkspaceContext },
+      { to: appRoutes.appEmail, label: "Email", shortLabel: "E", visible: canUseEmail },
+      { to: appRoutes.appBlog, label: "Blog", shortLabel: "BL", visible: canUseBlogPublishing },
+      { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", visible: canUseDashboard },
+      { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", visible: true },
+      { to: appRoutes.admin, label: "Admin", shortLabel: "AD", visible: canAccessAdmin.value },
+    ].filter((link) => link.visible);
+  });
 
 const mobileDockLinks = computed(() => {
   const findLink = (to: string) => visibleAppLinks.value.find((link) => link.to === to) ?? null;
@@ -94,7 +95,7 @@ const mobileDockLinks = computed(() => {
     findLink(appRoutes.appPlanner),
     findLink(appRoutes.appEmail),
     findLink(appRoutes.settingsPreferences),
-  ].filter((link): link is { to: string; label: string; shortLabel: string } => Boolean(link));
+  ].filter(Boolean) as Array<{ to: string; label: string; shortLabel: string }>;
 });
 
 const pageTitleMap: Record<string, string> = {
@@ -118,6 +119,7 @@ const pageTitleMap: Record<string, string> = {
   "app-ideas": "Idea Inbox",
   "app-planner": "Planner",
   "app-outreach": "Outreach",
+  "app-revenue-agent": "Revenue Agent",
   "app-result": "Generated content",
   "dashboard-analytics": "Analytics",
   onboarding: "Onboarding",

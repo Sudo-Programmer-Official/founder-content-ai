@@ -20,6 +20,7 @@ import AppGrowthPage from "./pages/app-growth.vue";
 import AppHistoryPage from "./pages/app-history.vue";
 import AppIdeasPage from "./pages/app-ideas.vue";
 import AppOutreachPage from "./pages/app-outreach.vue";
+import AppRevenueAgentPage from "./pages/app-revenue-agent.vue";
 import AppPlannerPage from "./pages/app-planner.vue";
 import AppResultPage from "./pages/app-result.vue";
 import DashboardPage from "./pages/dashboard.vue";
@@ -163,6 +164,15 @@ const router = createRouter({
       path: "/app/outreach",
       name: "app-outreach",
       component: AppOutreachPage,
+      meta: {
+        requiresAuth: true,
+        requiresWorkspace: true,
+      },
+    },
+    {
+      path: "/app/revenue-agent",
+      name: "app-revenue-agent",
+      component: AppRevenueAgentPage,
       meta: {
         requiresAuth: true,
         requiresWorkspace: true,

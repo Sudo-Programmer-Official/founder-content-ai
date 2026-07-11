@@ -87,7 +87,19 @@ apps/founder-content-api/
 
 - send Firebase ID tokens as `Authorization: Bearer <token>`
 - set `DATABASE_URL` for Postgres-backed auth and business persistence
+- set `GOOGLE_PLACES_API_KEY` and enable the Places API in Google Cloud to use the real Google Business lead provider
+- set `GOOGLE_CALENDAR_CLIENT_ID`, `GOOGLE_CALENDAR_CLIENT_SECRET`, and `GOOGLE_CALENDAR_REDIRECT_URI` to let the revenue agent connect a workspace Google Calendar and create actual meeting events
+- register the exact Google Calendar callback URL in the Google Cloud OAuth client before testing the connect flow
 - set `AUTH_MODE=stub` only for local development and send `x-dev-user-id` plus `x-dev-user-email`
+
+## Database Migrations
+
+- migration files live in [`db/migrations`](./db/migrations)
+- run `npm run db:migrate` from this folder to apply all pending SQL files
+- run `npm run db:migrate:status` to list applied and pending migrations
+- run `npm run db:bootstrap-ledger` once on an older database to backfill `schema_migrations`
+- the runner writes its ledger to `schema_migrations`
+- if a file changes after it has already been applied, the runner stops instead of silently reapplying it
 
 ## Background Workers
 

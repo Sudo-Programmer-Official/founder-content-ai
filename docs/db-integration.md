@@ -38,6 +38,14 @@ Current auth/business migration chain:
 
 The alignment migration renames the old `cognito_sub` bridge column to `auth_subject` and updates the provider check constraint for Firebase-era providers.
 
+For the full database history, use the app-level runner:
+
+- `cd apps/founder-content-api`
+- `npm run db:migrate`
+
+The runner applies every file under `db/migrations` in filename order and stores a checksum ledger in `schema_migrations`.
+See also: [docs/handbook/db-migration-runbook.md](./handbook/db-migration-runbook.md)
+
 ## Query Behavior
 
 ### `GET /api/me`

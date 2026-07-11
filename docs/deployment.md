@@ -75,6 +75,7 @@ Recommended production values:
 - `OPENAI_MODEL=gpt-4o-mini`
 - `FRONTEND_ORIGIN=https://foundercontent.ai,https://www.foundercontent.ai,https://founder-content-ai.vercel.app`
 - `META_REDIRECT_URI=https://api.foundercontent.ai/api/social-auth/meta/callback`
+- `GOOGLE_CALENDAR_REDIRECT_URI=https://api.foundercontent.ai/api/google-calendar/callback`
 
 Notes:
 
@@ -86,6 +87,8 @@ Notes:
 - if `/app/billing` should sell the email add-on, `STRIPE_EMAIL_STARTER_PRICE_ID`, `STRIPE_EMAIL_GROWTH_PRICE_ID`, and `STRIPE_EMAIL_SCALE_PRICE_ID` must also be live Stripe price ids
 - `META_REDIRECT_URI` must exactly match a Valid OAuth Redirect URI in the Meta app dashboard.
 - use the backend API host for the Meta callback. Do not point Meta OAuth back to the frontend app host.
+- `GOOGLE_CALENDAR_REDIRECT_URI` must exactly match a Google OAuth authorized redirect URI in the Google Cloud console.
+- use the backend API host for the Google Calendar callback. Do not point Google OAuth back to the frontend app host.
 
 ## Health Check
 
@@ -160,6 +163,8 @@ Use `docs/payment-billing.md` as the canonical payment and billing reference dur
 
 ## Related Runbooks
 
+- `./handbook/db-migration-runbook.md`
+  - local, dev, prod, and older-database migration workflow for Postgres schema changes
 - `./handbook/social-publishing-runbook.md`
   - working DNS, media host, Instagram smoke test, and publish history recovery flow
 - `./payment-billing.md`

@@ -59,6 +59,62 @@ Example:
 
 - set in Render environment settings only
 
+### `GOOGLE_PLACES_API_KEY`
+
+Purpose:
+
+- authenticates requests to the Google Places API for real Google Business lead discovery
+
+Behavior:
+
+- used by the revenue-agent Google Business provider
+- if this is missing, the Google Business provider will fail fast instead of silently falling back to mock data
+- the Google Cloud project must have the Places API enabled and billing configured
+
+Optional alias:
+
+- `GOOGLE_MAPS_API_KEY`
+
+### `GOOGLE_CALENDAR_CLIENT_ID`
+
+Purpose:
+
+- starts the Google Calendar OAuth flow so the revenue agent can create real calendar events
+
+Required companion envs:
+
+- `GOOGLE_CALENDAR_CLIENT_SECRET`
+- `GOOGLE_CALENDAR_REDIRECT_URI`
+
+Notes:
+
+- the OAuth app must allow the backend callback URL exactly as configured here
+- the integration requests Google Calendar event scopes plus basic profile/email scopes so we can identify the connected account
+- if you already use generic Google OAuth env names, the backend also accepts `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` as fallbacks
+- the state and token storage encryption reuse the existing `SOCIAL_AUTH_STATE_SECRET` and `SOCIAL_ACCOUNT_ENCRYPTION_SECRET` keys
+
+### `GOOGLE_CALENDAR_CLIENT_SECRET`
+
+Purpose:
+
+- exchanges the OAuth authorization code and refreshes Google Calendar access tokens
+
+Required companion envs:
+
+- `GOOGLE_CALENDAR_CLIENT_ID`
+- `GOOGLE_CALENDAR_REDIRECT_URI`
+
+### `GOOGLE_CALENDAR_REDIRECT_URI`
+
+Purpose:
+
+- backend OAuth callback URL registered in Google Cloud for the Google Calendar connection flow
+
+Notes:
+
+- must match the callback route exposed by the API exactly
+- use the API host, not the frontend host
+
 ### `OPENAI_MODEL`
 
 Purpose:

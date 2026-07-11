@@ -53,6 +53,7 @@ function buildDisabledFeatureMap(): ProductFeatureMap {
     brand_intelligence: false,
     outreach: false,
     email_campaigns: false,
+    blog_publishing: false,
     system_read_only: false,
   };
 }
