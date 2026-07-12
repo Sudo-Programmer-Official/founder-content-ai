@@ -2,6 +2,8 @@ import type {
   RevenueAgentActionRequest,
   RevenueAgentActionResponse,
   RevenueAgentFeedRequest,
+  RevenueAgentFeedConfigUpdateRequest,
+  RevenueAgentFeedConfigUpdateResponse,
   RevenueAgentFeedResponse,
   RevenueAgentReplyAnalysisRequest,
   RevenueAgentReplyAnalysisResponse,
@@ -43,6 +45,15 @@ export async function requestDisconnectGoogleCalendar(input: {
   businessId: string;
 }): Promise<GoogleCalendarDisconnectResponse> {
   return apiPost<{ businessId: string }, GoogleCalendarDisconnectResponse>("/google-calendar/disconnect", input);
+}
+
+export async function requestRevenueAgentFeedConfigUpdate(
+  payload: RevenueAgentFeedConfigUpdateRequest,
+): Promise<RevenueAgentFeedConfigUpdateResponse> {
+  return apiPatch<RevenueAgentFeedConfigUpdateRequest, RevenueAgentFeedConfigUpdateResponse>(
+    "/revenue-agent/feed-config",
+    payload,
+  );
 }
 
 export async function requestRevenueAgentFeed(

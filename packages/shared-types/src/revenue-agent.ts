@@ -1,3 +1,5 @@
+import type { WorkspaceKnowledgeProfile, WorkspaceKnowledgeSource } from "./brand-intelligence.ts";
+
 export type RevenueAgentLeadSourceProvider = "google_business" | "csv_import";
 export type RevenueAgentWebsitePerformanceBand = "strong" | "moderate" | "weak" | "unknown";
 export type RevenueAgentProspectStatus =
@@ -402,6 +404,7 @@ export interface RevenueAgentWorkspaceResponse {
   stats: RevenueAgentStats;
   prospects: RevenueAgentProspect[];
   googleCalendarConnection?: RevenueAgentGoogleCalendarConnection;
+  workspaceKnowledge?: RevenueAgentWorkspaceKnowledgeContext;
   leadSources: {
     id: string;
     provider: RevenueAgentLeadSourceProvider;
@@ -413,8 +416,32 @@ export interface RevenueAgentWorkspaceResponse {
   sequence: RevenueAgentSequenceStep[];
 }
 
+export interface RevenueAgentWorkspaceEmailIdentity {
+  fromName?: string;
+  fromEmail?: string;
+  replyToEmail?: string;
+  signatureText?: string;
+}
+
+export interface RevenueAgentWorkspaceKnowledgeContext {
+  businessName?: string;
+  websiteUrl?: string;
+  niche?: string;
+  profile?: WorkspaceKnowledgeProfile;
+  sources: WorkspaceKnowledgeSource[];
+  emailIdentity?: RevenueAgentWorkspaceEmailIdentity;
+}
+
 export interface RevenueAgentFeedRequest extends RevenueAgentFeedConfig {
   businessId: string;
+}
+
+export interface RevenueAgentFeedConfigUpdateRequest extends RevenueAgentFeedConfig {
+  businessId: string;
+}
+
+export interface RevenueAgentFeedConfigUpdateResponse {
+  feedConfig: RevenueAgentFeedConfig;
 }
 
 export interface RevenueAgentFeedResponse {

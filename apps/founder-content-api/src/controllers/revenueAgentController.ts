@@ -3,6 +3,8 @@ import type {
   RevenueAgentActionRequest,
   RevenueAgentActionResponse,
   RevenueAgentFeedRequest,
+  RevenueAgentFeedConfigUpdateRequest,
+  RevenueAgentFeedConfigUpdateResponse,
   RevenueAgentFeedResponse,
   RevenueAgentReplyAnalysisRequest,
   RevenueAgentReplyAnalysisResponse,
@@ -20,6 +22,7 @@ import {
   getRevenueAgentWorkspace,
   performRevenueAgentAction,
   regenerateRevenueAgentResearch,
+  updateRevenueAgentWorkspaceFeedConfig,
   runRevenueAgentFeed,
 } from "../services/revenueAgent/revenueAgentService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
@@ -196,6 +199,54 @@ export async function postRevenueAgentFeedController(
       code: "revenue_agent_feed_failed",
       message: "Unable to run revenue agent feed.",
       logMessage: "Failed to run revenue agent feed.",
+    });
+  }
+}
+
+export async function patchRevenueAgentWorkspaceFeedConfigController(
+  request: Request<unknown, unknown, RevenueAgentFeedConfigUpdateRequest>,
+  response: Response<RevenueAgentFeedConfigUpdateResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessIdFromBody(request.body);
+
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "outreach",
+      usageMetric: "outreach",
+    });
+    const actor = await ensureCurrentUser(request.auth);
+    const feedConfig = await updateRevenueAgentWorkspaceFeedConfig({
+      ...request.body,
+      businessId,
+      provider: readOptionalProvider(request.body.provider),
+    });
+    void actor;
+    response.json({ feedConfig });
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "revenue_agent_workspace_preferences_failed",
+      message: "Unable to save revenue agent workspace preferences.",
+      businessId,
+      userId: request.auth.userId,
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "revenue_agent_workspace_preferences_failed",
+      message: "Unable to save revenue agent workspace preferences.",
+      logMessage: "Failed to save revenue agent workspace preferences.",
     });
   }
 }

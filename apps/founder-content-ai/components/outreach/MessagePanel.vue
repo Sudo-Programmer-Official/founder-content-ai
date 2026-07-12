@@ -150,7 +150,7 @@ function messageMetaLabel(message: OutreachMessage): string {
         </div>
       </div>
 
-      <p class="shortcut-note">Shortcuts: Cmd/Ctrl + Enter send, Cmd/Ctrl + R regenerate, Cmd/Ctrl + ↓ next lead.</p>
+      <p class="shortcut-note">Shortcuts: Cmd/Ctrl + Enter send, Cmd/Ctrl + R regenerate, Cmd/Ctrl + Arrow Down next lead.</p>
     </template>
 
     <template v-else>

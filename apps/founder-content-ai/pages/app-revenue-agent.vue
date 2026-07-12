@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch, type Component } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from "vue";
 import { useRoute } from "vue-router";
 import type {
   BusinessMembership,
@@ -20,6 +20,7 @@ import {
   requestDisconnectGoogleCalendar,
   requestGoogleCalendarAuthStart,
   requestRevenueAgentAction,
+  requestRevenueAgentFeedConfigUpdate,
   requestRevenueAgentFeed,
   requestRevenueAgentReplyAnalysis,
   requestRevenueAgentProspectExport,
@@ -35,7 +36,15 @@ const CSV_IMPORT_SAMPLE = [
   "businessName,website,email,phone,city,state,industry,sourceUrl,rating,reviewCount,painSignals,tags",
   "Northstar Salon,https://northstarsalon.com,hello@northstarsalon.com,(555) 123-4567,Dallas,TX,Salon,https://maps.google.com/?q=Northstar+Salon+Dallas+TX,4.3,41,\"slow response|missed calls|manual follow-up\",\"salon|local-service\"",
 ].join("\n");
-
+const DEFAULT_REVENUE_FEED_CONFIG: RevenueAgentFeedConfig = {
+  industry: "Salon",
+  city: "Dallas",
+  state: "TX",
+  offer: "AI booking + follow-up automation",
+  dailyLeadLimit: 20,
+  provider: "google_business",
+  csvText: "",
+};
 const businesses = ref<BusinessMembership[]>([]);
 const selectedBusinessId = ref("");
 const workspace = ref<RevenueAgentWorkspaceResponse | null>(null);
@@ -52,15 +61,10 @@ const isExportingReport = ref(false);
 const actionLoadingId = ref("");
 const errorMessage = ref("");
 const feedbackMessage = ref("");
+const isHydratingFeedForm = ref(false);
 
 const feedForm = ref<RevenueAgentFeedConfig>({
-  industry: "Salon",
-  city: "Dallas",
-  state: "TX",
-  offer: "AI booking + follow-up automation",
-  dailyLeadLimit: 20,
-  provider: "google_business",
-  csvText: "",
+  ...DEFAULT_REVENUE_FEED_CONFIG,
 });
 
 const selectedProspect = computed(
@@ -87,6 +91,25 @@ const isGoogleBusinessSelected = computed(() => feedForm.value.provider === "goo
 const isCsvImportSelected = computed(() => feedForm.value.provider === "csv_import");
 const googleCalendarConnection = computed(() => workspace.value?.googleCalendarConnection ?? null);
 const isGoogleCalendarConnected = computed(() => googleCalendarConnection.value?.connected === true);
+const workspaceKnowledge = computed(() => workspace.value?.workspaceKnowledge ?? null);
+const workspaceKnowledgeProfile = computed(() => workspaceKnowledge.value?.profile ?? null);
+const workspaceKnowledgeSources = computed(() => workspaceKnowledge.value?.sources ?? []);
+const workspaceKnowledgeEmailIdentity = computed(() => workspaceKnowledge.value?.emailIdentity ?? null);
+const workspaceKnowledgeStatusLabel = computed(() => {
+  if (workspaceKnowledgeProfile.value?.processingStatus === "completed") {
+    return "Profile ready";
+  }
+
+  if (workspaceKnowledgeProfile.value?.processingStatus === "processing" || workspaceKnowledgeProfile.value?.processingStatus === "queued") {
+    return "Building profile";
+  }
+
+  if (workspaceKnowledgeSources.value.length > 0) {
+    return "Sources ready";
+  }
+
+  return "No profile yet";
+});
 const sourceCoverageRows = computed(() => {
   const coverage = selectedReport.value?.businessProfile.sourceCoverage;
   return [
@@ -166,6 +189,92 @@ type RevenueAgentFilterPreset = {
 const FILTER_STORAGE_KEY = "founder-content-revenue-agent-filters-v2";
 const FILTER_PRESETS_KEY = "founder-content-revenue-agent-filter-presets-v1";
 const savedFilterPresets = ref<RevenueAgentFilterPreset[]>([]);
+const FEED_CONFIG_SAVE_DEBOUNCE_MS = 500;
+let feedFormHydrationToken = 0;
+let feedConfigSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let feedConfigSaveNonce = 0;
+let hasHydratedFeedForm = false;
+
+function normalizeFeedFormConfig(
+  input: Partial<RevenueAgentFeedConfig> | null | undefined,
+  fallback: RevenueAgentFeedConfig = DEFAULT_REVENUE_FEED_CONFIG,
+): RevenueAgentFeedConfig {
+  const merged = {
+    ...fallback,
+    ...(input ?? {}),
+  };
+
+  return {
+    industry: typeof merged.industry === "string" ? merged.industry.trim() : fallback.industry,
+    city: typeof merged.city === "string" ? merged.city.trim() : fallback.city,
+    state: typeof merged.state === "string" ? merged.state.trim() : fallback.state,
+    offer: typeof merged.offer === "string" ? merged.offer.trim() : fallback.offer,
+    dailyLeadLimit: Math.min(25, Math.max(1, Math.floor(Number(merged.dailyLeadLimit) || fallback.dailyLeadLimit))),
+    provider: merged.provider === "csv_import" ? "csv_import" : merged.provider === "google_business" ? "google_business" : fallback.provider,
+    csvText: typeof merged.csvText === "string" ? merged.csvText : fallback.csvText ?? "",
+  };
+}
+
+function hydrateFeedFormForWorkspace(feedConfig: RevenueAgentFeedConfig): void {
+  const nextConfig = normalizeFeedFormConfig(feedConfig, feedConfig);
+  const hydrationToken = ++feedFormHydrationToken;
+
+  isHydratingFeedForm.value = true;
+  feedForm.value = nextConfig;
+
+  void nextTick(() => {
+    if (hydrationToken !== feedFormHydrationToken) {
+      return;
+    }
+
+    isHydratingFeedForm.value = false;
+    hasHydratedFeedForm = true;
+  });
+}
+
+function cancelFeedConfigSave(): void {
+  if (feedConfigSaveTimer) {
+    clearTimeout(feedConfigSaveTimer);
+    feedConfigSaveTimer = null;
+  }
+}
+
+async function persistFeedConfigToWorkspace(businessId: string): Promise<void> {
+  if (!businessId) {
+    return;
+  }
+
+  const response = await requestRevenueAgentFeedConfigUpdate({
+    businessId,
+    ...normalizeFeedFormConfig(feedForm.value),
+  });
+  void response;
+}
+
+function scheduleFeedConfigSave(): void {
+  const businessId = selectedBusinessId.value;
+
+  if (typeof window === "undefined" || !businessId || isHydratingFeedForm.value || !hasHydratedFeedForm) {
+    return;
+  }
+
+  cancelFeedConfigSave();
+  const saveNonce = ++feedConfigSaveNonce;
+
+  feedConfigSaveTimer = window.setTimeout(() => {
+    feedConfigSaveTimer = null;
+
+    void (async () => {
+      try {
+        await persistFeedConfigToWorkspace(businessId);
+      } catch {
+        if (saveNonce === feedConfigSaveNonce) {
+          // Background save failed; a later edit will retry.
+        }
+      }
+    })();
+  }, FEED_CONFIG_SAVE_DEBOUNCE_MS);
+}
 
 function cloneFilterState(): RevenueAgentFilterPreset["filterState"] {
   return {
@@ -704,6 +813,18 @@ watch(
   },
   { deep: true },
 );
+
+watch(
+  feedForm,
+  () => {
+    scheduleFeedConfigSave();
+  },
+  { deep: true },
+);
+
+onBeforeUnmount(() => {
+  cancelFeedConfigSave();
+});
 
 watch(selectedProspectId, () => {
   loadNoteDraft();
@@ -1812,18 +1933,6 @@ function selectProspect(prospect: RevenueAgentProspect | null, options: { resetR
   void loadWorkflowSnapshot();
 }
 
-function loadFeedFormFromWorkspace(): void {
-  feedForm.value = {
-    industry: feedForm.value.industry || "Salon",
-    city: feedForm.value.city || "Dallas",
-    state: feedForm.value.state || "TX",
-    offer: feedForm.value.offer || "AI booking + follow-up automation",
-    dailyLeadLimit: feedForm.value.dailyLeadLimit || 20,
-    provider: feedForm.value.provider || "google_business",
-    csvText: feedForm.value.csvText || "",
-  };
-}
-
 function applyCalendarConnectionFeedback(): void {
   const status = typeof route.query.google_calendar === "string" ? route.query.google_calendar : "";
   const detail = typeof route.query.message === "string" ? route.query.message : "";
@@ -1861,21 +1970,23 @@ async function loadBusinesses(): Promise<void> {
 }
 
 async function loadWorkspace(): Promise<void> {
+  cancelFeedConfigSave();
+  hasHydratedFeedForm = false;
+
   if (!selectedBusinessId.value) {
     workspace.value = null;
     prospects.value = [];
     selectedProspectId.value = "";
     workflowSnapshot.value = null;
+    feedForm.value = { ...DEFAULT_REVENUE_FEED_CONFIG };
+    isHydratingFeedForm.value = false;
     return;
   }
 
   const response = await requestRevenueAgentWorkspace(selectedBusinessId.value);
   workspace.value = response;
   prospects.value = response.prospects;
-  feedForm.value = {
-    ...response.feedConfig,
-    provider: response.feedConfig.provider ?? "google_business",
-  };
+  hydrateFeedFormForWorkspace(response.feedConfig);
   replyText.value = "";
   replyAnalysis.value = null;
 
@@ -1942,7 +2053,6 @@ async function initializePage(): Promise<void> {
     loadFiltersFromStorage();
     await loadBusinesses();
     await loadWorkspace();
-    loadFeedFormFromWorkspace();
     applyCalendarConnectionFeedback();
     loadNoteDraft();
   } catch (error) {
@@ -1967,10 +2077,7 @@ async function runFeed(): Promise<void> {
       ...feedForm.value,
     });
     prospects.value = response.workspace.prospects;
-    feedForm.value = {
-      ...response.workspace.feedConfig,
-      provider: response.workspace.feedConfig.provider ?? "google_business",
-    };
+    hydrateFeedFormForWorkspace(response.workspace.feedConfig);
     selectProspect(response.workspace.prospects[0] ?? null);
     feedbackMessage.value = `Daily feed completed for ${response.run.prospectsFound} prospects.`;
   } catch (error) {
@@ -2127,6 +2234,13 @@ onMounted(() => {
           <small>{{ selectedBusinessId ? "Live workspace" : "No workspace selected" }}</small>
         </div>
         <div class="workspace-pill">
+          <span>Knowledge</span>
+          <strong>{{ workspaceKnowledgeStatusLabel }}</strong>
+          <small>
+            {{ workspaceKnowledgeProfile?.voiceSummary || `${workspaceKnowledgeSources.length} source${workspaceKnowledgeSources.length === 1 ? "" : "s"} in DB` }}
+          </small>
+        </div>
+        <div class="workspace-pill">
           <span>Calendar</span>
           <strong>{{ googleCalendarConnection?.connected ? "Connected" : "Disconnected" }}</strong>
           <small>{{ googleCalendarConnection?.accountEmail || "Use Google Calendar for booking handoff" }}</small>
@@ -2154,6 +2268,47 @@ onMounted(() => {
             <span>{{ card.label }}</span>
             <strong>{{ card.value }}</strong>
           </article>
+        </section>
+
+        <section v-if="workspaceKnowledge" class="toolbar-card knowledge-panel">
+          <div class="section-head">
+            <div>
+              <p class="panel-kicker">Workspace knowledge</p>
+              <h2>Use the same voice, CTA, and signature in every draft</h2>
+              <p class="panel-note">
+                This pulls from the workspace knowledge base, the email settings table, and the connected sources in the database.
+              </p>
+            </div>
+            <router-link class="secondary-action link-action" :to="appRoutes.settingsPreferences">
+              Manage knowledge
+            </router-link>
+          </div>
+
+          <div class="knowledge-grid">
+            <article class="mini-card">
+              <span>Voice</span>
+              <strong>{{ workspaceKnowledgeProfile?.voiceSummary || "Not defined" }}</strong>
+            </article>
+            <article class="mini-card">
+              <span>Audience</span>
+              <strong>{{ workspaceKnowledgeProfile?.audienceSummary || "Not defined" }}</strong>
+            </article>
+            <article class="mini-card">
+              <span>Positioning</span>
+              <strong>{{ workspaceKnowledgeProfile?.positioningSummary || "Not defined" }}</strong>
+            </article>
+            <article class="mini-card">
+              <span>Email identity</span>
+              <strong>{{ workspaceKnowledgeEmailIdentity?.fromName || workspaceKnowledgeEmailIdentity?.replyToEmail || "Not defined" }}</strong>
+            </article>
+          </div>
+
+          <div class="knowledge-source-row">
+            <span v-for="source in workspaceKnowledgeSources.slice(0, 4)" :key="source.id" class="tag-pill">
+              {{ source.title || source.sourceType }}
+            </span>
+            <span v-if="workspaceKnowledgeSources.length === 0" class="tag-pill">No knowledge sources yet</span>
+          </div>
         </section>
 
         <section class="toolbar-stack">
@@ -3057,6 +3212,24 @@ onMounted(() => {
   padding: 16px;
 }
 
+.knowledge-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.knowledge-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.knowledge-source-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .toolbar-stack {
   display: grid;
   gap: 10px;
@@ -3198,6 +3371,10 @@ onMounted(() => {
 .more-menu summary {
   background: #fff;
   color: #4d3a31;
+}
+
+.link-action {
+  text-decoration: none;
 }
 
 .primary-action:hover:not(:disabled),
@@ -3750,6 +3927,10 @@ input[type="checkbox"] {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .knowledge-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .filter-toolbar {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -3782,6 +3963,7 @@ input[type="checkbox"] {
   .summary-grid,
   .filter-toolbar,
   .feed-fields,
+  .knowledge-grid,
   .overview-grid,
   .quick-grid,
   .reply-grid,
@@ -3799,6 +3981,7 @@ input[type="checkbox"] {
   .summary-grid,
   .filter-toolbar,
   .feed-fields,
+  .knowledge-grid,
   .overview-grid,
   .quick-grid,
   .reply-grid,

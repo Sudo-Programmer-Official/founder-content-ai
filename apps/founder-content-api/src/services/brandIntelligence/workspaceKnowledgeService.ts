@@ -1141,6 +1141,34 @@ export async function loadWorkspaceKnowledgeProfileForBusiness(
   }
 }
 
+export async function loadWorkspaceKnowledgeSnapshotForBusiness(
+  businessId: string | undefined,
+): Promise<WorkspaceKnowledgeResponse | undefined> {
+  const normalizedBusinessId = normalizeOptionalString(businessId);
+
+  if (!normalizedBusinessId) {
+    return undefined;
+  }
+
+  try {
+    const [sources, profile] = await Promise.all([
+      loadWorkspaceKnowledgeSourcesInternal(normalizedBusinessId),
+      loadWorkspaceKnowledgeProfileRecord(normalizedBusinessId),
+    ]);
+
+    return {
+      profile: profile ?? undefined,
+      sources,
+    };
+  } catch (error) {
+    logWarn("Skipping workspace knowledge snapshot lookup.", {
+      businessId: normalizedBusinessId,
+      message: error instanceof Error ? error.message : "Unknown workspace knowledge lookup error.",
+    });
+    return undefined;
+  }
+}
+
 export async function processQueuedWorkspaceKnowledgeJobs(): Promise<{
   jobsClaimed: number;
   jobsCompleted: number;

@@ -58,7 +58,7 @@ watch(
     <div class="panel-header">
       <div>
         <p class="panel-meta">Content Pipeline</p>
-        <h2>Draft → Ready → Scheduled → Posted</h2>
+        <h2>Draft to Ready to Scheduled to Posted</h2>
       </div>
     </div>
 

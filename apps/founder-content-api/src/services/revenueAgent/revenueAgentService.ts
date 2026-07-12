@@ -3,6 +3,7 @@ import type {
   RevenueAgentActionRequest,
   RevenueAgentActionResponse,
   RevenueAgentFeedConfig,
+  RevenueAgentFeedConfigUpdateRequest,
   RevenueAgentFeedRequest,
   RevenueAgentFeedResponse,
   RevenueAgentOpportunityReport,
@@ -50,6 +51,7 @@ import {
   type ProspectIntelligenceInput,
   type ProspectIntelligenceResult,
 } from "./prospectIntelligenceService.ts";
+import { loadWorkspaceKnowledgeSnapshotForBusiness } from "../brandIntelligence/workspaceKnowledgeService.ts";
 import {
   buildLeadSourceQueryJson,
   resolveLeadSourceProvider,
@@ -70,6 +72,27 @@ interface BusinessRow extends QueryResultRow {
   niche: string | null;
   timezone: string;
 }
+
+interface RevenueAgentEmailIdentityRow extends QueryResultRow {
+  from_name: string | null;
+  from_email: string | null;
+  reply_to_email: string | null;
+  signature_text: string | null;
+}
+
+interface RevenueAgentWorkspacePreferenceRow extends QueryResultRow {
+  business_id: string;
+  feed_config: Record<string, unknown> | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+interface RevenueAgentWorkspaceSeedRow extends QueryResultRow {
+  location: string | null;
+}
+
+type RevenueAgentWorkspaceKnowledgeContext = NonNullable<RevenueAgentWorkspaceResponse["workspaceKnowledge"]>;
+type RevenueAgentWorkspaceEmailIdentity = RevenueAgentWorkspaceKnowledgeContext["emailIdentity"];
 
 interface LeadSourceRow extends QueryResultRow {
   id: string;
@@ -777,29 +800,176 @@ function createEmptyWorkspaceResponse(businessId: string, feedConfig: RevenueAge
   };
 }
 
-function resolveFeedConfigFromBusiness(row: BusinessRow, runRow?: RunRow | null): RevenueAgentFeedConfig {
-  if (runRow) {
-    const inputJson = parseJsonObject(runRow.input_json);
+function parseRevenueAgentLocation(value: string | null | undefined): { city?: string; state?: string } {
+  const normalized = normalizeOptional(value);
 
+  if (!normalized) {
+    return {};
+  }
+
+  const parts = normalized
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (parts.length >= 2) {
     return {
-      industry: runRow.industry,
-      city: runRow.city,
-      state: runRow.state,
-      offer: runRow.offer,
-      dailyLeadLimit: toNumber(runRow.daily_lead_limit) || 20,
-      provider: runRow.provider === "csv_import" ? "csv_import" : "google_business",
-      csvText: typeof inputJson.csvText === "string" ? inputJson.csvText : undefined,
+      city: parts.slice(0, -1).join(", "),
+      state: parts[parts.length - 1],
     };
   }
 
   return {
+    city: normalized,
+  };
+}
+
+function buildDefaultRevenueAgentFeedConfig(row: BusinessRow, location?: string | null): RevenueAgentFeedConfig {
+  const parsedLocation = parseRevenueAgentLocation(location);
+
+  return {
     industry: normalizeOptional(row.niche) || "Salon",
-    city: "",
-    state: "",
+    city: parsedLocation.city || "",
+    state: parsedLocation.state || "",
     offer: "AI booking + follow-up automation",
     dailyLeadLimit: 20,
     provider: "google_business",
+    csvText: "",
   };
+}
+
+function normalizeRevenueAgentFeedConfig(
+  input: Partial<RevenueAgentFeedConfig> | null | undefined,
+  fallback: RevenueAgentFeedConfig,
+): RevenueAgentFeedConfig {
+  const nextProvider =
+    input?.provider === "csv_import"
+      ? "csv_import"
+      : input?.provider === "google_business"
+        ? "google_business"
+        : fallback.provider;
+
+  return {
+    industry: normalizeOptional(input?.industry) || fallback.industry,
+    city: normalizeOptional(input?.city) || fallback.city,
+    state: normalizeOptional(input?.state) || fallback.state,
+    offer: normalizeOptional(input?.offer) || fallback.offer,
+    dailyLeadLimit: Math.min(25, Math.max(1, Math.floor(Number(input?.dailyLeadLimit) || fallback.dailyLeadLimit))),
+    provider: nextProvider,
+    csvText: typeof input?.csvText === "string" ? input.csvText : fallback.csvText ?? "",
+  };
+}
+
+async function loadRevenueAgentWorkspaceSeed(
+  businessId: string,
+  client?: PoolClient,
+): Promise<RevenueAgentWorkspaceSeedRow | null> {
+  const result = await executeQuery<RevenueAgentWorkspaceSeedRow>(
+    `
+      select location
+      from brand_profiles
+      where business_id = $1::uuid
+      limit 1
+    `,
+    [businessId],
+    client,
+  );
+
+  return result.rows[0] ?? null;
+}
+
+async function loadRevenueAgentWorkspacePreferences(
+  businessId: string,
+  client?: PoolClient,
+): Promise<Partial<RevenueAgentFeedConfig> | null> {
+  const result = await executeQuery<RevenueAgentWorkspacePreferenceRow>(
+    `
+      select
+        business_id,
+        feed_config,
+        created_at,
+        updated_at
+      from revenue_agent_workspace_preferences
+      where business_id = $1::uuid
+      limit 1
+    `,
+    [businessId],
+    client,
+  );
+
+  const row = result.rows[0];
+
+  if (!row) {
+    return null;
+  }
+
+  return parseJsonObject(row.feed_config) as Partial<RevenueAgentFeedConfig>;
+}
+
+async function persistRevenueAgentWorkspacePreferences(
+  businessId: string,
+  feedConfig: RevenueAgentFeedConfig,
+  client?: PoolClient,
+): Promise<RevenueAgentFeedConfig> {
+  const normalizedFeedConfig = normalizeRevenueAgentFeedConfig(feedConfig, feedConfig);
+
+  await executeQuery<RevenueAgentWorkspacePreferenceRow>(
+    `
+      insert into revenue_agent_workspace_preferences (
+        business_id,
+        feed_config
+      ) values (
+        $1::uuid,
+        $2::jsonb
+      )
+      on conflict (business_id) do update set
+        feed_config = excluded.feed_config,
+        updated_at = now()
+      returning
+        business_id,
+        feed_config,
+        created_at,
+        updated_at
+    `,
+    [businessId, JSON.stringify(normalizedFeedConfig)],
+    client,
+  );
+
+  return normalizedFeedConfig;
+}
+
+function resolveFeedConfigFromBusiness(
+  row: BusinessRow,
+  options: {
+    runRow?: RunRow | null;
+    preferences?: Partial<RevenueAgentFeedConfig> | null;
+    location?: string | null;
+  } = {},
+): RevenueAgentFeedConfig {
+  const fallback = buildDefaultRevenueAgentFeedConfig(row, options.location);
+
+  if (options.preferences) {
+    return normalizeRevenueAgentFeedConfig(options.preferences, fallback);
+  }
+
+  if (options.runRow) {
+    const inputJson = parseJsonObject(options.runRow.input_json);
+
+    return normalizeRevenueAgentFeedConfig(
+      {
+        industry: options.runRow.industry,
+        city: options.runRow.city,
+        state: options.runRow.state,
+        offer: options.runRow.offer,
+        dailyLeadLimit: toNumber(options.runRow.daily_lead_limit) || fallback.dailyLeadLimit,
+        provider: options.runRow.provider,
+        csvText: typeof inputJson.csvText === "string" ? inputJson.csvText : undefined,
+      },
+      fallback,
+    );
+  }
+
+  return fallback;
 }
 
 async function executeQuery<TRow extends QueryResultRow>(
@@ -913,6 +1083,77 @@ async function getLeadSourceOrCreate(
   );
 
   return inserted.rows[0];
+}
+
+async function loadRevenueAgentEmailIdentity(
+  businessId: string,
+  client?: PoolClient,
+): Promise<RevenueAgentWorkspaceEmailIdentity | undefined> {
+  const result = await executeQuery<RevenueAgentEmailIdentityRow>(
+    `
+      select
+        from_name,
+        from_email,
+        reply_to_email,
+        signature_text
+      from business_email_settings
+      where business_id = $1::uuid
+      limit 1
+    `,
+    [businessId],
+    client,
+  );
+
+  const row = result.rows[0];
+
+  if (!row) {
+    return undefined;
+  }
+
+  const fromName = row.from_name?.trim();
+  const fromEmail = row.from_email?.trim();
+  const replyToEmail = row.reply_to_email?.trim();
+  const signatureText = row.signature_text?.trim();
+
+  if (!fromName && !fromEmail && !replyToEmail && !signatureText) {
+    return undefined;
+  }
+
+  return {
+    fromName: fromName || undefined,
+    fromEmail: fromEmail || undefined,
+    replyToEmail: replyToEmail || undefined,
+    signatureText: signatureText || undefined,
+  };
+}
+
+async function buildRevenueAgentWorkspaceKnowledgeContext(
+  business: BusinessRow,
+  businessId: string,
+  client?: PoolClient,
+): Promise<RevenueAgentWorkspaceResponse["workspaceKnowledge"]> {
+  const [workspaceKnowledge, emailIdentity] = await Promise.all([
+    loadWorkspaceKnowledgeSnapshotForBusiness(businessId),
+    loadRevenueAgentEmailIdentity(businessId, client),
+  ]);
+
+  const hasKnowledge =
+    Boolean(workspaceKnowledge?.profile) ||
+    Boolean(workspaceKnowledge?.sources?.length) ||
+    Boolean(emailIdentity);
+
+  if (!hasKnowledge) {
+    return undefined;
+  }
+
+  return {
+    businessName: business.brand_name || business.name,
+    websiteUrl: business.website_url ?? undefined,
+    niche: business.niche ?? undefined,
+    profile: workspaceKnowledge?.profile,
+    sources: workspaceKnowledge?.sources ?? [],
+    emailIdentity,
+  };
 }
 
 async function listWorkspaceProspects(
@@ -1237,12 +1478,22 @@ async function buildWorkspaceResponse(
 ): Promise<RevenueAgentWorkspaceResponse> {
   await ensureDefaultSequences(businessId, client);
   const business = await getBusinessRow(businessId, client);
-  const workspaceState = await listWorkspaceProspects(businessId, client);
-  const googleCalendarConnection = await getGoogleCalendarConnectionSummary(businessId, client);
+  const [workspaceState, googleCalendarConnection, workspaceKnowledge, workspacePreferences, workspaceSeed] =
+    await Promise.all([
+    listWorkspaceProspects(businessId, client),
+    getGoogleCalendarConnectionSummary(businessId, client),
+    buildRevenueAgentWorkspaceKnowledgeContext(business, businessId, client),
+    loadRevenueAgentWorkspacePreferences(businessId, client),
+    loadRevenueAgentWorkspaceSeed(businessId, client),
+  ]);
   const latestRun = workspaceState.runs[0];
   const feedConfig = resolveFeedConfigFromBusiness(
     business,
-    latestRun ? (latestRun as unknown as RunRow) : null,
+    {
+      runRow: latestRun ? (latestRun as unknown as RunRow) : null,
+      preferences: workspacePreferences,
+      location: workspaceSeed?.location ?? undefined,
+    },
   );
 
   return {
@@ -1251,6 +1502,7 @@ async function buildWorkspaceResponse(
     stats: computeStats(workspaceState.prospects),
     prospects: workspaceState.prospects,
     googleCalendarConnection,
+    workspaceKnowledge,
     leadSources: workspaceState.leadSources,
     runs: workspaceState.runs,
     sequence: workspaceState.sequence,
@@ -3245,6 +3497,30 @@ export async function getRevenueAgentWorkspace(
   return buildWorkspaceResponse(businessId);
 }
 
+export async function updateRevenueAgentWorkspaceFeedConfig(
+  input: RevenueAgentFeedConfigUpdateRequest,
+): Promise<RevenueAgentFeedConfig> {
+  return withDbTransaction(async (client) => {
+    const business = await getBusinessRow(input.businessId, client);
+    const workspaceSeed = await loadRevenueAgentWorkspaceSeed(input.businessId, client);
+    const feedConfig = normalizeRevenueAgentFeedConfig(
+      {
+        industry: input.industry,
+        city: input.city,
+        state: input.state,
+        offer: input.offer,
+        dailyLeadLimit: input.dailyLeadLimit,
+        provider: input.provider,
+        csvText: input.csvText,
+      },
+      buildDefaultRevenueAgentFeedConfig(business, workspaceSeed?.location),
+    );
+
+    await persistRevenueAgentWorkspacePreferences(input.businessId, feedConfig, client);
+    return feedConfig;
+  });
+}
+
 export async function getRevenueAgentProspectExportHtml(
   businessId: string,
   prospectId: string,
@@ -3286,6 +3562,8 @@ export async function regenerateRevenueAgentResearch(
   return withDbTransaction(async (client) => {
     const prospect = await loadProspectForUpdate(prospectId, client);
     requireBusinessOwnership(prospect, input.businessId);
+    const business = await getBusinessRow(input.businessId, client);
+    const workspaceKnowledge = await buildRevenueAgentWorkspaceKnowledgeContext(business, input.businessId, client);
 
     const latestResearchRow = await loadLatestResearchForProspect(prospectId, client);
     const latestResearch = latestResearchRow ? mapResearch(latestResearchRow) : undefined;
@@ -3308,6 +3586,7 @@ export async function regenerateRevenueAgentResearch(
         ...(latestResearch?.report.automationOpportunities ?? []),
       ].filter((signal): signal is string => Boolean(signal && signal.trim().length > 0)),
       offer: latestResearch?.suggestedOfferAngle || prospect.suggested_offer_angle || "AI booking + follow-up automation",
+      workspaceKnowledge,
     });
 
     const persistedResearch = await upsertProspectResearchForSnapshot(
@@ -3509,7 +3788,9 @@ export async function runRevenueAgentFeed(
   const leadSourceQueryJson = buildLeadSourceQueryJson(feedConfig, provider);
 
   const run = await withDbTransaction(async (client) => {
+    const business = await getBusinessRow(businessId, client);
     const leadSource = await getLeadSourceOrCreate(businessId, provider, leadSourceQueryJson, client);
+    const workspaceKnowledge = await buildRevenueAgentWorkspaceKnowledgeContext(business, businessId, client);
     const leadResult = await sourceProvider.search({
       industry: feedConfig.industry,
       city: feedConfig.city,
@@ -3612,6 +3893,7 @@ export async function runRevenueAgentFeed(
         reviewCount: lead.reviewCount,
         painSignals: lead.painSignals,
         offer: feedConfig.offer,
+        workspaceKnowledge,
       });
 
       const { prospect, research: persistedResearch, isNewProspect } = await upsertProspectAndResearch(
@@ -3799,6 +4081,12 @@ export async function runRevenueAgentFeed(
 
     return finalRunResult.rows[0];
   });
+
+  try {
+    await persistRevenueAgentWorkspacePreferences(businessId, feedConfig);
+  } catch {
+    // Keep the successful run response even if preference persistence fails.
+  }
 
   return {
     run: mapRun(run),

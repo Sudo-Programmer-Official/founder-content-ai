@@ -1770,7 +1770,7 @@ onMounted(async () => {
       <div class="repurpose-header">
         <div>
           <p class="result-label">Repurpose Engine</p>
-          <h2>Voice, text, or URL → multiple content outputs</h2>
+          <h2>Voice, text, or URL for multiple content outputs</h2>
           <p class="description small">
             Start with a raw input, expand it into hooks, variations, and a carousel draft, then move
             straight into visuals and scheduling.
@@ -2225,7 +2225,7 @@ onMounted(async () => {
       <div class="scheduler-header">
         <div>
           <p class="result-label">Schedule Carousel</p>
-          <h2>Create → Schedule → Publish</h2>
+          <h2>Create, Schedule, Publish</h2>
         </div>
         <button
           type="button"

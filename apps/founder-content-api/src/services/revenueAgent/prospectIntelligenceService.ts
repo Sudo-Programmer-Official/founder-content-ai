@@ -3,6 +3,7 @@ import type {
   RevenueAgentOpportunityReport,
   RevenueAgentWebsitePerformanceBand,
   RevenueAgentWebsiteSignals,
+  RevenueAgentWorkspaceKnowledgeContext,
 } from "../../../../../packages/shared-types/index.ts";
 import { logWarn } from "../../utils/logger.ts";
 
@@ -20,6 +21,7 @@ export interface ProspectIntelligenceInput {
   reviewCount?: number;
   painSignals: string[];
   offer: string;
+  workspaceKnowledge?: RevenueAgentWorkspaceKnowledgeContext;
 }
 
 export interface ProspectIntelligenceResult {
@@ -209,6 +211,84 @@ function normalizeOptional(value: string | undefined | null): string {
 
 function uniqueStrings(values: Array<string | undefined | null>): string[] {
   return [...new Set(values.map((item) => normalizeOptional(item)).filter((item) => item.length > 0))];
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const truncated = value.slice(0, maxLength);
+  const lastSpaceIndex = truncated.lastIndexOf(" ");
+  return (lastSpaceIndex > 80 ? truncated.slice(0, lastSpaceIndex) : truncated).trim();
+}
+
+function buildWorkspaceKnowledgePromptContext(
+  workspaceKnowledge: ProspectIntelligenceInput["workspaceKnowledge"],
+): Record<string, unknown> | undefined {
+  if (!workspaceKnowledge) {
+    return undefined;
+  }
+
+  const profile = workspaceKnowledge.profile;
+  const emailIdentity = workspaceKnowledge.emailIdentity;
+  const sources = (workspaceKnowledge.sources ?? []).slice(0, 4).map((source) => {
+    const excerpt = truncateText(
+      normalizeOptional(source.extractedText) || normalizeOptional(source.rawText) || "",
+      240,
+    );
+
+    return {
+      id: source.id,
+      sourceType: source.sourceType,
+      title: source.title,
+      sourceUrl: source.sourceUrl,
+      processingStatus: source.processingStatus,
+      excerpt: excerpt || undefined,
+    };
+  });
+
+  return {
+    businessName: workspaceKnowledge.businessName,
+    websiteUrl: workspaceKnowledge.websiteUrl,
+    niche: workspaceKnowledge.niche,
+    profile: profile
+      ? {
+          voiceSummary: profile.voiceSummary,
+          audienceSummary: profile.audienceSummary,
+          positioningSummary: profile.positioningSummary,
+          beliefs: profile.beliefs,
+          topicClusters: profile.topicClusters,
+          sourceCount: profile.sourceCount,
+          processingStatus: profile.processingStatus,
+          processingError: profile.processingError,
+          lastProcessedAt: profile.lastProcessedAt,
+        }
+      : undefined,
+    emailIdentity,
+    sourceCount: workspaceKnowledge.sources?.length ?? 0,
+    sourceHighlights: sources,
+  };
+}
+
+function resolveWorkspaceSignature(
+  workspaceKnowledge: ProspectIntelligenceInput["workspaceKnowledge"],
+): string {
+  const signatureText = workspaceKnowledge?.emailIdentity?.signatureText?.trim();
+  if (signatureText) {
+    return signatureText;
+  }
+
+  const fromName = workspaceKnowledge?.emailIdentity?.fromName?.trim();
+  const replyToEmail = workspaceKnowledge?.emailIdentity?.replyToEmail?.trim();
+  const fromEmail = workspaceKnowledge?.emailIdentity?.fromEmail?.trim();
+
+  const identityLines = [fromName, replyToEmail || fromEmail].filter((value): value is string => Boolean(value));
+  if (identityLines.length > 0) {
+    return identityLines.join("\n");
+  }
+
+  return "Best,\nFounder Content";
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -705,6 +785,7 @@ function buildWebsiteSnapshot(input: ProspectIntelligenceInput, html: string | u
 }
 
 function buildFallbackAnalysis(input: ProspectIntelligenceInput, snapshot: WebsiteSnapshot): CompletedAnalysis {
+  const workspaceKnowledge = input.workspaceKnowledge;
   const techStack = {
     cms: snapshot.cms,
     analytics: snapshot.analytics,
@@ -754,6 +835,9 @@ function buildFallbackAnalysis(input: ProspectIntelligenceInput, snapshot: Websi
   const websiteSummary = snapshot.title || snapshot.metaDescription
     ? `The site presents ${snapshot.title || input.businessName} and signals ${snapshot.metaDescription || "a simple public presence"}, but the conversion path still looks limited.`
     : "The website does not provide enough obvious conversion signals to suggest a strong self-serve booking path.";
+  const workspacePositioning = workspaceKnowledge?.profile?.positioningSummary?.trim();
+  const workspaceVoice = workspaceKnowledge?.profile?.voiceSummary?.trim();
+  const workspaceAudience = workspaceKnowledge?.profile?.audienceSummary?.trim();
   const businessProfile = buildBusinessProfile(input, snapshot, techStack);
   const salesStrategy = buildSalesStrategy(input, snapshot, businessProfile, {
     painPoints,
@@ -762,6 +846,16 @@ function buildFallbackAnalysis(input: ProspectIntelligenceInput, snapshot: Websi
       ? input.offer.trim()
       : "AI booking and follow-up automation that reduces front-desk work",
   });
+  const signature = resolveWorkspaceSignature(workspaceKnowledge);
+  const introduction = workspaceVoice
+    ? `I kept this aligned to the workspace voice and focused it on ${workspaceVoice.toLowerCase()}.`
+    : "I kept this tight and focused on a practical next step.";
+  const angleLine = workspacePositioning
+    ? `I think ${salesStrategy.recommendedOffer.toLowerCase()} fits your positioning around ${workspacePositioning.toLowerCase()}.`
+    : `I think ${salesStrategy.recommendedOffer.toLowerCase()} could recover more inbound opportunities without adding front-desk work.`;
+  const audienceLine = workspaceAudience
+    ? `The note is written for ${workspaceAudience.toLowerCase()}.`
+    : "The note is written for the owner or manager who wants a cleaner follow-up process.";
 
   return {
     businessSummary: `${input.businessName} is a ${input.industry.toLowerCase()} business in ${[input.city, input.state].filter(Boolean).join(", ") || "its local market"}.`,
@@ -783,16 +877,19 @@ function buildFallbackAnalysis(input: ProspectIntelligenceInput, snapshot: Websi
     emailBody: [
       `Hi ${input.businessName},`,
       "",
+      introduction,
+      "",
       `I took a quick look at your website and noticed a few places where lead capture and follow-up could be tighter.`,
       "",
       painSummary,
       "",
-      `The simplest win looks like ${salesStrategy.recommendedOffer} to recover more inbound opportunities without adding front-desk work.`,
+      angleLine,
+      "",
+      audienceLine,
       "",
       "If helpful, I can send a short audit with the exact gaps I would test first.",
       "",
-      "Best,",
-      "Founder Content",
+      signature,
     ].join("\n"),
     opportunityTags: buildOpportunityTags({
       bookingSoftware: snapshot.bookingSoftware,
@@ -825,12 +922,15 @@ function buildFallbackAnalysis(input: ProspectIntelligenceInput, snapshot: Websi
 }
 
 function buildPrompt(input: ProspectIntelligenceInput, snapshot: WebsiteSnapshot, analysis: ProspectIntelligenceResult): string {
+  const workspaceKnowledgeContext = buildWorkspaceKnowledgePromptContext(input.workspaceKnowledge);
   return [
     "You are a revenue operator analyzing a local business website for outreach.",
     "Return a single JSON object only.",
     "Be specific, practical, and founder-led. No hype.",
     "Do not mention that you are an AI model.",
     "Prefer grounded conclusions from the website signals and the business context.",
+    "Use the workspace knowledge as the source of truth for tone, services, CTA, and signature whenever it exists.",
+    "Never invent services, brand facts, or signature details that are not supported by the workspace context.",
     "",
     "JSON SHAPE",
     JSON.stringify(
@@ -920,6 +1020,7 @@ function buildPrompt(input: ProspectIntelligenceInput, snapshot: WebsiteSnapshot
     "- Make the email easy to approve in one glance.",
     "- Make salesStrategy feel like a real sales plan with a primary pain, offer, opening hook, objection handling, and CTA.",
     "- Mirror the provided websiteSignals unless the website page clearly contradicts them.",
+    workspaceKnowledgeContext ? "- Keep the draft aligned to the workspace voice and signature provided below." : "- If no workspace knowledge exists, fall back to a clean founder-led tone.",
     "",
     "BUSINESS CONTEXT",
     JSON.stringify(
@@ -935,6 +1036,7 @@ function buildPrompt(input: ProspectIntelligenceInput, snapshot: WebsiteSnapshot
         painSignals: input.painSignals,
         offer: input.offer,
         websiteSnapshot: snapshot,
+        workspaceKnowledge: workspaceKnowledgeContext,
       },
       null,
       2,

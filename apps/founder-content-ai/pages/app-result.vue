@@ -1546,7 +1546,7 @@ function getMediaSuggestionReason(suggestion: MediaRecommendationSuggestion): st
   }
 
   if (suggestion.visualTemplateType === "carousel") {
-    return "This keeps the workflow content → narrative → visuals instead of making you manually collect disconnected images.";
+    return "This keeps the workflow on content, narrative, and visuals instead of making you manually collect disconnected images.";
   }
 
   return suggestion.reason;

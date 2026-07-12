@@ -858,7 +858,7 @@ onMounted(() => {
     <section class="workspace-card ideas-header-card">
       <div>
         <p class="workspace-eyebrow">Idea inbox</p>
-        <h1>Idea → angle → post → publish</h1>
+        <h1>Idea to angle to post to publish</h1>
         <p class="workspace-description">
           Capture raw thoughts, shape them into reusable angles, and move the best ones into real drafts without leaving the workspace.
         </p>
