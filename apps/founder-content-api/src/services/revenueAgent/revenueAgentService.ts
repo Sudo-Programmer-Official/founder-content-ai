@@ -3100,7 +3100,7 @@ async function createDraftMessage(
           created_at,
           updated_at
       `,
-      [current.id, research.id, runId, nextType, research.emailSubject, research.emailBody],
+      [current.id, research.id, runId, nextType, research.email_subject, research.email_body],
       client,
     );
 
@@ -3147,7 +3147,7 @@ async function createDraftMessage(
         created_at,
         updated_at
     `,
-    [prospect.business_id, prospect.id, research.id, runId, research.emailSubject, research.emailBody],
+    [prospect.business_id, prospect.id, research.id, runId, research.email_subject, research.email_body],
     client,
   );
 
