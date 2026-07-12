@@ -62,6 +62,7 @@ import {
   getRepurposeStrategyOption,
   resolveRepurposeStrategySubmitLabel,
 } from "../utils/repurpose-strategies";
+import { actionIcons, aiFeatureIcons, iconSizes, iconStrokeWidth } from "../src/icons";
 import { appRoutes } from "../utils/routes";
 import {
   findConnectedFacebookAccount,
@@ -3348,7 +3349,19 @@ onBeforeUnmount(() => {
             :data-state="index < activeGenerationStepIndex ? 'complete' : index === activeGenerationStepIndex ? 'active' : 'pending'"
           >
             <span class="generation-status-marker">
-              {{ index < activeGenerationStepIndex ? "✓" : index + 1 }}
+              <component
+                v-if="index < activeGenerationStepIndex"
+                :is="actionIcons.approve"
+                :size="iconSizes.dense"
+                :stroke-width="iconStrokeWidth"
+              />
+              <component
+                v-else-if="index === activeGenerationStepIndex"
+                :is="aiFeatureIcons.generate"
+                :size="iconSizes.dense"
+                :stroke-width="iconStrokeWidth"
+              />
+              <span v-else>{{ index + 1 }}</span>
             </span>
             <div class="generation-status-step-copy">
               <strong>{{ step.label }}</strong>
@@ -4102,6 +4115,10 @@ onBeforeUnmount(() => {
   color: var(--fc-text-muted);
   font-size: 0.84rem;
   font-weight: 800;
+}
+
+.generation-status-marker :deep(svg) {
+  display: block;
 }
 
 .generation-status-step[data-state="active"] .generation-status-marker {

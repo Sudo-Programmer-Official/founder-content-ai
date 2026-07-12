@@ -787,7 +787,7 @@ function resolveFeedConfigFromBusiness(row: BusinessRow, runRow?: RunRow | null)
       state: runRow.state,
       offer: runRow.offer,
       dailyLeadLimit: toNumber(runRow.daily_lead_limit) || 20,
-      provider: runRow.provider,
+      provider: runRow.provider === "csv_import" ? "csv_import" : "google_business",
       csvText: typeof inputJson.csvText === "string" ? inputJson.csvText : undefined,
     };
   }
@@ -798,7 +798,7 @@ function resolveFeedConfigFromBusiness(row: BusinessRow, runRow?: RunRow | null)
     state: "",
     offer: "AI booking + follow-up automation",
     dailyLeadLimit: 20,
-    provider: "mock",
+    provider: "google_business",
   };
 }
 

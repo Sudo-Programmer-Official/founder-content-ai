@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import type { PublicMarketingAssistantTopic } from "../../../packages/shared-types";
+import { actionIcons, iconSizes, iconStrokeWidth } from "../src/icons";
 import { requestCreatePublicMarketingInquiry } from "../services/public-marketing-service";
 
 type ConciergePrompt = {
@@ -185,7 +186,7 @@ onMounted(() => {
             aria-label="Close Growth Concierge"
             @click="closeWidget"
           >
-            ×
+            <component :is="actionIcons.close" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
           </button>
         </div>
 
@@ -377,15 +378,20 @@ onMounted(() => {
 }
 
 .marketing-concierge-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 42px;
   height: 42px;
   border: 0;
   border-radius: 14px;
   background: rgba(36, 71, 77, 0.08);
   color: var(--marketing-concierge-teal);
-  font-size: 1.45rem;
-  line-height: 1;
   cursor: pointer;
+}
+
+.marketing-concierge-close :deep(svg) {
+  display: block;
 }
 
 .marketing-concierge-body {

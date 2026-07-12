@@ -46,6 +46,7 @@ import { requestBrandKit } from "../services/brand-kit-service";
 import { requestGenerateBrandStudioAsset } from "../services/brand-studio-service";
 import { requestPostAssets } from "../services/post-assets-service";
 import { requestWorkspaceInsights } from "../services/workspace-insights-service";
+import { actionIcons, aiFeatureIcons, iconSizes, iconStrokeWidth } from "../src/icons";
 import { appRoutes } from "../utils/routes";
 import {
   addDaysToDateKey,
@@ -2252,7 +2253,9 @@ onMounted(() => {
           :disabled="gapDays.length === 0"
           @click="focusFirstGap"
         >
-          <span class="planner-header-button-icon" aria-hidden="true">↘</span>
+          <span class="planner-header-button-icon" aria-hidden="true">
+            <component :is="actionIcons.arrowDownRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           <span class="planner-header-button-copy">
             <strong>Fill next gap</strong>
             <small>
@@ -2269,7 +2272,9 @@ onMounted(() => {
           class="workspace-primary-button planner-header-button planner-header-button-primary"
           @click="() => openNewPostFlow()"
         >
-          <span class="planner-header-button-icon" aria-hidden="true">+</span>
+          <span class="planner-header-button-icon" aria-hidden="true">
+            <component :is="aiFeatureIcons.generate" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           <span class="planner-header-button-copy">
             <strong>New post</strong>
             <small>Open composer</small>
@@ -3299,6 +3304,11 @@ onMounted(() => {
 .planner-inline-action-icon {
   background: rgba(245, 232, 219, 0.92);
   color: #c76528;
+}
+
+.planner-header-button-icon :deep(svg),
+.planner-inline-action-icon :deep(svg) {
+  display: block;
 }
 
 .planner-header-button-copy {

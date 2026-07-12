@@ -1,4 +1,4 @@
-export type RevenueAgentLeadSourceProvider = "google_business" | "mock" | "csv_import";
+export type RevenueAgentLeadSourceProvider = "google_business" | "csv_import";
 export type RevenueAgentWebsitePerformanceBand = "strong" | "moderate" | "weak" | "unknown";
 export type RevenueAgentProspectStatus =
   | "new"

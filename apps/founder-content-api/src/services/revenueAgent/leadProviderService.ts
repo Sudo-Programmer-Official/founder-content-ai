@@ -509,60 +509,6 @@ function parseLeadRows(csvText: string, input: LeadSearchInput): LeadSourceLead[
   return leads;
 }
 
-function buildMockLeadSource(provider: RevenueAgentLeadSourceProvider): LeadProvider {
-  return {
-    provider,
-    async search(input: LeadSearchInput): Promise<LeadSourceLead[]> {
-      const limit = Math.max(1, Math.min(25, Math.floor(input.limit || 20)));
-      const city = normalizeOptional(input.city) || "Local";
-      const state = normalizeOptional(input.state) || "";
-      const industry = normalizeOptional(input.industry) || "local business";
-      const slugBase = `${industry}-${city}-${state}-${provider}`;
-      const leads: LeadSourceLead[] = [];
-
-      for (let index = 0; index < limit; index += 1) {
-        const businessName = buildBusinessNameVariants(industry, city, index);
-        const slug = slugify(`${slugBase}-${index}-${businessName}`);
-        const rating = Math.max(3.4, Math.min(4.9, 4.1 + ((index % 4) * 0.18) - (index % 3 === 0 ? 0.22 : 0)));
-        const reviewCount = 18 + index * 11;
-        const hasWebsite = index % 5 !== 0;
-        const hasEmail = index % 4 !== 1;
-        const hasPhone = index % 6 !== 2;
-        const painSignals = [
-          reviewCount < 50 ? "light review volume" : "steady demand",
-          rating < 4.4 ? "rating pressure" : "good reputation with missed response opportunities",
-          index % 2 === 0 ? "inbound follow-up likely manual" : "front desk capacity is probably the bottleneck",
-        ];
-
-        leads.push({
-          businessName,
-          website: hasWebsite ? `https://${slug}.com` : undefined,
-          email: hasEmail ? `hello@${slug}.com` : undefined,
-          phone: hasPhone ? `(555) 01${String(index).padStart(2, "0")}-${String(110 + index).padStart(4, "0")}` : undefined,
-          city,
-          state,
-          industry,
-          source: provider,
-          sourceUrl: `https://maps.google.com/?q=${encodeURIComponent(`${businessName}, ${city} ${state}`.trim())}`,
-          rating,
-          reviewCount,
-          painSignals,
-          tags: [
-            provider === "google_business" ? "google-business" : "mock",
-            industry.toLowerCase().includes("salon") ? "salon" : industry.toLowerCase().includes("spa") ? "med-spa" : "local-service",
-            reviewCount < 100 ? "under-reviewed" : "well-reviewed",
-          ],
-        });
-      }
-
-      return leads;
-    },
-    async enrich(lead: LeadSourceLead): Promise<LeadSourceLead> {
-      return lead;
-    },
-  };
-}
-
 function buildCsvImportLeadSource(): LeadProvider {
   return {
     provider: "csv_import",
@@ -588,21 +534,17 @@ function buildCsvImportLeadSource(): LeadProvider {
 }
 
 export function resolveLeadSourceProvider(provider?: RevenueAgentLeadSourceProvider): RevenueAgentLeadSourceProvider {
-  return provider === "google_business" || provider === "csv_import" ? provider : "mock";
+  return provider === "csv_import" ? "csv_import" : "google_business";
 }
 
 export function resolveLeadSourceProviderInstance(provider?: RevenueAgentLeadSourceProvider): LeadProvider {
   const resolvedProvider = resolveLeadSourceProvider(provider);
 
-  if (resolvedProvider === "google_business") {
-    return buildGoogleBusinessLeadSource();
-  }
-
   if (resolvedProvider === "csv_import") {
     return buildCsvImportLeadSource();
   }
 
-  return buildMockLeadSource(resolvedProvider);
+  return buildGoogleBusinessLeadSource();
 }
 
 export function buildLeadSourceQueryJson(

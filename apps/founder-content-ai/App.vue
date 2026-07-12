@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useProductAccessContext } from "./access/product-access-context";
 import { useAuthContext } from "./auth/auth-context";
 import WorkspaceSwitcher from "./components/WorkspaceSwitcher.vue";
+import { actionIcons, aiFeatureIcons, iconSizes, iconStrokeWidth, navigationIcons } from "./src/icons";
 import { appRoutes } from "./utils/routes";
 
 const route = useRoute();
@@ -58,44 +59,52 @@ const shouldHoldWorkspaceRoute = computed(
         !hasWorkspaceMemberships.value)),
 );
 
-  const visibleAppLinks = computed(() => {
-    const hasWorkspaceContext = Boolean(currentWorkspaceId.value);
-    const canUsePlanner = hasWorkspaceContext && isFeatureEnabled("scheduler");
-    const canUseDashboard = hasWorkspaceContext && isFeatureEnabled("control_dashboard");
-    const canUseBrandStudio = hasWorkspaceContext && isFeatureEnabled("brand_intelligence");
-    const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
-    const canUseEmail = hasWorkspaceContext && isFeatureEnabled("email_campaigns");
-    const canUseBlogPublishing = hasWorkspaceContext && isFeatureEnabled("blog_publishing");
+interface AppNavLink {
+  to: string;
+  label: string;
+  shortLabel: string;
+  icon: Component;
+  visible?: boolean;
+}
 
-    return [
-      { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", visible: canUseDashboard },
-      { to: appRoutes.appIdeas, label: "Ideas", shortLabel: "I", visible: canUseDashboard },
-      { to: appRoutes.appAssets, label: "Assets", shortLabel: "AS", visible: canUseDashboard },
-      { to: appRoutes.appBrandStudio, label: "Brand", shortLabel: "B", visible: canUseBrandStudio },
-      { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", visible: canUsePlanner },
-      { to: appRoutes.appAutomationStudio, label: "Automation", shortLabel: "AU", visible: canUsePlanner },
-      { to: appRoutes.appHistory, label: "History", shortLabel: "H", visible: canUsePlanner },
-      { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", visible: canUseEmail },
-      { to: appRoutes.appOutreach, label: "Outreach", shortLabel: "O", visible: canUseOutreach },
-      { to: appRoutes.appRevenueAgent, label: "Revenue", shortLabel: "R", visible: hasWorkspaceContext },
-      { to: appRoutes.appEmail, label: "Email", shortLabel: "E", visible: canUseEmail },
-      { to: appRoutes.appBlog, label: "Blog", shortLabel: "BL", visible: canUseBlogPublishing },
-      { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", visible: canUseDashboard },
-      { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", visible: true },
-      { to: appRoutes.admin, label: "Admin", shortLabel: "AD", visible: canAccessAdmin.value },
-    ].filter((link) => link.visible);
-  });
+const visibleAppLinks = computed<AppNavLink[]>(() => {
+  const hasWorkspaceContext = Boolean(currentWorkspaceId.value);
+  const canUsePlanner = hasWorkspaceContext && isFeatureEnabled("scheduler");
+  const canUseDashboard = hasWorkspaceContext && isFeatureEnabled("control_dashboard");
+  const canUseBrandStudio = hasWorkspaceContext && isFeatureEnabled("brand_intelligence");
+  const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
+  const canUseEmail = hasWorkspaceContext && isFeatureEnabled("email_campaigns");
+  const canUseBlogPublishing = hasWorkspaceContext && isFeatureEnabled("blog_publishing");
+
+  return [
+    { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", icon: navigationIcons.dashboard, visible: canUseDashboard },
+    { to: appRoutes.appIdeas, label: "Ideas", shortLabel: "I", icon: navigationIcons.ideas, visible: canUseDashboard },
+    { to: appRoutes.appAssets, label: "Assets", shortLabel: "AS", icon: navigationIcons.assets, visible: canUseDashboard },
+    { to: appRoutes.appBrandStudio, label: "Brand", shortLabel: "B", icon: navigationIcons.brand, visible: canUseBrandStudio },
+    { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", icon: navigationIcons.planner, visible: canUsePlanner },
+    { to: appRoutes.appAutomationStudio, label: "Automation", shortLabel: "AU", icon: navigationIcons.automation, visible: canUsePlanner },
+    { to: appRoutes.appHistory, label: "History", shortLabel: "H", icon: navigationIcons.history, visible: canUsePlanner },
+    { to: appRoutes.appGrowth, label: "Growth", shortLabel: "G", icon: navigationIcons.growth, visible: canUseEmail },
+    { to: appRoutes.appOutreach, label: "Outreach", shortLabel: "O", icon: navigationIcons.outreach, visible: canUseOutreach },
+    { to: appRoutes.appRevenueAgent, label: "Revenue", shortLabel: "R", icon: navigationIcons.revenue, visible: hasWorkspaceContext },
+    { to: appRoutes.appEmail, label: "Email", shortLabel: "E", icon: navigationIcons.email, visible: canUseEmail },
+    { to: appRoutes.appBlog, label: "Blog", shortLabel: "BL", icon: navigationIcons.blog, visible: canUseBlogPublishing },
+    { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", icon: navigationIcons.analytics, visible: canUseDashboard },
+    { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", icon: navigationIcons.settings, visible: true },
+    { to: appRoutes.admin, label: "Admin", shortLabel: "AD", icon: navigationIcons.admin, visible: canAccessAdmin.value },
+  ].filter((link): link is AppNavLink => link.visible === true);
+});
 
 const mobileDockLinks = computed(() => {
   const findLink = (to: string) => visibleAppLinks.value.find((link) => link.to === to) ?? null;
 
   return [
     findLink(appRoutes.appIdeas),
-    { to: appRoutes.appGenerate, label: "Create", shortLabel: "C" },
+    { to: appRoutes.appGenerate, label: "Create", shortLabel: "C", icon: aiFeatureIcons.generate },
     findLink(appRoutes.appPlanner),
     findLink(appRoutes.appEmail),
     findLink(appRoutes.settingsPreferences),
-  ].filter(Boolean) as Array<{ to: string; label: string; shortLabel: string }>;
+  ].filter(Boolean) as Array<Pick<AppNavLink, "to" | "label" | "shortLabel" | "icon">>;
 });
 
 const pageTitleMap: Record<string, string> = {
@@ -312,9 +321,7 @@ async function goToAdmin(): Promise<void> {
           aria-label="Open site navigation"
           @click="mobileMenuOpen = true"
         >
-          <span></span>
-          <span></span>
-          <span></span>
+          <component :is="actionIcons.menu" :size="iconSizes.default" :stroke-width="iconStrokeWidth" />
         </button>
 
         <nav class="site-nav" :class="{ 'public-nav': isPublicShell }">
@@ -336,10 +343,15 @@ async function goToAdmin(): Promise<void> {
         <div class="header-controls" :class="{ 'public-controls': isPublicShell }">
           <template v-if="isPublicShell">
             <template v-if="auth.isAuthenticated.value">
-              <router-link class="header-link public-header-link" :to="appRoutes.appGenerate">Open App</router-link>
+              <router-link class="header-link public-header-link" :to="appRoutes.appGenerate">
+                <component :is="actionIcons.open" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                <span>Open App</span>
+              </router-link>
               <button class="header-secondary-button public-account-button" type="button" @click="handleLogout">
                 <span>Logout</span>
-                <span class="public-account-button-chevron" aria-hidden="true">›</span>
+                <span class="public-account-button-chevron" aria-hidden="true">
+                  <component :is="actionIcons.logOut" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                </span>
               </button>
             </template>
             <template v-else>
@@ -379,8 +391,7 @@ async function goToAdmin(): Promise<void> {
                 aria-label="Close site navigation"
                 @click="mobileMenuOpen = false"
               >
-                <span></span>
-                <span></span>
+                <component :is="actionIcons.close" :size="iconSizes.default" :stroke-width="iconStrokeWidth" />
               </button>
             </div>
 
@@ -452,7 +463,12 @@ async function goToAdmin(): Promise<void> {
             :title="sidebarCollapsed ? 'Open panel' : 'Close panel'"
             @click="toggleSidebar"
           >
-            <span aria-hidden="true">{{ sidebarCollapsed ? ">" : "<" }}</span>
+            <component
+              :is="sidebarCollapsed ? actionIcons.expandSidebar : actionIcons.collapseSidebar"
+              :size="iconSizes.dense"
+              :stroke-width="iconStrokeWidth"
+              aria-hidden="true"
+            />
           </button>
         </div>
 
@@ -462,7 +478,9 @@ async function goToAdmin(): Promise<void> {
           :to="appRoutes.appGenerate"
           :title="sidebarCollapsed ? 'New Post' : undefined"
         >
-          <span class="sidebar-primary-cta-icon">{{ sidebarCollapsed ? "+" : "✦" }}</span>
+          <span class="sidebar-primary-cta-icon">
+            <component :is="aiFeatureIcons.generate" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           <span class="sidebar-primary-cta-copy">New Post</span>
         </router-link>
 
@@ -474,7 +492,9 @@ async function goToAdmin(): Promise<void> {
             class="sidebar-link"
             :title="sidebarCollapsed ? link.label : undefined"
           >
-            <span class="sidebar-link-icon">{{ link.shortLabel }}</span>
+            <span class="sidebar-link-icon">
+              <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+            </span>
             <span class="sidebar-link-copy">{{ link.label }}</span>
           </router-link>
         </nav>
@@ -527,7 +547,9 @@ async function goToAdmin(): Promise<void> {
                 <strong>{{ userLabel }}</strong>
                 <small>Account</small>
               </div>
-              <span class="sidebar-account-chevron" aria-hidden="true">⌄</span>
+              <span class="sidebar-account-chevron" aria-hidden="true">
+                <component :is="actionIcons.chevronDown" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+              </span>
             </button>
 
             <transition name="sidebar-fade">
@@ -577,8 +599,7 @@ async function goToAdmin(): Promise<void> {
                 aria-label="Close navigation"
                 @click="mobileMenuOpen = false"
               >
-                <span></span>
-                <span></span>
+                <component :is="actionIcons.close" :size="iconSizes.default" :stroke-width="iconStrokeWidth" />
               </button>
             </div>
 
@@ -587,7 +608,9 @@ async function goToAdmin(): Promise<void> {
               :to="appRoutes.appGenerate"
               @click="mobileMenuOpen = false"
             >
-              <span class="sidebar-primary-cta-icon">✦</span>
+              <span class="sidebar-primary-cta-icon">
+                <component :is="aiFeatureIcons.generate" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+              </span>
               <span class="sidebar-primary-cta-copy">New Post</span>
             </router-link>
 
@@ -599,7 +622,9 @@ async function goToAdmin(): Promise<void> {
                 class="sidebar-link"
                 @click="mobileMenuOpen = false"
               >
-                <span class="sidebar-link-icon">{{ link.shortLabel }}</span>
+                <span class="sidebar-link-icon">
+                  <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                </span>
                 <span class="sidebar-link-copy">{{ link.label }}</span>
               </router-link>
             </nav>
@@ -665,7 +690,9 @@ async function goToAdmin(): Promise<void> {
             :to="link.to"
             class="mobile-bottom-dock-link"
           >
-            <span>{{ link.shortLabel }}</span>
+            <span class="mobile-bottom-dock-icon">
+              <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+            </span>
             <small>{{ link.label }}</small>
           </router-link>
         </nav>
@@ -864,6 +891,9 @@ async function goToAdmin(): Promise<void> {
 }
 
 .header-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--fc-text);
   font-weight: 700;
   text-decoration: none;
@@ -911,8 +941,10 @@ async function goToAdmin(): Promise<void> {
   min-width: 52px;
   min-height: 44px;
   border-left: 1px solid rgba(112, 84, 62, 0.1);
-  font-size: 1.35rem;
-  line-height: 1;
+}
+
+.public-account-button-chevron :deep(svg) {
+  display: block;
 }
 
 .sidebar-footer-action {
@@ -979,8 +1011,6 @@ async function goToAdmin(): Promise<void> {
   height: 28px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.18);
-  font-size: 0.92rem;
-  line-height: 1;
 }
 
 .sidebar-primary-cta.compact {
@@ -1053,6 +1083,12 @@ async function goToAdmin(): Promise<void> {
   font-size: 0.82rem;
   font-weight: 800;
   letter-spacing: 0.04em;
+}
+
+.sidebar-link-icon :deep(svg),
+.sidebar-primary-cta-icon :deep(svg),
+.sidebar-account-chevron :deep(svg) {
+  display: block;
 }
 
 .sidebar-link.router-link-active .sidebar-link-icon {
@@ -1135,9 +1171,7 @@ async function goToAdmin(): Promise<void> {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.55);
   color: var(--fc-text-muted);
-  font-size: 0.95rem;
   font-weight: 800;
-  line-height: 1;
   transition: transform 160ms ease;
 }
 
@@ -1279,41 +1313,17 @@ async function goToAdmin(): Promise<void> {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
   width: 44px;
   height: 44px;
   border: 1px solid var(--fc-border);
   border-radius: 14px;
   background: var(--fc-surface);
+  color: var(--fc-text);
   cursor: pointer;
 }
 
-.mobile-menu-button span {
+.mobile-menu-button :deep(svg) {
   display: block;
-  width: 18px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--fc-text);
-}
-
-.close-button {
-  position: relative;
-}
-
-.close-button span {
-  position: absolute;
-}
-
-.close-button span:nth-child(2) {
-  opacity: 0;
-}
-
-.close-button span:first-child {
-  transform: rotate(45deg);
-}
-
-.close-button span:last-child {
-  transform: rotate(-45deg);
 }
 
 .mobile-sidebar-overlay {
@@ -1556,10 +1566,14 @@ async function goToAdmin(): Promise<void> {
     background: color-mix(in srgb, var(--fc-panel-bg) 78%, white 22%);
   }
 
-  .mobile-bottom-dock-link span {
-    font-size: 0.78rem;
-    font-weight: 800;
-    letter-spacing: 0.02em;
+  .mobile-bottom-dock-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .mobile-bottom-dock-icon :deep(svg) {
+    display: block;
   }
 
   .mobile-bottom-dock-link small {

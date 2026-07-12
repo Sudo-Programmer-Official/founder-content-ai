@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import type { BusinessMembership } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import { useAuthContext } from "../auth/auth-context";
+import { actionIcons, iconSizes, iconStrokeWidth } from "../src/icons";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
 import { requestOnboardingWorkspace } from "../services/onboarding-service";
 
@@ -207,7 +208,9 @@ watch(
         <strong>{{ currentWorkspaceLabel }}</strong>
         <small>{{ currentWorkspaceMeta }}</small>
       </span>
-      <span class="workspace-switcher-chevron" :class="{ open: isOpen }">⌄</span>
+      <span class="workspace-switcher-chevron" :class="{ open: isOpen }">
+        <component :is="actionIcons.chevronDown" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+      </span>
     </button>
 
     <div v-if="isOpen" class="workspace-switcher-panel" role="dialog" aria-label="Workspace switcher">
@@ -222,6 +225,11 @@ watch(
           :disabled="isCreating"
           @click="isCreateFormOpen = !isCreateFormOpen"
         >
+          <component
+            :is="isCreateFormOpen ? actionIcons.close : actionIcons.add"
+            :size="iconSizes.dense"
+            :stroke-width="iconStrokeWidth"
+          />
           {{ isCreateFormOpen ? "Close" : "New workspace" }}
         </button>
       </div>
@@ -302,6 +310,7 @@ watch(
             :disabled="isCreating"
             @click="resetCreateForm"
           >
+            <component :is="actionIcons.close" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
             Cancel
           </button>
         </div>
@@ -369,10 +378,19 @@ watch(
 }
 
 .workspace-switcher-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
   color: var(--fc-text-muted);
-  font-size: 1.1rem;
-  line-height: 1;
   transition: transform 140ms ease;
+}
+
+.workspace-switcher-chevron :deep(svg),
+.workspace-switcher-inline-action :deep(svg),
+.workspace-create-secondary :deep(svg) {
+  display: block;
 }
 
 .workspace-switcher-chevron.open {

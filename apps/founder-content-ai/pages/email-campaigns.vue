@@ -10,6 +10,7 @@ import type {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useProductAccessContext } from "../access/product-access-context";
 import { requestBillingOverview } from "../services/billing-service";
+import { actionIcons, iconSizes, iconStrokeWidth } from "../src/icons";
 import {
   requestEmailCampaignCreate,
   requestEmailCampaignSend,
@@ -717,7 +718,10 @@ onBeforeUnmount(() => {
           <ul class="warning-list">
             <li v-for="warning in campaignBillingWarnings" :key="warning">{{ warning }}</li>
           </ul>
-          <a class="upgrade-link" :href="appRoutes.appBilling">Keep sending →</a>
+          <a class="upgrade-link" :href="appRoutes.appBilling">
+            <span>Keep sending</span>
+            <component :is="actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </a>
         </article>
         <article v-if="emailAddon" class="setup-banner usage-banner" :class="emailUsageTone">
           <div class="usage-banner-head">
@@ -725,7 +729,10 @@ onBeforeUnmount(() => {
               <strong>{{ emailAddon.label }}</strong>
               <p>{{ emailUsageSummary }}</p>
             </div>
-            <a class="upgrade-link" :href="appRoutes.appBilling">Manage billing</a>
+            <a class="upgrade-link" :href="appRoutes.appBilling">
+              <span>Manage billing</span>
+              <component :is="actionIcons.open" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+            </a>
           </div>
           <p v-if="emailUsageNudge" class="usage-banner-copy">{{ emailUsageNudge }}</p>
         </article>
@@ -808,7 +815,8 @@ onBeforeUnmount(() => {
                 class="upgrade-link"
                 :href="appRoutes.appBilling"
               >
-                Upgrade to keep sending →
+                <span>Upgrade to keep sending</span>
+                <component :is="actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
               </a>
             </article>
 
@@ -867,7 +875,8 @@ onBeforeUnmount(() => {
                 <p>{{ emailUsageSummary }}</p>
               </div>
               <a class="upgrade-link" :href="appRoutes.appBilling">
-                {{ emailUsageTone === "info" ? "View email billing" : "Keep sending →" }}
+                <span>{{ emailUsageTone === "info" ? "View email billing" : "Keep sending" }}</span>
+                <component :is="emailUsageTone === 'info' ? actionIcons.open : actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
               </a>
             </div>
           </article>
@@ -1443,9 +1452,14 @@ onBeforeUnmount(() => {
 .upgrade-link {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   font-weight: 800;
   color: inherit;
   text-decoration: none;
+}
+
+.upgrade-link :deep(svg) {
+  display: block;
 }
 
 .upgrade-link:hover {

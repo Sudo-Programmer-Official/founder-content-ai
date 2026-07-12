@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { OutreachLead } from "../../../../packages/shared-types";
+import { iconSizes, iconStrokeWidth, resolveProspectStatusIcon } from "../../src/icons";
 
 defineProps<{
   lead: OutreachLead;
@@ -24,7 +25,17 @@ const emit = defineEmits<{
         <strong>{{ lead.name }}</strong>
         <p>{{ lead.role }}</p>
       </div>
-      <span class="lead-platform">{{ lead.platform }}</span>
+      <span class="lead-meta-stack">
+        <span class="lead-status-pill" :data-status="lead.status">
+          <component
+            :is="resolveProspectStatusIcon(lead.status)"
+            :size="iconSizes.dense"
+            :stroke-width="iconStrokeWidth"
+          />
+          {{ lead.status }}
+        </span>
+        <span class="lead-platform">{{ lead.platform }}</span>
+      </span>
     </div>
 
     <p class="lead-post">{{ lead.recentPost }}</p>
@@ -91,6 +102,30 @@ const emit = defineEmits<{
   color: var(--fc-text);
   font-size: 0.8rem;
   text-transform: capitalize;
+}
+
+.lead-meta-stack {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.lead-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fc-accent) 10%, var(--fc-surface-muted));
+  color: var(--fc-text);
+  font-size: 0.8rem;
+  text-transform: capitalize;
+}
+
+.lead-status-pill :deep(svg) {
+  display: block;
 }
 
 .lead-post {

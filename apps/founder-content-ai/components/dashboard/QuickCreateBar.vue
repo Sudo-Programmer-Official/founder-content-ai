@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import InactivityPulse from "./InactivityPulse.vue";
+import { aiFeatureIcons, iconSizes, iconStrokeWidth } from "../../src/icons";
 
 defineProps<{
   bestTimeLabel: string;
@@ -28,6 +29,9 @@ const emit = defineEmits<{
 
     <div class="quick-create-actions">
       <button type="button" class="dashboard-button" :disabled="writeDisabled" @click="emit('write')">
+        <span class="quick-create-button-icon">
+          <component :is="aiFeatureIcons.generate" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
         New post
       </button>
       <button
@@ -36,6 +40,9 @@ const emit = defineEmits<{
         :disabled="dailyIdeaLoading || dailyIdeaDisabled"
         @click="emit('daily-idea')"
       >
+        <span class="quick-create-button-icon">
+          <component :is="aiFeatureIcons.idea" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
         {{ dailyIdeaLoading ? "Thinking..." : "Get today's idea" }}
       </button>
     </div>
@@ -79,6 +86,17 @@ const emit = defineEmits<{
 
 .quick-create-actions {
   align-items: stretch;
+}
+
+.quick-create-button-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+}
+
+.quick-create-button-icon :deep(svg) {
+  display: block;
 }
 
 .quick-create-status {

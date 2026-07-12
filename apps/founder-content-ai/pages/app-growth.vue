@@ -12,6 +12,7 @@ import type {
   GrowthLeadStatus,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
+import { actionIcons, iconSizes, iconStrokeWidth, resolveProspectStatusIcon } from "../src/icons";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
 import {
   growthLeadStatusOptions,
@@ -731,6 +732,13 @@ onMounted(() => {
                     <td>{{ formatLeadOrigin(lead) }}</td>
                     <td>
                       <span class="status-pill" :data-status="lead.status">
+                        <span class="status-pill-icon">
+                          <component
+                            :is="resolveProspectStatusIcon(lead.status)"
+                            :size="iconSizes.dense"
+                            :stroke-width="iconStrokeWidth"
+                          />
+                        </span>
                         {{ formatLeadStatus(lead.status) }}
                       </span>
                     </td>
@@ -752,7 +760,16 @@ onMounted(() => {
                 <p class="dashboard-card-label">Selected lead activity</p>
                 <h2>{{ selectedLead?.name || "Choose a lead" }}</h2>
               </div>
-              <span v-if="selectedLead" class="topbar-pill">{{ formatLeadStatus(selectedLead.status) }}</span>
+              <span v-if="selectedLead" class="topbar-pill">
+                <span class="topbar-pill-icon">
+                  <component
+                    :is="resolveProspectStatusIcon(selectedLead.status)"
+                    :size="iconSizes.dense"
+                    :stroke-width="iconStrokeWidth"
+                  />
+                </span>
+                {{ formatLeadStatus(selectedLead.status) }}
+              </span>
             </div>
 
             <template v-if="selectedLead">
@@ -821,6 +838,9 @@ onMounted(() => {
                   </select>
                 </label>
                 <button class="dashboard-button secondary" :disabled="isUpdatingStatus" @click="handleStatusUpdate">
+                  <span class="action-button-icon">
+                    <component :is="actionIcons.save" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                  </span>
                   {{ isUpdatingStatus ? "Saving..." : "Update Status" }}
                 </button>
               </div>
@@ -1050,11 +1070,32 @@ onMounted(() => {
 .status-pill {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   border-radius: 999px;
   padding: 6px 12px;
   font-size: 0.82rem;
   font-weight: 700;
   background: rgba(224, 214, 203, 0.72);
+}
+
+.status-pill-icon,
+.topbar-pill-icon,
+.action-button-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-pill-icon :deep(svg),
+.topbar-pill-icon :deep(svg),
+.action-button-icon :deep(svg) {
+  display: block;
+}
+
+.topbar-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .status-pill[data-status="new"] {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { MissionState, MissionTask } from "./dashboard-types";
+import { actionIcons, iconSizes, iconStrokeWidth } from "../../src/icons";
 
 defineProps<{
   mission: MissionState | null;
@@ -21,14 +22,19 @@ const emit = defineEmits<{
 
       <div class="mission-score">
         <strong>{{ mission?.score ?? 56 }}</strong>
-        <span>→ {{ mission?.targetScore ?? 85 }}</span>
+        <span class="mission-score-target">
+          <component :is="actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          {{ mission?.targetScore ?? 85 }}
+        </span>
       </div>
     </div>
 
     <div class="mission-checklist">
       <article v-for="task in mission?.tasks ?? []" :key="task.label" class="mission-task">
         <div class="mission-task-copy">
-          <span class="mission-checkbox" aria-hidden="true" />
+          <span class="mission-checkbox" aria-hidden="true">
+            <component :is="actionIcons.approve" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           <div>
             <strong>{{ task.label }}</strong>
             <p>{{ task.hint }}</p>
@@ -57,12 +63,15 @@ const emit = defineEmits<{
     <div class="mission-footer">
       <p class="mission-time">{{ mission?.bestTimeDescription }}</p>
       <button
-        v-if="mission?.primaryAction"
-        type="button"
-        class="dashboard-button"
-        @click="emit('primary-action', mission.primaryAction)"
-      >
-        {{ mission.primaryAction.actionLabel }} →
+      v-if="mission?.primaryAction"
+      type="button"
+      class="dashboard-button"
+      @click="emit('primary-action', mission.primaryAction)"
+    >
+        <span class="mission-action-icon">
+          <component :is="actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
+        {{ mission.primaryAction.actionLabel }}
       </button>
     </div>
   </section>
@@ -102,6 +111,12 @@ const emit = defineEmits<{
 
 .mission-score span {
   color: var(--fc-text-muted);
+}
+
+.mission-score-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .mission-checklist {
@@ -155,11 +170,26 @@ const emit = defineEmits<{
 }
 
 .mission-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 18px;
   height: 18px;
   margin-top: 2px;
-  border: 2px solid var(--fc-accent);
   border-radius: 999px;
+  color: var(--fc-accent);
+}
+
+.mission-checkbox :deep(svg),
+.mission-action-icon :deep(svg) {
+  display: block;
+}
+
+.mission-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
 }
 
 @media (max-width: 760px) {

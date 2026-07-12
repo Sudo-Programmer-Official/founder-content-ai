@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { SocialAccount } from "../../../packages/shared-types";
+import { actionIcons, iconSizes, iconStrokeWidth } from "../src/icons";
 import {
   requestMetaAuthSession,
   requestSelectMetaPage,
@@ -157,7 +158,7 @@ watch(
           aria-label="Close page selection"
           @click="emit('close')"
         >
-          ×
+          <component :is="actionIcons.close" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
         </button>
       </div>
 
@@ -303,6 +304,10 @@ watch(
     transform 0.18s ease,
     border-color 0.18s ease,
     background 0.18s ease;
+}
+
+.meta-page-close-button :deep(svg) {
+  display: block;
 }
 
 .meta-page-close-button:hover {

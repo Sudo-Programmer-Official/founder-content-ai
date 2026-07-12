@@ -12,6 +12,7 @@ import type {
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useProductAccessContext } from "../access/product-access-context";
+import { actionIcons, aiFeatureIcons, iconSizes, iconStrokeWidth } from "../src/icons";
 import {
   requestControlDashboard,
   requestConvertIdeaToContent,
@@ -864,7 +865,10 @@ onMounted(() => {
       </div>
 
       <button type="button" class="workspace-primary-button" @click="focusComposer">
-        + New idea
+        <span class="workspace-button-icon">
+          <component :is="actionIcons.add" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
+        New idea
       </button>
     </section>
 
@@ -1138,7 +1142,10 @@ onMounted(() => {
                   <h3>Multiple ways to use the same thought</h3>
                 </div>
                 <button type="button" class="workspace-secondary-button compact" @click="refreshAngles(card.idea.id)">
-                  + Generate more angles
+                  <span class="workspace-button-icon">
+                    <component :is="aiFeatureIcons.generate" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                  </span>
+                  Generate more angles
                 </button>
               </div>
 
@@ -1430,6 +1437,17 @@ onMounted(() => {
   background: color-mix(in srgb, var(--fc-accent) 12%, white 88%);
   border-color: color-mix(in srgb, var(--fc-accent) 30%, var(--fc-border));
   color: var(--fc-accent-dark);
+}
+
+.workspace-button-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+}
+
+.workspace-button-icon :deep(svg) {
+  display: block;
 }
 
 .workspace-input,

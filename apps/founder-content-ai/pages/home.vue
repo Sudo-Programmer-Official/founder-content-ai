@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import type { PublicSocialProofPost, SocialPlatform } from "../../../packages/shared-types";
 import MarketingConciergeWidget from "../components/MarketingConciergeWidget.vue";
+import { actionIcons, aiFeatureIcons, iconSizes, iconStrokeWidth, platformIcons } from "../src/icons";
 import { requestPublicSocialProof } from "../services/public-marketing-service";
 import { appRoutes } from "../utils/routes";
 
@@ -313,9 +314,13 @@ const trustedBrands = computed<TrustedBrand[]>(() => {
       }
 
       return left.name.localeCompare(right.name);
-    })
+  })
     .slice(0, 6);
 });
+
+function resolveSocialPlatformIcon(platform: SocialPlatform) {
+  return platformIcons[platform] ?? platformIcons.facebook;
+}
 
 const trustedByStats = computed(() => {
   const platformCount = new Set(socialProofPosts.value.map((post) => post.platform)).size;
@@ -550,7 +555,10 @@ onMounted(() => {
 
               <div class="social-proof-footer">
                 <span>Live on {{ formatPlatformLabel(post.platform) }}</span>
-                <span class="social-proof-link">View post ↗</span>
+                <span class="social-proof-link">
+                  <component :is="actionIcons.open" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                  View post
+                </span>
               </div>
             </a>
           </div>
@@ -608,7 +616,10 @@ onMounted(() => {
 
               <div class="social-proof-footer">
                 <span>Live on {{ formatPlatformLabel(post.platform) }}</span>
-                <span class="social-proof-link">View post ↗</span>
+                <span class="social-proof-link">
+                  <component :is="actionIcons.open" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                  View post
+                </span>
               </div>
             </a>
           </div>
@@ -636,24 +647,12 @@ onMounted(() => {
           rel="noreferrer noopener"
         >
           <span class="social-channel-icon-shell" aria-hidden="true">
-            <svg v-if="channel.platform === 'linkedin'" class="social-channel-icon" viewBox="0 0 24 24" role="presentation">
-              <path
-                d="M6.78 8.7H3.56V19h3.22V8.7Zm-1.61-1.4c1.03 0 1.68-.73 1.68-1.64-.02-.93-.65-1.64-1.66-1.64s-1.7.71-1.7 1.64c0 .91.67 1.64 1.66 1.64h.02Zm3.4 11.7h3.22v-5.75c0-.3.02-.6.11-.82.24-.6.79-1.23 1.71-1.23 1.21 0 1.69.94 1.69 2.31V19h3.22v-5.88c0-3.15-1.68-4.62-3.93-4.62-1.82 0-2.62 1.01-3.06 1.72h.02V8.7H8.57c.04.97 0 10.3 0 10.3Z"
-                fill="currentColor"
-              />
-            </svg>
-            <svg v-else-if="channel.platform === 'instagram'" class="social-channel-icon" viewBox="0 0 24 24" role="presentation">
-              <path
-                d="M7.75 3h8.5A4.75 4.75 0 0 1 21 7.75v8.5A4.75 4.75 0 0 1 16.25 21h-8.5A4.75 4.75 0 0 1 3 16.25v-8.5A4.75 4.75 0 0 1 7.75 3Zm0 1.5A3.25 3.25 0 0 0 4.5 7.75v8.5a3.25 3.25 0 0 0 3.25 3.25h8.5a3.25 3.25 0 0 0 3.25-3.25v-8.5A3.25 3.25 0 0 0 16.25 4.5h-8.5Zm8.88 1.12a.88.88 0 1 1 0 1.76.88.88 0 0 1 0-1.76ZM12 7.1A4.9 4.9 0 1 1 7.1 12 4.9 4.9 0 0 1 12 7.1Zm0 1.5A3.4 3.4 0 1 0 15.4 12 3.4 3.4 0 0 0 12 8.6Z"
-                fill="currentColor"
-              />
-            </svg>
-            <svg v-else class="social-channel-icon" viewBox="0 0 24 24" role="presentation">
-              <path
-                d="M13.5 20v-7.1h2.43l.37-2.95H13.5V8.06c0-.86.23-1.45 1.46-1.45h1.56V3.97c-.27-.03-1.2-.1-2.28-.1-2.26 0-3.8 1.38-3.8 3.92v2.15H7.9v2.95h2.54V20h3.06Z"
-                fill="currentColor"
-              />
-            </svg>
+            <component
+              :is="resolveSocialPlatformIcon(channel.platform)"
+              class="social-channel-icon"
+              :size="iconSizes.default"
+              :stroke-width="iconStrokeWidth"
+            />
           </span>
 
           <div class="social-channel-copy">
@@ -662,7 +661,9 @@ onMounted(() => {
             <small>{{ channel.accent }}</small>
           </div>
 
-          <span class="social-channel-arrow" aria-hidden="true">↗</span>
+          <span class="social-channel-arrow" aria-hidden="true">
+            <component :is="actionIcons.open" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
         </a>
       </div>
     </section>
@@ -677,9 +678,15 @@ onMounted(() => {
       </div>
 
       <div class="testimonials-stage">
-        <span class="floating-signal floating-signal-left" aria-hidden="true">✓</span>
-        <span class="floating-signal floating-signal-top" aria-hidden="true">f</span>
-        <span class="floating-signal floating-signal-right" aria-hidden="true">★</span>
+        <span class="floating-signal floating-signal-left" aria-hidden="true">
+          <component :is="actionIcons.approve" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
+        <span class="floating-signal floating-signal-top" aria-hidden="true">
+          <component :is="platformIcons.facebook" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
+        <span class="floating-signal floating-signal-right" aria-hidden="true">
+          <component :is="aiFeatureIcons.generate" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
 
         <div class="testimonials-lane">
           <article
@@ -976,7 +983,11 @@ onMounted(() => {
           </p>
           <div class="cta-row">
             <router-link class="primary-cta" :to="appRoutes.signup">
-              Create your first post → publish it in minutes
+              <span>Create your first post</span>
+              <span class="primary-cta-icon" aria-hidden="true">
+                <component :is="actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+              </span>
+              <span>publish it in minutes</span>
             </router-link>
             <a class="secondary-cta" href="/#pricing">See pricing</a>
           </div>
@@ -1541,6 +1552,9 @@ onMounted(() => {
 }
 
 .social-proof-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: #b94b24;
 }
 
@@ -1625,6 +1639,13 @@ onMounted(() => {
   box-shadow: 0 18px 34px rgba(76, 49, 26, 0.14);
 }
 
+.social-channel-icon-shell :deep(svg),
+.social-channel-arrow :deep(svg),
+.floating-signal :deep(svg),
+.social-proof-link :deep(svg) {
+  display: block;
+}
+
 .social-channel-card-linkedin .social-channel-icon-shell {
   background: linear-gradient(135deg, #0a66c2 0%, #004182 100%);
 }
@@ -1638,8 +1659,8 @@ onMounted(() => {
 }
 
 .social-channel-icon {
-  width: 28px;
-  height: 28px;
+  width: 20px;
+  height: 20px;
 }
 
 .social-channel-copy {
@@ -1937,8 +1958,7 @@ onMounted(() => {
   background: rgba(255, 252, 248, 0.92);
   box-shadow: 0 16px 36px rgba(75, 49, 27, 0.08);
   color: #d07a3f;
-  font-size: 1.2rem;
-  font-weight: 800;
+  font-size: 0;
 }
 
 .floating-signal-left {
@@ -2034,6 +2054,16 @@ h1 {
     box-shadow 180ms ease,
     border-color 180ms ease,
     background 180ms ease;
+}
+
+.primary-cta-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.primary-cta-icon :deep(svg) {
+  display: block;
 }
 
 .primary-cta,

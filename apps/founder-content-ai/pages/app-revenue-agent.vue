@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, reactive, ref, watch, type Component } from "vue";
 import { useRoute } from "vue-router";
 import type {
   BusinessMembership,
@@ -15,6 +15,7 @@ import type {
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
+import { actionIcons, iconSizes, iconStrokeWidth, resolveProspectStatusIcon } from "../src/icons";
 import {
   requestDisconnectGoogleCalendar,
   requestGoogleCalendarAuthStart,
@@ -58,7 +59,7 @@ const feedForm = ref<RevenueAgentFeedConfig>({
   state: "TX",
   offer: "AI booking + follow-up automation",
   dailyLeadLimit: 20,
-  provider: "mock",
+  provider: "google_business",
   csvText: "",
 });
 
@@ -117,6 +118,808 @@ const stats = computed(() => ({
   replies: prospects.value.filter((prospect) => prospect.status === "replied").length,
   meetings: prospects.value.filter((prospect) => prospect.status === "meeting_booked").length,
 }));
+
+const searchQuery = ref("");
+const sortKey = ref<"score" | "business" | "status" | "activity">("score");
+const sortDirection = ref<"desc" | "asc">("desc");
+const currentPage = ref(1);
+const tablePageSize = ref(12);
+const activeTab = ref<"overview" | "email" | "activity" | "notes">("overview");
+const selectedProspectIds = ref<string[]>([]);
+const focusedRowIndex = ref(0);
+const bulkActionLoading = ref("");
+const noteDraft = ref("");
+
+const filterState = reactive({
+  industry: "",
+  city: "",
+  state: "",
+  leadSource: "all" as "all" | RevenueAgentProspect["source"],
+  minScore: 0,
+  status: "all" as
+    | "all"
+    | "new"
+    | "researching"
+    | "research_ready"
+    | "draft_ready"
+    | "approved"
+    | "sent"
+    | "replied"
+    | "meeting"
+    | "closed_won"
+    | "closed_lost",
+  hasEmail: "all" as "all" | "yes" | "no",
+  hasWebsite: "all" as "all" | "yes" | "no",
+  hasBooking: "all" as "all" | "yes" | "no",
+  dateWindow: "all" as "all" | "today" | "7d" | "30d",
+});
+
+type RevenueAgentFilterPreset = {
+  name: string;
+  searchQuery: string;
+  sortKey: "score" | "business" | "status" | "activity";
+  sortDirection: "desc" | "asc";
+  tablePageSize: number;
+  filterState: typeof filterState;
+};
+
+const FILTER_STORAGE_KEY = "founder-content-revenue-agent-filters-v2";
+const FILTER_PRESETS_KEY = "founder-content-revenue-agent-filter-presets-v1";
+const savedFilterPresets = ref<RevenueAgentFilterPreset[]>([]);
+
+function cloneFilterState(): RevenueAgentFilterPreset["filterState"] {
+  return {
+    industry: filterState.industry,
+    city: filterState.city,
+    state: filterState.state,
+    leadSource: filterState.leadSource,
+    minScore: filterState.minScore,
+    status: filterState.status,
+    hasEmail: filterState.hasEmail,
+    hasWebsite: filterState.hasWebsite,
+    hasBooking: filterState.hasBooking,
+    dateWindow: filterState.dateWindow,
+  };
+}
+
+function saveFiltersToStorage(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const payload = {
+    searchQuery: searchQuery.value,
+    sortKey: sortKey.value,
+    sortDirection: sortDirection.value,
+    tablePageSize: tablePageSize.value,
+    filterState: cloneFilterState(),
+  };
+
+  window.localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function loadFiltersFromStorage(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const raw = window.localStorage.getItem(FILTER_STORAGE_KEY);
+
+  if (!raw) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<RevenueAgentFilterPreset>;
+
+    searchQuery.value = typeof parsed.searchQuery === "string" ? parsed.searchQuery : searchQuery.value;
+    sortKey.value = parsed.sortKey === "business" || parsed.sortKey === "status" || parsed.sortKey === "activity" ? parsed.sortKey : "score";
+    sortDirection.value = parsed.sortDirection === "asc" ? "asc" : "desc";
+    tablePageSize.value = Number.isFinite(parsed.tablePageSize as number) && (parsed.tablePageSize as number) > 0 ? Math.min(50, Math.max(6, Math.floor(parsed.tablePageSize as number))) : tablePageSize.value;
+
+    const savedFilters = parsed.filterState as Partial<typeof filterState> | undefined;
+    if (savedFilters) {
+      filterState.industry = typeof savedFilters.industry === "string" ? savedFilters.industry : filterState.industry;
+      filterState.city = typeof savedFilters.city === "string" ? savedFilters.city : filterState.city;
+      filterState.state = typeof savedFilters.state === "string" ? savedFilters.state : filterState.state;
+      filterState.leadSource = savedFilters.leadSource === "csv_import" ? "csv_import" : savedFilters.leadSource === "google_business" ? "google_business" : "all";
+      filterState.minScore = Number.isFinite(savedFilters.minScore as number) ? Math.max(0, Math.min(100, Math.floor(savedFilters.minScore as number))) : filterState.minScore;
+      filterState.status =
+        savedFilters.status === "researching" ||
+        savedFilters.status === "research_ready" ||
+        savedFilters.status === "draft_ready" ||
+        savedFilters.status === "approved" ||
+        savedFilters.status === "sent" ||
+        savedFilters.status === "replied" ||
+        savedFilters.status === "meeting" ||
+        savedFilters.status === "closed_won" ||
+        savedFilters.status === "closed_lost" ||
+        savedFilters.status === "new"
+          ? savedFilters.status
+          : "all";
+      filterState.hasEmail = savedFilters.hasEmail === "yes" || savedFilters.hasEmail === "no" ? savedFilters.hasEmail : "all";
+      filterState.hasWebsite = savedFilters.hasWebsite === "yes" || savedFilters.hasWebsite === "no" ? savedFilters.hasWebsite : "all";
+      filterState.hasBooking = savedFilters.hasBooking === "yes" || savedFilters.hasBooking === "no" ? savedFilters.hasBooking : "all";
+      filterState.dateWindow =
+        savedFilters.dateWindow === "today" || savedFilters.dateWindow === "7d" || savedFilters.dateWindow === "30d"
+          ? savedFilters.dateWindow
+          : "all";
+    }
+  } catch {
+    // Ignore malformed local state.
+  }
+
+  const presetRaw = window.localStorage.getItem(FILTER_PRESETS_KEY);
+  if (!presetRaw) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(presetRaw) as RevenueAgentFilterPreset[];
+    savedFilterPresets.value = Array.isArray(parsed) ? parsed : [];
+  } catch {
+    savedFilterPresets.value = [];
+  }
+}
+
+function saveCurrentFilterPreset(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const defaultName = [filterState.industry, filterState.city, filterState.state].filter(Boolean).join(" - ") || "Revenue Agent filter";
+  const presetName = window.prompt("Save this filter as:", defaultName)?.trim();
+
+  if (!presetName) {
+    return;
+  }
+
+  const nextPreset: RevenueAgentFilterPreset = {
+    name: presetName,
+    searchQuery: searchQuery.value,
+    sortKey: sortKey.value,
+    sortDirection: sortDirection.value,
+    tablePageSize: tablePageSize.value,
+    filterState: cloneFilterState(),
+  };
+
+  const nextPresets = [...savedFilterPresets.value.filter((preset) => preset.name !== presetName), nextPreset];
+  savedFilterPresets.value = nextPresets;
+  window.localStorage.setItem(FILTER_PRESETS_KEY, JSON.stringify(nextPresets));
+  saveFiltersToStorage();
+  feedbackMessage.value = `Saved filter "${presetName}".`;
+}
+
+function applyFilterPreset(preset: RevenueAgentFilterPreset): void {
+  searchQuery.value = preset.searchQuery;
+  sortKey.value = preset.sortKey;
+  sortDirection.value = preset.sortDirection;
+  tablePageSize.value = preset.tablePageSize;
+  filterState.industry = preset.filterState.industry;
+  filterState.city = preset.filterState.city;
+  filterState.state = preset.filterState.state;
+  filterState.leadSource = preset.filterState.leadSource;
+  filterState.minScore = preset.filterState.minScore;
+  filterState.status = preset.filterState.status;
+  filterState.hasEmail = preset.filterState.hasEmail;
+  filterState.hasWebsite = preset.filterState.hasWebsite;
+  filterState.hasBooking = preset.filterState.hasBooking;
+  filterState.dateWindow = preset.filterState.dateWindow;
+  currentPage.value = 1;
+}
+
+function toggleBulkSelection(prospectId: string): void {
+  const next = new Set(selectedProspectIds.value);
+  if (next.has(prospectId)) {
+    next.delete(prospectId);
+  } else {
+    next.add(prospectId);
+  }
+  selectedProspectIds.value = [...next];
+}
+
+function setBulkSelection(ids: string[]): void {
+  selectedProspectIds.value = [...new Set(ids)];
+}
+
+function clearBulkSelection(): void {
+  selectedProspectIds.value = [];
+}
+
+function toggleVisibleSelection(): void {
+  if (allVisibleSelected.value) {
+    const visible = new Set(visibleRowIds.value);
+    selectedProspectIds.value = selectedProspectIds.value.filter((id) => !visible.has(id));
+    return;
+  }
+
+  setBulkSelection([...selectedProspectIds.value, ...visibleRowIds.value]);
+}
+
+function isBulkSelected(prospectId: string): boolean {
+  return selectedProspectIds.value.includes(prospectId);
+}
+
+function isProspectSelectedForDetail(prospectId: string): boolean {
+  return selectedProspectId.value === prospectId;
+}
+
+function normalizeText(value: string | undefined | null): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function getProspectWebsiteValue(prospect: RevenueAgentProspect): string {
+  return prospect.website || prospect.research?.websiteUrl || "";
+}
+
+function getLastActivityAt(prospect: RevenueAgentProspect): string | undefined {
+  const timestamps = [
+    prospect.meetingBookedAt,
+    prospect.repliedAt,
+    prospect.sentAt,
+    prospect.approvedAt,
+    prospect.updatedAt,
+    prospect.createdAt,
+  ].filter((value): value is string => Boolean(value));
+
+  if (timestamps.length === 0) {
+    return undefined;
+  }
+
+  return [...timestamps].sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
+}
+
+function formatRelativeTime(value?: string): string {
+  if (!value) {
+    return "Never";
+  }
+
+  const deltaMs = Date.now() - new Date(value).getTime();
+  const deltaMinutes = Math.max(1, Math.floor(Math.abs(deltaMs) / 60_000));
+
+  if (deltaMinutes < 60) {
+    return `${deltaMinutes}m ago`;
+  }
+
+  const deltaHours = Math.floor(deltaMinutes / 60);
+  if (deltaHours < 24) {
+    return `${deltaHours}h ago`;
+  }
+
+  const deltaDays = Math.floor(deltaHours / 24);
+  return `${deltaDays}d ago`;
+}
+
+function toggleSort(nextKey: "score" | "business" | "status" | "activity"): void {
+  if (sortKey.value === nextKey) {
+    sortDirection.value = sortDirection.value === "asc" ? "desc" : "asc";
+    return;
+  }
+
+  sortKey.value = nextKey;
+  sortDirection.value = nextKey === "business" ? "asc" : "desc";
+}
+
+function sortIndicatorIcon(key: "score" | "business" | "status" | "activity"): Component {
+  if (sortKey.value !== key) {
+    return actionIcons.arrowUpDown;
+  }
+
+  return sortDirection.value === "asc" ? actionIcons.chevronUp : actionIcons.chevronDown;
+}
+
+function rowStatusLabel(prospect: RevenueAgentProspect): string {
+  if (prospect.status === "new" && prospect.research) {
+    return "Researching";
+  }
+
+  switch (prospect.status) {
+    case "new":
+      return "New";
+    case "researched":
+      return "Research Ready";
+    case "drafted":
+      return "Draft Ready";
+    case "approved":
+      return "Approved";
+    case "sent":
+      return "Sent";
+    case "replied":
+      return "Replied";
+    case "follow_up_due":
+      return "Follow-up";
+    case "meeting_booked":
+      return "Closed Won";
+    case "not_interested":
+    case "dead":
+      return "Closed Lost";
+    default:
+      return prospect.status;
+  }
+}
+
+function rowStatusToneClass(prospect: RevenueAgentProspect): string {
+  switch (rowStatusLabel(prospect)) {
+    case "Researching":
+      return "tone-researching";
+    case "Research Ready":
+      return "tone-research-ready";
+    case "Draft Ready":
+      return "tone-draft-ready";
+    case "Approved":
+      return "tone-approved";
+    case "Sent":
+      return "tone-sent";
+    case "Replied":
+      return "tone-replied";
+    case "Follow-up":
+      return "tone-follow-up";
+    case "Closed Won":
+      return "tone-won";
+    case "Closed Lost":
+      return "tone-lost";
+    default:
+      return "tone-new";
+  }
+}
+
+function matchesStatusFilter(prospect: RevenueAgentProspect): boolean {
+  switch (filterState.status) {
+    case "all":
+      return true;
+    case "researching":
+      return prospect.status === "new" && Boolean(prospect.research);
+    case "research_ready":
+      return prospect.status === "researched";
+    case "draft_ready":
+      return prospect.status === "drafted";
+    case "approved":
+      return prospect.status === "approved";
+    case "sent":
+      return prospect.status === "sent";
+    case "replied":
+      return prospect.status === "replied";
+    case "meeting":
+      return prospect.status === "meeting_booked" || prospect.status === "follow_up_due";
+    case "closed_won":
+      return prospect.status === "meeting_booked";
+    case "closed_lost":
+      return prospect.status === "not_interested" || prospect.status === "dead";
+    case "new":
+      return prospect.status === "new" && !prospect.research;
+    default:
+      return true;
+  }
+}
+
+function matchesDateFilter(prospect: RevenueAgentProspect): boolean {
+  if (filterState.dateWindow === "all") {
+    return true;
+  }
+
+  const compareDate = new Date(prospect.createdAt).getTime();
+  const now = Date.now();
+  const deltaDays =
+    filterState.dateWindow === "today" ? 0 : filterState.dateWindow === "7d" ? 7 : 30;
+
+  if (deltaDays === 0) {
+    const today = new Date();
+    return new Date(prospect.createdAt).toDateString() === today.toDateString();
+  }
+
+  return now - compareDate <= deltaDays * 24 * 60 * 60 * 1000;
+}
+
+const filteredProspects = computed(() => {
+  const query = normalizeText(searchQuery.value);
+
+  return prospects.value.filter((prospect) => {
+    const score = prospect.opportunityScore ?? 0;
+    const website = getProspectWebsiteValue(prospect);
+    const hasBooking = Boolean(prospect.research?.report.websiteSignals.bookingSoftware || prospect.meetingBookedAt);
+    const haystack = [
+      prospect.businessName,
+      prospect.email,
+      prospect.phone,
+      prospect.city,
+      prospect.state,
+      prospect.source,
+      website,
+      prospect.painSummary,
+      prospect.suggestedOfferAngle,
+      ...(prospect.opportunityTags ?? []),
+    ]
+      .map((value) => normalizeText(value))
+      .join(" ");
+
+    if (query && !haystack.includes(query)) {
+      return false;
+    }
+
+    if (filterState.industry && !normalizeText(prospect.industry).includes(normalizeText(filterState.industry))) {
+      return false;
+    }
+
+    if (filterState.city && !normalizeText(prospect.city).includes(normalizeText(filterState.city))) {
+      return false;
+    }
+
+    if (filterState.state && !normalizeText(prospect.state).includes(normalizeText(filterState.state))) {
+      return false;
+    }
+
+    if (filterState.leadSource !== "all" && prospect.source !== filterState.leadSource) {
+      return false;
+    }
+
+    if (score < filterState.minScore) {
+      return false;
+    }
+
+    if (!matchesStatusFilter(prospect)) {
+      return false;
+    }
+
+    if (filterState.hasEmail !== "all") {
+      const hasEmail = Boolean(prospect.email);
+      if ((filterState.hasEmail === "yes" && !hasEmail) || (filterState.hasEmail === "no" && hasEmail)) {
+        return false;
+      }
+    }
+
+    if (filterState.hasWebsite !== "all") {
+      const hasWebsite = Boolean(website);
+      if ((filterState.hasWebsite === "yes" && !hasWebsite) || (filterState.hasWebsite === "no" && hasWebsite)) {
+        return false;
+      }
+    }
+
+    if (filterState.hasBooking !== "all") {
+      const booking = hasBooking;
+      if ((filterState.hasBooking === "yes" && !booking) || (filterState.hasBooking === "no" && booking)) {
+        return false;
+      }
+    }
+
+    if (!matchesDateFilter(prospect)) {
+      return false;
+    }
+
+    return true;
+  });
+});
+
+const sortedProspects = computed(() => {
+  const list = [...filteredProspects.value];
+
+  list.sort((left, right) => {
+    const compare =
+      sortKey.value === "business"
+        ? left.businessName.localeCompare(right.businessName)
+        : sortKey.value === "status"
+          ? rowStatusLabel(left).localeCompare(rowStatusLabel(right))
+          : sortKey.value === "activity"
+            ? new Date(getLastActivityAt(left) ?? left.createdAt).getTime() -
+              new Date(getLastActivityAt(right) ?? right.createdAt).getTime()
+            : Number(right.opportunityScore) - Number(left.opportunityScore);
+
+    return sortDirection.value === "asc" ? compare : -compare;
+  });
+
+  return list;
+});
+
+const totalFilteredProspects = computed(() => sortedProspects.value.length);
+const pageCount = computed(() => Math.max(1, Math.ceil(totalFilteredProspects.value / tablePageSize.value)));
+const paginatedProspects = computed(() => {
+  const start = (currentPage.value - 1) * tablePageSize.value;
+  return sortedProspects.value.slice(start, start + tablePageSize.value);
+});
+const selectedCount = computed(() => selectedProspectIds.value.length);
+const visibleRowIds = computed(() => paginatedProspects.value.map((prospect) => prospect.id));
+const allVisibleSelected = computed(
+  () => visibleRowIds.value.length > 0 && visibleRowIds.value.every((id) => selectedProspectIds.value.includes(id)),
+);
+const selectedVisibleCount = computed(
+  () => visibleRowIds.value.filter((id) => selectedProspectIds.value.includes(id)).length,
+);
+const currentPageRangeLabel = computed(() => {
+  if (sortedProspects.value.length === 0) {
+    return "0 results";
+  }
+
+  const start = (currentPage.value - 1) * tablePageSize.value + 1;
+  const end = Math.min(sortedProspects.value.length, currentPage.value * tablePageSize.value);
+  return `Showing ${start}-${end} of ${sortedProspects.value.length}`;
+});
+const workspaceSummaryCards = computed(() => [
+  { label: "Total Prospects", value: prospects.value.length },
+  { label: "Research Complete", value: prospects.value.filter((prospect) =>
+    ["researched", "drafted", "approved", "sent", "replied", "follow_up_due", "meeting_booked"].includes(prospect.status),
+  ).length },
+  { label: "Drafts Ready", value: stats.value.draftsReady },
+  { label: "Sent Today", value: prospects.value.filter((prospect) => prospect.status === "sent").length },
+  { label: "Replies", value: stats.value.replies },
+  { label: "Meetings", value: stats.value.meetings },
+]);
+const selectedNoteKey = computed(() => (selectedProspect.value ? `founder-content-revenue-agent-note:${selectedProspect.value.id}` : ""));
+const selectedWebsite = computed(() => (selectedProspect.value ? getProspectWebsiteValue(selectedProspect.value) : ""));
+const selectedEmailSubject = computed(
+  () => selectedResearch.value?.emailSubject || selectedProspect.value?.latestMessage?.subject || "No draft yet.",
+);
+const selectedEmailBody = computed(
+  () => selectedResearch.value?.emailBody || selectedProspect.value?.latestMessage?.body || "Run the feed to generate the first draft.",
+);
+const selectedLastActivity = computed(() => (selectedProspect.value ? getLastActivityAt(selectedProspect.value) : undefined));
+const selectedMissingFeatures = computed(() => {
+  if (!selectedProspect.value) {
+    return [];
+  }
+
+  const report = selectedProspect.value.research?.report;
+  const websiteSignals = report?.websiteSignals;
+  const missing: string[] = [];
+
+  if (!websiteSignals?.bookingSoftware) {
+    missing.push("Booking software");
+  }
+  if (!websiteSignals?.contactForm) {
+    missing.push("Contact form");
+  }
+  if (!websiteSignals?.chatWidget) {
+    missing.push("Chat widget");
+  }
+  if (!websiteSignals?.https) {
+    missing.push("HTTPS");
+  }
+  if (!websiteSignals?.analytics?.length) {
+    missing.push("Analytics");
+  }
+
+  return missing.slice(0, 4);
+});
+const selectedOpportunityReasons = computed(() => {
+  const report = selectedProspect.value?.research?.report;
+  return report?.opportunityScoreReasons?.length
+    ? report.opportunityScoreReasons
+    : selectedProspect.value?.painSummary
+      ? [selectedProspect.value.painSummary]
+      : [];
+});
+const selectedQuickStats = computed(() => {
+  const report = selectedProspect.value?.research?.report;
+  return [
+    { label: "Google Rating", value: selectedProspect.value?.rating ? `${selectedProspect.value.rating.toFixed(1)} / 5` : "n/a" },
+    { label: "Review Count", value: selectedProspect.value?.reviewCount ?? "0" },
+    { label: "AI Readiness", value: report ? `${report.businessProfile.aiReadinessScore} / 100` : "n/a" },
+    { label: "Opportunity", value: selectedProspect.value ? formatScore(selectedProspect.value.opportunityScore) : "n/a" },
+  ];
+});
+
+watch(
+  [searchQuery, sortKey, sortDirection, tablePageSize, () => ({ ...filterState })],
+  () => {
+    currentPage.value = 1;
+    saveFiltersToStorage();
+  },
+  { deep: true },
+);
+
+watch(selectedProspectId, () => {
+  loadNoteDraft();
+  if (selectedProspect.value) {
+    activeTab.value = "overview";
+  }
+});
+
+watch(
+  paginatedProspects,
+  (rows) => {
+    if (rows.length === 0) {
+      return;
+    }
+
+    if (!rows.some((row) => row.id === selectedProspectId.value)) {
+      selectProspect(rows[0], { resetReplyDraft: false });
+    }
+  },
+  { immediate: true },
+);
+
+function loadNoteDraft(): void {
+  if (typeof window === "undefined" || !selectedProspect.value) {
+    noteDraft.value = "";
+    return;
+  }
+
+  const key = `founder-content-revenue-agent-note:${selectedProspect.value.id}`;
+  noteDraft.value = window.localStorage.getItem(key) ?? "";
+}
+
+function saveNoteDraft(): void {
+  if (typeof window === "undefined" || !selectedProspect.value) {
+    return;
+  }
+
+  const key = `founder-content-revenue-agent-note:${selectedProspect.value.id}`;
+  window.localStorage.setItem(key, noteDraft.value);
+}
+
+watch(noteDraft, () => {
+  saveNoteDraft();
+});
+
+function syncUpdatedProspect(updated: RevenueAgentProspect, resetReplyDraft = false): void {
+  prospects.value = prospects.value.map((prospect) => (prospect.id === updated.id ? updated : prospect));
+  selectProspect(updated, { resetReplyDraft });
+}
+
+async function submitProspectAction(
+  prospectId: string,
+  action: RevenueAgentActionType,
+  followUpDays?: number,
+): Promise<RevenueAgentProspect> {
+  const response = await requestRevenueAgentAction(prospectId, {
+    businessId: selectedBusinessId.value,
+    action,
+    followUpDays,
+  });
+
+  return response.prospect;
+}
+
+async function runBulkAction(
+  action: RevenueAgentActionType,
+  options: { followUpDays?: number; label: string },
+): Promise<void> {
+  if (selectedProspectIds.value.length === 0) {
+    errorMessage.value = "Select at least one prospect first.";
+    return;
+  }
+
+  bulkActionLoading.value = action;
+  errorMessage.value = "";
+
+  let successCount = 0;
+  let failureCount = 0;
+
+  try {
+    for (const prospectId of selectedProspectIds.value) {
+      try {
+        const updated = await submitProspectAction(prospectId, action, options.followUpDays);
+        prospects.value = prospects.value.map((prospect) => (prospect.id === updated.id ? updated : prospect));
+        successCount += 1;
+      } catch {
+        failureCount += 1;
+      }
+    }
+
+    if (selectedProspect.value) {
+      const refreshed = prospects.value.find((prospect) => prospect.id === selectedProspect.value?.id);
+      if (refreshed) {
+        selectProspect(refreshed, { resetReplyDraft: false });
+      }
+    }
+
+    feedbackMessage.value =
+      failureCount === 0
+        ? `${options.label} completed for ${successCount} prospect${successCount === 1 ? "" : "s"}.`
+        : `${options.label} completed for ${successCount} prospect${successCount === 1 ? "" : "s"} with ${failureCount} failure${failureCount === 1 ? "" : "s"}.`;
+  } finally {
+    bulkActionLoading.value = "";
+  }
+}
+
+async function runBulkGenerateDrafts(): Promise<void> {
+  if (selectedProspectIds.value.length === 0) {
+    errorMessage.value = "Select at least one prospect first.";
+    return;
+  }
+
+  bulkActionLoading.value = "generate_drafts";
+  errorMessage.value = "";
+
+  let successCount = 0;
+
+  try {
+    for (const prospectId of selectedProspectIds.value) {
+      try {
+        const response = await requestRevenueAgentResearchRegenerate(prospectId, {
+          businessId: selectedBusinessId.value,
+        });
+        prospects.value = prospects.value.map((prospect) => (prospect.id === response.prospect.id ? response.prospect : prospect));
+        successCount += 1;
+      } catch {
+        // Keep going so one bad record does not block the rest.
+      }
+    }
+
+    const refreshed = selectedProspect.value
+      ? prospects.value.find((prospect) => prospect.id === selectedProspect.value?.id)
+      : null;
+    if (refreshed) {
+      selectProspect(refreshed, { resetReplyDraft: false });
+    }
+
+    feedbackMessage.value = `Generated or refreshed drafts for ${successCount} prospect${successCount === 1 ? "" : "s"}.`;
+  } finally {
+    bulkActionLoading.value = "";
+  }
+}
+
+function exportSelectedProspects(): void {
+  if (selectedProspectIds.value.length === 0) {
+    errorMessage.value = "Select at least one prospect first.";
+    return;
+  }
+
+  const rows = prospects.value.filter((prospect) => selectedProspectIds.value.includes(prospect.id));
+  const header = [
+    "businessName",
+    "email",
+    "phone",
+    "website",
+    "status",
+    "opportunityScore",
+    "source",
+    "lastActivity",
+  ];
+  const csv = [
+    header.join(","),
+    ...rows.map((prospect) =>
+      [
+        prospect.businessName,
+        prospect.email ?? "",
+        prospect.phone ?? "",
+        getProspectWebsiteValue(prospect),
+        rowStatusLabel(prospect),
+        String(prospect.opportunityScore),
+        prospect.source,
+        getLastActivityAt(prospect) ?? "",
+      ]
+        .map((value) => `"${String(value).replaceAll('"', '""')}"`)
+        .join(","),
+    ),
+  ].join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = "revenue-agent-selected-prospects.csv";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(objectUrl);
+  feedbackMessage.value = "Selected prospects exported.";
+}
+
+function moveDetailSelection(direction: 1 | -1): void {
+  const rows = paginatedProspects.value;
+  if (rows.length === 0) {
+    return;
+  }
+
+  const currentIndex = rows.findIndex((row) => row.id === selectedProspectId.value);
+  const nextIndex = currentIndex >= 0 ? Math.min(rows.length - 1, Math.max(0, currentIndex + direction)) : 0;
+  selectProspect(rows[nextIndex], { resetReplyDraft: false });
+}
+
+function handleRowKeydown(event: KeyboardEvent, prospect: RevenueAgentProspect): void {
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveDetailSelection(1);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveDetailSelection(-1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    selectProspect(prospect);
+  } else if (event.key === " ") {
+    event.preventDefault();
+    toggleBulkSelection(prospect.id);
+  }
+}
 
 function formatScore(score: number): string {
   return `${Math.max(0, Math.min(100, Math.round(score)))} / 100`;
@@ -439,7 +1242,7 @@ function buildProspectTimeline(
     pushItem({
       id: "reply-analysis",
       label: "Reply analyzed",
-      description: `${analysis.intent.replaceAll("_", " ")} · ${Math.round(analysis.confidence)}% confidence.`,
+      description: `${analysis.intent.replaceAll("_", " ")} - ${Math.round(analysis.confidence)}% confidence.`,
       timestamp: new Date().toISOString(),
       tone: "active",
     });
@@ -860,7 +1663,7 @@ function buildAuditReportHtml(
           <div class="card">
             <span class="label">Classification</span>
             <p>${escapeHtml(analysis.intent.replaceAll("_", " "))}</p>
-            <p>${escapeHtml(analysis.sentiment)} sentiment · ${Math.round(analysis.confidence)}% confidence</p>
+            <p>${escapeHtml(analysis.sentiment)} sentiment - ${Math.round(analysis.confidence)}% confidence</p>
           </div>
           <div class="card">
             <span class="label">Suggested response</span>
@@ -918,6 +1721,27 @@ function printAuditReport(): void {
   window.setTimeout(() => {
     popup.print();
   }, 250);
+}
+
+function openAuditPreview(): void {
+  if (!selectedProspect.value) {
+    errorMessage.value = "Select a prospect first.";
+    return;
+  }
+
+  const content = buildAuditReportHtml(selectedProspect.value, selectedReport.value, replyAnalysis.value, selectedTimeline.value);
+  const popup = window.open("", "_blank", "width=1280,height=1400");
+
+  if (!popup) {
+    errorMessage.value = "Pop-up blocked the audit preview.";
+    return;
+  }
+
+  popup.document.open();
+  popup.document.write(content);
+  popup.document.close();
+  popup.focus();
+  feedbackMessage.value = "Full audit preview opened.";
 }
 
 function downloadAuditReport(): void {
@@ -995,7 +1819,7 @@ function loadFeedFormFromWorkspace(): void {
     state: feedForm.value.state || "TX",
     offer: feedForm.value.offer || "AI booking + follow-up automation",
     dailyLeadLimit: feedForm.value.dailyLeadLimit || 20,
-    provider: feedForm.value.provider || "mock",
+    provider: feedForm.value.provider || "google_business",
     csvText: feedForm.value.csvText || "",
   };
 }
@@ -1050,7 +1874,7 @@ async function loadWorkspace(): Promise<void> {
   prospects.value = response.prospects;
   feedForm.value = {
     ...response.feedConfig,
-    provider: response.feedConfig.provider ?? "mock",
+    provider: response.feedConfig.provider ?? "google_business",
   };
   replyText.value = "";
   replyAnalysis.value = null;
@@ -1115,10 +1939,12 @@ async function initializePage(): Promise<void> {
   errorMessage.value = "";
 
   try {
+    loadFiltersFromStorage();
     await loadBusinesses();
     await loadWorkspace();
     loadFeedFormFromWorkspace();
     applyCalendarConnectionFeedback();
+    loadNoteDraft();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to load the revenue agent workspace.";
   } finally {
@@ -1143,7 +1969,7 @@ async function runFeed(): Promise<void> {
     prospects.value = response.workspace.prospects;
     feedForm.value = {
       ...response.workspace.feedConfig,
-      provider: response.workspace.feedConfig.provider ?? "mock",
+      provider: response.workspace.feedConfig.provider ?? "google_business",
     };
     selectProspect(response.workspace.prospects[0] ?? null);
     feedbackMessage.value = `Daily feed completed for ${response.run.prospectsFound} prospects.`;
@@ -1285,102 +2111,192 @@ onMounted(() => {
 
 <template>
   <main class="revenue-shell">
-    <section class="revenue-hero">
-      <div class="revenue-hero-copy">
-        <p class="revenue-eyebrow">/app/revenue-agent</p>
+    <section class="revenue-header">
+      <div class="revenue-header-copy">
+        <p class="eyebrow">Revenue Agent - Sales operating system</p>
         <h1>Revenue Agent</h1>
-        <p class="revenue-description">
-          Find prospects, research pain points, draft outreach, and book meetings without turning the product into a
-          soft content tool.
+        <p class="lede">
+          Find leads, research them, draft outreach, and move prospects from discovery to sent emails without
+          leaving the table.
         </p>
-        <div class="revenue-chip-row">
-          <span class="revenue-chip">Human approval first</span>
-          <span class="revenue-chip">Signal-based cards</span>
-          <span class="revenue-chip">Daily feed workflow</span>
-        </div>
       </div>
-      <div class="revenue-hero-card">
-        <p class="hero-card-label">Goal</p>
-        <strong>Get 5-10 qualified meetings per month.</strong>
-        <p>Start with lead to research to personalized email to follow-up to meeting booked.</p>
+      <div class="header-meta">
+        <div class="workspace-pill">
+          <span>Workspace</span>
+          <strong>{{ workspaceName }}</strong>
+          <small>{{ selectedBusinessId ? "Live workspace" : "No workspace selected" }}</small>
+        </div>
+        <div class="workspace-pill">
+          <span>Calendar</span>
+          <strong>{{ googleCalendarConnection?.connected ? "Connected" : "Disconnected" }}</strong>
+          <small>{{ googleCalendarConnection?.accountEmail || "Use Google Calendar for booking handoff" }}</small>
+        </div>
       </div>
     </section>
 
-    <p v-if="errorMessage" class="revenue-feedback error">{{ errorMessage }}</p>
-    <p v-else-if="feedbackMessage" class="revenue-feedback">{{ feedbackMessage }}</p>
+    <p v-if="errorMessage" class="flash error">{{ errorMessage }}</p>
+    <p v-else-if="feedbackMessage" class="flash">{{ feedbackMessage }}</p>
 
-    <section v-if="isLoading" class="revenue-card">
-      <p class="revenue-muted">Loading revenue workspace...</p>
+    <section v-if="isLoading" class="empty-shell">
+      <p>Loading revenue workspace...</p>
     </section>
 
     <template v-else>
-      <section v-if="!selectedBusinessId" class="revenue-card empty-state">
+      <section v-if="!selectedBusinessId" class="empty-shell">
         <h2>Revenue Agent needs a workspace.</h2>
         <p>Create or select a workspace first, then run the daily feed.</p>
         <router-link class="primary-action" :to="appRoutes.onboardingWorkspace">Create workspace</router-link>
       </section>
 
       <template v-else>
-        <section class="revenue-card">
-          <div class="panel-header">
-            <div>
-              <p class="panel-meta">ICP</p>
-              <h2>Run the daily feed</h2>
-              <p class="panel-note">{{ workspaceName }}</p>
+        <section class="summary-grid">
+          <article v-for="card in workspaceSummaryCards" :key="card.label" class="summary-card">
+            <span>{{ card.label }}</span>
+            <strong>{{ card.value }}</strong>
+          </article>
+        </section>
+
+        <section class="toolbar-stack">
+          <div class="toolbar-card search-toolbar">
+            <label class="field search-field">
+              <span>Search</span>
+              <input v-model="searchQuery" type="search" placeholder="Business, email, phone, note, tag" />
+            </label>
+            <div class="toolbar-actions">
+              <button type="button" class="secondary-action" @click="saveCurrentFilterPreset">Save Filter</button>
             </div>
-            <button type="button" class="primary-action" :disabled="isRunningFeed" @click="runFeed">
-              {{ isRunningFeed ? "Running feed..." : "Run Daily Feed" }}
-            </button>
+            <div v-if="savedFilterPresets.length" class="preset-chips">
+              <button
+                v-for="preset in savedFilterPresets"
+                :key="preset.name"
+                type="button"
+                class="chip-button"
+                @click="applyFilterPreset(preset)"
+              >
+                {{ preset.name }}
+              </button>
+            </div>
           </div>
 
-          <div class="feed-grid">
+          <div class="toolbar-card filter-toolbar">
             <label class="field">
               <span>Industry</span>
-              <input v-model="feedForm.industry" type="text" placeholder="Salon" />
+              <input v-model="filterState.industry" type="text" placeholder="Med Spa" />
             </label>
             <label class="field">
               <span>City</span>
-              <input v-model="feedForm.city" type="text" placeholder="Dallas" />
+              <input v-model="filterState.city" type="text" placeholder="Salt Lake City" />
             </label>
             <label class="field">
               <span>State</span>
-              <input v-model="feedForm.state" type="text" placeholder="TX" />
+              <input v-model="filterState.state" type="text" placeholder="UT" />
             </label>
             <label class="field">
-              <span>Offer</span>
-              <input v-model="feedForm.offer" type="text" placeholder="AI booking + follow-up automation" />
-            </label>
-            <label class="field">
-              <span>Daily lead limit</span>
-              <input v-model.number="feedForm.dailyLeadLimit" type="number" min="1" max="25" />
-            </label>
-            <label class="field">
-              <span>Provider</span>
-              <select v-model="feedForm.provider">
-                <option value="mock">Mock provider</option>
+              <span>Lead Source</span>
+              <select v-model="filterState.leadSource">
+                <option value="all">All</option>
                 <option value="google_business">Google Business</option>
                 <option value="csv_import">CSV import</option>
               </select>
-              <small v-if="isGoogleBusinessSelected" class="muted-copy">
-                Requires `GOOGLE_PLACES_API_KEY` on the backend.
-              </small>
+            </label>
+            <label class="field">
+              <span>Min Score</span>
+              <input v-model.number="filterState.minScore" type="number" min="0" max="100" />
+            </label>
+            <label class="field">
+              <span>Status</span>
+              <select v-model="filterState.status">
+                <option value="all">All</option>
+                <option value="new">New</option>
+                <option value="researching">Researching</option>
+                <option value="research_ready">Research Ready</option>
+                <option value="draft_ready">Draft Ready</option>
+                <option value="approved">Approved</option>
+                <option value="sent">Sent</option>
+                <option value="replied">Replied</option>
+                <option value="meeting">Meeting</option>
+                <option value="closed_won">Closed Won</option>
+                <option value="closed_lost">Closed Lost</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Has Email</span>
+              <select v-model="filterState.hasEmail">
+                <option value="all">All</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Has Website</span>
+              <select v-model="filterState.hasWebsite">
+                <option value="all">All</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Has Booking</span>
+              <select v-model="filterState.hasBooking">
+                <option value="all">All</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Date</span>
+              <select v-model="filterState.dateWindow">
+                <option value="all">All</option>
+                <option value="today">Today</option>
+                <option value="7d">7 days</option>
+                <option value="30d">30 days</option>
+              </select>
             </label>
           </div>
 
-          <div v-if="isCsvImportSelected" class="csv-import-block">
-            <div class="panel-header">
-              <div>
-                <p class="panel-meta">Lead import</p>
-                <h3>Paste real businesses</h3>
-                <p class="panel-note">Use CSV rows with businessName, website, email, phone, city, state, industry, sourceUrl, rating, reviewCount, painSignals, and tags.</p>
-              </div>
-              <button type="button" class="secondary-action" @click="loadSampleCsv">Load sample CSV</button>
+          <div class="toolbar-card feed-toolbar">
+            <div class="feed-fields">
+              <label class="field">
+                <span>Industry</span>
+                <input v-model="feedForm.industry" type="text" placeholder="Salon" />
+              </label>
+              <label class="field">
+                <span>City</span>
+                <input v-model="feedForm.city" type="text" placeholder="Dallas" />
+              </label>
+              <label class="field">
+                <span>State</span>
+                <input v-model="feedForm.state" type="text" placeholder="TX" />
+              </label>
+              <label class="field">
+                <span>Limit</span>
+                <input v-model.number="feedForm.dailyLeadLimit" type="number" min="1" max="25" />
+              </label>
+              <label class="field">
+                <span>Provider</span>
+                <select v-model="feedForm.provider">
+                  <option value="google_business">Google Business</option>
+                  <option value="csv_import">CSV import</option>
+                </select>
+              </label>
             </div>
+            <div class="feed-actions">
+              <button v-if="isCsvImportSelected" type="button" class="secondary-action" @click="loadSampleCsv">
+                Load sample CSV
+              </button>
+              <p v-if="isGoogleBusinessSelected" class="helper-copy">Requires `GOOGLE_PLACES_API_KEY` on the backend.</p>
+              <button type="button" class="primary-action" :disabled="isRunningFeed" @click="runFeed">
+                {{ isRunningFeed ? "Running feed..." : "Run Daily Feed" }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="isCsvImportSelected" class="toolbar-card csv-card">
             <label class="field">
               <span>CSV text</span>
               <textarea
                 v-model="feedForm.csvText"
-                rows="8"
+                rows="5"
                 spellcheck="false"
                 placeholder="businessName,website,email,phone,city,state,industry,sourceUrl,rating,reviewCount,painSignals,tags"
               ></textarea>
@@ -1388,742 +2304,589 @@ onMounted(() => {
           </div>
         </section>
 
-        <section class="stats-grid">
-          <article class="stat-card">
-            <span>New Prospects</span>
-            <strong>{{ stats.newProspects }}</strong>
-          </article>
-          <article class="stat-card">
-            <span>Researched</span>
-            <strong>{{ stats.researched }}</strong>
-          </article>
-          <article class="stat-card">
-            <span>Drafts Ready</span>
-            <strong>{{ stats.draftsReady }}</strong>
-          </article>
-          <article class="stat-card">
-            <span>Follow-ups Due</span>
-            <strong>{{ stats.followUpsDue }}</strong>
-          </article>
-          <article class="stat-card">
-            <span>Replies</span>
-            <strong>{{ stats.replies }}</strong>
-          </article>
-          <article class="stat-card">
-            <span>Meetings</span>
-            <strong>{{ stats.meetings }}</strong>
-          </article>
-        </section>
-
-        <section class="revenue-grid">
-          <article class="revenue-card table-card">
-            <div class="panel-header">
+        <section class="workspace-grid">
+          <article class="table-panel">
+            <div class="panel-head">
               <div>
-                <p class="panel-meta">Today</p>
-                <h2>Prospects</h2>
+                <p class="panel-kicker">Prospect table</p>
+                <h2>{{ currentPageRangeLabel }}</h2>
+                <p class="panel-note">{{ totalFilteredProspects }} matched - {{ selectedCount }} selected</p>
+              </div>
+              <div class="panel-head-actions">
+                <label class="field page-size-field">
+                  <span>Page size</span>
+                  <select v-model="tablePageSize">
+                    <option :value="12">12</option>
+                    <option :value="24">24</option>
+                    <option :value="50">50</option>
+                  </select>
+                </label>
               </div>
             </div>
 
-            <div v-if="prospects.length === 0" class="empty-note">
-              No prospects yet. Run the feed to populate the workspace.
+            <div v-if="selectedCount > 0" class="bulk-toolbar">
+              <div class="bulk-summary">
+                <strong>{{ selectedCount }} Selected</strong>
+                <span>{{ selectedVisibleCount }} on this page</span>
+              </div>
+              <div class="bulk-actions">
+                <button
+                  type="button"
+                  class="primary-action"
+                  :disabled="bulkActionLoading === 'generate_drafts'"
+                  @click="runBulkGenerateDrafts"
+                >
+                  {{ bulkActionLoading === 'generate_drafts' ? "Generating..." : "Generate Drafts" }}
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="bulkActionLoading === 'approve_draft'"
+                  @click="runBulkAction('approve_draft', { label: 'Approve' })"
+                >
+                  {{ bulkActionLoading === 'approve_draft' ? "Approving..." : "Approve" }}
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="bulkActionLoading === 'send_email'"
+                  @click="runBulkAction('send_email', { label: 'Send emails' })"
+                >
+                  {{ bulkActionLoading === 'send_email' ? "Sending..." : "Send Emails" }}
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="bulkActionLoading === 'schedule_follow_up'"
+                  @click="runBulkAction('schedule_follow_up', { followUpDays: 3, label: 'Schedule follow-up' })"
+                >
+                  {{ bulkActionLoading === 'schedule_follow_up' ? "Scheduling..." : "Schedule Follow-up" }}
+                </button>
+                <button type="button" class="secondary-action" @click="exportSelectedProspects">Export</button>
+                <details class="more-menu">
+                  <summary>More</summary>
+                  <div class="more-menu-panel">
+                    <button type="button" @click="openAuditPreview">Open audit</button>
+                    <button type="button" @click="copyAuditReport">Copy audit</button>
+                    <button type="button" @click="downloadAuditReport">Download audit</button>
+                    <button type="button" @click="clearBulkSelection">Clear selection</button>
+                  </div>
+                </details>
+              </div>
             </div>
 
-            <div v-else class="prospect-table">
-              <button
-                v-for="prospect in prospects"
-                :key="prospect.id"
-                type="button"
-                class="prospect-row"
-                :class="{ active: selectedProspectId === prospect.id }"
-                @click="selectProspect(prospect)"
-              >
-                <span class="row-main">
-                  <strong>{{ prospect.businessName }}</strong>
-                  <small>{{ prospect.source }}</small>
+            <div class="table-shell">
+              <table class="prospect-table">
+                <thead>
+                  <tr>
+                    <th class="checkbox-col">
+                      <input type="checkbox" :checked="allVisibleSelected" @change="toggleVisibleSelection" />
+                    </th>
+                    <th>
+                      <button type="button" class="column-sort" @click="toggleSort('business')">
+                        Business
+                        <span class="sort-indicator">
+                          <component :is="sortIndicatorIcon('business')" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                      </button>
+                    </th>
+                    <th>
+                      <button type="button" class="column-sort" @click="toggleSort('score')">
+                        Opportunity Score
+                        <span class="sort-indicator">
+                          <component :is="sortIndicatorIcon('score')" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                      </button>
+                    </th>
+                    <th>
+                      <button type="button" class="column-sort" @click="toggleSort('status')">
+                        Status
+                        <span class="sort-indicator">
+                          <component :is="sortIndicatorIcon('status')" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                      </button>
+                    </th>
+                    <th>Email</th>
+                    <th>Phone</th>
+                    <th>Website</th>
+                    <th>
+                      <button type="button" class="column-sort" @click="toggleSort('activity')">
+                        Last Activity
+                        <span class="sort-indicator">
+                          <component :is="sortIndicatorIcon('activity')" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                      </button>
+                    </th>
+                    <th class="actions-col">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-if="paginatedProspects.length === 0" class="table-empty-row">
+                    <td colspan="9">No prospects match the current filters.</td>
+                  </tr>
+                  <tr
+                    v-for="(prospect, index) in paginatedProspects"
+                    :key="prospect.id"
+                    :class="{ selected: isProspectSelectedForDetail(prospect.id), bulk: isBulkSelected(prospect.id) }"
+                    tabindex="0"
+                    :aria-selected="isProspectSelectedForDetail(prospect.id)"
+                    @click="selectProspect(prospect)"
+                    @keydown="handleRowKeydown($event, prospect)"
+                  >
+                    <td class="checkbox-col" @click.stop>
+                      <input
+                        type="checkbox"
+                        :checked="isBulkSelected(prospect.id)"
+                        :aria-label="`Select ${prospect.businessName}`"
+                        @change="toggleBulkSelection(prospect.id)"
+                      />
+                    </td>
+                    <td class="business-cell">
+                      <strong>{{ prospect.businessName }}</strong>
+                      <span>{{ prospect.industry }} - {{ prospect.city || "Unknown city" }}{{ prospect.state ? `, ${prospect.state}` : "" }}</span>
+                    </td>
+                    <td><strong>{{ formatScore(prospect.opportunityScore) }}</strong></td>
+                    <td>
+                      <span class="status-badge" :class="rowStatusToneClass(prospect)">
+                        <component
+                          :is="resolveProspectStatusIcon(prospect.status)"
+                          :size="iconSizes.dense"
+                          :stroke-width="iconStrokeWidth"
+                        />
+                        {{ rowStatusLabel(prospect) }}
+                      </span>
+                    </td>
+                    <td>
+                      <a v-if="prospect.email" :href="`mailto:${prospect.email}`" @click.stop>{{ prospect.email }}</a>
+                      <span v-else class="muted-value">No email</span>
+                    </td>
+                    <td>
+                      <a v-if="prospect.phone" :href="`tel:${prospect.phone}`" @click.stop>{{ prospect.phone }}</a>
+                      <span v-else class="muted-value">No phone</span>
+                    </td>
+                    <td>
+                      <a v-if="getProspectWebsiteValue(prospect)" :href="getProspectWebsiteValue(prospect)" target="_blank" rel="noreferrer" @click.stop>
+                        Visit
+                      </a>
+                      <span v-else class="muted-value">None</span>
+                    </td>
+                    <td>{{ formatRelativeTime(getLastActivityAt(prospect)) }}</td>
+                    <td class="actions-col">
+                      <button type="button" class="table-action" @click.stop="selectProspect(prospect)">
+                        <span class="detail-action-icon">
+                          <component :is="actionIcons.open" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                        Open
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="table-footer">
+              <span>{{ currentPageRangeLabel }}</span>
+              <div class="pagination">
+                <button type="button" class="secondary-action" :disabled="currentPage <= 1" @click="currentPage -= 1">
+                  <span class="detail-action-icon">
+                    <component :is="actionIcons.chevronLeft" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                  </span>
+                  Prev
+                </button>
+                <span>{{ currentPage }} / {{ pageCount }}</span>
+                <button type="button" class="secondary-action" :disabled="currentPage >= pageCount" @click="currentPage += 1">
+                  <span class="detail-action-icon">
+                    <component :is="actionIcons.chevronRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                  </span>
+                  Next
+                </button>
+              </div>
+            </div>
+          </article>
+
+          <aside class="detail-panel">
+            <div class="detail-head">
+              <div v-if="selectedProspect">
+                <p class="panel-kicker">Research panel</p>
+                <h2>{{ selectedProspect.businessName }}</h2>
+                <p class="panel-note">
+                  {{ selectedProspect.industry }} - {{ selectedProspect.city || "Unknown city" }}{{ selectedProspect.state ? `, ${selectedProspect.state}` : "" }}
+                </p>
+              </div>
+              <div v-if="selectedProspect" class="detail-score">
+                <strong>{{ formatScore(selectedProspect.opportunityScore) }}</strong>
+                <span class="status-badge" :class="rowStatusToneClass(selectedProspect)">
+                  <component
+                    :is="resolveProspectStatusIcon(selectedProspect.status)"
+                    :size="iconSizes.dense"
+                    :stroke-width="iconStrokeWidth"
+                  />
+                  {{ rowStatusLabel(selectedProspect) }}
                 </span>
-                <span class="row-secondary">
-                  <strong>{{ prospect.painSummary || "No pain summary yet." }}</strong>
-                  <small>{{ prospect.city }}{{ prospect.state ? `, ${prospect.state}` : "" }}</small>
-                </span>
-                <span>{{ formatScore(prospect.opportunityScore) }}</span>
-                <span>{{ nextActionLabel(prospect) }}</span>
-                <span>{{ statusLabel(prospect.status) }}</span>
+              </div>
+            </div>
+
+            <div class="detail-tabs">
+              <button type="button" class="tab-button" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">
+                Overview
+              </button>
+              <button type="button" class="tab-button" :class="{ active: activeTab === 'email' }" @click="activeTab = 'email'">
+                Email Draft
+              </button>
+              <button type="button" class="tab-button" :class="{ active: activeTab === 'activity' }" @click="activeTab = 'activity'">
+                Activity
+              </button>
+              <button type="button" class="tab-button" :class="{ active: activeTab === 'notes' }" @click="activeTab = 'notes'">
+                Notes
               </button>
             </div>
-          </article>
 
-          <article class="revenue-card detail-card">
-            <div class="panel-header">
-              <div>
-                <p class="panel-meta">Lead detail</p>
-                <h2>{{ selectedProspect?.businessName || "Pick a prospect" }}</h2>
-              </div>
-              <div v-if="selectedProspect" class="detail-actions">
-                <button
-                  type="button"
-                  class="secondary-action"
-                  :disabled="actionLoadingId === `${selectedProspect.id}:regenerate_research`"
-                  @click="regenerateResearch"
-                >
-                  {{ actionLoadingId === `${selectedProspect.id}:regenerate_research` ? "Regenerating..." : "Regenerate Report" }}
-                </button>
-                <button type="button" class="secondary-action" @click="copyAuditReport">Copy Audit</button>
-                <button type="button" class="secondary-action" @click="downloadAuditReport">Download Audit</button>
-                <button type="button" class="secondary-action" @click="printAuditReport">Print / Save PDF</button>
-                <button
-                  type="button"
-                  class="secondary-action"
-                  :disabled="isExportingReport"
-                  @click="downloadServerExport"
-                >
-                  {{ isExportingReport ? "Exporting..." : "Server Export" }}
-                </button>
-              </div>
+            <div v-if="!selectedProspect" class="empty-panel">
+              Select a row to load the research, email draft, activity timeline, and notes panel.
             </div>
 
-            <div v-if="!selectedProspect" class="empty-note">
-              Select a prospect to see research, the generated email, and approval controls.
-            </div>
-
-            <template v-else>
-              <div class="detail-meta">
-                <div>
-                  <span>Website</span>
-                  <strong>{{ selectedProspect.website || "Not available" }}</strong>
-                </div>
-                <div>
-                  <span>Contact</span>
-                  <strong>{{ selectedProspect.email || selectedProspect.phone || "Not available" }}</strong>
-                </div>
-                <div>
-                  <span>Rating</span>
-                  <strong>{{ selectedProspect.rating ? `${selectedProspect.rating.toFixed(1)} / 5` : "n/a" }}</strong>
-                </div>
-                <div>
-                  <span>Reviews</span>
-                  <strong>{{ selectedProspect.reviewCount }}</strong>
-                </div>
-              </div>
-
-              <div class="tag-row">
-                <span v-for="tag in selectedProspect.opportunityTags" :key="tag" class="tag-pill">{{ tag }}</span>
-              </div>
-
-              <div class="insight-card activity-card">
-                <div class="panel-header">
-                  <div>
-                    <p class="panel-meta">Activity</p>
-                    <h3>Current account pulse</h3>
-                    <p class="panel-note">A compact view of the latest persisted actions on this prospect.</p>
-                  </div>
-                </div>
-
-                <div class="activity-stats">
-                  <div class="activity-stat">
-                    <span>Total events</span>
-                    <strong>{{ timelineStats.total }}</strong>
-                  </div>
-                  <div class="activity-stat">
-                    <span>Replies</span>
-                    <strong>{{ timelineStats.replies }}</strong>
-                  </div>
-                  <div class="activity-stat">
-                    <span>Meetings</span>
-                    <strong>{{ timelineStats.meetings }}</strong>
-                  </div>
-                  <div class="activity-stat">
-                    <span>Follow-ups</span>
-                    <strong>{{ timelineStats.followUps }}</strong>
-                  </div>
-                </div>
-
-                <div v-if="recentTimelineEvents.length === 0" class="empty-note">
-                  No persisted activity yet.
-                </div>
-
-                <div v-else class="activity-feed">
-                  <article v-for="item in recentTimelineEvents" :key="`recent-${item.id}`" class="activity-feed-item">
+            <div v-else class="detail-content">
+              <template v-if="activeTab === 'overview'">
+                <section class="section-card">
+                  <div class="section-head">
                     <div>
-                      <strong>{{ item.title }}</strong>
-                      <p>{{ item.description }}</p>
+                      <p class="panel-kicker">Overview</p>
+                      <h3>Account summary</h3>
                     </div>
-                    <span>{{ formatTimelineTimestamp(item.occurredAt) }}</span>
-                  </article>
-                </div>
-              </div>
-
-              <div class="insight-card workflow-card">
-                <div class="panel-header">
-                  <div>
-                    <p class="panel-meta">Orchestration</p>
-                    <h3>Revenue workflow</h3>
-                    <p class="panel-note">A server-generated playbook for the selected prospect.</p>
-                  </div>
-                  <button type="button" class="secondary-action" :disabled="isLoadingWorkflow" @click="loadWorkflowSnapshot">
-                    {{ isLoadingWorkflow ? "Loading..." : "Refresh workflow" }}
-                  </button>
-                </div>
-
-                <div v-if="!workflowSnapshot" class="empty-note">
-                  Select a prospect to generate the workflow snapshot.
-                </div>
-
-                <template v-else>
-                  <div class="workflow-summary">
-                    <div>
-                      <span>Trigger</span>
-                      <strong>{{ workflowSnapshot.workflow.trigger.replaceAll("_", " ") }}</strong>
-                    </div>
-                    <div>
-                      <span>Confidence</span>
-                      <strong>{{ Math.round(workflowSnapshot.workflow.confidence) }}%</strong>
-                    </div>
-                    <div>
-                      <span>Next best action</span>
-                      <strong>{{ workflowSnapshot.workflow.nextBestAction }}</strong>
+                    <div class="detail-actions">
+                      <a v-if="selectedWebsite" class="secondary-action link-action" :href="selectedWebsite" target="_blank" rel="noreferrer">
+                        <span class="detail-action-icon">
+                          <component :is="actionIcons.open" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                        Visit Website
+                      </a>
+                      <button type="button" class="secondary-action" @click="openAuditPreview">
+                        <span class="detail-action-icon">
+                          <component :is="actionIcons.eye" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                        View Full Audit
+                      </button>
                     </div>
                   </div>
 
-                  <div class="workflow-notes">
-                    <span v-for="note in workflowSnapshot.workflow.calendarNotes" :key="note">{{ note }}</span>
+                  <div class="overview-grid">
+                    <div class="mini-card">
+                      <span>Business</span>
+                      <strong>{{ selectedProspect.businessName }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Opportunity Score</span>
+                      <strong>{{ formatScore(selectedProspect.opportunityScore) }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Contact</span>
+                      <strong>{{ selectedProspect.email || selectedProspect.phone || "Not available" }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Website</span>
+                      <strong>{{ selectedWebsite || "Not available" }}</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="section-card">
+                  <p class="panel-kicker">Quick stats</p>
+                  <div class="quick-grid">
+                    <article v-for="stat in selectedQuickStats" :key="stat.label" class="quick-card">
+                      <span>{{ stat.label }}</span>
+                      <strong>{{ stat.value }}</strong>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="section-card">
+                  <p class="panel-kicker">AI summary</p>
+                  <p>{{ selectedReport?.businessSummary || selectedProspect.painSummary || "Waiting on research." }}</p>
+                </section>
+
+                <section class="section-card">
+                  <p class="panel-kicker">Recommended offer</p>
+                  <p>{{ selectedReport?.salesStrategy.recommendedOffer || selectedProspect.suggestedOfferAngle || "No offer yet." }}</p>
+                </section>
+
+                <section class="section-card">
+                  <p class="panel-kicker">Missing features</p>
+                  <div class="tag-row">
+                    <span v-for="item in selectedMissingFeatures" :key="item" class="tag-pill">{{ item }}</span>
+                    <span v-if="selectedMissingFeatures.length === 0" class="tag-pill">No obvious gaps</span>
+                  </div>
+                </section>
+
+                <section class="section-card">
+                  <p class="panel-kicker">Opportunity reasons</p>
+                  <ul class="bullet-list">
+                    <li v-for="item in selectedOpportunityReasons" :key="item">{{ item }}</li>
+                    <li v-if="selectedOpportunityReasons.length === 0">No score reasoning yet.</li>
+                  </ul>
+                </section>
+
+                <section class="section-card">
+                  <p class="panel-kicker">Source coverage</p>
+                  <div class="coverage-grid">
+                    <div v-for="item in sourceCoverageRows" :key="item.label" class="coverage-card">
+                      <strong>{{ item.label }}</strong>
+                      <span>{{ formatCoverageStatus(item.coverage?.status || "unknown") }}</span>
+                      <small v-if="item.coverage?.note">{{ item.coverage.note }}</small>
+                    </div>
+                  </div>
+                </section>
+              </template>
+
+              <template v-else-if="activeTab === 'email'">
+                <section class="section-card">
+                  <div class="section-head">
+                    <div>
+                      <p class="panel-kicker">Email draft</p>
+                      <h3>Ready to approve or send</h3>
+                    </div>
+                    <div class="detail-actions">
+                      <button
+                        type="button"
+                        class="secondary-action"
+                        :disabled="actionLoadingId === `${selectedProspect.id}:regenerate_research`"
+                        @click="regenerateResearch"
+                      >
+                        <span class="detail-action-icon">
+                          <component :is="actionIcons.refresh" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                        {{ actionLoadingId === `${selectedProspect.id}:regenerate_research` ? "Regenerating..." : "Regenerate" }}
+                      </button>
+                      <button
+                        type="button"
+                        class="secondary-action"
+                        :disabled="actionLoadingId === `${selectedProspect.id}:approve_draft`"
+                        @click="performAction('approve_draft')"
+                      >
+                        <span class="detail-action-icon">
+                          <component :is="actionIcons.approve" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                        {{ actionLoadingId === `${selectedProspect.id}:approve_draft` ? "Approving..." : "Approve" }}
+                      </button>
+                      <button
+                        type="button"
+                        class="primary-action"
+                        :disabled="actionLoadingId === `${selectedProspect.id}:send_email`"
+                        @click="performAction('send_email')"
+                      >
+                        <span class="detail-action-icon">
+                          <component :is="actionIcons.send" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                        {{ actionLoadingId === `${selectedProspect.id}:send_email` ? "Sending..." : "Send" }}
+                      </button>
+                    </div>
                   </div>
 
-                  <div v-if="workflowSnapshot.workflow.calendarSuggestion" class="workflow-calendar">
-                    <div class="panel-header">
-                      <div>
-                        <p class="panel-meta">Calendar handoff</p>
-                        <h4>Suggested meeting times</h4>
-                        <p class="panel-note">
-                          {{ workflowSnapshot.workflow.calendarSuggestion.timezone }} ·
-                          {{ workflowSnapshot.workflow.calendarSuggestion.meetingDurationMinutes }} minute call
-                        </p>
+                  <div class="mini-stack">
+                    <div class="mini-card">
+                      <span>Subject</span>
+                      <strong>{{ selectedEmailSubject }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Preview</span>
+                      <p class="draft-body">{{ selectedEmailBody }}</p>
+                    </div>
+                  </div>
+
+                  <div class="action-row">
+                    <button type="button" class="secondary-action" @click="copyAuditReport">
+                      <span class="detail-action-icon">
+                        <component :is="actionIcons.copy" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                      </span>
+                      Copy Audit
+                    </button>
+                    <button type="button" class="secondary-action" @click="downloadAuditReport">
+                      <span class="detail-action-icon">
+                        <component :is="actionIcons.download" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                      </span>
+                      Download Audit
+                    </button>
+                    <button type="button" class="secondary-action" @click="printAuditReport">
+                      <span class="detail-action-icon">
+                        <component :is="actionIcons.print" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                      </span>
+                      Print / Save PDF
+                    </button>
+                    <button type="button" class="secondary-action" :disabled="isExportingReport" @click="downloadServerExport">
+                      <span class="detail-action-icon">
+                        <component :is="actionIcons.open" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                      </span>
+                      {{ isExportingReport ? "Exporting..." : "Server Export" }}
+                    </button>
+                  </div>
+                </section>
+              </template>
+
+              <template v-else-if="activeTab === 'activity'">
+                <section class="section-card">
+                  <div class="section-head">
+                    <div>
+                      <p class="panel-kicker">Activity</p>
+                      <h3>Timeline</h3>
+                    </div>
+                    <label class="inline-field">
+                      <span>Filter</span>
+                      <select v-model="timelineEventFilter">
+                        <option value="all">All events</option>
+                        <option value="lead_discovered">Lead discovered</option>
+                        <option value="research_generated">Research completed</option>
+                        <option value="draft_created">Draft created</option>
+                        <option value="draft_approved">Draft approved</option>
+                        <option value="sent">Email sent</option>
+                        <option value="reply_received">Reply received</option>
+                        <option value="reply_analyzed">Reply analyzed</option>
+                        <option value="meeting_booked">Meeting booked</option>
+                        <option value="follow_up_scheduled">Follow-up scheduled</option>
+                        <option value="meeting_prep_created">Meeting prep created</option>
+                        <option value="not_interested">Not interested</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="quick-grid">
+                    <article class="quick-card"><span>Total events</span><strong>{{ timelineStats.total }}</strong></article>
+                    <article class="quick-card"><span>Replies</span><strong>{{ timelineStats.replies }}</strong></article>
+                    <article class="quick-card"><span>Meetings</span><strong>{{ timelineStats.meetings }}</strong></article>
+                    <article class="quick-card"><span>Follow-ups</span><strong>{{ timelineStats.followUps }}</strong></article>
+                  </div>
+
+                  <p v-if="selectedTimeline.length === 0" class="muted-copy">No timeline yet.</p>
+                  <p v-else-if="displayedTimeline.length === 0" class="muted-copy">No events match the current filter.</p>
+                  <div v-else class="timeline-list">
+                    <article v-for="item in displayedTimeline" :key="item.id" class="timeline-item" :class="item.tone">
+                      <div class="timeline-dot"></div>
+                      <div class="timeline-copy">
+                        <div class="timeline-head">
+                          <strong>{{ item.title }}</strong>
+                          <span>{{ formatTimelineTimestamp(item.occurredAt) }}</span>
+                        </div>
+                        <p>{{ item.description }}</p>
                       </div>
-                      <button
-                        v-if="!isGoogleCalendarConnected"
-                        type="button"
-                        class="secondary-action"
-                        :disabled="isLoadingWorkflow"
-                        @click="connectGoogleCalendar"
-                      >
-                        Connect Google Calendar
-                      </button>
-                      <button
-                        v-else
-                        type="button"
-                        class="secondary-action"
-                        :disabled="isLoadingWorkflow"
-                        @click="disconnectGoogleCalendar"
-                      >
-                        Disconnect Google Calendar
-                      </button>
+                    </article>
+                  </div>
+                </section>
+
+                <section class="section-card">
+                  <div class="section-head">
+                    <div>
+                      <p class="panel-kicker">Reply intake</p>
+                      <h3>Classify inbound replies</h3>
                     </div>
-                    <div class="calendar-connection-status">
-                      <span v-if="googleCalendarConnection?.connected">
-                        Connected as {{ googleCalendarConnection.accountEmail || googleCalendarConnection.googleAccountId }}.
+                    <button type="button" class="secondary-action" :disabled="isAnalyzingReply || !replyText.trim()" @click="analyzeReply">
+                      <span class="detail-action-icon">
+                        <component :is="actionIcons.search" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
                       </span>
-                      <span v-else-if="googleCalendarConnection">
-                        Google Calendar is {{ googleCalendarConnection.status }}.
-                      </span>
-                      <span v-else>Connect Google Calendar to create a real event when the meeting is booked.</span>
-                    </div>
-                    <div class="workflow-notes">
-                      <span v-for="slot in workflowSnapshot.workflow.calendarSuggestion.suggestedTimes" :key="slot">{{ slot }}</span>
-                    </div>
-                    <p class="workflow-summary-text">{{ workflowSnapshot.workflow.calendarSuggestion.inviteDraft }}</p>
-                    <button
-                      type="button"
-                      class="primary-action"
-                      :disabled="actionLoadingId === `${selectedProspect.id}:book_meeting`"
-                      @click="performAction('book_meeting')"
-                    >
-                      {{ actionLoadingId === `${selectedProspect.id}:book_meeting` ? "Booking..." : "Book Meeting" }}
+                      {{ isAnalyzingReply ? "Analyzing..." : "Analyze Reply" }}
                     </button>
                   </div>
 
-                  <ol class="workflow-steps">
-                    <li v-for="step in workflowSnapshot.workflow.steps" :key="step.type" class="workflow-step">
-                      <div class="workflow-step-head">
-                        <strong>{{ formatWorkflowStepType(step.type) }}</strong>
-                        <span :class="`workflow-step-status ${step.status}`">{{ formatWorkflowStepStatus(step.status) }}</span>
-                      </div>
-                      <p>{{ step.description }}</p>
-                    </li>
-                  </ol>
-
-                  <div v-if="workflowSnapshot.workflow.proposalDraft" class="workflow-proposal">
-                    <div class="panel-header">
-                      <div>
-                        <p class="panel-meta">Proposal draft</p>
-                        <h4>{{ workflowSnapshot.workflow.proposalDraft.pricingSuggestion }}</h4>
-                      </div>
-                      <button
-                        type="button"
-                        class="secondary-action"
-                        :disabled="actionLoadingId === `${selectedProspect.id}:send_proposal` || !selectedProspect.email"
-                        @click="performAction('send_proposal')"
-                      >
-                        {{ actionLoadingId === `${selectedProspect.id}:send_proposal` ? "Sending..." : "Send Proposal" }}
-                      </button>
-                    </div>
-                    <p class="workflow-summary-text">{{ workflowSnapshot.workflow.proposalDraft.executiveSummary }}</p>
-                    <p class="workflow-summary-text">{{ workflowSnapshot.workflow.proposalDraft.roiSummary }}</p>
-                    <p class="workflow-summary-text">{{ workflowSnapshot.workflow.proposalDraft.acceptancePrompt }}</p>
-                    <div class="workflow-two-col">
-                      <div>
-                        <span>Current workflow</span>
-                        <ul>
-                          <li v-for="item in workflowSnapshot.workflow.proposalDraft.currentWorkflow" :key="item">{{ item }}</li>
-                        </ul>
-                      </div>
-                      <div>
-                        <span>Proposed workflow</span>
-                        <ul>
-                          <li v-for="item in workflowSnapshot.workflow.proposalDraft.proposedWorkflow" :key="item">{{ item }}</li>
-                        </ul>
-                      </div>
-                    </div>
-                    <div class="workflow-two-col">
-                      <div>
-                        <span>Timeline</span>
-                        <ul>
-                          <li v-for="item in workflowSnapshot.workflow.proposalDraft.timeline" :key="item">{{ item }}</li>
-                        </ul>
-                      </div>
-                      <div>
-                        <span>Deliverables</span>
-                        <ul>
-                          <li v-for="item in workflowSnapshot.workflow.proposalDraft.deliverables" :key="item">{{ item }}</li>
-                        </ul>
-                      </div>
-                    </div>
-                  </div>
-                </template>
-              </div>
-
-              <div class="report-grid">
-                <article class="insight-card report-card">
-                  <p class="card-kicker">Business summary</p>
-                  <p>{{ selectedReport?.businessSummary || selectedProspect.research?.painSummary || selectedProspect.painSummary || "Waiting on research." }}</p>
-                </article>
-                <article class="insight-card report-card">
-                  <p class="card-kicker">Website summary</p>
-                  <p>{{ selectedReport?.websiteSummary || selectedProspect.research?.suggestedOfferAngle || selectedProspect.suggestedOfferAngle || "No website summary yet." }}</p>
-                  <p class="muted-copy">{{ selectedResearch?.websiteUrl || selectedProspect.website || "Website not available." }}</p>
-                </article>
-              </div>
-
-              <div class="report-grid report-grid-wide">
-                <article class="insight-card score-card">
-                  <p class="card-kicker">Opportunity score</p>
-                  <strong class="score-value">{{ formatScore(selectedProspect.opportunityScore) }}</strong>
-                  <p class="muted-copy">
-                    Estimated ROI:
-                    {{ formatHoursRange(selectedReport?.estimatedRoiHoursPerWeekMin ?? 0, selectedReport?.estimatedRoiHoursPerWeekMax ?? 0) }}
-                  </p>
-                  <p class="muted-copy">
-                    {{ selectedReport?.suggestedOutreachAngle || selectedProspect.research?.suggestedOfferAngle || selectedProspect.suggestedOfferAngle || "No outreach angle yet." }}
-                  </p>
-                </article>
-
-                <article class="insight-card report-list-card">
-                  <p class="card-kicker">Pain points</p>
-                  <ul class="report-list">
-                    <li v-for="item in selectedReport?.painPoints || []" :key="`pain-${item}`">
-                      {{ item }}
-                    </li>
-                    <li v-if="(selectedReport?.painPoints?.length ?? 0) === 0">Waiting on research.</li>
-                  </ul>
-                </article>
-
-                <article class="insight-card report-list-card">
-                  <p class="card-kicker">Automation opportunities</p>
-                  <ul class="report-list">
-                    <li v-for="item in selectedReport?.automationOpportunities || []" :key="`auto-${item}`">
-                      {{ item }}
-                    </li>
-                    <li v-if="(selectedReport?.automationOpportunities?.length ?? 0) === 0">Waiting on research.</li>
-                  </ul>
-                </article>
-
-                <article class="insight-card report-list-card">
-                  <p class="card-kicker">Why it scores</p>
-                  <ul class="report-list">
-                    <li v-for="item in selectedReport?.opportunityScoreReasons || []" :key="`reason-${item}`">
-                      {{ item }}
-                    </li>
-                    <li v-if="(selectedReport?.opportunityScoreReasons?.length ?? 0) === 0">No score reasoning yet.</li>
-                  </ul>
-                </article>
-              </div>
-
-              <div class="insight-card website-signals-card">
-                <h3>Website signals</h3>
-                <div class="signal-grid">
-                  <div>
-                    <span>Booking software</span>
-                    <strong>{{ selectedReport?.websiteSignals.bookingSoftware || "None detected" }}</strong>
-                  </div>
-                  <div>
-                    <span>Contact form</span>
-                    <strong>{{ selectedReport?.websiteSignals.contactForm ? "Yes" : "No" }}</strong>
-                  </div>
-                  <div>
-                    <span>Chat widget</span>
-                    <strong>{{ selectedReport?.websiteSignals.chatWidget ? "Yes" : "No" }}</strong>
-                  </div>
-                  <div>
-                    <span>Mobile responsive</span>
-                    <strong>{{ selectedReport?.websiteSignals.mobileResponsive ? "Yes" : "No" }}</strong>
-                  </div>
-                  <div>
-                    <span>HTTPS</span>
-                    <strong>{{ selectedReport?.websiteSignals.https ? "Yes" : "No" }}</strong>
-                  </div>
-                  <div>
-                    <span>Performance</span>
-                    <strong>{{ selectedReport?.websiteSignals.performanceBand || "unknown" }}</strong>
-                  </div>
-                </div>
-
-                <div class="signal-group" v-if="(selectedReport?.websiteSignals.services?.length ?? 0) > 0">
-                  <span>Services</span>
-                  <div class="tag-row">
-                    <span v-for="service in selectedReport?.websiteSignals.services || []" :key="`service-${service}`" class="tag-pill">
-                      {{ service }}
-                    </span>
-                  </div>
-                </div>
-
-                <div class="signal-group" v-if="(selectedReport?.websiteSignals.socialLinks?.length ?? 0) > 0">
-                  <span>Social links</span>
-                  <div class="tag-row">
-                    <span v-for="social in selectedReport?.websiteSignals.socialLinks || []" :key="`social-${social}`" class="tag-pill">
-                      {{ social }}
-                    </span>
-                  </div>
-                </div>
-
-              <div v-if="(selectedReport?.websiteSignals.notes?.length ?? 0) > 0" class="signal-notes">
-                <span v-for="note in selectedReport?.websiteSignals.notes || []" :key="`note-${note}`" class="signal-note">
-                  {{ note }}
-                </span>
-              </div>
-            </div>
-
-              <div class="report-grid report-grid-wide">
-                <article class="insight-card profile-card">
-                  <h3>Business profile</h3>
-                  <div class="profile-score-grid">
-                    <div>
-                      <span>Business health</span>
-                      <strong>{{ formatScore(selectedReport?.businessProfile.businessHealthScore || 0) }}</strong>
-                    </div>
-                    <div>
-                      <span>Website</span>
-                      <strong>{{ formatScore(selectedReport?.businessProfile.websiteScore || 0) }}</strong>
-                    </div>
-                    <div>
-                      <span>Reviews</span>
-                      <strong>{{ formatScore(selectedReport?.businessProfile.reviewsScore || 0) }}</strong>
-                    </div>
-                    <div>
-                      <span>Booking</span>
-                      <strong>{{ formatScore(selectedReport?.businessProfile.bookingScore || 0) }}</strong>
-                    </div>
-                    <div>
-                      <span>CRM</span>
-                      <strong>{{ formatNullableScore(selectedReport?.businessProfile.crmScore) }}</strong>
-                    </div>
-                    <div>
-                      <span>AI readiness</span>
-                      <strong>{{ formatScore(selectedReport?.businessProfile.aiReadinessScore || 0) }}</strong>
-                    </div>
-                  </div>
-
-                  <div class="profile-section">
-                    <span>Growth signals</span>
-                    <div class="tag-row">
-                      <span v-for="signal in selectedReport?.businessProfile.growthSignals || []" :key="`growth-${signal}`" class="tag-pill">
-                        {{ signal }}
-                      </span>
-                      <span v-if="(selectedReport?.businessProfile.growthSignals?.length ?? 0) === 0" class="tag-pill">None detected</span>
-                    </div>
-                  </div>
-
-                  <div class="profile-section">
-                    <span>Owner signals</span>
-                    <div class="tag-row">
-                      <span v-for="signal in selectedReport?.businessProfile.ownerSignals || []" :key="`owner-${signal}`" class="tag-pill">
-                        {{ signal }}
-                      </span>
-                      <span v-if="(selectedReport?.businessProfile.ownerSignals?.length ?? 0) === 0" class="tag-pill">Unknown</span>
-                    </div>
-                  </div>
-
-                  <div class="profile-section">
-                    <span>Source coverage</span>
-                    <div class="coverage-grid">
-                      <div v-for="item in sourceCoverageRows" :key="item.label" class="coverage-item">
-                        <strong>{{ item.label }}</strong>
-                        <span>{{ formatCoverageStatus(item.coverage?.status || 'unknown') }}</span>
-                        <small v-if="item.coverage?.note">{{ item.coverage.note }}</small>
-                      </div>
-                    </div>
-                  </div>
-                </article>
-
-                <article class="insight-card strategy-card">
-                  <h3>AI sales strategy</h3>
-                  <div class="strategy-block">
-                    <span>Primary pain</span>
-                    <p>{{ selectedReport?.salesStrategy.primaryPain || "Not enough signal yet." }}</p>
-                  </div>
-                  <div class="strategy-block">
-                    <span>Recommended offer</span>
-                    <p>{{ selectedReport?.salesStrategy.recommendedOffer || "No offer yet." }}</p>
-                  </div>
-                  <div class="strategy-block">
-                    <span>Opening hook</span>
-                    <p>{{ selectedReport?.salesStrategy.openingHook || "No opening hook yet." }}</p>
-                  </div>
-                  <div class="strategy-block">
-                    <span>Objection handling</span>
-                    <div class="objection-list">
-                      <div v-for="objection in selectedReport?.salesStrategy.objections || []" :key="`objection-${objection.objection}`" class="objection-item">
-                        <strong>{{ objection.objection }}</strong>
-                        <p>{{ objection.response }}</p>
-                      </div>
-                      <div v-if="(selectedReport?.salesStrategy.objections?.length ?? 0) === 0" class="objection-item">
-                        <strong>No objections yet.</strong>
-                        <p>Regenerate the report to create a sales plan.</p>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="strategy-block">
-                    <span>CTA</span>
-                    <p>{{ selectedReport?.salesStrategy.cta || "No CTA yet." }}</p>
-                  </div>
-                  <div class="strategy-block">
-                    <span>Strategy rationale</span>
-                    <ul class="report-list">
-                      <li v-for="item in selectedReport?.salesStrategy.strategyRationale || []" :key="`strategy-${item}`">
-                        {{ item }}
-                      </li>
-                      <li v-if="(selectedReport?.salesStrategy.strategyRationale?.length ?? 0) === 0">No rationale yet.</li>
-                    </ul>
-                  </div>
-                </article>
-              </div>
-
-              <div class="insight-card timeline-card">
-                <div class="panel-header">
-                  <div>
-                    <h3>Workflow timeline</h3>
-                    <p class="panel-note">Persisted activity from research, outreach, replies, and follow-up work.</p>
-                  </div>
-                  <label class="timeline-filter">
-                    <span>Filter</span>
-                    <select v-model="timelineEventFilter">
-                      <option value="all">All events</option>
-                      <option value="lead_discovered">{{ formatTimelineEventLabel("lead_discovered") }}</option>
-                      <option value="research_generated">{{ formatTimelineEventLabel("research_generated") }}</option>
-                      <option value="draft_created">{{ formatTimelineEventLabel("draft_created") }}</option>
-                      <option value="draft_approved">{{ formatTimelineEventLabel("draft_approved") }}</option>
-                      <option value="sent">{{ formatTimelineEventLabel("sent") }}</option>
-                      <option value="reply_received">{{ formatTimelineEventLabel("reply_received") }}</option>
-                      <option value="reply_analyzed">{{ formatTimelineEventLabel("reply_analyzed") }}</option>
-                      <option value="meeting_booked">{{ formatTimelineEventLabel("meeting_booked") }}</option>
-                      <option value="follow_up_scheduled">{{ formatTimelineEventLabel("follow_up_scheduled") }}</option>
-                      <option value="meeting_prep_created">{{ formatTimelineEventLabel("meeting_prep_created") }}</option>
-                      <option value="not_interested">{{ formatTimelineEventLabel("not_interested") }}</option>
-                    </select>
+                  <label class="field">
+                    <span>Inbound reply</span>
+                    <textarea
+                      v-model="replyText"
+                      rows="4"
+                      spellcheck="false"
+                      placeholder="Thanks for the note. I'm interested, but can we see more details?"
+                    ></textarea>
                   </label>
-                </div>
 
-                <div v-if="selectedTimeline.length === 0" class="empty-note">
-                  No timeline yet. Research, send a draft, or analyze a reply to start the chronology.
-                </div>
+                  <div v-if="replyAnalysis" class="reply-grid">
+                    <article class="quick-card"><span>Intent</span><strong>{{ replyAnalysis.intent.replaceAll("_", " ") }}</strong></article>
+                    <article class="quick-card"><span>Sentiment</span><strong>{{ replyAnalysis.sentiment }}</strong></article>
+                    <article class="quick-card"><span>Confidence</span><strong>{{ Math.round(replyAnalysis.confidence) }}%</strong></article>
+                    <article class="quick-card"><span>Next step</span><strong>{{ replyAnalysis.suggestedNextStep.replaceAll("_", " ") }}</strong></article>
+                  </div>
 
-                <div v-else-if="displayedTimeline.length === 0" class="empty-note">
-                  No events match the current filter.
-                </div>
+                  <div v-if="replyAnalysis" class="section-stack">
+                    <p><strong>Summary</strong></p>
+                    <p>{{ replyAnalysis.summary }}</p>
+                    <p><strong>Suggested response</strong></p>
+                    <pre class="draft-body">{{ replyAnalysis.suggestedReply }}</pre>
+                  </div>
 
-                <div v-else class="timeline-list">
-                  <article
-                    v-for="item in displayedTimeline"
-                    :key="item.id"
-                    class="timeline-item"
-                    :class="item.tone"
-                  >
-                    <div class="timeline-marker"></div>
-                    <div class="timeline-content">
-                      <div class="timeline-meta">
-                        <strong>{{ item.title }}</strong>
-                        <span>{{ formatTimelineTimestamp(item.occurredAt) }}</span>
+                  <div class="section-card inner-card">
+                    <div class="section-head">
+                      <div>
+                        <p class="panel-kicker">Meeting handoff</p>
+                        <h4>Google Calendar</h4>
                       </div>
-                      <p>{{ item.description }}</p>
+                      <div class="detail-actions">
+                        <button v-if="!isGoogleCalendarConnected" type="button" class="secondary-action" @click="connectGoogleCalendar">
+                          <span class="detail-action-icon">
+                            <component :is="actionIcons.add" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                          </span>
+                          Connect
+                        </button>
+                        <button v-else type="button" class="secondary-action" @click="disconnectGoogleCalendar">
+                          <span class="detail-action-icon">
+                            <component :is="actionIcons.close" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                          </span>
+                          Disconnect
+                        </button>
+                        <button type="button" class="primary-action" :disabled="actionLoadingId === `${selectedProspect.id}:book_meeting`" @click="performAction('book_meeting')">
+                          <span class="detail-action-icon">
+                            <component :is="actionIcons.send" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                          </span>
+                          {{ actionLoadingId === `${selectedProspect.id}:book_meeting` ? "Booking..." : "Book Meeting" }}
+                        </button>
+                      </div>
                     </div>
-                  </article>
-                </div>
-              </div>
-
-              <div class="insight-card email-card">
-                <h3>Generated email draft</h3>
-                <p class="subject-line">{{ selectedProspect.latestMessage?.subject || selectedProspect.research?.emailSubject || "No draft yet." }}</p>
-                <pre>{{ selectedProspect.latestMessage?.body || selectedProspect.research?.emailBody || "Run the feed to generate the first draft." }}</pre>
-              </div>
-
-              <div class="insight-card reply-card">
-                <div class="panel-header reply-header">
-                  <div>
-                    <h3>Reply intelligence</h3>
-                    <p class="panel-note">Paste the lead's reply and classify whether this is interest, an objection, or a meeting ask.</p>
+                    <p class="muted-copy">
+                      {{
+                        googleCalendarConnection?.connected
+                          ? `Connected as ${googleCalendarConnection.accountEmail || googleCalendarConnection.googleAccountId || "Google account"}`
+                          : "Connect Google Calendar to create an event when the meeting is booked."
+                      }}
+                    </p>
                   </div>
-                  <button
-                    type="button"
-                    class="primary-action"
-                    :disabled="isAnalyzingReply || !replyText.trim()"
-                    @click="analyzeReply"
-                  >
-                    {{ isAnalyzingReply ? "Analyzing..." : "Analyze Reply" }}
-                  </button>
-                </div>
+                </section>
+              </template>
 
-                <label class="field">
-                  <span>Inbound reply</span>
-                  <textarea
-                    v-model="replyText"
-                    rows="6"
-                    spellcheck="false"
-                    placeholder="Thanks for the note. I’m interested, but can we see more details?"
-                  ></textarea>
-                </label>
-
-                <div v-if="replyAnalysis" class="reply-analysis-grid">
-                  <div class="reply-stat">
-                    <span>Intent</span>
-                    <strong>{{ replyAnalysis.intent.replaceAll("_", " ") }}</strong>
+              <template v-else>
+                <section class="section-card">
+                  <div class="section-head">
+                    <div>
+                      <p class="panel-kicker">Notes</p>
+                      <h3>Internal notes and tasks</h3>
+                    </div>
+                    <p class="muted-copy">{{ selectedLastActivity ? `Last activity ${formatRelativeTime(selectedLastActivity)}` : "No activity yet" }}</p>
                   </div>
-                  <div class="reply-stat">
-                    <span>Sentiment</span>
-                    <strong>{{ replyAnalysis.sentiment }}</strong>
+
+                  <label class="field">
+                    <span>Internal note</span>
+                    <textarea v-model="noteDraft" rows="6" spellcheck="false" placeholder="Log context, objections, next steps, or follow-up notes."></textarea>
+                  </label>
+
+                  <div class="section-stack">
+                    <p class="panel-kicker">Tags</p>
+                    <div class="tag-row">
+                      <span v-for="tag in selectedProspect.opportunityTags" :key="tag" class="tag-pill">{{ tag }}</span>
+                      <span v-if="selectedProspect.opportunityTags.length === 0" class="tag-pill">No tags yet</span>
+                    </div>
                   </div>
-                  <div class="reply-stat">
-                    <span>Confidence</span>
-                    <strong>{{ Math.round(replyAnalysis.confidence) }}%</strong>
+
+                  <div class="section-stack">
+                    <p class="panel-kicker">Tasks</p>
+                    <div v-if="(selectedProspect.tasks?.length ?? 0) === 0" class="muted-copy">No tasks yet.</div>
+                    <div v-else class="task-list">
+                      <article v-for="task in selectedProspect.tasks || []" :key="task.id" class="task-item">
+                        <div>
+                          <strong>{{ formatTimelineTaskLabel(task.type) }}</strong>
+                          <p>{{ task.status }} - {{ formatTimelineTimestamp(task.dueAt) }}</p>
+                        </div>
+                        <span class="status-badge" :class="task.status === 'done' ? 'tone-approved' : task.status === 'failed' ? 'tone-lost' : 'tone-follow-up'">
+                          {{ task.status }}</span>
+                      </article>
+                    </div>
                   </div>
-                  <div class="reply-stat">
-                    <span>Next step</span>
-                    <strong>{{ replyAnalysis.suggestedNextStep.replaceAll("_", " ") }}</strong>
-                  </div>
-                </div>
-
-                <div v-if="replyAnalysis" class="strategy-block">
-                  <span>Reply summary</span>
-                  <p>{{ replyAnalysis.summary }}</p>
-                </div>
-
-                <div v-if="replyAnalysis" class="strategy-block">
-                  <span>Suggested response</span>
-                  <pre>{{ replyAnalysis.suggestedReply }}</pre>
-                </div>
-
-                <div v-if="replyAnalysis?.meetingBrief" class="strategy-block">
-                  <span>Meeting brief</span>
-                  <p>{{ replyAnalysis.meetingBrief.objective }}</p>
-                  <p class="muted-copy">{{ replyAnalysis.meetingBrief.durationMinutes }} minute call</p>
-                  <ul class="report-list">
-                    <li v-for="item in replyAnalysis.meetingBrief.agenda" :key="`brief-agenda-${item}`">
-                      {{ item }}
-                    </li>
-                  </ul>
-                  <p class="muted-copy">{{ replyAnalysis.meetingBrief.suggestedCalendarMessage }}</p>
-                </div>
-
-                <div v-if="replyAnalysis?.meetingBrief?.followUpPlan?.length" class="strategy-block">
-                  <span>Post-call plan</span>
-                  <ul class="report-list">
-                    <li v-for="item in replyAnalysis.meetingBrief.followUpPlan" :key="`follow-${item}`">
-                      {{ item }}
-                    </li>
-                  </ul>
-                </div>
-
-                <div v-if="replyAnalysis?.meetingAgenda?.length" class="strategy-block">
-                  <span>Meeting agenda</span>
-                  <ul class="report-list">
-                    <li v-for="item in replyAnalysis.meetingAgenda" :key="`agenda-${item}`">{{ item }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="replyAnalysis?.reasons?.length" class="strategy-block">
-                  <span>Why it classified this way</span>
-                  <ul class="report-list">
-                    <li v-for="item in replyAnalysis.reasons" :key="`reason-${item}`">{{ item }}</li>
-                  </ul>
-                </div>
-
-                <div v-if="replyAnalysis" class="action-row reply-actions">
-                  <button
-                    type="button"
-                    class="primary-action"
-                    :disabled="actionLoadingId === `${selectedProspect.id}:mark_replied`"
-                    @click="performAction('mark_replied')"
-                  >
-                    {{ actionLoadingId === `${selectedProspect.id}:mark_replied` ? "Updating..." : "Mark Replied" }}
-                  </button>
-                  <button
-                    type="button"
-                    class="secondary-action"
-                    :disabled="actionLoadingId === `${selectedProspect.id}:mark_meeting_booked`"
-                    @click="performAction('mark_meeting_booked')"
-                  >
-                    {{ actionLoadingId === `${selectedProspect.id}:mark_meeting_booked` ? "Updating..." : "Mark Meeting Booked" }}
-                  </button>
-                </div>
-              </div>
-
-              <div class="follow-up-strip">
-                <span>Next follow-up</span>
-                <strong>{{ formatFollowUp(selectedProspect.nextFollowUpAt) }}</strong>
-              </div>
-
-              <div class="action-row">
-                <button
-                  type="button"
-                  class="primary-action"
-                  :disabled="actionLoadingId === `${selectedProspect.id}:approve_draft` || selectedProspect.status === 'not_interested'"
-                  @click="performAction('approve_draft')"
-                >
-                  {{ actionLoadingId === `${selectedProspect.id}:approve_draft` ? "Approving..." : "Approve Draft" }}
-                </button>
-                <button
-                  type="button"
-                  class="primary-action"
-                  :disabled="actionLoadingId === `${selectedProspect.id}:send_email` || selectedProspect.status === 'not_interested'"
-                  @click="performAction('send_email')"
-                >
-                  {{ actionLoadingId === `${selectedProspect.id}:send_email` ? "Sending..." : "Send Email" }}
-                </button>
-                <button
-                  type="button"
-                  class="secondary-action"
-                  :disabled="actionLoadingId === `${selectedProspect.id}:schedule_follow_up` || selectedProspect.status === 'not_interested'"
-                  @click="performAction('schedule_follow_up', 3)"
-                >
-                  {{ actionLoadingId === `${selectedProspect.id}:schedule_follow_up` ? "Scheduling..." : "Schedule Follow-up" }}
-                </button>
-                <button
-                  type="button"
-                  class="secondary-action danger"
-                  :disabled="actionLoadingId === `${selectedProspect.id}:mark_not_interested`"
-                  @click="performAction('mark_not_interested')"
-                >
-                  {{ actionLoadingId === `${selectedProspect.id}:mark_not_interested` ? "Updating..." : "Mark Not Interested" }}
-                </button>
-              </div>
-            </template>
-          </article>
+                </section>
+              </template>
+            </div>
+          </aside>
         </section>
       </template>
     </template>
@@ -2131,109 +2894,276 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.revenue-shell {
-  width: min(100%, 1260px);
-  margin: 0 auto;
-  padding: 48px 20px 80px;
-}
-
-.revenue-hero {
-  display: grid;
-  gap: 20px;
-  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
-  align-items: stretch;
-  margin-bottom: 24px;
-}
-
-.revenue-hero-copy,
-.revenue-hero-card,
-.revenue-card,
-.stat-card {
-  border: 1px solid var(--fc-border);
-  border-radius: 28px;
-  background: linear-gradient(180deg, var(--fc-surface-strong) 0%, var(--fc-surface) 100%);
-  box-shadow: var(--fc-panel-shadow);
-}
-
-.revenue-hero-copy {
-  padding: 32px;
-}
-
-.revenue-hero-card {
-  padding: 28px;
-  display: grid;
-  align-content: space-between;
+:global(body) {
+  margin: 0;
   background:
-    radial-gradient(circle at top right, rgba(215, 102, 52, 0.18), transparent 42%),
-    linear-gradient(180deg, var(--fc-surface-strong) 0%, var(--fc-surface) 100%);
+    radial-gradient(circle at top left, rgba(217, 110, 63, 0.12), transparent 34%),
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.06), transparent 26%),
+    linear-gradient(180deg, #fffaf5 0%, #faf6f0 100%);
+  color: #241913;
 }
 
-.revenue-eyebrow,
-.panel-meta,
-.hero-card-label {
-  margin: 0 0 10px;
-  color: var(--fc-text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.14em;
+.revenue-shell {
+  min-height: 100vh;
+  padding: 24px 20px 28px;
+}
+
+.revenue-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.revenue-header-copy {
+  display: grid;
+  gap: 8px;
+  max-width: 760px;
+}
+
+.eyebrow,
+.panel-kicker {
+  margin: 0;
+  color: #9a6a4f;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
 }
 
-.revenue-hero h1 {
+.revenue-header h1 {
   margin: 0;
-  font-size: clamp(2.4rem, 5vw, 4rem);
-  line-height: 1.02;
-  font-family: var(--fc-font-family-display);
+  font-size: clamp(2rem, 3vw, 3.2rem);
+  line-height: 1;
 }
 
-.revenue-description {
-  margin: 16px 0 0;
-  color: var(--fc-text-muted);
-  line-height: 1.7;
-  max-width: 64ch;
+.lede,
+.panel-note,
+.helper-copy,
+.muted-copy,
+.empty-shell,
+.timeline-copy p,
+.task-item p,
+.coverage-card small,
+.draft-body {
+  color: #6f5a4e;
 }
 
-.revenue-chip-row,
-.tag-row,
-.action-row,
-.follow-up-strip,
-.detail-meta,
-.feed-grid,
-.stats-grid,
-.revenue-grid {
+.lede {
+  margin: 0;
+  max-width: 68ch;
+  line-height: 1.55;
+}
+
+.header-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 10px;
+  min-width: 380px;
+}
+
+.workspace-pill {
+  padding: 14px 16px;
+  border: 1px solid rgba(111, 90, 78, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: 0 10px 24px rgba(62, 36, 19, 0.06);
+}
+
+.workspace-pill span,
+.summary-card span,
+.mini-card span,
+.quick-card span,
+.coverage-card strong,
+.table-footer span,
+.task-item p,
+.field span,
+.inline-field span {
+  display: block;
+  color: #8b6f60;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-pill strong,
+.summary-card strong,
+.mini-card strong,
+.quick-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.05rem;
+}
+
+.workspace-pill small {
+  display: block;
+  margin-top: 4px;
+  color: #786055;
+}
+
+.flash {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(220, 115, 53, 0.18);
+  border-radius: 14px;
+  background: rgba(220, 115, 53, 0.08);
+  color: #9b4c1d;
+  font-weight: 700;
+}
+
+.flash.error {
+  border-color: rgba(176, 57, 57, 0.18);
+  background: rgba(176, 57, 57, 0.08);
+  color: #8f3030;
+}
+
+.empty-shell {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  min-height: 280px;
+  padding: 28px;
+  border: 1px solid rgba(111, 90, 78, 0.14);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.84);
+  text-align: center;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.summary-card,
+.toolbar-card,
+.table-panel,
+.detail-panel,
+.section-card,
+.mini-card,
+.quick-card,
+.coverage-card,
+.task-item {
+  border: 1px solid rgba(111, 90, 78, 0.14);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 14px 28px rgba(58, 34, 18, 0.05);
+}
+
+.summary-card {
+  padding: 16px;
+}
+
+.toolbar-stack {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.toolbar-card {
+  padding: 14px;
+}
+
+.search-toolbar {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.preset-chips {
+  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px;
 }
 
-.revenue-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 36px;
-  padding: 0 14px;
+.chip-button,
+.table-action,
+.tab-button,
+.more-menu summary {
+  border: 1px solid rgba(111, 90, 78, 0.14);
   border-radius: 999px;
-  border: 1px solid var(--fc-border);
-  background: color-mix(in srgb, var(--fc-surface-strong) 72%, var(--fc-surface-muted));
-  color: var(--fc-text-muted);
-  font-size: 0.84rem;
+  background: #fff;
+  color: #4d3a31;
+  font: inherit;
   font-weight: 700;
+  cursor: pointer;
 }
 
-.revenue-feedback {
-  margin: 0 0 18px;
-  font-weight: 700;
+.chip-button {
+  padding: 8px 12px;
 }
 
-.revenue-feedback.error {
-  color: var(--fc-error-text);
+.filter-toolbar {
+  display: grid;
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.revenue-card {
-  padding: clamp(22px, 3vw, 30px);
+.feed-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
 }
 
-.empty-state {
-  text-align: center;
+.feed-fields {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.feed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.csv-card {
+  padding-top: 6px;
+}
+
+.field,
+.inline-field {
+  display: grid;
+  gap: 6px;
+}
+
+.field input,
+.field select,
+.field textarea,
+.inline-field select {
+  width: 100%;
+  border: 1px solid rgba(111, 90, 78, 0.16);
+  border-radius: 14px;
+  background: #fff;
+  color: #241913;
+  font: inherit;
+  padding: 11px 12px;
+  outline: none;
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    transform 0.18s ease;
+}
+
+.field textarea {
+  min-height: 96px;
+  resize: vertical;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus,
+.inline-field select:focus {
+  border-color: #d86635;
+  box-shadow: 0 0 0 4px rgba(216, 102, 53, 0.12);
 }
 
 .primary-action,
@@ -2241,847 +3171,658 @@ onMounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 48px;
-  padding: 0 18px;
-  border-radius: 999px;
+  gap: 8px;
+  border: 0;
+  border-radius: 14px;
+  padding: 11px 14px;
+  font: inherit;
   font-weight: 800;
-  text-decoration: none;
   cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease,
+    opacity 0.16s ease,
+    background-color 0.16s ease;
 }
 
 .primary-action {
-  border: none;
-  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
-  color: var(--fc-accent-contrast);
-  box-shadow: var(--fc-accent-shadow);
+  background: linear-gradient(135deg, #ef7a32, #d65e21);
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(214, 94, 33, 0.22);
+}
+
+.secondary-action,
+.table-action,
+.tab-button,
+.chip-button,
+.more-menu summary {
+  background: #fff;
+  color: #4d3a31;
+}
+
+.primary-action:hover:not(:disabled),
+.secondary-action:hover:not(:disabled),
+.table-action:hover,
+.chip-button:hover,
+.tab-button:hover,
+.more-menu summary:hover {
+  transform: translateY(-1px);
 }
 
 .primary-action:disabled,
 .secondary-action:disabled {
-  opacity: 0.7;
-  cursor: wait;
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
 }
 
-.secondary-action {
-  border: 1px solid var(--fc-border);
-  background: transparent;
-  color: var(--fc-text);
-}
-
-.secondary-action.danger {
-  color: #9a3412;
-  border-color: rgba(215, 102, 52, 0.28);
-  background: rgba(215, 102, 52, 0.08);
-}
-
-.panel-header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  align-items: flex-start;
-  justify-content: space-between;
-}
-
-.panel-header h2 {
+.helper-copy {
   margin: 0;
+  align-self: center;
+  font-size: 0.85rem;
 }
 
-.detail-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  justify-content: flex-end;
-}
-
-.timeline-filter {
+.workspace-grid {
   display: grid;
-  gap: 6px;
-  min-width: 210px;
-}
-
-.timeline-filter span {
-  color: var(--fc-text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.timeline-filter select {
-  min-height: 44px;
-  padding: 0 14px;
-  border-radius: 14px;
-  border: 1px solid var(--fc-input-border);
-  background: var(--fc-input-bg);
-  color: var(--fc-text);
-}
-
-.panel-note,
-.revenue-muted {
-  margin: 6px 0 0;
-  color: var(--fc-text-muted);
-  line-height: 1.6;
-}
-
-.feed-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 20px;
-}
-
-.csv-import-block {
-  margin-top: 20px;
-  display: grid;
-  gap: 16px;
-}
-
-.field {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-}
-
-.field span {
-  color: var(--fc-text-muted);
-  font-size: 0.88rem;
-  font-weight: 700;
-}
-
-.field input,
-.field select,
-.field textarea {
-  width: 100%;
-  min-height: 48px;
-  padding: 0 14px;
-  border-radius: 16px;
-  border: 1px solid var(--fc-input-border);
-  background: var(--fc-input-bg);
-}
-
-.field textarea {
-  min-height: 180px;
-  padding: 14px;
-  resize: vertical;
-  line-height: 1.5;
-}
-
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  margin: 20px 0;
-}
-
-.stat-card {
-  padding: 18px;
-  display: grid;
-  gap: 8px;
-}
-
-.stat-card span {
-  color: var(--fc-text-muted);
-  font-size: 0.84rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.stat-card strong {
-  font-size: 1.8rem;
-  line-height: 1;
-}
-
-.revenue-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
-  gap: 20px;
-}
-
-.table-card,
-.detail-card {
-  min-height: 100%;
-}
-
-.prospect-table {
-  display: grid;
-  gap: 10px;
-  margin-top: 18px;
-}
-
-.prospect-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.4fr) 90px 130px 140px;
+  grid-template-columns: minmax(0, 1.65fr) minmax(360px, 0.95fr);
   gap: 14px;
-  padding: 14px 16px;
-  border: 1px solid var(--fc-border);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 78%, var(--fc-surface-muted));
-  text-align: left;
-  cursor: pointer;
-  color: var(--fc-text);
+  align-items: stretch;
+  min-height: 0;
 }
 
-.prospect-row.active {
-  border-color: color-mix(in srgb, var(--fc-accent) 50%, var(--fc-border));
-  box-shadow: 0 0 0 1px rgba(215, 102, 52, 0.14);
+.table-panel,
+.detail-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.row-main,
-.row-secondary {
+.panel-head,
+.section-head,
+.detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.panel-head {
+  padding: 16px 16px 0;
+}
+
+.panel-head-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.page-size-field {
+  min-width: 120px;
+}
+
+.bulk-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  margin: 14px 16px 0;
+  border: 1px solid rgba(216, 102, 53, 0.12);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(216, 102, 53, 0.08), rgba(216, 102, 53, 0.04));
+}
+
+.bulk-summary {
   display: grid;
   gap: 4px;
 }
 
-.row-main small,
-.row-secondary small {
-  color: var(--fc-text-muted);
+.bulk-summary strong {
+  font-size: 1rem;
 }
 
-.row-secondary strong {
-  font-weight: 600;
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
 }
 
-.detail-meta {
+.more-menu {
+  position: relative;
+}
+
+.more-menu summary {
+  list-style: none;
+  padding: 11px 14px;
+}
+
+.more-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.more-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 5;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 18px;
+  gap: 6px;
+  min-width: 180px;
+  padding: 8px;
+  border: 1px solid rgba(111, 90, 78, 0.14);
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 18px 28px rgba(58, 34, 18, 0.12);
 }
 
-.detail-meta div {
-  padding: 14px;
-  border: 1px solid var(--fc-border);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 86%, var(--fc-surface-muted));
+.more-menu-panel button {
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #f8f5f1;
+  color: #4d3a31;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
 }
 
-.detail-meta span,
-.muted-copy {
-  color: var(--fc-text-muted);
-  font-size: 0.84rem;
+.more-menu-panel button:hover {
+  background: #f1ebe5;
 }
 
-.detail-meta strong {
+.table-shell {
+  min-height: 0;
+  overflow: auto;
+  margin-top: 12px;
+}
+
+.prospect-table {
+  width: 100%;
+  min-width: 1100px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.prospect-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 12px 10px;
+  background: #fcfaf7;
+  border-bottom: 1px solid rgba(111, 90, 78, 0.12);
+  color: #6e584c;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.column-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.sort-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sort-indicator :deep(svg) {
   display: block;
-  margin-top: 6px;
+}
+
+.prospect-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid rgba(111, 90, 78, 0.1);
+  vertical-align: middle;
+}
+
+.prospect-table tbody tr {
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.prospect-table tbody tr:hover {
+  background: rgba(216, 102, 53, 0.04);
+}
+
+.prospect-table tbody tr.selected {
+  background: rgba(216, 102, 53, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(216, 102, 53, 0.16);
+}
+
+.checkbox-col {
+  width: 42px;
+  text-align: center;
+}
+
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #d86635;
+}
+
+.business-cell {
+  display: grid;
+  gap: 3px;
+}
+
+.business-cell span,
+.muted-value {
+  color: #705b4e;
+  font-size: 0.92rem;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.detail-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.detail-action-icon :deep(svg) {
+  display: block;
+}
+
+.tone-new {
+  background: #f4efe9;
+  color: #6d5b50;
+}
+
+.tone-researching,
+.tone-research-ready {
+  background: #e8f2ff;
+  color: #20538a;
+}
+
+.tone-draft-ready {
+  background: #efe6ff;
+  color: #6a3ec1;
+}
+
+.tone-approved {
+  background: #e5f8ec;
+  color: #1d7a43;
+}
+
+.tone-sent,
+.tone-follow-up {
+  background: #fff1d9;
+  color: #9a651c;
+}
+
+.tone-replied {
+  background: #e7f7f6;
+  color: #14706e;
+}
+
+.tone-won {
+  background: #e1f8ea;
+  color: #1a7a3c;
+}
+
+.tone-lost {
+  background: #f4e4e4;
+  color: #9b3b3b;
+}
+
+.actions-col {
+  width: 96px;
+  text-align: right;
+}
+
+.table-action {
+  padding: 8px 11px;
+}
+
+.table-empty-row td {
+  padding: 26px 18px;
+  color: #6f5a4e;
+  text-align: center;
+}
+
+.table-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 16px 16px;
+  border-top: 1px solid rgba(111, 90, 78, 0.1);
+}
+
+.pagination {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.detail-panel {
+  min-width: 0;
+}
+
+.detail-head {
+  padding: 16px 16px 0;
+}
+
+.detail-score {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.detail-score strong {
+  font-size: 1.4rem;
+}
+
+.detail-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px 0;
+  border-bottom: 1px solid rgba(111, 90, 78, 0.1);
+}
+
+.tab-button {
+  padding: 10px 12px;
+}
+
+.tab-button.active {
+  background: rgba(216, 102, 53, 0.12);
+  color: #b44f21;
+  border-color: rgba(216, 102, 53, 0.18);
+}
+
+.detail-content {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px 16px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.section-card {
+  padding: 14px;
+}
+
+.section-head {
+  margin-bottom: 12px;
+}
+
+.inner-card {
+  padding: 12px;
+  background: #fcfaf7;
+}
+
+.overview-grid,
+.quick-grid,
+.reply-grid,
+.coverage-grid,
+.mini-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.overview-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mini-stack {
+  margin-top: 12px;
+}
+
+.mini-card {
+  padding: 12px;
+}
+
+.mini-card p,
+.quick-card p {
+  margin: 8px 0 0;
+  line-height: 1.55;
+}
+
+.quick-grid,
+.reply-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.quick-card {
+  padding: 12px;
+}
+
+.tag-row,
+.action-row,
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .tag-pill {
   display: inline-flex;
   align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
+  min-height: 28px;
+  padding: 0 10px;
   border-radius: 999px;
-  border: 1px solid rgba(215, 102, 52, 0.2);
-  background: rgba(215, 102, 52, 0.08);
-  color: var(--fc-accent-dark);
-  font-size: 0.84rem;
-  font-weight: 700;
+  background: rgba(216, 102, 53, 0.1);
+  color: #b04f24;
+  font-size: 0.8rem;
+  font-weight: 800;
 }
 
-.card-kicker {
-  margin: 0 0 10px;
-  color: var(--fc-text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.report-grid,
-.report-grid-wide {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 18px;
-}
-
-.report-card,
-.report-list-card,
-.score-card,
-.website-signals-card {
-  margin-top: 0;
-}
-
-.report-list,
-.signal-notes {
+.bullet-list,
+.timeline-list {
   display: grid;
   gap: 10px;
 }
 
-.report-list {
+.bullet-list {
   margin: 0;
   padding-left: 18px;
-  color: var(--fc-text-muted);
-}
-
-.report-list li {
-  line-height: 1.6;
-}
-
-.score-card {
-  gap: 10px;
-}
-
-.score-value {
-  display: block;
-  font-size: clamp(2.2rem, 5vw, 3.6rem);
-  line-height: 1;
-  font-weight: 800;
-  color: var(--fc-text);
-}
-
-.profile-card,
-.strategy-card,
-.reply-card,
-.timeline-card,
-.activity-card {
-  display: grid;
-  gap: 16px;
-}
-
-.profile-score-grid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.profile-score-grid div,
-.coverage-item,
-.strategy-block,
-.objection-item {
-  display: grid;
-  gap: 6px;
-}
-
-.profile-score-grid span,
-.profile-section > span,
-.strategy-block > span,
-.coverage-item span,
-.coverage-item small {
-  color: var(--fc-text-muted);
-  font-size: 0.84rem;
-}
-
-.profile-score-grid strong {
-  font-size: 1.05rem;
-}
-
-.profile-section {
-  display: grid;
-  gap: 10px;
+  color: #6f5a4e;
 }
 
 .coverage-grid {
-  display: grid;
-  gap: 10px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.coverage-item {
+.coverage-card,
+.task-item {
   padding: 12px;
-  border: 1px solid var(--fc-border);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 86%, var(--fc-surface-muted));
 }
 
-.coverage-item strong {
-  font-size: 0.98rem;
-}
-
-.strategy-block p {
-  margin: 0;
-  color: var(--fc-text-muted);
-  line-height: 1.6;
-}
-
-.timeline-list {
+.coverage-card {
   display: grid;
-  gap: 12px;
+  gap: 4px;
 }
 
 .timeline-item {
+  position: relative;
   display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  gap: 14px;
-  align-items: start;
-}
-
-.timeline-marker {
-  width: 12px;
-  height: 12px;
-  margin-top: 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--fc-text-muted) 40%, var(--fc-surface-muted));
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--fc-surface-strong) 88%, var(--fc-surface-muted));
-}
-
-.timeline-item.done .timeline-marker {
-  background: linear-gradient(135deg, var(--fc-accent) 0%, var(--fc-accent-dark) 100%);
-}
-
-.timeline-item.active .timeline-marker {
-  background: #b45309;
-}
-
-.timeline-item.pending .timeline-marker {
-  background: #6b7280;
-}
-
-.timeline-content {
-  display: grid;
-  gap: 6px;
-  padding: 14px 16px;
-  border: 1px solid var(--fc-border);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 88%, var(--fc-surface-muted));
-}
-
-.timeline-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.timeline-meta strong {
-  font-size: 0.98rem;
-}
-
-.timeline-meta span {
-  color: var(--fc-text-muted);
-  font-size: 0.84rem;
-}
-
-.timeline-content p {
-  margin: 0;
-  color: var(--fc-text-muted);
-  line-height: 1.6;
-}
-
-.activity-stats {
-  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
   gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 10px 0;
 }
 
-.activity-stat {
-  padding: 12px 14px;
-  border: 1px solid var(--fc-border);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 88%, var(--fc-surface-muted));
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: #d86635;
+  box-shadow: 0 0 0 4px rgba(216, 102, 53, 0.12);
 }
 
-.activity-stat span {
-  display: block;
-  color: var(--fc-text-muted);
+.timeline-item.done .timeline-dot {
+  background: #1a7a3c;
+  box-shadow: 0 0 0 4px rgba(26, 122, 60, 0.12);
+}
+
+.timeline-item.pending .timeline-dot {
+  background: #a26d1f;
+  box-shadow: 0 0 0 4px rgba(162, 109, 31, 0.12);
+}
+
+.timeline-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.timeline-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.timeline-head span {
+  color: #8b6f60;
   font-size: 0.78rem;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
 }
 
-.activity-stat strong {
-  display: block;
-  margin-top: 8px;
-  font-size: 1.2rem;
-}
-
-.activity-feed {
-  display: grid;
-  gap: 10px;
-}
-
-.activity-feed-item {
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border: 1px solid var(--fc-border);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 92%, var(--fc-surface-muted));
-}
-
-.activity-feed-item strong {
-  display: block;
-  font-size: 0.96rem;
-}
-
-.activity-feed-item p {
-  margin: 4px 0 0;
-  color: var(--fc-text-muted);
-  line-height: 1.5;
-}
-
-.activity-feed-item span {
-  color: var(--fc-text-muted);
-  font-size: 0.8rem;
-  white-space: nowrap;
-}
-
-.workflow-card {
-  display: grid;
-  gap: 16px;
-  margin-top: 18px;
-}
-
-.workflow-summary,
-.workflow-two-col {
-  display: grid;
-  gap: 12px;
-}
-
-.workflow-summary {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.workflow-summary div,
-.workflow-calendar,
-.workflow-proposal,
-.workflow-step {
-  padding: 14px 16px;
-  border: 1px solid var(--fc-border);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 92%, var(--fc-surface-muted));
-}
-
-.workflow-summary span,
-.workflow-notes span,
-.workflow-proposal span {
-  display: block;
-  color: var(--fc-text-muted);
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.workflow-summary strong,
-.workflow-step strong,
-.workflow-proposal h4 {
-  display: block;
-  margin-top: 6px;
-  margin-bottom: 0;
-}
-
-.workflow-notes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.workflow-notes span {
-  padding: 8px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--fc-border);
-  background: color-mix(in srgb, var(--fc-surface-strong) 88%, var(--fc-surface-muted));
-  text-transform: none;
-  letter-spacing: 0;
-  font-size: 0.8rem;
-}
-
-.workflow-steps {
-  display: grid;
-  gap: 10px;
+.draft-body {
   margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.workflow-step {
-  display: grid;
-  gap: 8px;
-}
-
-.workflow-step-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.workflow-step p,
-.workflow-summary-text,
-.workflow-proposal li {
-  margin: 0;
-  color: var(--fc-text-muted);
+  white-space: pre-wrap;
   line-height: 1.55;
 }
 
-.workflow-step-status {
-  padding: 6px 10px;
-  border-radius: 999px;
-  font-size: 0.76rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.workflow-step-status.done {
-  background: rgba(34, 197, 94, 0.12);
-  color: #15803d;
-}
-
-.workflow-step-status.active {
-  background: rgba(245, 158, 11, 0.14);
-  color: #b45309;
-}
-
-.workflow-step-status.pending {
-  background: rgba(148, 163, 184, 0.16);
-  color: #475569;
-}
-
-.workflow-step-status.blocked {
-  background: rgba(239, 68, 68, 0.14);
-  color: #b91c1c;
-}
-
-.workflow-proposal {
+.task-list {
   display: grid;
-  gap: 12px;
-}
-
-.workflow-calendar {
-  display: grid;
-  gap: 12px;
-  margin-top: 14px;
-}
-
-.calendar-connection-status {
-  color: var(--fc-text-muted);
-  font-size: 0.92rem;
-  line-height: 1.5;
-}
-
-.workflow-proposal h4 {
-  font-size: 1.02rem;
-}
-
-.workflow-two-col {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.workflow-two-col ul {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  color: var(--fc-text-muted);
-}
-
-.objection-list {
-  display: grid;
-  gap: 10px;
-}
-
-.objection-item {
-  padding: 12px;
-  border: 1px solid var(--fc-border);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 88%, var(--fc-surface-muted));
-}
-
-.objection-item strong {
-  font-size: 0.96rem;
-}
-
-.objection-item p {
-  margin: 0;
-  color: var(--fc-text-muted);
-  line-height: 1.6;
-}
-
-.website-signals-card {
-  display: grid;
-  gap: 16px;
-}
-
-.signal-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.signal-grid div,
-.signal-group,
-.signal-note {
-  display: grid;
-  gap: 6px;
-}
-
-.signal-grid span,
-.signal-group > span,
-.signal-note {
-  color: var(--fc-text-muted);
-  font-size: 0.84rem;
-  line-height: 1.5;
-}
-
-.signal-grid strong {
-  font-size: 0.98rem;
-}
-
-.signal-group {
-  gap: 10px;
-}
-
-.signal-notes {
   gap: 8px;
 }
 
-.signal-note {
-  padding: 10px 12px;
-  border: 1px solid var(--fc-border);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 84%, var(--fc-surface-muted));
-}
-
-.insight-card {
-  margin-top: 18px;
-  padding: 18px;
-  border: 1px solid var(--fc-border);
-  border-radius: 22px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 82%, var(--fc-surface-muted));
-}
-
-.insight-card h3 {
-  margin: 0 0 10px;
-}
-
-.insight-card p {
-  margin: 0;
-  color: var(--fc-text-muted);
-  line-height: 1.7;
-}
-
-.email-card pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font: inherit;
-  color: var(--fc-text-muted);
-  line-height: 1.7;
-}
-
-.reply-header {
-  align-items: center;
-}
-
-.reply-analysis-grid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.reply-stat {
-  padding: 12px;
-  border: 1px solid var(--fc-border);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--fc-surface-strong) 88%, var(--fc-surface-muted));
-  display: grid;
-  gap: 6px;
-}
-
-.reply-stat span {
-  color: var(--fc-text-muted);
-  font-size: 0.8rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.reply-stat strong {
-  font-size: 0.98rem;
-}
-
-.reply-card pre {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font: inherit;
-  color: var(--fc-text-muted);
-  line-height: 1.7;
-}
-
-.subject-line {
-  margin: 0 0 10px !important;
-  font-weight: 800;
-  color: var(--fc-text) !important;
-}
-
-.follow-up-strip {
+.task-item {
+  display: flex;
   justify-content: space-between;
+  gap: 12px;
   align-items: center;
-  margin-top: 18px;
-  padding: 14px 16px;
-  border-radius: 18px;
-  border: 1px solid var(--fc-border);
-  background: color-mix(in srgb, var(--fc-surface-strong) 86%, var(--fc-surface-muted));
 }
 
-.follow-up-strip span {
-  color: var(--fc-text-muted);
-  font-size: 0.84rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.muted-copy {
+  margin: 0;
 }
 
-.action-row {
-  margin-top: 18px;
+.link-action {
+  text-decoration: none;
 }
 
-.empty-note {
-  margin-top: 18px;
-  color: var(--fc-text-muted);
-  line-height: 1.7;
+.empty-panel {
+  padding: 18px 16px 16px;
+  color: #705b4e;
 }
 
-@media (max-width: 1120px) {
-  .stats-grid {
+.field :is(input, select, textarea),
+.inline-field select {
+  min-width: 0;
+}
+
+@media (max-width: 1440px) {
+  .summary-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .revenue-grid {
-    grid-template-columns: 1fr;
+  .filter-toolbar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .feed-fields {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 860px) {
-  .revenue-hero,
-  .feed-grid,
-  .prospect-row {
+@media (max-width: 1160px) {
+  .revenue-header,
+  .workspace-grid,
+  .search-toolbar,
+  .feed-toolbar {
     grid-template-columns: 1fr;
   }
 
-  .stats-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .report-grid,
-  .report-grid-wide,
-  .signal-grid,
-  .reply-analysis-grid,
-  .profile-score-grid,
-  .coverage-grid,
-  .workflow-summary,
-  .workflow-two-col {
-    grid-template-columns: 1fr;
-  }
-
-  .detail-meta {
-    grid-template-columns: 1fr;
-  }
-
-  .action-row {
+  .revenue-header {
     display: grid;
   }
-}
 
-@media (max-width: 640px) {
-  .revenue-shell {
-    padding-inline: 16px;
+  .header-meta {
+    min-width: 0;
   }
 
-  .stats-grid {
+  .workspace-grid {
+    display: grid;
+  }
+
+  .summary-grid,
+  .filter-toolbar,
+  .feed-fields,
+  .overview-grid,
+  .quick-grid,
+  .reply-grid,
+  .coverage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 780px) {
+  .revenue-shell {
+    padding-inline: 14px;
+  }
+
+  .header-meta,
+  .summary-grid,
+  .filter-toolbar,
+  .feed-fields,
+  .overview-grid,
+  .quick-grid,
+  .reply-grid,
+  .coverage-grid {
     grid-template-columns: 1fr;
+  }
+
+  .table-panel,
+  .detail-panel {
+    min-height: auto;
+  }
+
+  .prospect-table {
+    min-width: 980px;
+  }
+
+  .panel-head,
+  .detail-head,
+  .detail-content {
+    padding-inline: 12px;
+  }
+
+  .bulk-toolbar {
+    margin-inline: 12px;
   }
 }
 </style>

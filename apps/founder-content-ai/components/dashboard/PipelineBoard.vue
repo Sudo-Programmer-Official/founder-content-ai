@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import type { ContentAsset } from "../../../../packages/shared-types";
 import PipelineCard from "./PipelineCard.vue";
 import type { PipelineCardModel, PipelineColumnModel, PipelineDraftState } from "./dashboard-types";
+import { actionIcons, aiFeatureIcons, iconSizes, iconStrokeWidth } from "../../src/icons";
 
 const props = defineProps<{
   columns: PipelineColumnModel[];
@@ -65,9 +66,15 @@ watch(
       <p class="pipeline-empty">No content yet. Start by speaking your first idea or generating a draft.</p>
       <div class="action-row">
         <button type="button" class="dashboard-button" @click="emit('speak-now')">
+          <span class="pipeline-action-icon">
+            <component :is="aiFeatureIcons.voice" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           Speak now
         </button>
         <button type="button" class="dashboard-button secondary" @click="emit('open-creator')">
+          <span class="pipeline-action-icon">
+            <component :is="actionIcons.add" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           Write now
         </button>
       </div>
@@ -190,6 +197,17 @@ watch(
 .pipeline-stage-stack {
   display: grid;
   gap: 16px;
+}
+
+.pipeline-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+}
+
+.pipeline-action-icon :deep(svg) {
+  display: block;
 }
 
 .pipeline-empty-state {

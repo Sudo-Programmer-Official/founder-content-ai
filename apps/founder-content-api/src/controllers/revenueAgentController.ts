@@ -34,7 +34,7 @@ function readBusinessIdFromBody(body: { businessId?: unknown }): string | undefi
 }
 
 function readOptionalProvider(value: unknown): RevenueAgentFeedRequest["provider"] | undefined {
-  return value === "google_business" || value === "mock" || value === "csv_import" ? value : undefined;
+  return value === "google_business" || value === "csv_import" ? value : undefined;
 }
 
 function readReplyText(value: unknown): string | undefined {

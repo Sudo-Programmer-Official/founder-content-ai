@@ -77,6 +77,7 @@ import {
   requestWorkspaceAssetUploadUrl,
 } from "../services/workspace-assets-service";
 import { requestWorkspaceInsights } from "../services/workspace-insights-service";
+import { actionIcons, iconSizes, iconStrokeWidth } from "../src/icons";
 import { appRoutes } from "../utils/routes";
 
 function buildSuggestedSubject(value: string): string {
@@ -5010,15 +5011,26 @@ onBeforeUnmount(() => {
                       <span class="workspace-chip">{{ campaign.sentCount }} sent</span>
                       <span class="workspace-chip">{{ campaign.deliveredCount }} delivered</span>
                       <span class="workspace-chip" :class="{ warning: campaign.failedCount > 0 }">
-                        {{ campaign.failedCount }} failed<span v-if="campaign.failedCount === 0"> ✓</span><span v-else> ⚠️</span>
+                        <component
+                          :is="campaign.failedCount === 0 ? actionIcons.approve : actionIcons.warning"
+                          :size="iconSizes.dense"
+                          :stroke-width="iconStrokeWidth"
+                        />
+                        {{ campaign.failedCount }} failed
                       </span>
                     </div>
                   </div>
                   <div class="campaign-card-actions">
                     <button type="button" class="secondary-action" @click="duplicateCampaign(campaign)">
+                      <span class="campaign-action-icon">
+                        <component :is="actionIcons.copy" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                      </span>
                       Duplicate
                     </button>
                     <button type="button" class="secondary-action" @click="setEmailTab('campaigns')">
+                      <span class="campaign-action-icon">
+                        <component :is="actionIcons.eye" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                      </span>
                       View
                     </button>
                   </div>
@@ -6816,6 +6828,7 @@ Daycare Spots"
 .workspace-chip {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   min-height: 36px;
   padding: 0 12px;
   border-radius: 999px;
@@ -8638,6 +8651,17 @@ Daycare Spots"
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.campaign-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+}
+
+.campaign-action-icon :deep(svg) {
+  display: block;
 }
 
 .campaign-card-heading {

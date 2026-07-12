@@ -68,7 +68,7 @@ Purpose:
 Behavior:
 
 - used by the revenue-agent Google Business provider
-- if this is missing, the Google Business provider will fail fast instead of silently falling back to mock data
+- if this is missing, the Google Business provider will fail fast
 - the Google Cloud project must have the Places API enabled and billing configured
 
 Optional alias:

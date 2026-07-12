@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { ContentAsset } from "../../../../packages/shared-types";
 import type { PipelineCardModel, PipelineDraftState } from "./dashboard-types";
+import { actionIcons, iconSizes, iconStrokeWidth } from "../../src/icons";
 
 const props = defineProps<{
   model: PipelineCardModel;
@@ -60,6 +61,9 @@ const excerptPreview = computed(() => {
         class="dashboard-button secondary small-button"
         @click="emit('edit', model.asset)"
       >
+        <span class="pipeline-action-icon">
+          <component :is="actionIcons.edit" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
         {{ model.isEditing ? "Editing" : "Edit" }}
       </button>
     </div>
@@ -124,6 +128,9 @@ const excerptPreview = computed(() => {
         :disabled="model.isSaving"
         @click="emit('advance', model.asset)"
       >
+        <span class="pipeline-action-icon">
+          <component :is="actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
         {{ model.isSaving ? "Updating..." : model.stageActionLabel }}
       </button>
       <button
@@ -131,6 +138,9 @@ const excerptPreview = computed(() => {
         class="dashboard-button secondary small-button"
         @click="emit('open-creator', model.asset)"
       >
+        <span class="pipeline-action-icon">
+          <component :is="actionIcons.arrowUpRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
         Improve
       </button>
     </div>
@@ -174,9 +184,15 @@ const excerptPreview = computed(() => {
           :disabled="model.isSaving"
           @click="emit('save', model.asset)"
         >
+          <span class="pipeline-action-icon">
+            <component :is="actionIcons.save" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           {{ model.isSaving ? "Saving..." : "Save changes" }}
         </button>
         <button type="button" class="dashboard-button secondary" @click="emit('close')">
+          <span class="pipeline-action-icon">
+            <component :is="actionIcons.close" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           Close
         </button>
       </div>
@@ -206,6 +222,17 @@ const excerptPreview = computed(() => {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
+}
+
+.pipeline-action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 8px;
+}
+
+.pipeline-action-icon :deep(svg) {
+  display: block;
 }
 
 .status-tag {

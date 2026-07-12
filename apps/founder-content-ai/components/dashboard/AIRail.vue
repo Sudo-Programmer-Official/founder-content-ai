@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { AISuggestion } from "./dashboard-types";
+import { actionIcons, aiFeatureIcons, iconSizes, iconStrokeWidth } from "../../src/icons";
 
 const props = defineProps<{
   suggestions: AISuggestion[];
@@ -22,7 +23,12 @@ const secondarySuggestions = computed(() =>
   <section class="dashboard-panel suggestion-panel" id="ai-suggestions">
     <div class="panel-header">
       <div>
-        <p class="panel-meta">AI Strategist</p>
+        <p class="panel-meta panel-meta-with-icon">
+          <span class="panel-meta-icon">
+            <component :is="aiFeatureIcons.assistant" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
+          <span>AI Strategist</span>
+        </p>
         <h2>What to do next</h2>
       </div>
       <span class="topbar-pill">{{ suggestions.length }}</span>
@@ -41,6 +47,9 @@ const secondarySuggestions = computed(() =>
         class="dashboard-button"
         @click="emit('action', primarySuggestion)"
       >
+        <span class="rail-button-icon">
+          <component :is="actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+        </span>
         {{ primarySuggestion.actionLabel }}
       </button>
     </article>
@@ -59,6 +68,9 @@ const secondarySuggestions = computed(() =>
           class="dashboard-button secondary small-button"
           @click="emit('action', suggestion)"
         >
+          <span class="rail-button-icon">
+            <component :is="actionIcons.arrowRight" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+          </span>
           {{ suggestion.actionLabel }}
         </button>
       </article>
@@ -74,6 +86,28 @@ const secondarySuggestions = computed(() =>
 .suggestion-grid {
   display: grid;
   gap: 12px;
+}
+
+.panel-meta-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-meta-icon,
+.rail-button-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.rail-button-icon {
+  margin-right: 8px;
+}
+
+.panel-meta-icon :deep(svg),
+.rail-button-icon :deep(svg) {
+  display: block;
 }
 
 .primary-recommendation,
