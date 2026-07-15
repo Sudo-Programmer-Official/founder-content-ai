@@ -1674,13 +1674,14 @@ async function persistContact(
             $28,
             $29,
             $30,
-            $31::jsonb,
+            $31,
             $32::jsonb,
             $33::jsonb,
-            $34::boolean,
+            $34::jsonb,
             $35::boolean,
-            $36::timestamptz,
-            $37::timestamptz
+            $36::boolean,
+            $37::timestamptz,
+            $38::timestamptz
           )
           returning
             id,
