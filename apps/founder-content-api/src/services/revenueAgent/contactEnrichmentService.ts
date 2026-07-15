@@ -1763,6 +1763,7 @@ async function persistContact(
           JSON.stringify(mergedEvents),
           options.isPrimary,
           Boolean(options.manualOverride),
+          Boolean(options.manualOverride) ? new Date().toISOString() : null,
           new Date().toISOString(),
         ],
         client,
