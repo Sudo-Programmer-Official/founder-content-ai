@@ -1516,7 +1516,8 @@ async function persistContact(
             enrichment_events_json = $34::jsonb,
             is_primary = $35::boolean,
             manual_override = manual_override OR $36::boolean,
-            last_enriched_at = coalesce($37::timestamptz, last_enriched_at),
+            manually_corrected_at = coalesce($37::timestamptz, manually_corrected_at),
+            last_enriched_at = coalesce($38::timestamptz, last_enriched_at),
             updated_at = now()
           where id = $1::uuid
           returning
