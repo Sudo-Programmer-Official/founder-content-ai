@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, t
 import { useRoute } from "vue-router";
 import type {
   BusinessMembership,
+  RevenueAgentContactEnrichmentStatus,
   RevenueAgentActionType,
   RevenueAgentFeedConfig,
   RevenueAgentOpportunityReport,
@@ -12,6 +13,8 @@ import type {
   RevenueAgentTimelineEvent,
   RevenueAgentWorkflowResponse,
   RevenueAgentWorkspaceResponse,
+  RevenueAgentProviderHealth,
+  RevenueAgentProviderName,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
@@ -20,6 +23,10 @@ import {
   requestDisconnectGoogleCalendar,
   requestGoogleCalendarAuthStart,
   requestRevenueAgentAction,
+  requestRevenueAgentContactsEnrich,
+  requestRevenueAgentContactsGenerateDrafts,
+  requestRevenueAgentContactsSend,
+  requestRevenueAgentContactsVerify,
   requestRevenueAgentFeedConfigUpdate,
   requestRevenueAgentFeed,
   requestRevenueAgentReplyAnalysis,
@@ -42,6 +49,7 @@ const DEFAULT_REVENUE_FEED_CONFIG: RevenueAgentFeedConfig = {
   state: "TX",
   offer: "AI booking + follow-up automation",
   dailyLeadLimit: 20,
+  contactEnrichmentThreshold: 80,
   provider: "google_business",
   csvText: "",
 };
@@ -77,6 +85,15 @@ const selectedTimeline = computed(() => selectedProspect.value?.timeline ?? []);
 const recentTimelineEvents = computed(() => [...selectedTimeline.value].slice(-4).reverse());
 const timelineStats = computed(() => ({
   total: selectedTimeline.value.length,
+  contactEvents: selectedTimeline.value.filter((item) =>
+    [
+      "contact_enrichment_started",
+      "contact_match_found",
+      "contact_verified",
+      "contact_primary_selected",
+      "contact_enrichment_skipped",
+    ].includes(item.type),
+  ).length,
   replies: selectedTimeline.value.filter((item) => item.type === "reply_received" || item.type === "reply_analyzed").length,
   meetings: selectedTimeline.value.filter((item) => item.type === "meeting_booked" || item.type === "meeting_prep_created").length,
   followUps: selectedTimeline.value.filter((item) => item.type === "follow_up_scheduled").length,
@@ -110,6 +127,64 @@ const workspaceKnowledgeStatusLabel = computed(() => {
 
   return "No profile yet";
 });
+const providerHealthRows = computed(() => {
+  const healthByProvider = new Map((workspace.value?.providerHealth ?? []).map((item) => [item.provider, item]));
+  const rows: Array<{
+    provider: RevenueAgentProviderName;
+    label: string;
+    health: RevenueAgentProviderHealth | null;
+  }> = [
+    { provider: "google_places", label: "Google Places", health: healthByProvider.get("google_places") ?? null },
+    { provider: "openai", label: "OpenAI", health: healthByProvider.get("openai") ?? null },
+    { provider: "apollo", label: "Apollo", health: healthByProvider.get("apollo") ?? null },
+    { provider: "hunter", label: "Hunter", health: healthByProvider.get("hunter") ?? null },
+  ];
+
+  return rows;
+});
+function getProviderHealthToneClass(health: RevenueAgentProviderHealth | null): string {
+  if (!health) {
+    return "tone-lost";
+  }
+
+  if (health.available) {
+    return "tone-approved";
+  }
+
+  if (!health.configured) {
+    return "tone-lost";
+  }
+
+  return "tone-follow-up";
+}
+
+function getProviderHealthStatusLabel(health: RevenueAgentProviderHealth | null): string {
+  if (!health) {
+    return "Unavailable";
+  }
+
+  if (!health.configured) {
+    return "Not configured";
+  }
+
+  if (health.available) {
+    return "Healthy";
+  }
+
+  return "Degraded";
+}
+
+function getProviderHealthDetail(health: RevenueAgentProviderHealth | null): string {
+  if (!health) {
+    return "Provider data is unavailable.";
+  }
+
+  if (health.available) {
+    return health.quotaRemaining !== undefined ? `${health.quotaRemaining} credits remaining` : "Ready for enrichment";
+  }
+
+  return health.reason || "Check provider configuration.";
+}
 const sourceCoverageRows = computed(() => {
   const coverage = selectedReport.value?.businessProfile.sourceCoverage;
   return [
@@ -143,7 +218,7 @@ const stats = computed(() => ({
 }));
 
 const searchQuery = ref("");
-const sortKey = ref<"score" | "business" | "status" | "activity">("score");
+const sortKey = ref<"reachability" | "score" | "business" | "status" | "activity">("reachability");
 const sortDirection = ref<"desc" | "asc">("desc");
 const currentPage = ref(1);
 const tablePageSize = ref(12);
@@ -177,10 +252,19 @@ const filterState = reactive({
   dateWindow: "all" as "all" | "today" | "7d" | "30d",
 });
 
+const CONTACT_STATUS_LABELS: Record<RevenueAgentContactEnrichmentStatus, string> = {
+  not_started: "Not started",
+  searching: "Searching",
+  found: "Found",
+  verified: "Verified",
+  no_match: "No match",
+  needs_review: "Needs review",
+};
+
 type RevenueAgentFilterPreset = {
   name: string;
   searchQuery: string;
-  sortKey: "score" | "business" | "status" | "activity";
+  sortKey: "reachability" | "score" | "business" | "status" | "activity";
   sortDirection: "desc" | "asc";
   tablePageSize: number;
   filterState: typeof filterState;
@@ -191,7 +275,7 @@ const FILTER_PRESETS_KEY = "founder-content-revenue-agent-filter-presets-v1";
 const savedFilterPresets = ref<RevenueAgentFilterPreset[]>([]);
 const FEED_CONFIG_SAVE_DEBOUNCE_MS = 500;
 let feedFormHydrationToken = 0;
-let feedConfigSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let feedConfigSaveTimer: number | null = null;
 let feedConfigSaveNonce = 0;
 let hasHydratedFeedForm = false;
 
@@ -210,6 +294,10 @@ function normalizeFeedFormConfig(
     state: typeof merged.state === "string" ? merged.state.trim() : fallback.state,
     offer: typeof merged.offer === "string" ? merged.offer.trim() : fallback.offer,
     dailyLeadLimit: Math.min(25, Math.max(1, Math.floor(Number(merged.dailyLeadLimit) || fallback.dailyLeadLimit))),
+    contactEnrichmentThreshold: Math.min(
+      100,
+      Math.max(0, Math.floor(Number(merged.contactEnrichmentThreshold ?? fallback.contactEnrichmentThreshold ?? 80))),
+    ),
     provider: merged.provider === "csv_import" ? "csv_import" : merged.provider === "google_business" ? "google_business" : fallback.provider,
     csvText: typeof merged.csvText === "string" ? merged.csvText : fallback.csvText ?? "",
   };
@@ -322,7 +410,10 @@ function loadFiltersFromStorage(): void {
     const parsed = JSON.parse(raw) as Partial<RevenueAgentFilterPreset>;
 
     searchQuery.value = typeof parsed.searchQuery === "string" ? parsed.searchQuery : searchQuery.value;
-    sortKey.value = parsed.sortKey === "business" || parsed.sortKey === "status" || parsed.sortKey === "activity" ? parsed.sortKey : "score";
+    sortKey.value =
+      parsed.sortKey === "reachability" || parsed.sortKey === "score" || parsed.sortKey === "business" || parsed.sortKey === "status" || parsed.sortKey === "activity"
+        ? parsed.sortKey
+        : "reachability";
     sortDirection.value = parsed.sortDirection === "asc" ? "asc" : "desc";
     tablePageSize.value = Number.isFinite(parsed.tablePageSize as number) && (parsed.tablePageSize as number) > 0 ? Math.min(50, Math.max(6, Math.floor(parsed.tablePageSize as number))) : tablePageSize.value;
 
@@ -461,6 +552,89 @@ function getProspectWebsiteValue(prospect: RevenueAgentProspect): string {
   return prospect.website || prospect.research?.websiteUrl || "";
 }
 
+function getPrimaryContact(prospect: RevenueAgentProspect): RevenueAgentProspect["primaryContact"] | undefined {
+  if (prospect.primaryContact) {
+    return prospect.primaryContact;
+  }
+
+  return prospect.contacts?.find((contact) => contact.isPrimary) ?? prospect.contacts?.[0];
+}
+
+function getDecisionMakerLabel(prospect: RevenueAgentProspect): string {
+  const contact = getPrimaryContact(prospect);
+  return contact?.fullName || prospect.businessName;
+}
+
+function getContactTitleLabel(prospect: RevenueAgentProspect): string {
+  return getPrimaryContact(prospect)?.title || "Owner or manager";
+}
+
+function getVerifiedEmailLabel(prospect: RevenueAgentProspect): string {
+  const contact = getPrimaryContact(prospect);
+  if (contact?.emailVerificationStatus === "verified") {
+    return contact.verifiedEmail || contact.email || "Verified";
+  }
+
+  return contact?.email || "Unverified";
+}
+
+function getDirectPhoneLabel(prospect: RevenueAgentProspect): string {
+  return getPrimaryContact(prospect)?.directPhone || prospect.phone || "Not available";
+}
+
+function getContactStatusLabel(prospect: RevenueAgentProspect): string {
+  return CONTACT_STATUS_LABELS[prospect.contactEnrichmentStatus || "not_started"];
+}
+
+function getContactStatusToneClass(prospect: RevenueAgentProspect): string {
+  switch (prospect.contactEnrichmentStatus) {
+    case "verified":
+      return "tone-approved";
+    case "found":
+      return "tone-research-ready";
+    case "searching":
+      return "tone-follow-up";
+    case "needs_review":
+      return "tone-draft-ready";
+    case "no_match":
+      return "tone-lost";
+    default:
+      return "tone-new";
+  }
+}
+
+function getContactConfidenceLabel(prospect: RevenueAgentProspect): string {
+  const contact = getPrimaryContact(prospect);
+  if (!contact) {
+    return "Not scored";
+  }
+
+  return `${Math.round(contact.contactConfidence || contact.confidence || 0)} / 100`;
+}
+
+function getReachabilityLabel(prospect: RevenueAgentProspect): string {
+  const score = prospect.reachabilityScore ?? prospect.opportunityScore ?? 0;
+  return `${formatScore(score)} / 100`;
+}
+
+function getReachabilityToneClass(prospect: RevenueAgentProspect): string {
+  const score = prospect.reachabilityScore ?? prospect.opportunityScore ?? 0;
+  if (score >= 90) {
+    return "tone-approved";
+  }
+  if (score >= 75) {
+    return "tone-research-ready";
+  }
+  if (score >= 60) {
+    return "tone-follow-up";
+  }
+  return "tone-lost";
+}
+
+function getAIRecommendation(prospect: RevenueAgentProspect): string {
+  return prospect.aiRecommendation || "No recommendation yet.";
+}
+
 function getLastActivityAt(prospect: RevenueAgentProspect): string | undefined {
   const timestamps = [
     prospect.meetingBookedAt,
@@ -499,7 +673,7 @@ function formatRelativeTime(value?: string): string {
   return `${deltaDays}d ago`;
 }
 
-function toggleSort(nextKey: "score" | "business" | "status" | "activity"): void {
+function toggleSort(nextKey: "reachability" | "score" | "business" | "status" | "activity"): void {
   if (sortKey.value === nextKey) {
     sortDirection.value = sortDirection.value === "asc" ? "desc" : "asc";
     return;
@@ -509,7 +683,7 @@ function toggleSort(nextKey: "score" | "business" | "status" | "activity"): void
   sortDirection.value = nextKey === "business" ? "asc" : "desc";
 }
 
-function sortIndicatorIcon(key: "score" | "business" | "status" | "activity"): Component {
+function sortIndicatorIcon(key: "reachability" | "score" | "business" | "status" | "activity"): Component {
   if (sortKey.value !== key) {
     return actionIcons.arrowUpDown;
   }
@@ -703,14 +877,16 @@ const sortedProspects = computed(() => {
 
   list.sort((left, right) => {
     const compare =
-      sortKey.value === "business"
-        ? left.businessName.localeCompare(right.businessName)
-        : sortKey.value === "status"
-          ? rowStatusLabel(left).localeCompare(rowStatusLabel(right))
-          : sortKey.value === "activity"
-            ? new Date(getLastActivityAt(left) ?? left.createdAt).getTime() -
-              new Date(getLastActivityAt(right) ?? right.createdAt).getTime()
-            : Number(right.opportunityScore) - Number(left.opportunityScore);
+      sortKey.value === "reachability"
+        ? Number(left.reachabilityScore ?? left.opportunityScore ?? 0) - Number(right.reachabilityScore ?? right.opportunityScore ?? 0)
+        : sortKey.value === "business"
+          ? left.businessName.localeCompare(right.businessName)
+          : sortKey.value === "status"
+            ? rowStatusLabel(left).localeCompare(rowStatusLabel(right))
+            : sortKey.value === "activity"
+              ? new Date(getLastActivityAt(left) ?? left.createdAt).getTime() -
+                new Date(getLastActivityAt(right) ?? right.createdAt).getTime()
+              : Number(left.opportunityScore) - Number(right.opportunityScore);
 
     return sortDirection.value === "asc" ? compare : -compare;
   });
@@ -802,6 +978,54 @@ const selectedQuickStats = computed(() => {
     { label: "Review Count", value: selectedProspect.value?.reviewCount ?? "0" },
     { label: "AI Readiness", value: report ? `${report.businessProfile.aiReadinessScore} / 100` : "n/a" },
     { label: "Opportunity", value: selectedProspect.value ? formatScore(selectedProspect.value.opportunityScore) : "n/a" },
+    { label: "Reachability", value: selectedProspect.value ? getReachabilityLabel(selectedProspect.value) : "n/a" },
+    { label: "Decision Maker Confidence", value: selectedProspect.value ? getContactConfidenceLabel(selectedProspect.value) : "n/a" },
+  ];
+});
+type PriorityLane = {
+  key: "hot" | "warm" | "cold";
+  label: string;
+  tone: string;
+  description: string;
+  prospects: RevenueAgentProspect[];
+};
+
+const priorityLanes = computed<PriorityLane[]>(() => {
+  const ranked = [...filteredProspects.value].sort(
+    (left, right) =>
+      Number(right.reachabilityScore ?? right.opportunityScore ?? 0) -
+      Number(left.reachabilityScore ?? left.opportunityScore ?? 0),
+  );
+
+  const hot = ranked.filter((prospect) => (prospect.reachabilityScore ?? prospect.opportunityScore ?? 0) >= 85).slice(0, 5);
+  const warm = ranked.filter((prospect) => {
+    const score = prospect.reachabilityScore ?? prospect.opportunityScore ?? 0;
+    return score >= 70 && score < 85;
+  }).slice(0, 5);
+  const cold = ranked.filter((prospect) => (prospect.reachabilityScore ?? prospect.opportunityScore ?? 0) < 70).slice(0, 5);
+
+  return [
+    {
+      key: "hot",
+      label: "Hot",
+      tone: "tone-approved",
+      description: "Reachable decision maker and strong buying signal.",
+      prospects: hot,
+    },
+    {
+      key: "warm",
+      label: "Warm",
+      tone: "tone-follow-up",
+      description: "Good fit, but contact or website signals still need work.",
+      prospects: warm,
+    },
+    {
+      key: "cold",
+      label: "Cold",
+      tone: "tone-lost",
+      description: "Low reachability or missing decision-maker data.",
+      prospects: cold,
+    },
   ];
 });
 
@@ -963,6 +1187,61 @@ async function runBulkGenerateDrafts(): Promise<void> {
     }
 
     feedbackMessage.value = `Generated or refreshed drafts for ${successCount} prospect${successCount === 1 ? "" : "s"}.`;
+  } finally {
+    bulkActionLoading.value = "";
+  }
+}
+
+function getSelectedProspectsForBulk(): RevenueAgentProspect[] {
+  return prospects.value.filter((prospect) => selectedProspectIds.value.includes(prospect.id)).slice(0, 10);
+}
+
+async function runBulkContactAction(
+  action: "enrich" | "verify" | "generate_drafts" | "send_verified",
+): Promise<void> {
+  const selectedProspects = getSelectedProspectsForBulk();
+
+  if (selectedProspects.length === 0) {
+    errorMessage.value = "Select at least one prospect first.";
+    return;
+  }
+
+  bulkActionLoading.value = action;
+  errorMessage.value = "";
+
+  try {
+    const payload = {
+      businessId: selectedBusinessId.value,
+      prospectIds: selectedProspectIds.value.slice(0, 10),
+      limit: 10,
+      minimumOpportunityScore: feedForm.value.contactEnrichmentThreshold ?? 80,
+    };
+
+    const response =
+      action === "enrich"
+        ? await requestRevenueAgentContactsEnrich(payload)
+        : action === "verify"
+          ? await requestRevenueAgentContactsVerify(payload)
+          : action === "generate_drafts"
+            ? await requestRevenueAgentContactsGenerateDrafts(payload)
+            : await requestRevenueAgentContactsSend(payload);
+
+    workspace.value = response.workspace;
+    prospects.value = response.workspace.prospects;
+
+    const selected = response.workspace.prospects.find((prospect) => prospect.id === selectedProspectId.value) ?? response.workspace.prospects[0] ?? null;
+    selectProspect(selected, { resetReplyDraft: false });
+
+    feedbackMessage.value =
+      action === "enrich"
+        ? `Enriched contacts for ${response.processedProspectIds.length} prospect${response.processedProspectIds.length === 1 ? "" : "s"}.`
+        : action === "verify"
+          ? `Verified contacts for ${response.verifiedContactCount} prospect${response.verifiedContactCount === 1 ? "" : "s"}.`
+          : action === "generate_drafts"
+            ? `Generated drafts for ${response.processedProspectIds.length} prospect${response.processedProspectIds.length === 1 ? "" : "s"}.`
+            : `Sent verified contacts for ${response.processedProspectIds.length} prospect${response.processedProspectIds.length === 1 ? "" : "s"}.`;
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to process contact enrichment.";
   } finally {
     bulkActionLoading.value = "";
   }
@@ -1202,6 +1481,16 @@ function formatTimelineEventLabel(type: RevenueAgentTimelineEvent["type"]): stri
       return "Lead discovered";
     case "research_generated":
       return "Research completed";
+    case "contact_enrichment_started":
+      return "Contact enrichment started";
+    case "contact_match_found":
+      return "Decision maker match found";
+    case "contact_verified":
+      return "Contact verified";
+    case "contact_primary_selected":
+      return "Primary contact selected";
+    case "contact_enrichment_skipped":
+      return "Contact enrichment skipped";
     case "draft_created":
       return "Draft created";
     case "draft_approved":
@@ -1425,6 +1714,8 @@ function buildAuditReportMarkdown(
   lines.push(`- Website: ${prospect.website || "Not available"}`);
   lines.push(`- Contact: ${prospect.email || prospect.phone || "Not available"}`);
   lines.push(`- Opportunity score: ${opportunityScore}`);
+  lines.push(`- Reachability: ${getReachabilityLabel(prospect)}`);
+  lines.push(`- AI recommendation: ${getAIRecommendation(prospect)}`);
   lines.push(`- Generated: ${report?.generatedAt ? formatTimelineTimestamp(report.generatedAt) : "Not available"}`);
   lines.push("");
   lines.push("## Business summary");
@@ -2270,6 +2561,31 @@ onMounted(() => {
           </article>
         </section>
 
+        <section v-if="providerHealthRows.length" class="toolbar-card provider-health-panel">
+          <div class="section-head">
+            <div>
+              <p class="panel-kicker">Provider health</p>
+              <h2>Core workflow stays live even when enrichment providers are down</h2>
+              <p class="panel-note">
+                Apollo and Hunter improve decision-maker matching, but Google Places, website intelligence, and OpenAI still keep the workflow moving.
+              </p>
+            </div>
+          </div>
+
+          <div class="provider-health-grid">
+            <article
+              v-for="row in providerHealthRows"
+              :key="row.provider"
+              class="mini-card provider-health-card"
+              :class="getProviderHealthToneClass(row.health)"
+            >
+              <span>{{ row.label }}</span>
+              <strong>{{ getProviderHealthStatusLabel(row.health) }}</strong>
+              <small>{{ getProviderHealthDetail(row.health) }}</small>
+            </article>
+          </div>
+        </section>
+
         <section v-if="workspaceKnowledge" class="toolbar-card knowledge-panel">
           <div class="section-head">
             <div>
@@ -2428,6 +2744,10 @@ onMounted(() => {
                 <input v-model.number="feedForm.dailyLeadLimit" type="number" min="1" max="25" />
               </label>
               <label class="field">
+                <span>Enrich Threshold</span>
+                <input v-model.number="feedForm.contactEnrichmentThreshold" type="number" min="0" max="100" />
+              </label>
+              <label class="field">
                 <span>Provider</span>
                 <select v-model="feedForm.provider">
                   <option value="google_business">Google Business</option>
@@ -2440,6 +2760,7 @@ onMounted(() => {
                 Load sample CSV
               </button>
               <p v-if="isGoogleBusinessSelected" class="helper-copy">Requires `GOOGLE_PLACES_API_KEY` on the backend.</p>
+              <p class="helper-copy">Only prospects at or above {{ feedForm.contactEnrichmentThreshold ?? 80 }} / 100 are eligible for contact enrichment.</p>
               <button type="button" class="primary-action" :disabled="isRunningFeed" @click="runFeed">
                 {{ isRunningFeed ? "Running feed..." : "Run Daily Feed" }}
               </button>
@@ -2488,10 +2809,34 @@ onMounted(() => {
                 <button
                   type="button"
                   class="primary-action"
+                  :disabled="bulkActionLoading === 'enrich'"
+                  @click="runBulkContactAction('enrich')"
+                >
+                  {{ bulkActionLoading === 'enrich' ? "Enriching..." : "Enrich Contacts" }}
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="bulkActionLoading === 'verify'"
+                  @click="runBulkContactAction('verify')"
+                >
+                  {{ bulkActionLoading === 'verify' ? "Verifying..." : "Verify Emails" }}
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
                   :disabled="bulkActionLoading === 'generate_drafts'"
-                  @click="runBulkGenerateDrafts"
+                  @click="runBulkContactAction('generate_drafts')"
                 >
                   {{ bulkActionLoading === 'generate_drafts' ? "Generating..." : "Generate Drafts" }}
+                </button>
+                <button
+                  type="button"
+                  class="secondary-action"
+                  :disabled="bulkActionLoading === 'send_verified'"
+                  @click="runBulkContactAction('send_verified')"
+                >
+                  {{ bulkActionLoading === 'send_verified' ? "Sending..." : "Send to Verified Contacts" }}
                 </button>
                 <button
                   type="button"
@@ -2530,6 +2875,40 @@ onMounted(() => {
               </div>
             </div>
 
+            <div class="priority-strip">
+              <div class="section-head">
+                <div>
+                  <p class="panel-kicker">Priority queue</p>
+                  <h3>Hot, warm, cold</h3>
+                </div>
+                <p class="muted-copy">Sorted by reachability first, then opportunity quality.</p>
+              </div>
+              <div class="priority-lane-grid">
+                <article v-for="lane in priorityLanes" :key="lane.key" class="priority-lane-card">
+                  <div class="priority-lane-head">
+                    <div>
+                      <strong>{{ lane.label }}</strong>
+                      <p>{{ lane.description }}</p>
+                    </div>
+                    <span class="status-badge" :class="lane.tone">{{ lane.prospects.length }}</span>
+                  </div>
+                  <div class="priority-list">
+                    <article v-for="prospect in lane.prospects" :key="prospect.id" class="priority-card">
+                      <div>
+                        <strong>{{ prospect.businessName }}</strong>
+                        <p>{{ getDecisionMakerLabel(prospect) }} - {{ getContactTitleLabel(prospect) }}</p>
+                      </div>
+                      <div class="priority-score">
+                        <span :class="getReachabilityToneClass(prospect)">{{ getReachabilityLabel(prospect) }}</span>
+                        <small>{{ getAIRecommendation(prospect) }}</small>
+                      </div>
+                    </article>
+                    <p v-if="lane.prospects.length === 0" class="muted-copy">No prospects in this lane.</p>
+                  </div>
+                </article>
+              </div>
+            </div>
+
             <div class="table-shell">
               <table class="prospect-table">
                 <thead>
@@ -2554,6 +2933,14 @@ onMounted(() => {
                       </button>
                     </th>
                     <th>
+                      <button type="button" class="column-sort" @click="toggleSort('reachability')">
+                        Reachability
+                        <span class="sort-indicator">
+                          <component :is="sortIndicatorIcon('reachability')" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                        </span>
+                      </button>
+                    </th>
+                    <th>
                       <button type="button" class="column-sort" @click="toggleSort('status')">
                         Status
                         <span class="sort-indicator">
@@ -2561,8 +2948,12 @@ onMounted(() => {
                         </span>
                       </button>
                     </th>
-                    <th>Email</th>
-                    <th>Phone</th>
+                    <th>Decision Maker</th>
+                    <th>Title</th>
+                    <th>Verified Email</th>
+                    <th>Direct Phone</th>
+                    <th>Contact Status</th>
+                    <th>Confidence</th>
                     <th>Website</th>
                     <th>
                       <button type="button" class="column-sort" @click="toggleSort('activity')">
@@ -2577,7 +2968,7 @@ onMounted(() => {
                 </thead>
                 <tbody>
                   <tr v-if="paginatedProspects.length === 0" class="table-empty-row">
-                    <td colspan="9">No prospects match the current filters.</td>
+                    <td colspan="14">No prospects match the current filters.</td>
                   </tr>
                   <tr
                     v-for="(prospect, index) in paginatedProspects"
@@ -2602,6 +2993,11 @@ onMounted(() => {
                     </td>
                     <td><strong>{{ formatScore(prospect.opportunityScore) }}</strong></td>
                     <td>
+                      <span class="status-badge" :class="getReachabilityToneClass(prospect)">
+                        {{ getReachabilityLabel(prospect) }}
+                      </span>
+                    </td>
+                    <td>
                       <span class="status-badge" :class="rowStatusToneClass(prospect)">
                         <component
                           :is="resolveProspectStatusIcon(prospect.status)"
@@ -2612,13 +3008,29 @@ onMounted(() => {
                       </span>
                     </td>
                     <td>
-                      <a v-if="prospect.email" :href="`mailto:${prospect.email}`" @click.stop>{{ prospect.email }}</a>
-                      <span v-else class="muted-value">No email</span>
+                      <strong>{{ getDecisionMakerLabel(prospect) }}</strong>
                     </td>
                     <td>
-                      <a v-if="prospect.phone" :href="`tel:${prospect.phone}`" @click.stop>{{ prospect.phone }}</a>
-                      <span v-else class="muted-value">No phone</span>
+                      <span class="muted-value">{{ getContactTitleLabel(prospect) }}</span>
                     </td>
+                    <td>
+                      <a v-if="getVerifiedEmailLabel(prospect) !== 'Unverified'" :href="`mailto:${getVerifiedEmailLabel(prospect)}`" @click.stop>
+                        {{ getVerifiedEmailLabel(prospect) }}
+                      </a>
+                      <span v-else class="muted-value">Unverified</span>
+                    </td>
+                    <td>
+                      <a v-if="getDirectPhoneLabel(prospect) !== 'Not available'" :href="`tel:${getDirectPhoneLabel(prospect)}`" @click.stop>
+                        {{ getDirectPhoneLabel(prospect) }}
+                      </a>
+                      <span v-else class="muted-value">No direct phone</span>
+                    </td>
+                    <td>
+                      <span class="status-badge" :class="getContactStatusToneClass(prospect)">
+                        {{ getContactStatusLabel(prospect) }}
+                      </span>
+                    </td>
+                    <td><strong>{{ getContactConfidenceLabel(prospect) }}</strong></td>
                     <td>
                       <a v-if="getProspectWebsiteValue(prospect)" :href="getProspectWebsiteValue(prospect)" target="_blank" rel="noreferrer" @click.stop>
                         Visit
@@ -2734,8 +3146,32 @@ onMounted(() => {
                       <strong>{{ formatScore(selectedProspect.opportunityScore) }}</strong>
                     </div>
                     <div class="mini-card">
-                      <span>Contact</span>
-                      <strong>{{ selectedProspect.email || selectedProspect.phone || "Not available" }}</strong>
+                      <span>Decision Maker</span>
+                      <strong>{{ getDecisionMakerLabel(selectedProspect) }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Title</span>
+                      <strong>{{ getContactTitleLabel(selectedProspect) }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Verified Email</span>
+                      <strong>{{ getVerifiedEmailLabel(selectedProspect) }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Direct Phone</span>
+                      <strong>{{ getDirectPhoneLabel(selectedProspect) }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Contact Status</span>
+                      <strong>{{ getContactStatusLabel(selectedProspect) }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>Reachability</span>
+                      <strong>{{ getReachabilityLabel(selectedProspect) }}</strong>
+                    </div>
+                    <div class="mini-card">
+                      <span>AI Recommendation</span>
+                      <strong>{{ getAIRecommendation(selectedProspect) }}</strong>
                     </div>
                     <div class="mini-card">
                       <span>Website</span>
@@ -2889,6 +3325,11 @@ onMounted(() => {
                         <option value="all">All events</option>
                         <option value="lead_discovered">Lead discovered</option>
                         <option value="research_generated">Research completed</option>
+                        <option value="contact_enrichment_started">Contact enrichment started</option>
+                        <option value="contact_match_found">Decision maker match found</option>
+                        <option value="contact_verified">Contact verified</option>
+                        <option value="contact_primary_selected">Primary contact selected</option>
+                        <option value="contact_enrichment_skipped">Contact enrichment skipped</option>
                         <option value="draft_created">Draft created</option>
                         <option value="draft_approved">Draft approved</option>
                         <option value="sent">Email sent</option>
@@ -2904,6 +3345,7 @@ onMounted(() => {
 
                   <div class="quick-grid">
                     <article class="quick-card"><span>Total events</span><strong>{{ timelineStats.total }}</strong></article>
+                    <article class="quick-card"><span>Contact events</span><strong>{{ timelineStats.contactEvents }}</strong></article>
                     <article class="quick-card"><span>Replies</span><strong>{{ timelineStats.replies }}</strong></article>
                     <article class="quick-card"><span>Meetings</span><strong>{{ timelineStats.meetings }}</strong></article>
                     <article class="quick-card"><span>Follow-ups</span><strong>{{ timelineStats.followUps }}</strong></article>
@@ -3210,6 +3652,50 @@ onMounted(() => {
 
 .summary-card {
   padding: 16px;
+}
+
+.provider-health-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.provider-health-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.provider-health-card {
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+.provider-health-card strong {
+  margin-top: 10px;
+}
+
+.provider-health-card small {
+  display: block;
+  margin-top: 6px;
+  color: #6f5a4e;
+  line-height: 1.45;
+}
+
+.provider-health-card.tone-approved {
+  background: linear-gradient(180deg, rgba(218, 246, 227, 0.88), rgba(255, 255, 255, 0.95));
+  border-color: rgba(71, 150, 90, 0.24);
+}
+
+.provider-health-card.tone-follow-up {
+  background: linear-gradient(180deg, rgba(255, 242, 204, 0.94), rgba(255, 255, 255, 0.95));
+  border-color: rgba(204, 144, 35, 0.24);
+}
+
+.provider-health-card.tone-lost {
+  background: linear-gradient(180deg, rgba(250, 235, 235, 0.94), rgba(255, 255, 255, 0.95));
+  border-color: rgba(176, 57, 57, 0.2);
 }
 
 .knowledge-panel {
@@ -3738,6 +4224,92 @@ input[type="checkbox"] {
   border-color: rgba(216, 102, 53, 0.18);
 }
 
+.priority-strip {
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid rgba(111, 90, 78, 0.14);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 14px 28px rgba(58, 34, 18, 0.05);
+}
+
+.priority-list {
+  display: grid;
+  gap: 10px;
+}
+
+.priority-lane-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.priority-lane-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(111, 90, 78, 0.12);
+  background: #fcfaf7;
+}
+
+.priority-lane-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.priority-lane-head strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.priority-lane-head p {
+  margin: 6px 0 0;
+  color: #6f5a4e;
+  line-height: 1.45;
+}
+
+.priority-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #fcfaf7;
+  border: 1px solid rgba(111, 90, 78, 0.12);
+}
+
+.priority-card strong {
+  display: block;
+  font-size: 0.98rem;
+}
+
+.priority-card p {
+  margin: 6px 0 0;
+}
+
+.priority-card p,
+.priority-score small {
+  margin: 6px 0 0;
+  color: #6f5a4e;
+}
+
+.priority-score {
+  display: grid;
+  justify-items: end;
+  text-align: right;
+}
+
+.priority-score span {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-weight: 800;
+}
+
 .detail-content {
   display: grid;
   gap: 12px;
@@ -3967,7 +4539,8 @@ input[type="checkbox"] {
   .overview-grid,
   .quick-grid,
   .reply-grid,
-  .coverage-grid {
+  .coverage-grid,
+  .priority-lane-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -3985,7 +4558,8 @@ input[type="checkbox"] {
   .overview-grid,
   .quick-grid,
   .reply-grid,
-  .coverage-grid {
+  .coverage-grid,
+  .priority-lane-grid {
     grid-template-columns: 1fr;
   }
 

@@ -34,6 +34,8 @@ import type {
   RevenueAgentTask,
   RevenueAgentTaskStatus,
   RevenueAgentTaskType,
+  RevenueAgentProviderHealth,
+  RevenueAgentProviderName,
   RevenueAgentWorkflow,
   RevenueAgentWorkflowResponse,
   RevenueAgentWorkflowStep,
@@ -41,6 +43,8 @@ import type {
   RevenueAgentWorkflowStepType,
   RevenueAgentWorkflowTrigger,
   RevenueAgentWorkspaceResponse,
+  RevenueAgentContactRecord,
+  RevenueAgentContactEnrichmentBatchRequest,
 } from "../../../../../packages/shared-types/index.ts";
 import { incrementBusinessDailyUsage } from "../adminControlService.ts";
 import { queryDb, withDbTransaction } from "../db/client.ts";
@@ -58,10 +62,16 @@ import {
   resolveLeadSourceProviderInstance,
   type LeadSourceLead,
 } from "./leadProviderService.ts";
+import { computeRevenueAgentReachability } from "./reachabilityService.ts";
 import {
   createGoogleCalendarMeetingEvent,
   getGoogleCalendarConnectionSummary,
 } from "./googleCalendarService.ts";
+import {
+  enrichProspectContacts,
+  loadContactEnrichmentSummary,
+  verifyProspectContacts,
+} from "./contactEnrichmentService.ts";
 import { HttpError } from "../../utils/http.ts";
 
 interface BusinessRow extends QueryResultRow {
@@ -128,7 +138,14 @@ interface ProspectRow extends QueryResultRow {
   opportunity_tags_json: unknown;
   suggested_offer_angle: string;
   status: RevenueAgentProspectStatus;
+  decision_maker_confidence: string | number;
+  website_quality_score: string | number;
+  reachability_score: string | number;
+  reachability_reasons_json: unknown;
+  ai_recommendation: string;
+  reachability_updated_at: Date | string | null;
   last_contacted_at: Date | string | null;
+  last_contact_enriched_at: Date | string | null;
   next_follow_up_at: Date | string | null;
   approved_at: Date | string | null;
   sent_at: Date | string | null;
@@ -350,6 +367,11 @@ function normalizeTimelineEventType(value: string): RevenueAgentTimelineEventTyp
   switch (value) {
     case "lead_discovered":
     case "research_generated":
+    case "contact_enrichment_started":
+    case "contact_match_found":
+    case "contact_verified":
+    case "contact_primary_selected":
+    case "contact_enrichment_skipped":
     case "draft_created":
     case "draft_approved":
     case "sent":
@@ -387,6 +409,16 @@ function labelTimelineEvent(eventType: RevenueAgentTimelineEventType): string {
       return "Lead discovered";
     case "research_generated":
       return "Research completed";
+    case "contact_enrichment_started":
+      return "Contact enrichment started";
+    case "contact_match_found":
+      return "Decision maker match found";
+    case "contact_verified":
+      return "Contact verified";
+    case "contact_primary_selected":
+      return "Primary contact selected";
+    case "contact_enrichment_skipped":
+      return "Contact enrichment skipped";
     case "draft_created":
       return "Email draft created";
     case "draft_approved":
@@ -745,7 +777,26 @@ function mapProspect(row: ProspectRow, extras: {
   latestMessage?: RevenueAgentMessage;
   tasks?: RevenueAgentTask[];
   timeline?: RevenueAgentTimelineEvent[];
+  contacts?: RevenueAgentContactRecord[];
 } = {}): RevenueAgentProspect {
+  const contacts = extras.contacts ?? [];
+  const primaryContact = contacts.find((contact) => contact.isPrimary) ?? contacts[0];
+  const contactStatus =
+    primaryContact?.status ??
+    (contacts.length === 0 ? "not_started" : contacts.some((contact) => contact.emailVerificationStatus === "verified") ? "verified" : "found");
+  const reachability = computeRevenueAgentReachability({
+    prospect: {
+      website: row.website ?? undefined,
+      sourceUrl: row.source_url ?? undefined,
+      status: row.status,
+      reviewCount: toNumber(row.review_count),
+      lastContactEnrichedAt: toIsoString(row.last_contact_enriched_at),
+      opportunityScore: toNumber(row.opportunity_score),
+    },
+    contacts,
+    report: extras.research?.report,
+  });
+
   return {
     id: row.id,
     businessId: row.business_id,
@@ -766,7 +817,16 @@ function mapProspect(row: ProspectRow, extras: {
     opportunityTags: parseJsonArray(row.opportunity_tags_json),
     suggestedOfferAngle: row.suggested_offer_angle,
     status: row.status,
+    reachabilityScore: toNumber(row.reachability_score) || reachability.reachabilityScore,
+    decisionMakerConfidence: toNumber(row.decision_maker_confidence) || reachability.decisionMakerConfidence,
+    websiteQualityScore: toNumber(row.website_quality_score) || reachability.websiteQualityScore,
+    reachabilityReasons: parseJsonArray(row.reachability_reasons_json).length
+      ? parseJsonArray(row.reachability_reasons_json)
+      : reachability.reachabilityReasons,
+    aiRecommendation: row.ai_recommendation || reachability.aiRecommendation,
+    reachabilityUpdatedAt: toIsoString(row.reachability_updated_at),
     lastContactedAt: toIsoString(row.last_contacted_at),
+    lastContactEnrichedAt: toIsoString(row.last_contact_enriched_at),
     nextFollowUpAt: toIsoString(row.next_follow_up_at),
     approvedAt: toIsoString(row.approved_at),
     sentAt: toIsoString(row.sent_at),
@@ -778,7 +838,95 @@ function mapProspect(row: ProspectRow, extras: {
     latestMessage: extras.latestMessage,
     tasks: extras.tasks,
     timeline: extras.timeline,
+    contactEnrichmentStatus: contactStatus,
+    primaryContact,
+    contacts,
   };
+}
+
+async function persistProspectReachability(
+  businessId: string,
+  prospect: Pick<ProspectRow, "id" | "website" | "source_url" | "status" | "review_count" | "opportunity_score" | "last_contact_enriched_at">,
+  contacts: RevenueAgentContactRecord[],
+  report?: RevenueAgentOpportunityReport | null,
+  client?: PoolClient,
+): Promise<void> {
+  const snapshot = computeRevenueAgentReachability({
+    prospect: {
+      website: prospect.website ?? undefined,
+      sourceUrl: prospect.source_url ?? undefined,
+      status: prospect.status,
+      reviewCount: toNumber(prospect.review_count),
+      lastContactEnrichedAt: toIsoString(prospect.last_contact_enriched_at),
+      opportunityScore: toNumber(prospect.opportunity_score),
+    },
+    contacts,
+    report,
+  });
+
+  await executeQuery(
+    `
+      update prospects
+      set
+        decision_maker_confidence = $2::int,
+        website_quality_score = $3::int,
+        reachability_score = $4::int,
+        reachability_reasons_json = $5::jsonb,
+        ai_recommendation = $6,
+        reachability_updated_at = now(),
+        updated_at = now()
+      where business_id = $1::uuid
+        and id = $7::uuid
+    `,
+    [
+      businessId,
+      snapshot.decisionMakerConfidence,
+      snapshot.websiteQualityScore,
+      snapshot.reachabilityScore,
+      JSON.stringify(snapshot.reachabilityReasons),
+      snapshot.aiRecommendation,
+      prospect.id,
+    ],
+    client,
+  );
+}
+
+function buildRevenueAgentProviderHealth(): RevenueAgentProviderHealth[] {
+  const hasGooglePlacesKey = Boolean(process.env.GOOGLE_PLACES_API_KEY?.trim() || process.env.GOOGLE_MAPS_API_KEY?.trim());
+  const hasOpenAiKey = Boolean(process.env.OPENAI_API_KEY?.trim());
+  const hasApolloKey = Boolean(process.env.APOLLO_API_KEY?.trim());
+  const hasHunterKey = Boolean(process.env.HUNTER_API_KEY?.trim());
+
+  return [
+    {
+      provider: "google_places",
+      enabled: true,
+      configured: hasGooglePlacesKey,
+      available: hasGooglePlacesKey,
+      reason: hasGooglePlacesKey ? undefined : "GOOGLE_PLACES_API_KEY is not configured.",
+    },
+    {
+      provider: "openai",
+      enabled: true,
+      configured: hasOpenAiKey,
+      available: hasOpenAiKey,
+      reason: hasOpenAiKey ? undefined : "OPENAI_API_KEY is not configured.",
+    },
+    {
+      provider: "apollo",
+      enabled: true,
+      configured: hasApolloKey,
+      available: hasApolloKey,
+      reason: hasApolloKey ? undefined : "APOLLO_API_KEY is not configured.",
+    },
+    {
+      provider: "hunter",
+      enabled: true,
+      configured: hasHunterKey,
+      available: hasHunterKey,
+      reason: hasHunterKey ? undefined : "HUNTER_API_KEY is not configured.",
+    },
+  ];
 }
 
 function createEmptyWorkspaceResponse(businessId: string, feedConfig: RevenueAgentFeedConfig): RevenueAgentWorkspaceResponse {
@@ -794,6 +942,7 @@ function createEmptyWorkspaceResponse(businessId: string, feedConfig: RevenueAge
       meetings: 0,
     },
     prospects: [],
+    providerHealth: buildRevenueAgentProviderHealth(),
     leadSources: [],
     runs: [],
     sequence: [],
@@ -833,6 +982,7 @@ function buildDefaultRevenueAgentFeedConfig(row: BusinessRow, location?: string 
     state: parsedLocation.state || "",
     offer: "AI booking + follow-up automation",
     dailyLeadLimit: 20,
+    contactEnrichmentThreshold: 80,
     provider: "google_business",
     csvText: "",
   };
@@ -855,6 +1005,10 @@ function normalizeRevenueAgentFeedConfig(
     state: normalizeOptional(input?.state) || fallback.state,
     offer: normalizeOptional(input?.offer) || fallback.offer,
     dailyLeadLimit: Math.min(25, Math.max(1, Math.floor(Number(input?.dailyLeadLimit) || fallback.dailyLeadLimit))),
+    contactEnrichmentThreshold: Math.min(
+      100,
+      Math.max(0, Math.floor(Number(input?.contactEnrichmentThreshold ?? fallback.contactEnrichmentThreshold ?? 80))),
+    ),
     provider: nextProvider,
     csvText: typeof input?.csvText === "string" ? input.csvText : fallback.csvText ?? "",
   };
@@ -1166,7 +1320,7 @@ async function listWorkspaceProspects(
   sequence: RevenueAgentSequenceStep[];
   tasks: RevenueAgentTask[];
 }> {
-  const [prospectResult, researchResult, messageResult, taskResult, sourceResult, runResult, sequenceResult, eventResult] =
+  const [prospectResult, researchResult, messageResult, taskResult, sourceResult, runResult, sequenceResult, eventResult, contactSummary] =
     await Promise.all([
       executeQuery<ProspectRow>(
         `
@@ -1193,7 +1347,14 @@ async function listWorkspaceProspects(
             opportunity_tags_json,
             suggested_offer_angle,
             status,
+            decision_maker_confidence,
+            website_quality_score,
+            reachability_score,
+            reachability_reasons_json,
+            ai_recommendation,
+            reachability_updated_at,
             last_contacted_at,
+            last_contact_enriched_at,
             next_follow_up_at,
             approved_at,
             sent_at,
@@ -1390,6 +1551,7 @@ async function listWorkspaceProspects(
         [businessId],
         client,
       ),
+      loadContactEnrichmentSummary(businessId, client),
     ]);
 
   const latestResearchByProspectId = new Map<string, RevenueAgentResearch>();
@@ -1426,6 +1588,7 @@ async function listWorkspaceProspects(
       latestMessage: latestMessageByProspectId.get(row.id),
       tasks: tasksByProspectId.get(row.id),
       timeline: timelineByProspectId.get(row.id),
+      contacts: contactSummary.get(row.id),
     }),
   );
 
@@ -1501,6 +1664,7 @@ async function buildWorkspaceResponse(
     feedConfig,
     stats: computeStats(workspaceState.prospects),
     prospects: workspaceState.prospects,
+    providerHealth: buildRevenueAgentProviderHealth(),
     googleCalendarConnection,
     workspaceKnowledge,
     leadSources: workspaceState.leadSources,
@@ -1538,7 +1702,14 @@ async function loadProspectForUpdate(
         opportunity_tags_json,
         suggested_offer_angle,
         status,
+        decision_maker_confidence,
+        website_quality_score,
+        reachability_score,
+        reachability_reasons_json,
+        ai_recommendation,
+        reachability_updated_at,
         last_contacted_at,
+        last_contact_enriched_at,
         next_follow_up_at,
         approved_at,
         sent_at,
@@ -2793,6 +2964,7 @@ async function updateProspectStatus(
     sentAt?: string | null;
     nextFollowUpAt?: string | null;
     lastContactedAt?: string | null;
+    lastContactEnrichedAt?: string | null;
     repliedAt?: string | null;
     meetingBookedAt?: string | null;
     unsubscribedAt?: string | null;
@@ -2814,14 +2986,15 @@ async function updateProspectStatus(
         approved_at = coalesce($7::timestamptz, approved_at),
         sent_at = coalesce($8::timestamptz, sent_at),
         next_follow_up_at = case
-          when $15::boolean and $9::timestamptz is null then null
+          when $16::boolean and $9::timestamptz is null then null
           else coalesce($9::timestamptz, next_follow_up_at)
         end,
         last_contacted_at = coalesce($10::timestamptz, last_contacted_at),
-        replied_at = coalesce($11::timestamptz, replied_at),
-        meeting_booked_at = coalesce($12::timestamptz, meeting_booked_at),
-        unsubscribed_at = coalesce($13::timestamptz, unsubscribed_at),
-        lead_source_id = coalesce($14::uuid, lead_source_id),
+        last_contact_enriched_at = coalesce($11::timestamptz, last_contact_enriched_at),
+        replied_at = coalesce($12::timestamptz, replied_at),
+        meeting_booked_at = coalesce($13::timestamptz, meeting_booked_at),
+        unsubscribed_at = coalesce($14::timestamptz, unsubscribed_at),
+        lead_source_id = coalesce($15::uuid, lead_source_id),
         updated_at = now()
       where id = $1::uuid
       returning
@@ -2848,6 +3021,7 @@ async function updateProspectStatus(
         suggested_offer_angle,
         status,
         last_contacted_at,
+        last_contact_enriched_at,
         next_follow_up_at,
         approved_at,
         sent_at,
@@ -2868,6 +3042,7 @@ async function updateProspectStatus(
       input.sentAt ?? null,
       input.nextFollowUpAt ?? null,
       input.lastContactedAt ?? null,
+      input.lastContactEnrichedAt ?? null,
       input.repliedAt ?? null,
       input.meetingBookedAt ?? null,
       input.unsubscribedAt ?? null,
@@ -2965,7 +3140,14 @@ async function upsertProspectAndResearch(
             opportunity_tags_json,
             suggested_offer_angle,
             status,
+            decision_maker_confidence,
+            website_quality_score,
+            reachability_score,
+            reachability_reasons_json,
+            ai_recommendation,
+            reachability_updated_at,
             last_contacted_at,
+            last_contact_enriched_at,
             next_follow_up_at,
             approved_at,
             sent_at,
@@ -3069,7 +3251,14 @@ async function upsertProspectAndResearch(
             opportunity_tags_json,
             suggested_offer_angle,
             status,
+            decision_maker_confidence,
+            website_quality_score,
+            reachability_score,
+            reachability_reasons_json,
+            ai_recommendation,
+            reachability_updated_at,
             last_contacted_at,
+            last_contact_enriched_at,
             next_follow_up_at,
             approved_at,
             sent_at,
@@ -3172,6 +3361,22 @@ async function upsertProspectAndResearch(
         report: researchInput.report,
       }),
     ],
+    client,
+  );
+
+  await persistProspectReachability(
+    businessId,
+    {
+      id: prospect.id,
+      website: prospect.website,
+      source_url: prospect.source_url,
+      status: prospect.status,
+      review_count: prospect.review_count,
+      opportunity_score: prospect.opportunity_score,
+      last_contact_enriched_at: prospect.last_contact_enriched_at,
+    },
+    [],
+    mapResearch(researchResult.rows[0]).report,
     client,
   );
 
@@ -3510,6 +3715,7 @@ export async function updateRevenueAgentWorkspaceFeedConfig(
         state: input.state,
         offer: input.offer,
         dailyLeadLimit: input.dailyLeadLimit,
+        contactEnrichmentThreshold: input.contactEnrichmentThreshold,
         provider: input.provider,
         csvText: input.csvText,
       },
@@ -3631,6 +3837,193 @@ export async function regenerateRevenueAgentResearch(
       research: mapResearch(persistedResearch),
     };
   });
+}
+
+function personalizeDraftBodyForContact(body: string, contact?: RevenueAgentContactRecord | null): string {
+  const firstName = contact?.firstName?.trim();
+
+  if (!firstName) {
+    return body;
+  }
+
+  return body.replace(/^Hi there,?/i, `Hi ${firstName},`);
+}
+
+export async function runRevenueAgentContactEnrichmentBatch(
+  input: RevenueAgentContactEnrichmentBatchRequest & { businessId: string },
+): Promise<{
+  workspace: RevenueAgentWorkspaceResponse;
+  processedProspectIds: string[];
+  updatedContactCount: number;
+  verifiedContactCount: number;
+  primaryContactCount: number;
+  skippedProspectIds: string[];
+}> {
+  return withDbTransaction(async (client) => {
+    const result = await enrichProspectContacts(input, client);
+    return {
+      workspace: await buildWorkspaceResponse(input.businessId, client),
+      ...result,
+    };
+  });
+}
+
+export async function runRevenueAgentContactVerificationBatch(
+  input: RevenueAgentContactEnrichmentBatchRequest & { businessId: string },
+): Promise<{
+  workspace: RevenueAgentWorkspaceResponse;
+  processedProspectIds: string[];
+  updatedContactCount: number;
+  verifiedContactCount: number;
+  primaryContactCount: number;
+  skippedProspectIds: string[];
+}> {
+  return withDbTransaction(async (client) => {
+    const result = await verifyProspectContacts(input, client);
+    return {
+      workspace: await buildWorkspaceResponse(input.businessId, client),
+      ...result,
+    };
+  });
+}
+
+export async function generateRevenueAgentVerifiedContactDrafts(
+  input: RevenueAgentContactEnrichmentBatchRequest & { businessId: string },
+): Promise<{
+  workspace: RevenueAgentWorkspaceResponse;
+  processedProspectIds: string[];
+  updatedContactCount: number;
+  verifiedContactCount: number;
+  primaryContactCount: number;
+  skippedProspectIds: string[];
+}> {
+  return withDbTransaction(async (client) => {
+    const workspace = await buildWorkspaceResponse(input.businessId, client);
+    const contactsByProspectId = await loadContactEnrichmentSummary(input.businessId, client);
+    const requestedProspects = new Set((input.prospectIds ?? []).filter(Boolean));
+    const eligibleProspects = workspace.prospects.filter((prospect) => {
+      if (requestedProspects.size > 0 && !requestedProspects.has(prospect.id)) {
+        return false;
+      }
+
+      return prospect.primaryContact?.emailVerificationStatus === "verified" || prospect.contacts?.some((contact) => contact.emailVerificationStatus === "verified") === true;
+    });
+
+    const processedProspectIds: string[] = [];
+    const skippedProspectIds: string[] = [];
+    let updatedContactCount = 0;
+    let verifiedContactCount = 0;
+    let primaryContactCount = 0;
+
+    for (const prospect of eligibleProspects.slice(0, 10)) {
+      processedProspectIds.push(prospect.id);
+      const primaryContact = contactsByProspectId.get(prospect.id)?.find((contact) => contact.isPrimary || contact.emailVerificationStatus === "verified") ?? prospect.primaryContact ?? null;
+      if (!primaryContact) {
+        skippedProspectIds.push(prospect.id);
+        continue;
+      }
+
+      const latestResearch = await loadLatestResearchForProspect(prospect.id, client);
+      if (!latestResearch) {
+        skippedProspectIds.push(prospect.id);
+        continue;
+      }
+
+      const latestMessage = await loadLatestMessageForProspect(prospect.id, client);
+      const body = personalizeDraftBodyForContact(latestMessage?.body || latestResearch.email_body, primaryContact);
+
+      if (latestMessage) {
+        await executeQuery(
+          `
+            update revenue_agent_outreach_messages
+            set body = $2, updated_at = now()
+            where id = $1::uuid
+          `,
+          [latestMessage.id, body],
+          client,
+        );
+      } else {
+        const prospectRow = await loadProspectForUpdate(prospect.id, client);
+        const newDraft = await createDraftMessage(prospectRow, latestResearch, latestResearch.agent_run_id ?? prospect.id, client);
+        const updatedDraftBody = personalizeDraftBodyForContact(newDraft.body, primaryContact);
+
+        await executeQuery(
+          `
+            update revenue_agent_outreach_messages
+            set body = $2, updated_at = now()
+            where id = $1::uuid
+          `,
+          [newDraft.id, updatedDraftBody],
+          client,
+        );
+      }
+
+      updatedContactCount += 1;
+      if (primaryContact.emailVerificationStatus === "verified") {
+        verifiedContactCount += 1;
+      }
+      primaryContactCount += 1;
+    }
+
+    return {
+      workspace: await buildWorkspaceResponse(input.businessId, client),
+      processedProspectIds,
+      updatedContactCount,
+      verifiedContactCount,
+      primaryContactCount,
+      skippedProspectIds,
+    };
+  });
+}
+
+export async function sendRevenueAgentVerifiedContactsBatch(
+  input: RevenueAgentContactEnrichmentBatchRequest & { businessId: string },
+): Promise<{
+  workspace: RevenueAgentWorkspaceResponse;
+  processedProspectIds: string[];
+  updatedContactCount: number;
+  verifiedContactCount: number;
+  primaryContactCount: number;
+  skippedProspectIds: string[];
+}> {
+  const contactsByProspectId = await loadContactEnrichmentSummary(input.businessId);
+  const candidateProspects = (input.prospectIds ?? []).filter(Boolean).slice(0, 10);
+  const processedProspectIds: string[] = [];
+  const skippedProspectIds: string[] = [];
+  let updatedContactCount = 0;
+  let verifiedContactCount = 0;
+  let primaryContactCount = 0;
+
+  for (const prospectId of candidateProspects) {
+    const primaryContact = contactsByProspectId.get(prospectId)?.find((contact) => contact.isPrimary || contact.emailVerificationStatus === "verified");
+
+    if (!primaryContact?.emailVerificationStatus || primaryContact.emailVerificationStatus !== "verified") {
+      skippedProspectIds.push(prospectId);
+      continue;
+    }
+
+    try {
+      processedProspectIds.push(prospectId);
+      await performRevenueAgentAction(prospectId, {
+        businessId: input.businessId,
+        action: "send_email",
+      });
+      updatedContactCount += 1;
+      verifiedContactCount += 1;
+      primaryContactCount += 1;
+    } catch {
+      skippedProspectIds.push(prospectId);
+    }
+  }
+
+  return {
+    workspace: await buildWorkspaceResponse(input.businessId),
+    processedProspectIds,
+    updatedContactCount,
+    verifiedContactCount,
+    primaryContactCount,
+    skippedProspectIds,
+  };
 }
 
 export async function analyzeRevenueAgentReply(
@@ -3782,6 +4175,7 @@ export async function runRevenueAgentFeed(
     state: input.state.trim(),
     offer: input.offer.trim(),
     dailyLeadLimit: Math.max(1, Math.min(25, Math.floor(input.dailyLeadLimit || 20))),
+    contactEnrichmentThreshold: Math.min(100, Math.max(0, Math.floor(input.contactEnrichmentThreshold ?? 80))),
     provider,
     csvText: typeof input.csvText === "string" ? input.csvText : undefined,
   };
@@ -3877,6 +4271,7 @@ export async function runRevenueAgentFeed(
     const runRow = insertedRun.rows[0];
     let savedCount = 0;
     let draftsCount = 0;
+    let enrichmentCount = 0;
 
     for (const lead of enrichedLeads) {
       const research = await generateProspectResearch({
@@ -3907,6 +4302,19 @@ export async function runRevenueAgentFeed(
 
       savedCount += 1;
       draftsCount += 1;
+
+      if (research.opportunityScore >= (feedConfig.contactEnrichmentThreshold ?? 80) && enrichmentCount < 10) {
+        await enrichProspectContacts(
+          {
+            businessId,
+            prospectIds: [prospect.id],
+            limit: 1,
+            minimumOpportunityScore: feedConfig.contactEnrichmentThreshold ?? 80,
+          },
+          client,
+        );
+        enrichmentCount += 1;
+      }
 
       if (isNewProspect) {
         await recordRevenueAgentTimelineEvent(
@@ -3964,6 +4372,22 @@ export async function runRevenueAgentFeed(
       );
 
       const draftMessage = await createDraftMessage(prospect, persistedResearch, runRow.id, client);
+      const contactSummary = await loadContactEnrichmentSummary(businessId, client);
+      const primaryContact = contactSummary.get(prospect.id)?.find((contact) => contact.isPrimary || contact.emailVerificationStatus === "verified") ?? null;
+      const draftBody = personalizeDraftBodyForContact(draftMessage.body, primaryContact);
+
+      if (primaryContact) {
+        await executeQuery(
+          `
+            update revenue_agent_outreach_messages
+            set body = $2, updated_at = now()
+            where id = $1::uuid
+          `,
+          [draftMessage.id, draftBody],
+          client,
+        );
+      }
+
       await recordRevenueAgentTimelineEvent(
         businessId,
         prospect.id,
@@ -3972,7 +4396,15 @@ export async function runRevenueAgentFeed(
         draftMessage.subject,
         {
           subject: draftMessage.subject,
-          body: draftMessage.body,
+          body: draftBody,
+          primaryContact: primaryContact
+            ? {
+                fullName: primaryContact.fullName,
+                title: primaryContact.title,
+                email: primaryContact.verifiedEmail || primaryContact.email,
+                emailVerificationStatus: primaryContact.emailVerificationStatus,
+              }
+            : undefined,
         },
         new Date().toISOString(),
         draftMessage.id,
@@ -4213,7 +4645,18 @@ export async function performRevenueAgentAction(
         throw new HttpError(400, "revenue_agent_blocked", "This prospect is marked not interested.");
       }
 
-      await ensureEmailContact(input.businessId, prospect.email, prospect, client);
+      const contactSummary = await loadContactEnrichmentSummary(input.businessId, client);
+      const primaryContact = contactSummary.get(prospect.id)?.find((contact) => contact.isPrimary || contact.emailVerificationStatus === "verified") ?? null;
+      const recipientEmail =
+        primaryContact?.emailVerificationStatus === "verified"
+          ? primaryContact.verifiedEmail || primaryContact.email
+          : prospect.email;
+
+      if (!recipientEmail) {
+        throw new HttpError(400, "revenue_agent_missing_email", "This prospect does not have a sendable email address.");
+      }
+
+      await ensureEmailContact(input.businessId, recipientEmail, prospect, client);
       await incrementBusinessDailyUsage(input.businessId, "emails", 1);
 
       const fromEmailRow = await executeQuery<{ from_email: string | null; reply_to_email: string | null }>(
@@ -4232,7 +4675,7 @@ export async function performRevenueAgentAction(
         fromEmail,
         replyToEmail,
         fromName: business.brand_name || business.name,
-        toEmail: prospect.email,
+        toEmail: recipientEmail,
         subject: latestMessage.subject,
         htmlBody: buildMessageHtml(latestMessage.body),
         textBody: buildMessageText(latestMessage.body),
@@ -4295,7 +4738,7 @@ export async function performRevenueAgentAction(
         prospect.id,
         "sent",
         "Email sent",
-        `Sent to ${prospect.email}`,
+        `Sent to ${recipientEmail}`,
         {
           messageId: sent.messageId,
           provider: sent.provider,
@@ -4331,11 +4774,18 @@ export async function performRevenueAgentAction(
     }
 
     if (input.action === "send_proposal") {
-      if (!prospect.email) {
+      const contactSummary = await loadContactEnrichmentSummary(input.businessId, client);
+      const primaryContact = contactSummary.get(prospect.id)?.find((contact) => contact.isPrimary || contact.emailVerificationStatus === "verified") ?? null;
+      const recipientEmail =
+        primaryContact?.emailVerificationStatus === "verified"
+          ? primaryContact.verifiedEmail || primaryContact.email
+          : prospect.email;
+
+      if (!recipientEmail) {
         throw new HttpError(400, "revenue_agent_missing_email", "This prospect does not have an email address.");
       }
 
-      await ensureEmailContact(input.businessId, prospect.email, prospect, client);
+      await ensureEmailContact(input.businessId, recipientEmail, prospect, client);
       await incrementBusinessDailyUsage(input.businessId, "emails", 1);
 
       const workspace = await buildWorkspaceResponse(input.businessId, client);
@@ -4363,7 +4813,7 @@ export async function performRevenueAgentAction(
         fromEmail,
         replyToEmail,
         fromName: business.brand_name || business.name,
-        toEmail: prospect.email,
+        toEmail: recipientEmail,
         subject: proposalContent.subject,
         htmlBody: proposalContent.htmlBody,
         textBody: proposalContent.textBody,
@@ -4452,7 +4902,7 @@ export async function performRevenueAgentAction(
         prospect.id,
         "sent",
         "Proposal sent",
-        `Sent proposal to ${prospect.email}.`,
+        `Sent proposal to ${recipientEmail}.`,
         {
           messageId: sent.messageId,
           provider: sent.provider,
@@ -4647,8 +5097,15 @@ export async function performRevenueAgentAction(
       let confirmationMessageResult: Pick<QueryResult<OutreachMessageRow>, "rows"> | undefined;
       let confirmationSent: { messageId: string; provider: string; subject: string } | undefined;
 
-      if (input.action === "book_meeting" && prospect.email) {
-        await ensureEmailContact(input.businessId, prospect.email, prospect, client);
+      const contactSummary = await loadContactEnrichmentSummary(input.businessId, client);
+      const primaryContact = contactSummary.get(prospect.id)?.find((contact) => contact.isPrimary || contact.emailVerificationStatus === "verified") ?? null;
+      const recipientEmail =
+        primaryContact?.emailVerificationStatus === "verified"
+          ? primaryContact.verifiedEmail || primaryContact.email
+          : prospect.email;
+
+      if (input.action === "book_meeting" && recipientEmail) {
+        await ensureEmailContact(input.businessId, recipientEmail, prospect, client);
         await incrementBusinessDailyUsage(input.businessId, "emails", 1);
 
         const confirmationContent = buildMeetingConfirmationContent(workspaceProspect, workflow, business);
@@ -4669,7 +5126,7 @@ export async function performRevenueAgentAction(
           fromEmail,
           replyToEmail,
           fromName: business.brand_name || business.name,
-          toEmail: prospect.email,
+          toEmail: recipientEmail,
           subject: confirmationContent.subject,
           htmlBody: confirmationContent.htmlBody,
           textBody: confirmationContent.textBody,
@@ -4863,7 +5320,7 @@ export async function performRevenueAgentAction(
           prospect.id,
           "sent",
           "Meeting confirmation sent",
-          `Sent meeting confirmation to ${prospect.email}.`,
+          `Sent meeting confirmation to ${recipientEmail}.`,
           {
             messageId: confirmationSent.messageId,
             provider: confirmationSent.provider,

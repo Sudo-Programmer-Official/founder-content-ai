@@ -3,6 +3,10 @@ import {
   getRevenueAgentProspectExportController,
   getRevenueAgentProspectWorkflowController,
   getRevenueAgentWorkspaceController,
+  postRevenueAgentContactsEnrichController,
+  postRevenueAgentContactsGenerateDraftsController,
+  postRevenueAgentContactsSendController,
+  postRevenueAgentContactsVerifyController,
   postRevenueAgentReplyAnalysisController,
   patchRevenueAgentProspectController,
   patchRevenueAgentWorkspaceFeedConfigController,
@@ -21,3 +25,7 @@ revenueAgentRoute.patch("/api/revenue-agent/feed-config", requireAuth(), patchRe
 revenueAgentRoute.patch("/api/revenue-agent/prospects/:prospectId", requireAuth(), patchRevenueAgentProspectController);
 revenueAgentRoute.post("/api/revenue-agent/prospects/:prospectId/research", requireAuth(), postRevenueAgentResearchController);
 revenueAgentRoute.post("/api/revenue-agent/prospects/:prospectId/reply-analysis", requireAuth(), postRevenueAgentReplyAnalysisController);
+revenueAgentRoute.post("/api/revenue-agent/contacts/enrich", requireAuth(), postRevenueAgentContactsEnrichController);
+revenueAgentRoute.post("/api/revenue-agent/contacts/verify", requireAuth(), postRevenueAgentContactsVerifyController);
+revenueAgentRoute.post("/api/revenue-agent/contacts/generate-drafts", requireAuth(), postRevenueAgentContactsGenerateDraftsController);
+revenueAgentRoute.post("/api/revenue-agent/contacts/send", requireAuth(), postRevenueAgentContactsSendController);

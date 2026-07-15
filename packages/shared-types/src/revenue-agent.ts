@@ -1,6 +1,21 @@
 import type { WorkspaceKnowledgeProfile, WorkspaceKnowledgeSource } from "./brand-intelligence.ts";
 
 export type RevenueAgentLeadSourceProvider = "google_business" | "csv_import";
+export type RevenueAgentContactEnrichmentProviderName = "apollo" | "hunter";
+export type RevenueAgentContactEnrichmentStatus =
+  | "not_started"
+  | "searching"
+  | "found"
+  | "verified"
+  | "no_match"
+  | "needs_review";
+export type RevenueAgentContactEmailVerificationStatus =
+  | "not_started"
+  | "searching"
+  | "verified"
+  | "invalid"
+  | "risky"
+  | "unknown";
 export type RevenueAgentWebsitePerformanceBand = "strong" | "moderate" | "weak" | "unknown";
 export type RevenueAgentProspectStatus =
   | "new"
@@ -29,6 +44,11 @@ export type RevenueAgentTimelineTone = "done" | "active" | "pending";
 export type RevenueAgentTimelineEventType =
   | "lead_discovered"
   | "research_generated"
+  | "contact_enrichment_started"
+  | "contact_match_found"
+  | "contact_verified"
+  | "contact_primary_selected"
+  | "contact_enrichment_skipped"
   | "draft_created"
   | "draft_approved"
   | "sent"
@@ -45,8 +65,70 @@ export interface RevenueAgentFeedConfig {
   state: string;
   offer: string;
   dailyLeadLimit: number;
+  contactEnrichmentThreshold?: number;
   provider?: RevenueAgentLeadSourceProvider;
   csvText?: string;
+}
+
+export interface RevenueAgentOrganizationMatch {
+  source: RevenueAgentContactEnrichmentProviderName;
+  sourceId: string;
+  name: string;
+  domain?: string;
+  website?: string;
+  city?: string;
+  state?: string;
+  confidence: number;
+  raw?: Record<string, unknown>;
+}
+
+export interface RevenueAgentPersonCandidate {
+  source: RevenueAgentContactEnrichmentProviderName;
+  sourceId: string;
+  organizationSourceId: string;
+  personSourceId?: string;
+  organizationName: string;
+  organizationDomain?: string;
+  organizationWebsite?: string;
+  city?: string;
+  state?: string;
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  title: string;
+  department?: string;
+  email?: string;
+  directPhone?: string;
+  linkedinUrl?: string;
+  confidence: number;
+  titleRank: number;
+  raw?: Record<string, unknown>;
+}
+
+export interface RevenueAgentEnrichedPerson extends RevenueAgentPersonCandidate {
+  emailVerificationStatus: RevenueAgentContactEmailVerificationStatus;
+  emailVerifiedAt?: string;
+  verificationSource?: RevenueAgentContactEnrichmentProviderName;
+  verifiedEmail?: string;
+  verifiedDomain?: string;
+  verifiedReason?: string;
+}
+
+export interface RevenueAgentContactRecord extends RevenueAgentEnrichedPerson {
+  id: string;
+  businessId: string;
+  prospectId: string;
+  sourceIds: string[];
+  sourceNames: RevenueAgentContactEnrichmentProviderName[];
+  isPrimary: boolean;
+  status: RevenueAgentContactEnrichmentStatus;
+  matchConfidence: number;
+  contactConfidence: number;
+  manualOverride: boolean;
+  manuallyCorrectedAt?: string;
+  lastEnrichedAt?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface RevenueAgentWebsiteSignals {
@@ -66,6 +148,17 @@ export interface RevenueAgentWebsiteSignals {
 }
 
 export type RevenueAgentCoverageStatus = "available" | "partial" | "missing" | "unknown";
+
+export type RevenueAgentProviderName = "google_places" | "openai" | "apollo" | "hunter";
+
+export interface RevenueAgentProviderHealth {
+  provider: RevenueAgentProviderName;
+  enabled: boolean;
+  configured: boolean;
+  available: boolean;
+  quotaRemaining?: number;
+  reason?: string;
+}
 
 export interface RevenueAgentSourceCoverage {
   status: RevenueAgentCoverageStatus;
@@ -339,6 +432,12 @@ export interface RevenueAgentProspect {
   opportunityTags: string[];
   suggestedOfferAngle: string;
   status: RevenueAgentProspectStatus;
+  reachabilityScore?: number;
+  decisionMakerConfidence?: number;
+  websiteQualityScore?: number;
+  reachabilityReasons?: string[];
+  aiRecommendation?: string;
+  reachabilityUpdatedAt?: string;
   lastContactedAt?: string;
   nextFollowUpAt?: string;
   approvedAt?: string;
@@ -347,10 +446,14 @@ export interface RevenueAgentProspect {
   meetingBookedAt?: string;
   createdAt: string;
   updatedAt?: string;
+  lastContactEnrichedAt?: string;
   research?: RevenueAgentResearch;
   latestMessage?: RevenueAgentMessage;
   tasks?: RevenueAgentTask[];
   timeline?: RevenueAgentTimelineEvent[];
+  contactEnrichmentStatus?: RevenueAgentContactEnrichmentStatus;
+  primaryContact?: RevenueAgentContactRecord;
+  contacts?: RevenueAgentContactRecord[];
 }
 
 export interface RevenueAgentRun {
@@ -403,6 +506,7 @@ export interface RevenueAgentWorkspaceResponse {
   feedConfig: RevenueAgentFeedConfig;
   stats: RevenueAgentStats;
   prospects: RevenueAgentProspect[];
+  providerHealth?: RevenueAgentProviderHealth[];
   googleCalendarConnection?: RevenueAgentGoogleCalendarConnection;
   workspaceKnowledge?: RevenueAgentWorkspaceKnowledgeContext;
   leadSources: {
@@ -414,6 +518,22 @@ export interface RevenueAgentWorkspaceResponse {
   }[];
   runs: RevenueAgentRun[];
   sequence: RevenueAgentSequenceStep[];
+}
+
+export interface RevenueAgentContactEnrichmentBatchRequest {
+  businessId: string;
+  prospectIds?: string[];
+  limit?: number;
+  minimumOpportunityScore?: number;
+}
+
+export interface RevenueAgentContactEnrichmentBatchResponse {
+  workspace: RevenueAgentWorkspaceResponse;
+  processedProspectIds: string[];
+  updatedContactCount: number;
+  verifiedContactCount: number;
+  primaryContactCount: number;
+  skippedProspectIds: string[];
 }
 
 export interface RevenueAgentWorkspaceEmailIdentity {

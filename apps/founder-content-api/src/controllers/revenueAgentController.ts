@@ -2,6 +2,8 @@ import type { ApiError } from "../../../../packages/shared-types/index.ts";
 import type {
   RevenueAgentActionRequest,
   RevenueAgentActionResponse,
+  RevenueAgentContactEnrichmentBatchRequest,
+  RevenueAgentContactEnrichmentBatchResponse,
   RevenueAgentFeedRequest,
   RevenueAgentFeedConfigUpdateRequest,
   RevenueAgentFeedConfigUpdateResponse,
@@ -17,11 +19,15 @@ import { ensureCurrentUser } from "../services/authBusinessService.ts";
 import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
 import {
   analyzeRevenueAgentReply,
+  generateRevenueAgentVerifiedContactDrafts,
   getRevenueAgentProspectExportHtml,
   getRevenueAgentProspectWorkflow,
   getRevenueAgentWorkspace,
   performRevenueAgentAction,
   regenerateRevenueAgentResearch,
+  runRevenueAgentContactEnrichmentBatch,
+  runRevenueAgentContactVerificationBatch,
+  sendRevenueAgentVerifiedContactsBatch,
   updateRevenueAgentWorkspaceFeedConfig,
   runRevenueAgentFeed,
 } from "../services/revenueAgent/revenueAgentService.ts";
@@ -42,6 +48,15 @@ function readOptionalProvider(value: unknown): RevenueAgentFeedRequest["provider
 
 function readReplyText(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readProspectIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const ids = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim());
+  return ids.length > 0 ? ids : undefined;
 }
 
 export async function getRevenueAgentWorkspaceController(
@@ -391,6 +406,190 @@ export async function postRevenueAgentReplyAnalysisController(
       code: "revenue_agent_reply_analysis_failed",
       message: "Unable to analyze revenue agent reply.",
       logMessage: "Failed to analyze revenue agent reply.",
+    });
+  }
+}
+
+export async function postRevenueAgentContactsEnrichController(
+  request: Request<unknown, unknown, RevenueAgentContactEnrichmentBatchRequest>,
+  response: Response<RevenueAgentContactEnrichmentBatchResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessIdFromBody(request.body);
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "outreach",
+      usageMetric: "outreach",
+    });
+    await ensureCurrentUser(request.auth);
+    const result = await runRevenueAgentContactEnrichmentBatch({
+      ...request.body,
+      businessId,
+      prospectIds: readProspectIds(request.body.prospectIds),
+    });
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "revenue_agent_contact_enrichment_failed",
+      message: "Unable to enrich prospect contacts.",
+      businessId,
+      userId: request.auth.userId,
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "revenue_agent_contact_enrichment_failed",
+      message: "Unable to enrich prospect contacts.",
+      logMessage: "Failed to enrich prospect contacts.",
+    });
+  }
+}
+
+export async function postRevenueAgentContactsVerifyController(
+  request: Request<unknown, unknown, RevenueAgentContactEnrichmentBatchRequest>,
+  response: Response<RevenueAgentContactEnrichmentBatchResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessIdFromBody(request.body);
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "outreach",
+      usageMetric: "outreach",
+    });
+    await ensureCurrentUser(request.auth);
+    const result = await runRevenueAgentContactVerificationBatch({
+      ...request.body,
+      businessId,
+      prospectIds: readProspectIds(request.body.prospectIds),
+    });
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "revenue_agent_contact_verification_failed",
+      message: "Unable to verify prospect contacts.",
+      businessId,
+      userId: request.auth.userId,
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "revenue_agent_contact_verification_failed",
+      message: "Unable to verify prospect contacts.",
+      logMessage: "Failed to verify prospect contacts.",
+    });
+  }
+}
+
+export async function postRevenueAgentContactsGenerateDraftsController(
+  request: Request<unknown, unknown, RevenueAgentContactEnrichmentBatchRequest>,
+  response: Response<RevenueAgentContactEnrichmentBatchResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessIdFromBody(request.body);
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "outreach",
+      usageMetric: "outreach",
+    });
+    await ensureCurrentUser(request.auth);
+    const result = await generateRevenueAgentVerifiedContactDrafts({
+      ...request.body,
+      businessId,
+      prospectIds: readProspectIds(request.body.prospectIds),
+    });
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "revenue_agent_contact_drafts_failed",
+      message: "Unable to generate verified contact drafts.",
+      businessId,
+      userId: request.auth.userId,
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "revenue_agent_contact_drafts_failed",
+      message: "Unable to generate verified contact drafts.",
+      logMessage: "Failed to generate verified contact drafts.",
+    });
+  }
+}
+
+export async function postRevenueAgentContactsSendController(
+  request: Request<unknown, unknown, RevenueAgentContactEnrichmentBatchRequest>,
+  response: Response<RevenueAgentContactEnrichmentBatchResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = readBusinessIdFromBody(request.body);
+  if (!businessId) {
+    sendApiError(response, 400, "business_id_required", "businessId is required.");
+    return;
+  }
+
+  try {
+    await enforceWorkspaceWriteAccess({
+      principal: request.auth,
+      businessId,
+      featureKey: "outreach",
+      usageMetric: "outreach",
+    });
+    await ensureCurrentUser(request.auth);
+    const result = await sendRevenueAgentVerifiedContactsBatch({
+      ...request.body,
+      businessId,
+      prospectIds: readProspectIds(request.body.prospectIds),
+    });
+    response.json(result);
+  } catch (error) {
+    void safeCreateSystemErrorLog({
+      route: request.originalUrl,
+      code: "revenue_agent_contact_send_failed",
+      message: "Unable to send verified contact emails.",
+      businessId,
+      userId: request.auth.userId,
+    });
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "revenue_agent_contact_send_failed",
+      message: "Unable to send verified contact emails.",
+      logMessage: "Failed to send verified contact emails.",
     });
   }
 }

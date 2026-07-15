@@ -92,7 +92,7 @@ const visibleAppLinks = computed<AppNavLink[]>(() => {
     { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", icon: navigationIcons.analytics, visible: canUseDashboard },
     { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", icon: navigationIcons.settings, visible: true },
     { to: appRoutes.admin, label: "Admin", shortLabel: "AD", icon: navigationIcons.admin, visible: canAccessAdmin.value },
-  ].filter((link): link is AppNavLink => link.visible === true);
+  ].filter((link) => link.visible === true) as AppNavLink[];
 });
 
 const mobileDockLinks = computed(() => {

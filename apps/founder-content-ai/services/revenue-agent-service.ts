@@ -5,6 +5,8 @@ import type {
   RevenueAgentFeedConfigUpdateRequest,
   RevenueAgentFeedConfigUpdateResponse,
   RevenueAgentFeedResponse,
+  RevenueAgentContactEnrichmentBatchRequest,
+  RevenueAgentContactEnrichmentBatchResponse,
   RevenueAgentReplyAnalysisRequest,
   RevenueAgentReplyAnalysisResponse,
   RevenueAgentResearchResponse,
@@ -110,5 +112,41 @@ export async function requestRevenueAgentWorkflow(
   const encodedProspectId = encodeURIComponent(prospectId);
   return apiGet<RevenueAgentWorkflowResponse>(
     `/revenue-agent/prospects/${encodedProspectId}/workflow${businessQueryString(businessId)}`,
+  );
+}
+
+export async function requestRevenueAgentContactsEnrich(
+  payload: RevenueAgentContactEnrichmentBatchRequest,
+): Promise<RevenueAgentContactEnrichmentBatchResponse> {
+  return apiPost<RevenueAgentContactEnrichmentBatchRequest, RevenueAgentContactEnrichmentBatchResponse>(
+    "/revenue-agent/contacts/enrich",
+    payload,
+  );
+}
+
+export async function requestRevenueAgentContactsVerify(
+  payload: RevenueAgentContactEnrichmentBatchRequest,
+): Promise<RevenueAgentContactEnrichmentBatchResponse> {
+  return apiPost<RevenueAgentContactEnrichmentBatchRequest, RevenueAgentContactEnrichmentBatchResponse>(
+    "/revenue-agent/contacts/verify",
+    payload,
+  );
+}
+
+export async function requestRevenueAgentContactsGenerateDrafts(
+  payload: RevenueAgentContactEnrichmentBatchRequest,
+): Promise<RevenueAgentContactEnrichmentBatchResponse> {
+  return apiPost<RevenueAgentContactEnrichmentBatchRequest, RevenueAgentContactEnrichmentBatchResponse>(
+    "/revenue-agent/contacts/generate-drafts",
+    payload,
+  );
+}
+
+export async function requestRevenueAgentContactsSend(
+  payload: RevenueAgentContactEnrichmentBatchRequest,
+): Promise<RevenueAgentContactEnrichmentBatchResponse> {
+  return apiPost<RevenueAgentContactEnrichmentBatchRequest, RevenueAgentContactEnrichmentBatchResponse>(
+    "/revenue-agent/contacts/send",
+    payload,
   );
 }
