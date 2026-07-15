@@ -1597,6 +1597,7 @@ async function persistContact(
           JSON.stringify(mergedEvents),
           options.isPrimary,
           Boolean(options.manualOverride),
+          Boolean(options.manualOverride) ? now : null,
           now,
         ],
         client,
@@ -1640,6 +1641,7 @@ async function persistContact(
             enrichment_events_json,
             is_primary,
             manual_override,
+            manually_corrected_at,
             last_enriched_at
           ) values (
             $1::uuid,
@@ -1677,7 +1679,8 @@ async function persistContact(
             $33::jsonb,
             $34::boolean,
             $35::boolean,
-            $36::timestamptz
+            $36::timestamptz,
+            $37::timestamptz
           )
           returning
             id,
