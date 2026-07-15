@@ -1484,6 +1484,7 @@ async function persistContact(
             source = $4,
             source_id = $5,
             dedupe_key = coalesce($2::text, dedupe_key),
+            prospect_id = coalesce($3::uuid, prospect_id),
             organization_source_id = coalesce($6::text, organization_source_id),
             person_source_id = coalesce($7::text, person_source_id),
             full_name = case when manual_override then full_name else $8 end,
