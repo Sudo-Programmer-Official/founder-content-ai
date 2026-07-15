@@ -13,8 +13,6 @@ import type {
   RevenueAgentTimelineEvent,
   RevenueAgentWorkflowResponse,
   RevenueAgentWorkspaceResponse,
-  RevenueAgentProviderHealth,
-  RevenueAgentProviderName,
 } from "../../../packages/shared-types";
 import { useProductAccessContext } from "../access/product-access-context";
 import { requestMyBusinesses } from "../services/admin-analytics-service";
@@ -108,83 +106,6 @@ const isGoogleBusinessSelected = computed(() => feedForm.value.provider === "goo
 const isCsvImportSelected = computed(() => feedForm.value.provider === "csv_import");
 const googleCalendarConnection = computed(() => workspace.value?.googleCalendarConnection ?? null);
 const isGoogleCalendarConnected = computed(() => googleCalendarConnection.value?.connected === true);
-const workspaceKnowledge = computed(() => workspace.value?.workspaceKnowledge ?? null);
-const workspaceKnowledgeProfile = computed(() => workspaceKnowledge.value?.profile ?? null);
-const workspaceKnowledgeSources = computed(() => workspaceKnowledge.value?.sources ?? []);
-const workspaceKnowledgeEmailIdentity = computed(() => workspaceKnowledge.value?.emailIdentity ?? null);
-const workspaceKnowledgeStatusLabel = computed(() => {
-  if (workspaceKnowledgeProfile.value?.processingStatus === "completed") {
-    return "Profile ready";
-  }
-
-  if (workspaceKnowledgeProfile.value?.processingStatus === "processing" || workspaceKnowledgeProfile.value?.processingStatus === "queued") {
-    return "Building profile";
-  }
-
-  if (workspaceKnowledgeSources.value.length > 0) {
-    return "Sources ready";
-  }
-
-  return "No profile yet";
-});
-const providerHealthRows = computed(() => {
-  const healthByProvider = new Map((workspace.value?.providerHealth ?? []).map((item) => [item.provider, item]));
-  const rows: Array<{
-    provider: RevenueAgentProviderName;
-    label: string;
-    health: RevenueAgentProviderHealth | null;
-  }> = [
-    { provider: "google_places", label: "Google Places", health: healthByProvider.get("google_places") ?? null },
-    { provider: "openai", label: "OpenAI", health: healthByProvider.get("openai") ?? null },
-    { provider: "apollo", label: "Apollo", health: healthByProvider.get("apollo") ?? null },
-    { provider: "hunter", label: "Hunter", health: healthByProvider.get("hunter") ?? null },
-  ];
-
-  return rows;
-});
-function getProviderHealthToneClass(health: RevenueAgentProviderHealth | null): string {
-  if (!health) {
-    return "tone-lost";
-  }
-
-  if (health.available) {
-    return "tone-approved";
-  }
-
-  if (!health.configured) {
-    return "tone-lost";
-  }
-
-  return "tone-follow-up";
-}
-
-function getProviderHealthStatusLabel(health: RevenueAgentProviderHealth | null): string {
-  if (!health) {
-    return "Unavailable";
-  }
-
-  if (!health.configured) {
-    return "Not configured";
-  }
-
-  if (health.available) {
-    return "Healthy";
-  }
-
-  return "Degraded";
-}
-
-function getProviderHealthDetail(health: RevenueAgentProviderHealth | null): string {
-  if (!health) {
-    return "Provider data is unavailable.";
-  }
-
-  if (health.available) {
-    return health.quotaRemaining !== undefined ? `${health.quotaRemaining} credits remaining` : "Ready for enrichment";
-  }
-
-  return health.reason || "Check provider configuration.";
-}
 const sourceCoverageRows = computed(() => {
   const coverage = selectedReport.value?.businessProfile.sourceCoverage;
   return [
@@ -1028,6 +949,12 @@ const priorityLanes = computed<PriorityLane[]>(() => {
     },
   ];
 });
+
+const prioritySummary = computed(() => ({
+  hot: priorityLanes.value.find((lane) => lane.key === "hot")?.prospects.length ?? 0,
+  warm: priorityLanes.value.find((lane) => lane.key === "warm")?.prospects.length ?? 0,
+  cold: priorityLanes.value.find((lane) => lane.key === "cold")?.prospects.length ?? 0,
+}));
 
 watch(
   [searchQuery, sortKey, sortDirection, tablePageSize, () => ({ ...filterState })],
@@ -2525,13 +2452,6 @@ onMounted(() => {
           <small>{{ selectedBusinessId ? "Live workspace" : "No workspace selected" }}</small>
         </div>
         <div class="workspace-pill">
-          <span>Knowledge</span>
-          <strong>{{ workspaceKnowledgeStatusLabel }}</strong>
-          <small>
-            {{ workspaceKnowledgeProfile?.voiceSummary || `${workspaceKnowledgeSources.length} source${workspaceKnowledgeSources.length === 1 ? "" : "s"} in DB` }}
-          </small>
-        </div>
-        <div class="workspace-pill">
           <span>Calendar</span>
           <strong>{{ googleCalendarConnection?.connected ? "Connected" : "Disconnected" }}</strong>
           <small>{{ googleCalendarConnection?.accountEmail || "Use Google Calendar for booking handoff" }}</small>
@@ -2554,88 +2474,117 @@ onMounted(() => {
       </section>
 
       <template v-else>
-        <section class="summary-grid">
-          <article v-for="card in workspaceSummaryCards" :key="card.label" class="summary-card">
+        <section class="summary-strip">
+          <article v-for="card in workspaceSummaryCards" :key="card.label" class="summary-chip">
             <span>{{ card.label }}</span>
             <strong>{{ card.value }}</strong>
           </article>
+          <article class="summary-chip summary-chip-wide">
+            <span>Priority mix</span>
+            <strong>{{ prioritySummary.hot }} hot · {{ prioritySummary.warm }} warm · {{ prioritySummary.cold }} cold</strong>
+          </article>
         </section>
 
-        <section v-if="providerHealthRows.length" class="toolbar-card provider-health-panel">
-          <div class="section-head">
-            <div>
-              <p class="panel-kicker">Provider health</p>
-              <h2>Core workflow stays live even when enrichment providers are down</h2>
-              <p class="panel-note">
-                Apollo and Hunter improve decision-maker matching, but Google Places, website intelligence, and OpenAI still keep the workflow moving.
-              </p>
-            </div>
-          </div>
-
-          <div class="provider-health-grid">
-            <article
-              v-for="row in providerHealthRows"
-              :key="row.provider"
-              class="mini-card provider-health-card"
-              :class="getProviderHealthToneClass(row.health)"
-            >
-              <span>{{ row.label }}</span>
-              <strong>{{ getProviderHealthStatusLabel(row.health) }}</strong>
-              <small>{{ getProviderHealthDetail(row.health) }}</small>
-            </article>
-          </div>
-        </section>
-
-        <section v-if="workspaceKnowledge" class="toolbar-card knowledge-panel">
-          <div class="section-head">
-            <div>
-              <p class="panel-kicker">Workspace knowledge</p>
-              <h2>Use the same voice, CTA, and signature in every draft</h2>
-              <p class="panel-note">
-                This pulls from the workspace knowledge base, the email settings table, and the connected sources in the database.
-              </p>
-            </div>
-            <router-link class="secondary-action link-action" :to="appRoutes.settingsPreferences">
-              Manage knowledge
-            </router-link>
-          </div>
-
-          <div class="knowledge-grid">
-            <article class="mini-card">
-              <span>Voice</span>
-              <strong>{{ workspaceKnowledgeProfile?.voiceSummary || "Not defined" }}</strong>
-            </article>
-            <article class="mini-card">
-              <span>Audience</span>
-              <strong>{{ workspaceKnowledgeProfile?.audienceSummary || "Not defined" }}</strong>
-            </article>
-            <article class="mini-card">
-              <span>Positioning</span>
-              <strong>{{ workspaceKnowledgeProfile?.positioningSummary || "Not defined" }}</strong>
-            </article>
-            <article class="mini-card">
-              <span>Email identity</span>
-              <strong>{{ workspaceKnowledgeEmailIdentity?.fromName || workspaceKnowledgeEmailIdentity?.replyToEmail || "Not defined" }}</strong>
-            </article>
-          </div>
-
-          <div class="knowledge-source-row">
-            <span v-for="source in workspaceKnowledgeSources.slice(0, 4)" :key="source.id" class="tag-pill">
-              {{ source.title || source.sourceType }}
-            </span>
-            <span v-if="workspaceKnowledgeSources.length === 0" class="tag-pill">No knowledge sources yet</span>
-          </div>
-        </section>
-
-        <section class="toolbar-stack">
-          <div class="toolbar-card search-toolbar">
+        <section class="toolbar-card workflow-toolbar">
+          <div class="toolbar-primary-row">
             <label class="field search-field">
               <span>Search</span>
               <input v-model="searchQuery" type="search" placeholder="Business, email, phone, note, tag" />
             </label>
+            <label class="field page-size-field">
+              <span>Page size</span>
+              <select v-model="tablePageSize">
+                <option :value="12">12</option>
+                <option :value="18">18</option>
+                <option :value="24">24</option>
+                <option :value="50">50</option>
+              </select>
+            </label>
             <div class="toolbar-actions">
               <button type="button" class="secondary-action" @click="saveCurrentFilterPreset">Save Filter</button>
             </div>
+          </div>
+
+          <details class="advanced-filters">
+            <summary>Advanced Filters</summary>
+            <div class="filter-toolbar compact">
+              <label class="field">
+                <span>Industry</span>
+                <input v-model="filterState.industry" type="text" placeholder="Med Spa" />
+              </label>
+              <label class="field">
+                <span>City</span>
+                <input v-model="filterState.city" type="text" placeholder="Salt Lake City" />
+              </label>
+              <label class="field">
+                <span>State</span>
+                <input v-model="filterState.state" type="text" placeholder="UT" />
+              </label>
+              <label class="field">
+                <span>Lead Source</span>
+                <select v-model="filterState.leadSource">
+                  <option value="all">All</option>
+                  <option value="google_business">Google Business</option>
+                  <option value="csv_import">CSV import</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Min Score</span>
+                <input v-model.number="filterState.minScore" type="number" min="0" max="100" />
+              </label>
+              <label class="field">
+                <span>Status</span>
+                <select v-model="filterState.status">
+                  <option value="all">All</option>
+                  <option value="new">New</option>
+                  <option value="researching">Researching</option>
+                  <option value="research_ready">Research Ready</option>
+                  <option value="draft_ready">Draft Ready</option>
+                  <option value="approved">Approved</option>
+                  <option value="sent">Sent</option>
+                  <option value="replied">Replied</option>
+                  <option value="meeting">Meeting</option>
+                  <option value="closed_won">Closed Won</option>
+                  <option value="closed_lost">Closed Lost</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Has Email</span>
+                <select v-model="filterState.hasEmail">
+                  <option value="all">All</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Has Website</span>
+                <select v-model="filterState.hasWebsite">
+                  <option value="all">All</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Has Booking</span>
+                <select v-model="filterState.hasBooking">
+                  <option value="all">All</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Date</span>
+                <select v-model="filterState.dateWindow">
+                  <option value="all">All</option>
+                  <option value="today">Today</option>
+                  <option value="7d">7 days</option>
+                  <option value="30d">30 days</option>
+                </select>
+              </label>
+            </div>
+          </details>
+
+          <div class="toolbar-secondary-row">
             <div v-if="savedFilterPresets.length" class="preset-chips">
               <button
                 v-for="preset in savedFilterPresets"
@@ -2647,115 +2596,8 @@ onMounted(() => {
                 {{ preset.name }}
               </button>
             </div>
-          </div>
 
-          <div class="toolbar-card filter-toolbar">
-            <label class="field">
-              <span>Industry</span>
-              <input v-model="filterState.industry" type="text" placeholder="Med Spa" />
-            </label>
-            <label class="field">
-              <span>City</span>
-              <input v-model="filterState.city" type="text" placeholder="Salt Lake City" />
-            </label>
-            <label class="field">
-              <span>State</span>
-              <input v-model="filterState.state" type="text" placeholder="UT" />
-            </label>
-            <label class="field">
-              <span>Lead Source</span>
-              <select v-model="filterState.leadSource">
-                <option value="all">All</option>
-                <option value="google_business">Google Business</option>
-                <option value="csv_import">CSV import</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Min Score</span>
-              <input v-model.number="filterState.minScore" type="number" min="0" max="100" />
-            </label>
-            <label class="field">
-              <span>Status</span>
-              <select v-model="filterState.status">
-                <option value="all">All</option>
-                <option value="new">New</option>
-                <option value="researching">Researching</option>
-                <option value="research_ready">Research Ready</option>
-                <option value="draft_ready">Draft Ready</option>
-                <option value="approved">Approved</option>
-                <option value="sent">Sent</option>
-                <option value="replied">Replied</option>
-                <option value="meeting">Meeting</option>
-                <option value="closed_won">Closed Won</option>
-                <option value="closed_lost">Closed Lost</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Has Email</span>
-              <select v-model="filterState.hasEmail">
-                <option value="all">All</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Has Website</span>
-              <select v-model="filterState.hasWebsite">
-                <option value="all">All</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Has Booking</span>
-              <select v-model="filterState.hasBooking">
-                <option value="all">All</option>
-                <option value="yes">Yes</option>
-                <option value="no">No</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Date</span>
-              <select v-model="filterState.dateWindow">
-                <option value="all">All</option>
-                <option value="today">Today</option>
-                <option value="7d">7 days</option>
-                <option value="30d">30 days</option>
-              </select>
-            </label>
-          </div>
-
-          <div class="toolbar-card feed-toolbar">
-            <div class="feed-fields">
-              <label class="field">
-                <span>Industry</span>
-                <input v-model="feedForm.industry" type="text" placeholder="Salon" />
-              </label>
-              <label class="field">
-                <span>City</span>
-                <input v-model="feedForm.city" type="text" placeholder="Dallas" />
-              </label>
-              <label class="field">
-                <span>State</span>
-                <input v-model="feedForm.state" type="text" placeholder="TX" />
-              </label>
-              <label class="field">
-                <span>Limit</span>
-                <input v-model.number="feedForm.dailyLeadLimit" type="number" min="1" max="25" />
-              </label>
-              <label class="field">
-                <span>Enrich Threshold</span>
-                <input v-model.number="feedForm.contactEnrichmentThreshold" type="number" min="0" max="100" />
-              </label>
-              <label class="field">
-                <span>Provider</span>
-                <select v-model="feedForm.provider">
-                  <option value="google_business">Google Business</option>
-                  <option value="csv_import">CSV import</option>
-                </select>
-              </label>
-            </div>
-            <div class="feed-actions">
+            <div class="feed-actions compact">
               <button v-if="isCsvImportSelected" type="button" class="secondary-action" @click="loadSampleCsv">
                 Load sample CSV
               </button>
@@ -2767,12 +2609,12 @@ onMounted(() => {
             </div>
           </div>
 
-          <div v-if="isCsvImportSelected" class="toolbar-card csv-card">
+          <div v-if="isCsvImportSelected" class="csv-card">
             <label class="field">
               <span>CSV text</span>
               <textarea
                 v-model="feedForm.csvText"
-                rows="5"
+                rows="4"
                 spellcheck="false"
                 placeholder="businessName,website,email,phone,city,state,industry,sourceUrl,rating,reviewCount,painSignals,tags"
               ></textarea>
@@ -2787,16 +2629,6 @@ onMounted(() => {
                 <p class="panel-kicker">Prospect table</p>
                 <h2>{{ currentPageRangeLabel }}</h2>
                 <p class="panel-note">{{ totalFilteredProspects }} matched - {{ selectedCount }} selected</p>
-              </div>
-              <div class="panel-head-actions">
-                <label class="field page-size-field">
-                  <span>Page size</span>
-                  <select v-model="tablePageSize">
-                    <option :value="12">12</option>
-                    <option :value="24">24</option>
-                    <option :value="50">50</option>
-                  </select>
-                </label>
               </div>
             </div>
 
@@ -2875,38 +2707,14 @@ onMounted(() => {
               </div>
             </div>
 
-            <div class="priority-strip">
-              <div class="section-head">
-                <div>
-                  <p class="panel-kicker">Priority queue</p>
-                  <h3>Hot, warm, cold</h3>
-                </div>
-                <p class="muted-copy">Sorted by reachability first, then opportunity quality.</p>
+            <div class="compact-priority-bar">
+              <span class="panel-kicker">Priority queue</span>
+              <div class="compact-priority-items">
+                <span class="compact-priority-item tone-approved">Hot <strong>{{ prioritySummary.hot }}</strong></span>
+                <span class="compact-priority-item tone-follow-up">Warm <strong>{{ prioritySummary.warm }}</strong></span>
+                <span class="compact-priority-item tone-lost">Cold <strong>{{ prioritySummary.cold }}</strong></span>
               </div>
-              <div class="priority-lane-grid">
-                <article v-for="lane in priorityLanes" :key="lane.key" class="priority-lane-card">
-                  <div class="priority-lane-head">
-                    <div>
-                      <strong>{{ lane.label }}</strong>
-                      <p>{{ lane.description }}</p>
-                    </div>
-                    <span class="status-badge" :class="lane.tone">{{ lane.prospects.length }}</span>
-                  </div>
-                  <div class="priority-list">
-                    <article v-for="prospect in lane.prospects" :key="prospect.id" class="priority-card">
-                      <div>
-                        <strong>{{ prospect.businessName }}</strong>
-                        <p>{{ getDecisionMakerLabel(prospect) }} - {{ getContactTitleLabel(prospect) }}</p>
-                      </div>
-                      <div class="priority-score">
-                        <span :class="getReachabilityToneClass(prospect)">{{ getReachabilityLabel(prospect) }}</span>
-                        <small>{{ getAIRecommendation(prospect) }}</small>
-                      </div>
-                    </article>
-                    <p v-if="lane.prospects.length === 0" class="muted-copy">No prospects in this lane.</p>
-                  </div>
-                </article>
-              </div>
+              <p class="muted-copy">Sorted by reachability first, then opportunity quality.</p>
             </div>
 
             <div class="table-shell">
@@ -4494,16 +4302,238 @@ input[type="checkbox"] {
   min-width: 0;
 }
 
+.summary-strip {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.summary-chip {
+  display: grid;
+  gap: 4px;
+  min-height: 72px;
+  padding: 12px 14px;
+  border: 1px solid rgba(111, 90, 78, 0.14);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 20px rgba(58, 34, 18, 0.04);
+}
+
+.summary-chip span {
+  color: #8b6f60;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.summary-chip strong {
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.summary-chip-wide {
+  grid-column: span 2;
+}
+
+.workflow-toolbar {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.toolbar-primary-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) 150px auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.toolbar-secondary-row {
+  display: grid;
+  gap: 10px;
+}
+
+.advanced-filters summary {
+  list-style: none;
+  cursor: pointer;
+  font-weight: 800;
+  color: #4d3a31;
+}
+
+.advanced-filters summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-filters[open] summary {
+  margin-bottom: 10px;
+}
+
+.compact-priority-bar {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(111, 90, 78, 0.12);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.compact-priority-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compact-priority-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.compact-priority-item strong {
+  font-size: 0.95rem;
+}
+
+.compact-priority-item.tone-approved {
+  background: #e5f8ec;
+  color: #1d7a43;
+}
+
+.compact-priority-item.tone-follow-up {
+  background: #fff1d9;
+  color: #9a651c;
+}
+
+.compact-priority-item.tone-lost {
+  background: #f4e4e4;
+  color: #9b3b3b;
+}
+
+.filter-toolbar.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.feed-actions.compact {
+  justify-content: flex-start;
+}
+
+.workspace-grid {
+  grid-template-columns: minmax(0, 2.15fr) minmax(320px, 0.72fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.panel-head {
+  padding: 14px 14px 0;
+}
+
+.bulk-toolbar {
+  padding: 10px 14px;
+  margin: 12px 14px 0;
+}
+
+.table-shell {
+  margin-top: 8px;
+}
+
+.prospect-table {
+  min-width: 1140px;
+}
+
+.prospect-table thead th {
+  padding: 7px 7px;
+  font-size: 0.68rem;
+}
+
+.prospect-table td {
+  padding: 7px 7px;
+  font-size: 0.88rem;
+  line-height: 1.05;
+}
+
+.status-badge {
+  min-height: 24px;
+  padding: 0 9px;
+  font-size: 0.74rem;
+}
+
+.table-action {
+  padding: 6px 10px;
+}
+
+.detail-panel {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100vh - 28px);
+}
+
+.detail-head {
+  padding: 14px 14px 0;
+}
+
+.detail-tabs {
+  padding: 10px 14px 0;
+}
+
+.tab-button {
+  padding: 8px 10px;
+}
+
+.detail-content {
+  gap: 8px;
+  padding: 10px 14px 12px;
+}
+
+.section-card {
+  padding: 10px;
+}
+
+.overview-grid,
+.quick-grid,
+.reply-grid,
+.coverage-grid,
+.mini-stack {
+  gap: 6px;
+}
+
+.mini-card {
+  padding: 9px 11px;
+}
+
+.quick-card {
+  padding: 9px 11px;
+}
+
+.coverage-card,
+.task-item {
+  padding: 9px 11px;
+}
+
+.timeline-item {
+  padding: 6px 0;
+}
+
 @media (max-width: 1440px) {
-  .summary-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .summary-strip {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
-  .knowledge-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .summary-chip-wide {
+    grid-column: span 2;
   }
 
-  .filter-toolbar {
+  .toolbar-primary-row {
+    grid-template-columns: minmax(0, 1fr) 140px auto;
+  }
+
+  .filter-toolbar.compact {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
@@ -4515,8 +4545,7 @@ input[type="checkbox"] {
 @media (max-width: 1160px) {
   .revenue-header,
   .workspace-grid,
-  .search-toolbar,
-  .feed-toolbar {
+  .toolbar-primary-row {
     grid-template-columns: 1fr;
   }
 
@@ -4528,19 +4557,13 @@ input[type="checkbox"] {
     min-width: 0;
   }
 
-  .workspace-grid {
-    display: grid;
-  }
-
-  .summary-grid,
-  .filter-toolbar,
+  .summary-strip,
+  .filter-toolbar.compact,
   .feed-fields,
-  .knowledge-grid,
   .overview-grid,
   .quick-grid,
   .reply-grid,
-  .coverage-grid,
-  .priority-lane-grid {
+  .coverage-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -4551,15 +4574,14 @@ input[type="checkbox"] {
   }
 
   .header-meta,
-  .summary-grid,
-  .filter-toolbar,
+  .summary-strip,
+  .filter-toolbar.compact,
   .feed-fields,
-  .knowledge-grid,
   .overview-grid,
   .quick-grid,
   .reply-grid,
   .coverage-grid,
-  .priority-lane-grid {
+  .toolbar-primary-row {
     grid-template-columns: 1fr;
   }
 
