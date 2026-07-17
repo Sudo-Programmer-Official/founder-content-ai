@@ -200,6 +200,31 @@ let feedConfigSaveTimer: number | null = null;
 let feedConfigSaveNonce = 0;
 let hasHydratedFeedForm = false;
 
+function getWorkspaceFilterStorageKey(businessId: string): string {
+  return `${FILTER_STORAGE_KEY}:${businessId}`;
+}
+
+function getWorkspaceFilterPresetsKey(businessId: string): string {
+  return `${FILTER_PRESETS_KEY}:${businessId}`;
+}
+
+function resetFiltersToDefaults(): void {
+  searchQuery.value = "";
+  sortKey.value = "reachability";
+  sortDirection.value = "desc";
+  tablePageSize.value = 10;
+  filterState.industry = "";
+  filterState.city = "";
+  filterState.state = "";
+  filterState.leadSource = "all";
+  filterState.minScore = 0;
+  filterState.status = "all";
+  filterState.hasEmail = "all";
+  filterState.hasWebsite = "all";
+  filterState.hasBooking = "all";
+  filterState.dateWindow = "all";
+}
+
 function normalizeFeedFormConfig(
   input: Partial<RevenueAgentFeedConfig> | null | undefined,
   fallback: RevenueAgentFeedConfig = DEFAULT_REVENUE_FEED_CONFIG,
@@ -301,7 +326,7 @@ function cloneFilterState(): RevenueAgentFilterPreset["filterState"] {
 }
 
 function saveFiltersToStorage(): void {
-  if (typeof window === "undefined") {
+  if (typeof window === "undefined" || !selectedBusinessId.value) {
     return;
   }
 
@@ -313,64 +338,72 @@ function saveFiltersToStorage(): void {
     filterState: cloneFilterState(),
   };
 
-  window.localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(payload));
+  window.localStorage.setItem(getWorkspaceFilterStorageKey(selectedBusinessId.value), JSON.stringify(payload));
 }
 
-function loadFiltersFromStorage(): void {
+function loadFiltersFromStorage(businessId: string): void {
   if (typeof window === "undefined") {
     return;
   }
 
-  const raw = window.localStorage.getItem(FILTER_STORAGE_KEY);
+  resetFiltersToDefaults();
 
-  if (!raw) {
+  if (!businessId) {
+    savedFilterPresets.value = [];
     return;
   }
 
-  try {
-    const parsed = JSON.parse(raw) as Partial<RevenueAgentFilterPreset>;
+  const raw = window.localStorage.getItem(getWorkspaceFilterStorageKey(businessId));
 
-    searchQuery.value = typeof parsed.searchQuery === "string" ? parsed.searchQuery : searchQuery.value;
-    sortKey.value =
-      parsed.sortKey === "reachability" || parsed.sortKey === "score" || parsed.sortKey === "business" || parsed.sortKey === "status" || parsed.sortKey === "activity"
-        ? parsed.sortKey
-        : "reachability";
-    sortDirection.value = parsed.sortDirection === "asc" ? "asc" : "desc";
-    tablePageSize.value = Number.isFinite(parsed.tablePageSize as number) && (parsed.tablePageSize as number) > 0 ? Math.min(50, Math.max(6, Math.floor(parsed.tablePageSize as number))) : tablePageSize.value;
+  if (!raw) {
+    savedFilterPresets.value = [];
+  } else {
+    try {
+      const parsed = JSON.parse(raw) as Partial<RevenueAgentFilterPreset>;
 
-    const savedFilters = parsed.filterState as Partial<typeof filterState> | undefined;
-    if (savedFilters) {
-      filterState.industry = typeof savedFilters.industry === "string" ? savedFilters.industry : filterState.industry;
-      filterState.city = typeof savedFilters.city === "string" ? savedFilters.city : filterState.city;
-      filterState.state = typeof savedFilters.state === "string" ? savedFilters.state : filterState.state;
-      filterState.leadSource = savedFilters.leadSource === "csv_import" ? "csv_import" : savedFilters.leadSource === "google_business" ? "google_business" : "all";
-      filterState.minScore = Number.isFinite(savedFilters.minScore as number) ? Math.max(0, Math.min(100, Math.floor(savedFilters.minScore as number))) : filterState.minScore;
-      filterState.status =
-        savedFilters.status === "researching" ||
-        savedFilters.status === "research_ready" ||
-        savedFilters.status === "draft_ready" ||
-        savedFilters.status === "approved" ||
-        savedFilters.status === "sent" ||
-        savedFilters.status === "replied" ||
-        savedFilters.status === "meeting" ||
-        savedFilters.status === "closed_won" ||
-        savedFilters.status === "closed_lost" ||
-        savedFilters.status === "new"
-          ? savedFilters.status
-          : "all";
-      filterState.hasEmail = savedFilters.hasEmail === "yes" || savedFilters.hasEmail === "no" ? savedFilters.hasEmail : "all";
-      filterState.hasWebsite = savedFilters.hasWebsite === "yes" || savedFilters.hasWebsite === "no" ? savedFilters.hasWebsite : "all";
-      filterState.hasBooking = savedFilters.hasBooking === "yes" || savedFilters.hasBooking === "no" ? savedFilters.hasBooking : "all";
-      filterState.dateWindow =
-        savedFilters.dateWindow === "today" || savedFilters.dateWindow === "7d" || savedFilters.dateWindow === "30d"
-          ? savedFilters.dateWindow
-          : "all";
+      searchQuery.value = typeof parsed.searchQuery === "string" ? parsed.searchQuery : searchQuery.value;
+      sortKey.value =
+        parsed.sortKey === "reachability" || parsed.sortKey === "score" || parsed.sortKey === "business" || parsed.sortKey === "status" || parsed.sortKey === "activity"
+          ? parsed.sortKey
+          : "reachability";
+      sortDirection.value = parsed.sortDirection === "asc" ? "asc" : "desc";
+      tablePageSize.value = Number.isFinite(parsed.tablePageSize as number) && (parsed.tablePageSize as number) > 0 ? Math.min(50, Math.max(6, Math.floor(parsed.tablePageSize as number))) : tablePageSize.value;
+
+      const savedFilters = parsed.filterState as Partial<typeof filterState> | undefined;
+      if (savedFilters) {
+        filterState.industry = typeof savedFilters.industry === "string" ? savedFilters.industry : filterState.industry;
+        filterState.city = typeof savedFilters.city === "string" ? savedFilters.city : filterState.city;
+        filterState.state = typeof savedFilters.state === "string" ? savedFilters.state : filterState.state;
+        filterState.leadSource = savedFilters.leadSource === "csv_import" ? "csv_import" : savedFilters.leadSource === "google_business" ? "google_business" : "all";
+        filterState.minScore = Number.isFinite(savedFilters.minScore as number) ? Math.max(0, Math.min(100, Math.floor(savedFilters.minScore as number))) : filterState.minScore;
+        filterState.status =
+          savedFilters.status === "researching" ||
+          savedFilters.status === "research_ready" ||
+          savedFilters.status === "draft_ready" ||
+          savedFilters.status === "approved" ||
+          savedFilters.status === "sent" ||
+          savedFilters.status === "replied" ||
+          savedFilters.status === "meeting" ||
+          savedFilters.status === "closed_won" ||
+          savedFilters.status === "closed_lost" ||
+          savedFilters.status === "new"
+            ? savedFilters.status
+            : "all";
+        filterState.hasEmail = savedFilters.hasEmail === "yes" || savedFilters.hasEmail === "no" ? savedFilters.hasEmail : "all";
+        filterState.hasWebsite = savedFilters.hasWebsite === "yes" || savedFilters.hasWebsite === "no" ? savedFilters.hasWebsite : "all";
+        filterState.hasBooking = savedFilters.hasBooking === "yes" || savedFilters.hasBooking === "no" ? savedFilters.hasBooking : "all";
+        filterState.dateWindow =
+          savedFilters.dateWindow === "today" || savedFilters.dateWindow === "7d" || savedFilters.dateWindow === "30d"
+            ? savedFilters.dateWindow
+            : "all";
+      }
+    } catch {
+      // Ignore malformed local state.
+      resetFiltersToDefaults();
     }
-  } catch {
-    // Ignore malformed local state.
   }
 
-  const presetRaw = window.localStorage.getItem(FILTER_PRESETS_KEY);
+  const presetRaw = window.localStorage.getItem(getWorkspaceFilterPresetsKey(businessId));
   if (!presetRaw) {
     return;
   }
@@ -385,6 +418,11 @@ function loadFiltersFromStorage(): void {
 
 function saveCurrentFilterPreset(): void {
   if (typeof window === "undefined") {
+    return;
+  }
+
+  const businessId = selectedBusinessId.value;
+  if (!businessId) {
     return;
   }
 
@@ -406,7 +444,7 @@ function saveCurrentFilterPreset(): void {
 
   const nextPresets = [...savedFilterPresets.value.filter((preset) => preset.name !== presetName), nextPreset];
   savedFilterPresets.value = nextPresets;
-  window.localStorage.setItem(FILTER_PRESETS_KEY, JSON.stringify(nextPresets));
+  window.localStorage.setItem(getWorkspaceFilterPresetsKey(businessId), JSON.stringify(nextPresets));
   saveFiltersToStorage();
   feedbackMessage.value = `Saved filter "${presetName}".`;
 }
@@ -2196,11 +2234,13 @@ async function loadWorkspace(): Promise<void> {
     prospects.value = [];
     selectedProspectId.value = "";
     workflowSnapshot.value = null;
+    resetFiltersToDefaults();
     feedForm.value = { ...DEFAULT_REVENUE_FEED_CONFIG };
     isHydratingFeedForm.value = false;
     return;
   }
 
+  loadFiltersFromStorage(selectedBusinessId.value);
   const response = await requestRevenueAgentWorkspace(selectedBusinessId.value);
   workspace.value = response;
   prospects.value = response.prospects;
@@ -2268,7 +2308,6 @@ async function initializePage(): Promise<void> {
   errorMessage.value = "";
 
   try {
-    loadFiltersFromStorage();
     await loadBusinesses();
     await loadWorkspace();
     applyCalendarConnectionFeedback();
@@ -2421,6 +2460,7 @@ watch(
     }
 
     selectedBusinessId.value = nextBusinessId;
+    resetFiltersToDefaults();
 
     void (async () => {
       await loadBusinesses();
