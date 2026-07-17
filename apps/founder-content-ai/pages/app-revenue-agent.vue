@@ -2336,9 +2336,17 @@ async function runFeed(): Promise<void> {
       businessId: selectedBusinessId.value,
       ...feedForm.value,
     });
-    prospects.value = response.workspace.prospects;
     hydrateFeedFormForWorkspace(response.workspace.feedConfig);
-    selectProspect(response.workspace.prospects[0] ?? null);
+    await loadWorkspace();
+    await nextTick();
+
+    if (prospects.value.length > 0 && filteredProspects.value.length === 0) {
+      resetFiltersToDefaults();
+      saveFiltersToStorage();
+      feedbackMessage.value = `Daily feed completed for ${response.run.prospectsFound} prospects. Filters were reset to show the new leads.`;
+      return;
+    }
+
     feedbackMessage.value = `Daily feed completed for ${response.run.prospectsFound} prospects.`;
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : "Unable to run the daily feed.";
