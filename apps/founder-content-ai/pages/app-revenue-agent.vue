@@ -1026,6 +1026,9 @@ watch(
   paginatedProspects,
   (rows) => {
     if (rows.length === 0) {
+      if (selectedProspectId.value) {
+        selectProspect(null, { resetReplyDraft: false });
+      }
       return;
     }
 
