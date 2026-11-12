@@ -65,6 +65,11 @@ async function main(): Promise<void> {
       outputLocation: outPath,
       inputProps: { ...inputProps },
       concurrency: resolveConcurrency(),
+      // The Render worker also runs the shared queue worker, and 1080x1920
+      // frames are memory-heavy. Remotion's parallel encoder can overlap
+      // FFmpeg with Chromium and push the container over its memory limit
+      // even when concurrency is already set to 1.
+      disallowParallelEncoding: true,
       onProgress: ({ progress }) => {
         const rounded = Math.floor(progress * 100);
         if (rounded !== lastReported) {
