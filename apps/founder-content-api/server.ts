@@ -23,6 +23,7 @@ import { mediaIntelligenceRoute } from "./src/routes/mediaIntelligence.ts";
 import { onboardingRoute } from "./src/routes/onboarding.ts";
 import { outreachAdminRoute, outreachRoute } from "./src/routes/outreach.ts";
 import { revenueAgentRoute } from "./src/routes/revenue-agent.ts";
+import { reelStudioRoute } from "./src/routes/reelStudio.ts";
 import { postAssetsRoute } from "./src/routes/postAssets.ts";
 import { publicBlogsRoute } from "./src/routes/publicBlogs.ts";
 import { publicMarketingRoute } from "./src/routes/publicMarketing.ts";
@@ -166,6 +167,7 @@ export function createServerApp(): Express {
   app.use(outreachAdminRoute);
   app.use(outreachRoute);
   app.use(revenueAgentRoute);
+  app.use(reelStudioRoute);
   app.use(workspaceAnalyticsRoute);
   app.use(workspaceBlogsRoute);
   app.use(competitiveIntelligenceRoute);

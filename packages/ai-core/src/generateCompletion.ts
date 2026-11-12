@@ -15,6 +15,8 @@ const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 
 interface GenerateCompletionOptions {
   jsonMode?: boolean;
+  /** Overrides OPENAI_MODEL for this call. */
+  model?: string;
 }
 
 export async function generateCompletion(
@@ -27,7 +29,7 @@ export async function generateCompletion(
     throw new Error("OPENAI_API_KEY is not set.");
   }
 
-  const model = process.env.OPENAI_MODEL ?? "gpt-4o-mini";
+  const model = options.model?.trim() || process.env.OPENAI_MODEL || "gpt-4o-mini";
 
   const response = await fetch(OPENAI_CHAT_COMPLETIONS_URL, {
     method: "POST",

@@ -19,6 +19,7 @@ import {
   ChevronUp,
   CircleDollarSign,
   CircleX,
+  Clapperboard,
   Clock3,
   Copy,
   CopyPlus,
@@ -56,6 +57,7 @@ import {
   ScanSearch,
   Search,
   Send,
+  Share2,
   Settings2,
   Save,
   ShieldCheck,
@@ -91,6 +93,7 @@ export const navigationIcons = {
   growth: TrendingUp,
   outreach: Megaphone,
   revenue: BadgeDollarSign,
+  reels: Clapperboard,
   email: Mail,
   blog: NotebookText,
   analytics: BarChart3,
@@ -131,6 +134,7 @@ export const actionIcons = {
   save: Save,
   search: Search,
   send: Send,
+  share: Share2,
   warning: TriangleAlert,
 } as const;
 

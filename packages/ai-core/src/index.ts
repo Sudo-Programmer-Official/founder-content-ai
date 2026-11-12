@@ -1,6 +1,7 @@
 export * from "./generateCompletion.ts";
 export * from "./generateImage.ts";
 export * from "./transcribeAudio.ts";
+export * from "./synthesizeSpeech.ts";
 export * from "./providers/openai.ts";
 export * from "./runners/text-generation.ts";
 export * from "./runners/structured-generation.ts";

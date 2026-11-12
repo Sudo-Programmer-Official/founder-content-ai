@@ -15,6 +15,7 @@ export const appRoutes = {
   appResult: "/app/result",
   appRoot: "/app",
   appRevenueAgent: "/app/revenue-agent",
+  appReelStudio: "/app/reels",
   appOutreach: "/app/outreach",
   admin: "/admin",
   adminFeatures: "/admin/features",

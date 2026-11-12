@@ -31,3 +31,4 @@ export * from "./src/media-intelligence.ts";
 export * from "./src/workspace-insights.ts";
 export * from "./src/public-marketing.ts";
 export * from "./src/revenue-agent.ts";
+export * from "./src/reel-studio.ts";

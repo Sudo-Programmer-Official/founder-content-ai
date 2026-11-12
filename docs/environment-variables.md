@@ -115,6 +115,21 @@ Notes:
 - must match the callback route exposed by the API exactly
 - use the API host, not the frontend host
 
+### YouTube publishing
+
+FounderContent AI's Reel Studio uses these backend variables for the explicit, human-approved YouTube publish action:
+
+- `YOUTUBE_CLIENT_ID`
+- `YOUTUBE_CLIENT_SECRET`
+- `YOUTUBE_REDIRECT_URI`
+
+For local development, `YOUTUBE_REDIRECT_URI` should be:
+
+- `http://localhost:3001/api/reel-studio/youtube/callback`
+
+For production, use the backend API host and register the exact same callback URL in Google Cloud. The YouTube Data
+API must be enabled, and the OAuth consent screen must include the YouTube upload/read scopes requested by Reel Studio.
+
 ### `OPENAI_MODEL`
 
 Purpose:

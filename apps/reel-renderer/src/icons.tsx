@@ -1,0 +1,60 @@
+import {
+  AppWindow,
+  BarChart3,
+  Box,
+  Braces,
+  Brain,
+  CircleCheck,
+  Cloud,
+  Code,
+  CreditCard,
+  Database,
+  Globe,
+  Layers,
+  Lock,
+  Mail,
+  MemoryStick,
+  Router,
+  Search,
+  Server,
+  ShoppingCart,
+  Smartphone,
+  TriangleAlert,
+  User,
+  Users,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+import type { ReelIconName } from "../../../packages/shared-types/src/reel-studio";
+
+const ICONS: Record<ReelIconName, LucideIcon> = {
+  user: User,
+  users: Users,
+  phone: Smartphone,
+  browser: AppWindow,
+  server: Server,
+  database: Database,
+  queue: Layers,
+  cache: MemoryStick,
+  cloud: Cloud,
+  api: Braces,
+  gateway: Router,
+  service: Box,
+  lock: Lock,
+  bolt: Zap,
+  globe: Globe,
+  code: Code,
+  chart: BarChart3,
+  mail: Mail,
+  cart: ShoppingCart,
+  payment: CreditCard,
+  search: Search,
+  brain: Brain,
+  check: CircleCheck,
+  alert: TriangleAlert,
+};
+
+export function ReelIcon(props: { name: ReelIconName; size: number; color: string; strokeWidth?: number }) {
+  const Icon = ICONS[props.name] ?? Box;
+  return <Icon size={props.size} color={props.color} strokeWidth={props.strokeWidth ?? 2} />;
+}

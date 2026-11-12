@@ -38,6 +38,12 @@ services:
         sync: false
       - key: OPENAI_IMAGE_QUALITY
         sync: false
+      - key: YOUTUBE_CLIENT_ID
+        sync: false
+      - key: YOUTUBE_CLIENT_SECRET
+        sync: false
+      - key: YOUTUBE_REDIRECT_URI
+        sync: false
       - key: LINKEDIN_API_VERSION
         sync: false
       - key: LINKEDIN_CLIENT_ID
@@ -230,3 +236,43 @@ services:
         value: 2
       - key: GROWTH_AUTOMATION_WORKER_BATCH_SIZE
         value: 25
+
+  - type: worker
+    name: foundercontent-reel-worker
+    runtime: node
+    rootDir: apps/founder-content-api
+    buildCommand: npm install && cd ../reel-renderer && npm install
+    startCommand: npm run worker:reel-renders
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: RENDER_SERVICE_NAME
+        value: foundercontent-reel-worker
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_SSL_MODE
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_TTS_MODEL
+        value: gpt-4o-mini-tts
+      - key: AWS_REGION
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_SESSION_TOKEN
+        sync: false
+      - key: S3_MEDIA_BUCKET
+        sync: false
+      - key: S3_MEDIA_PREFIX
+        value: workspaces
+      - key: REEL_RENDERER_DIR
+        value: ../reel-renderer
+      - key: REEL_RENDER_CONCURRENCY
+        sync: false
+      - key: REEL_RENDER_WORKER_POLL_INTERVAL_MS
+        value: 4000
+      - key: REEL_MEDIA_SIGNING_SECRET
+        sync: false

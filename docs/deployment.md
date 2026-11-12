@@ -76,6 +76,7 @@ Recommended production values:
 - `FRONTEND_ORIGIN=https://foundercontent.ai,https://www.foundercontent.ai,https://founder-content-ai.vercel.app`
 - `META_REDIRECT_URI=https://api.foundercontent.ai/api/social-auth/meta/callback`
 - `GOOGLE_CALENDAR_REDIRECT_URI=https://api.foundercontent.ai/api/google-calendar/callback`
+- `YOUTUBE_REDIRECT_URI=https://api.foundercontent.ai/api/reel-studio/youtube/callback`
 
 Notes:
 
@@ -89,6 +90,9 @@ Notes:
 - use the backend API host for the Meta callback. Do not point Meta OAuth back to the frontend app host.
 - `GOOGLE_CALENDAR_REDIRECT_URI` must exactly match a Google OAuth authorized redirect URI in the Google Cloud console.
 - use the backend API host for the Google Calendar callback. Do not point Google OAuth back to the frontend app host.
+- `YOUTUBE_REDIRECT_URI` must exactly match a Google OAuth authorized redirect URI in the Google Cloud console.
+- `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` must be configured on the API service; YouTube publishing is only enabled after human review.
+- `foundercontent-reel-worker` must be deployed for Reel Studio render jobs to finish.
 
 ## Health Check
 

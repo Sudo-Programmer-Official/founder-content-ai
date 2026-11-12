@@ -1,0 +1,29 @@
+{
+  "name": "reel-renderer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Remotion scene engine that renders Reel Studio storyboards to MP4",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "bundle": "tsx scripts/bundle.ts",
+    "render": "tsx scripts/render.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.537",
+    "@remotion/cli": "4.0.537",
+    "@remotion/google-fonts": "4.0.537",
+    "@remotion/renderer": "4.0.537",
+    "lucide-react": "1.60.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.537"
+  },
+  "devDependencies": {
+    "@types/node": "24.0.0",
+    "@types/react": "19.2.2",
+    "tsx": "4.19.2",
+    "typescript": "5.8.2"
+  }
+}

@@ -75,10 +75,12 @@ const visibleAppLinks = computed<AppNavLink[]>(() => {
   const canUseOutreach = hasWorkspaceContext && isFeatureEnabled("outreach");
   const canUseEmail = hasWorkspaceContext && isFeatureEnabled("email_campaigns");
   const canUseBlogPublishing = hasWorkspaceContext && isFeatureEnabled("blog_publishing");
+  const canUseReelStudio = hasWorkspaceContext && isFeatureEnabled("visual_generation");
 
   return [
     { to: appRoutes.dashboard, label: "Dashboard", shortLabel: "D", icon: navigationIcons.dashboard, visible: canUseDashboard },
     { to: appRoutes.appIdeas, label: "Ideas", shortLabel: "I", icon: navigationIcons.ideas, visible: canUseDashboard },
+    { to: appRoutes.appReelStudio, label: "Reels", shortLabel: "RE", icon: navigationIcons.reels, visible: canUseReelStudio },
     { to: appRoutes.appAssets, label: "Assets", shortLabel: "AS", icon: navigationIcons.assets, visible: canUseDashboard },
     { to: appRoutes.appBrandStudio, label: "Brand", shortLabel: "B", icon: navigationIcons.brand, visible: canUseBrandStudio },
     { to: appRoutes.appPlanner, label: "Planner", shortLabel: "P", icon: navigationIcons.planner, visible: canUsePlanner },
@@ -129,6 +131,7 @@ const pageTitleMap: Record<string, string> = {
   "app-planner": "Planner",
   "app-outreach": "Outreach",
   "app-revenue-agent": "Revenue Agent",
+  "app-reel-studio": "Reel Studio",
   "app-result": "Generated content",
   "dashboard-analytics": "Analytics",
   onboarding: "Onboarding",

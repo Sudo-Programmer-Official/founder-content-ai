@@ -32,6 +32,13 @@ apps/founder-content-ai/utils/*.js
 packages/shared-types/*.js
 packages/shared-types/src/*.js
 
+# Reel Studio local media and smoke-test output
+apps/founder-content-api/.data/
+apps/founder-content-api/reel-smoke/
+apps/reel-renderer/node_modules/
+apps/reel-renderer/build/
+apps/reel-renderer/out/
+
 # Logs
 *.log
 npm-debug.log*
@@ -43,3 +50,6 @@ pnpm-debug.log*
 .DS_Store
 .idea/
 .vscode/
+
+# Renderer-local caches
+apps/reel-renderer/.cache/
