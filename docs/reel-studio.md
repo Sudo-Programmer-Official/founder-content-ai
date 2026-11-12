@@ -91,6 +91,12 @@ Remotion Studio for designing scenes against the sample storyboard: `cd apps/ree
   native Node runtime still needs deployment verification; a Docker worker (e.g. `node:22-bookworm` + Chrome deps)
   remains the safest production path if native rendering cannot launch Chrome.
 - Production must use S3: the local media fallback only works when API and worker share a filesystem.
+- The Reel Worker now fails at startup when it is running as a production/Render service without S3 configured,
+  instead of completing a render that the API cannot later serve.
+- The IAM principal used by the API and Reel worker must be able to read rendered media. At minimum, grant
+  `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/workspaces/*`; add `s3:DeleteObject` if the
+  application should remove old media. `s3:ListBucket` on the bucket is optional and can be restricted to the
+  `workspaces/` prefix. Keep the bucket private; the API uses presigned URLs for browser playback.
 - Fonts load from Google Fonts at render time, so the worker needs outbound internet (it already calls OpenAI).
 - S3 bucket CORS must allow `GET` from the frontend origin for the in-page download button; otherwise it opens the
   file in a new tab.

@@ -23,6 +23,24 @@ export function isReelS3StorageConfigured(): boolean {
   );
 }
 
+function isProductionMediaRuntime(): boolean {
+  const serviceName = process.env.RENDER_SERVICE_NAME?.trim();
+  return process.env.NODE_ENV === "production"
+    || serviceName === "foundercontent-api"
+    || serviceName === "foundercontent-reel-worker";
+}
+
+/** Render services must share S3; their local filesystems are isolated. */
+export function assertReelMediaStorageConfiguredForRuntime(): void {
+  if (isProductionMediaRuntime() && !isReelS3StorageConfigured()) {
+    throw new HttpError(
+      500,
+      "reel_media_storage_not_configured",
+      "Production Reel Studio requires S3_MEDIA_BUCKET, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY on the API and Reel Worker services.",
+    );
+  }
+}
+
 function resolveLocalMediaDir(): string {
   return process.env.REEL_LOCAL_MEDIA_DIR?.trim() || path.join(API_ROOT, ".data", "reel-media");
 }
@@ -67,6 +85,8 @@ function resolveLocalPath(storageKey: string): string {
 }
 
 export async function storeReelMedia(input: { storageKey: string; bytes: Buffer; mimeType: string }): Promise<void> {
+  assertReelMediaStorageConfiguredForRuntime();
+
   if (isReelS3StorageConfigured()) {
     await uploadPostAssetBytesToStorage(input);
     return;
