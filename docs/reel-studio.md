@@ -83,6 +83,7 @@ Remotion Studio for designing scenes against the sample storyboard: `cd apps/ree
 | `REEL_RENDER_CONCURRENCY` | Remotion render concurrency (defaults to `1` for small Render workers; increase only on a larger worker). |
 | `REEL_MEDIA_SIGNING_SECRET` | Signs local-dev media URLs (falls back to `SOCIAL_AUTH_STATE_SECRET`). |
 | `S3_MEDIA_BUCKET`, `AWS_*` | When set, reels and posters are stored in S3 under `<prefix>/<businessId>/reels/<projectId>/`. |
+| `REEL_RENDER_REQUIRES_S3` | Set to `true` on deployed API/worker services so a missing S3 configuration fails fast instead of using isolated local disk. |
 
 ## Deployment notes
 
@@ -91,8 +92,9 @@ Remotion Studio for designing scenes against the sample storyboard: `cd apps/ree
   Reel Studio renders in the same service. A Docker worker (e.g. `node:22-bookworm` + Chrome deps) remains the
   safest production path if Render's native runtime cannot launch Chrome.
 - Production must use S3: the local media fallback only works when API and worker share a filesystem.
-- The Reel Worker now fails at startup when it is running as a production/Render service without S3 configured,
-  instead of completing a render that the API cannot later serve.
+- Set `REEL_RENDER_REQUIRES_S3=true` on both Render services. The Reel Worker and API then fail fast when S3 is
+  missing, instead of completing a render that the API cannot later serve. The worker logs a safe storage diagnostic
+  showing `mode`, bucket, region, and whether the key/secret are present; it never logs credential values.
 - The IAM principal used by the API and Reel worker must be able to read rendered media. At minimum, grant
   `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/workspaces/*`; add `s3:DeleteObject` if the
   application should remove old media. `s3:ListBucket` on the bucket is optional and can be restricted to the

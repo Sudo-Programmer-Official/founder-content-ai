@@ -88,6 +88,8 @@ services:
         sync: false
       - key: S3_MAX_VIDEO_BYTES
         sync: false
+      - key: REEL_RENDER_REQUIRES_S3
+        value: "true"
       - key: SES_CONFIGURATION_SET
         sync: false
       - key: SES_SNS_TOPIC_ARNS
@@ -192,6 +194,8 @@ services:
         sync: false
       - key: S3_MAX_VIDEO_BYTES
         sync: false
+      - key: REEL_RENDER_REQUIRES_S3
+        value: "true"
       - key: SES_CONFIGURATION_SET
         sync: false
       - key: SES_SNS_TOPIC_ARNS

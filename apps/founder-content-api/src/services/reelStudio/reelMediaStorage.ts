@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPostAssetDownloadUrl, uploadPostAssetBytesToStorage } from "../postAssetService.ts";
 import { HttpError } from "../../utils/http.ts";
-import { logWarn } from "../../utils/logger.ts";
+import { logInfo, logWarn } from "../../utils/logger.ts";
 
 /**
  * Rendered reels go to the shared S3 media bucket when it is configured.
@@ -25,11 +25,42 @@ export function isReelS3StorageConfigured(): boolean {
 
 function isProductionMediaRuntime(): boolean {
   const serviceName = process.env.RENDER_SERVICE_NAME?.trim();
-  return process.env.NODE_ENV === "production"
+  const explicitlyRequiresS3 = process.env.REEL_RENDER_REQUIRES_S3?.trim().toLowerCase() === "true";
+
+  return explicitlyRequiresS3
+    || process.env.NODE_ENV === "production"
     || serviceName === "foundercontent-api"
     || serviceName === "foundercontent-reel-worker"
     || serviceName === "foundercontent-worker"
     || serviceName === "founder-content-worker";
+}
+
+/**
+ * Safe diagnostics for startup logs. Never include the access key or secret;
+ * this is only intended to make storage-mode mismatches visible in Render.
+ */
+export function getReelMediaStorageStatus(): {
+  mode: "s3" | "local";
+  requiresS3: boolean;
+  s3Configured: boolean;
+  bucket: string | null;
+  region: string;
+  accessKeyIdPresent: boolean;
+  secretAccessKeyPresent: boolean;
+} {
+  const accessKeyIdPresent = Boolean(process.env.AWS_ACCESS_KEY_ID?.trim());
+  const secretAccessKeyPresent = Boolean(process.env.AWS_SECRET_ACCESS_KEY?.trim());
+  const s3Configured = isReelS3StorageConfigured();
+
+  return {
+    mode: s3Configured ? "s3" : "local",
+    requiresS3: isProductionMediaRuntime(),
+    s3Configured,
+    bucket: process.env.S3_MEDIA_BUCKET?.trim() || null,
+    region: process.env.AWS_REGION?.trim() || "us-east-1",
+    accessKeyIdPresent,
+    secretAccessKeyPresent,
+  };
 }
 
 /** Render services must share S3; their local filesystems are isolated. */
@@ -91,6 +122,11 @@ export async function storeReelMedia(input: { storageKey: string; bytes: Buffer;
 
   if (isReelS3StorageConfigured()) {
     await uploadPostAssetBytesToStorage(input);
+    logInfo("Stored rendered reel media in S3.", {
+      storageKey: input.storageKey,
+      mimeType: input.mimeType,
+      bytes: input.bytes.byteLength,
+    });
     return;
   }
 
@@ -123,6 +159,11 @@ export function createReelMediaUrl(storageKey: string | null | undefined): strin
   if (!storageKey) {
     return undefined;
   }
+
+  // Keep the API from returning a local-disk URL in a deployed environment.
+  // Render's API and worker have separate filesystems, so that URL can never
+  // point to the worker's rendered file.
+  assertReelMediaStorageConfiguredForRuntime();
 
   if (isReelS3StorageConfigured()) {
     return createPostAssetDownloadUrl({ storageKey }, MEDIA_URL_TTL_SECONDS);

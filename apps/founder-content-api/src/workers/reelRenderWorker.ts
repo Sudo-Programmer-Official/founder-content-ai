@@ -1,5 +1,8 @@
 import { processQueuedReelRenderJobs } from "../services/reelStudio/reelRenderService.ts";
-import { assertReelMediaStorageConfiguredForRuntime } from "../services/reelStudio/reelMediaStorage.ts";
+import {
+  assertReelMediaStorageConfiguredForRuntime,
+  getReelMediaStorageStatus,
+} from "../services/reelStudio/reelMediaStorage.ts";
 import { recordWorkerFailure, recordWorkerHeartbeat } from "../services/workerRuntimeService.ts";
 import { toErrorContext } from "../utils/http.ts";
 import { logError, logInfo } from "../utils/logger.ts";
@@ -39,6 +42,7 @@ export async function runReelRenderWorker(): Promise<void> {
     || process.env.RENDER_SERVICE_NAME?.trim()
     || "reel-render-worker";
 
+  logInfo("Reel render media storage detected.", getReelMediaStorageStatus());
   assertReelMediaStorageConfiguredForRuntime();
 
   logInfo("Reel render worker started.", { pollIntervalMs, runOnce });
