@@ -93,8 +93,8 @@ Notes:
 - use the backend API host for the Google Calendar callback. Do not point Google OAuth back to the frontend app host.
 - `YOUTUBE_REDIRECT_URI` must exactly match a Google OAuth authorized redirect URI in the Google Cloud console.
 - `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` must be configured on the API service; YouTube publishing is only enabled after human review.
-- `foundercontent-reel-worker` must be deployed for Reel Studio render jobs to finish.
-- `S3_MEDIA_BUCKET` and the AWS credentials must be configured on both the API and Reel worker services. The worker and API do not share a filesystem in production, so the local `.data` media fallback is development-only.
+- The existing `foundercontent-worker` must use `npm run worker:all`; it runs the shared queues and Reel Studio renders together.
+- `S3_MEDIA_BUCKET` and the AWS credentials must be configured on both the API and existing worker services. The worker and API do not share a filesystem in production, so the local `.data` media fallback is development-only.
 
 ## Health Check
 

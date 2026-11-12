@@ -35,7 +35,9 @@ process.on("SIGINT", () => {
 export async function runReelRenderWorker(): Promise<void> {
   const pollIntervalMs = resolvePollIntervalMs();
   const runOnce = process.env.REEL_RENDER_WORKER_RUN_ONCE === "true";
-  const serviceName = process.env.RENDER_SERVICE_NAME?.trim() || "reel-render-worker";
+  const serviceName = process.env.REEL_RENDER_WORKER_SERVICE_NAME?.trim()
+    || process.env.RENDER_SERVICE_NAME?.trim()
+    || "reel-render-worker";
 
   assertReelMediaStorageConfiguredForRuntime();
 
@@ -77,7 +79,9 @@ export async function runReelRenderWorker(): Promise<void> {
 
 if (process.argv[1]?.includes("reelRenderWorker.ts")) {
   runReelRenderWorker().catch((error) => {
-    const serviceName = process.env.RENDER_SERVICE_NAME?.trim() || "reel-render-worker";
+    const serviceName = process.env.REEL_RENDER_WORKER_SERVICE_NAME?.trim()
+      || process.env.RENDER_SERVICE_NAME?.trim()
+      || "reel-render-worker";
     logError("Reel render worker failed.", toErrorContext(error));
     void recordWorkerFailure({
       workerKey: serviceName,

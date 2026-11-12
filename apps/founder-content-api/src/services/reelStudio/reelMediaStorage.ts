@@ -27,7 +27,9 @@ function isProductionMediaRuntime(): boolean {
   const serviceName = process.env.RENDER_SERVICE_NAME?.trim();
   return process.env.NODE_ENV === "production"
     || serviceName === "foundercontent-api"
-    || serviceName === "foundercontent-reel-worker";
+    || serviceName === "foundercontent-reel-worker"
+    || serviceName === "foundercontent-worker"
+    || serviceName === "founder-content-worker";
 }
 
 /** Render services must share S3; their local filesystems are isolated. */

@@ -86,10 +86,10 @@ Remotion Studio for designing scenes against the sample storyboard: `cd apps/ree
 
 ## Deployment notes
 
-- The render worker needs `apps/reel-renderer` installed next to the API (`npm install` in both) and the system
-  libraries Chrome Headless Shell needs. The `foundercontent-reel-worker` is declared in `render.yaml`, but Render's
-  native Node runtime still needs deployment verification; a Docker worker (e.g. `node:22-bookworm` + Chrome deps)
-  remains the safest production path if native rendering cannot launch Chrome.
+- The existing Render worker needs `apps/reel-renderer` installed next to the API (`npm install` in both) and the
+  system libraries Chrome Headless Shell needs. Its command is `npm run worker:all`, which runs shared queues and
+  Reel Studio renders in the same service. A Docker worker (e.g. `node:22-bookworm` + Chrome deps) remains the
+  safest production path if Render's native runtime cannot launch Chrome.
 - Production must use S3: the local media fallback only works when API and worker share a filesystem.
 - The Reel Worker now fails at startup when it is running as a production/Render service without S3 configured,
   instead of completing a render that the API cannot later serve.

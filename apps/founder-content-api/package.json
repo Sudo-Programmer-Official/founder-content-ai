@@ -29,6 +29,7 @@
     "smoke:scheduler": "tsx scripts/schedulerSmoke.ts",
     "smoke:reel": "tsx --env-file=.env scripts/reelSmoke.ts",
     "worker": "tsx src/workers/appWorker.ts",
+    "worker:all": "tsx src/workers/allWorker.ts",
     "worker:scheduled-posts": "tsx src/workers/scheduledPostWorker.ts",
     "worker:email-campaigns": "tsx src/workers/emailCampaignWorker.ts",
     "worker:email-deliverability": "tsx src/workers/emailDeliverabilityWorker.ts",

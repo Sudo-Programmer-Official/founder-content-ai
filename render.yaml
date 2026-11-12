@@ -111,8 +111,8 @@ services:
     name: foundercontent-worker
     runtime: node
     rootDir: apps/founder-content-api
-    buildCommand: npm install
-    startCommand: npm run worker
+    buildCommand: npm install && cd ../reel-renderer && npm install
+    startCommand: npm run worker:all
     envVars:
       - key: NODE_VERSION
         value: 22
@@ -136,6 +136,8 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: OPENAI_TTS_MODEL
+        value: gpt-4o-mini-tts
       - key: OPENAI_MODEL
         sync: false
       - key: OPENAI_TRANSCRIBE_MODEL
@@ -236,38 +238,8 @@ services:
         value: 2
       - key: GROWTH_AUTOMATION_WORKER_BATCH_SIZE
         value: 25
-
-  - type: worker
-    name: foundercontent-reel-worker
-    runtime: node
-    rootDir: apps/founder-content-api
-    buildCommand: npm install && cd ../reel-renderer && npm install
-    startCommand: npm run worker:reel-renders
-    envVars:
-      - key: NODE_VERSION
-        value: 22
-      - key: RENDER_SERVICE_NAME
-        value: foundercontent-reel-worker
-      - key: DATABASE_URL
-        sync: false
-      - key: DATABASE_SSL_MODE
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_TTS_MODEL
-        value: gpt-4o-mini-tts
-      - key: AWS_REGION
-        sync: false
-      - key: AWS_ACCESS_KEY_ID
-        sync: false
-      - key: AWS_SECRET_ACCESS_KEY
-        sync: false
-      - key: AWS_SESSION_TOKEN
-        sync: false
-      - key: S3_MEDIA_BUCKET
-        sync: false
-      - key: S3_MEDIA_PREFIX
-        value: workspaces
+      - key: REEL_RENDER_WORKER_SERVICE_NAME
+        value: foundercontent-worker:reel-renders
       - key: REEL_RENDERER_DIR
         value: ../reel-renderer
       - key: REEL_RENDER_CONCURRENCY
