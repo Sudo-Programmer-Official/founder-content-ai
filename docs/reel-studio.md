@@ -80,7 +80,7 @@ Remotion Studio for designing scenes against the sample storyboard: `cd apps/ree
 | `REEL_STORYBOARD_MODEL` | Model for the director (falls back to `OPENAI_MODEL`). A stronger model than `gpt-4o-mini` noticeably improves scripts. |
 | `OPENAI_TTS_MODEL` | Defaults to `gpt-4o-mini-tts` (supports accent/tone instructions), falls back to `tts-1`. |
 | `REEL_RENDERER_DIR` | Path to `apps/reel-renderer` if not the sibling folder. |
-| `REEL_RENDER_CONCURRENCY` | Remotion render concurrency (defaults to Remotion's choice). |
+| `REEL_RENDER_CONCURRENCY` | Remotion render concurrency (defaults to `1` for small Render workers; increase only on a larger worker). |
 | `REEL_MEDIA_SIGNING_SECRET` | Signs local-dev media URLs (falls back to `SOCIAL_AUTH_STATE_SECRET`). |
 | `S3_MEDIA_BUCKET`, `AWS_*` | When set, reels and posters are stored in S3 under `<prefix>/<businessId>/reels/<projectId>/`. |
 

@@ -23,7 +23,10 @@ function readArg(name: string): string | undefined {
 
 function resolveConcurrency(): number | null {
   const value = Number(process.env.REEL_RENDER_CONCURRENCY);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+  // A 9:16 1080x1920 render is memory-heavy. Render one frame at a time by
+  // default so the shared Render worker stays within its memory limit. Larger
+  // workers can opt into more parallelism explicitly through the environment.
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
 }
 
 async function main(): Promise<void> {

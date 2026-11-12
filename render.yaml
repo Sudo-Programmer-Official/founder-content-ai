@@ -243,7 +243,7 @@ services:
       - key: REEL_RENDERER_DIR
         value: ../reel-renderer
       - key: REEL_RENDER_CONCURRENCY
-        sync: false
+        value: "1"
       - key: REEL_RENDER_WORKER_POLL_INTERVAL_MS
         value: 4000
       - key: REEL_MEDIA_SIGNING_SECRET
