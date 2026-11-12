@@ -8,6 +8,7 @@ import type {
   ReelYouTubePublishResponse,
   ReelWorkflowActionRequest,
 } from "../../../../packages/shared-types/index.ts";
+import path from "node:path";
 import type { Request, Response } from "express";
 import { ensureCurrentUser } from "../services/authBusinessService.ts";
 import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
@@ -338,7 +339,14 @@ export async function deleteReelProjectController(
 export function getLocalReelMediaController(request: Request, response: Response<ApiError>): void {
   try {
     const filePath = resolveSignedLocalReelMedia(request.query);
-    response.sendFile(filePath, { headers: { "Cache-Control": "private, max-age=3600" } }, (error) => {
+    const extension = path.extname(filePath).toLowerCase();
+    const contentType = extension === ".mp4" ? "video/mp4" : extension === ".jpg" || extension === ".jpeg" ? "image/jpeg" : undefined;
+    const headers = {
+      "Cache-Control": "private, max-age=3600",
+      "Content-Disposition": "inline",
+      ...(contentType ? { "Content-Type": contentType } : {}),
+    };
+    response.sendFile(filePath, { headers }, (error) => {
       if (error && !response.headersSent) {
         sendApiError(response, 404, "reel_media_not_found", "Media file not found.");
       }

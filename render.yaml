@@ -99,7 +99,7 @@ services:
       - key: SYSTEM_FROM_NAME
         sync: false
       - key: API_PUBLIC_BASE_URL
-        sync: false
+        value: https://api.foundercontent.ai/api
       - key: SUPER_ADMIN_EMAILS
         sync: false
       - key: ALLOW_VISUAL_SVG_FALLBACK

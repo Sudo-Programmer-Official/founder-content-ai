@@ -74,6 +74,7 @@ Recommended production values:
 
 - `OPENAI_MODEL=gpt-4o-mini`
 - `FRONTEND_ORIGIN=https://foundercontent.ai,https://www.foundercontent.ai,https://founder-content-ai.vercel.app`
+- `API_PUBLIC_BASE_URL=https://api.foundercontent.ai/api`
 - `META_REDIRECT_URI=https://api.foundercontent.ai/api/social-auth/meta/callback`
 - `GOOGLE_CALENDAR_REDIRECT_URI=https://api.foundercontent.ai/api/google-calendar/callback`
 - `YOUTUBE_REDIRECT_URI=https://api.foundercontent.ai/api/reel-studio/youtube/callback`
@@ -93,6 +94,7 @@ Notes:
 - `YOUTUBE_REDIRECT_URI` must exactly match a Google OAuth authorized redirect URI in the Google Cloud console.
 - `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` must be configured on the API service; YouTube publishing is only enabled after human review.
 - `foundercontent-reel-worker` must be deployed for Reel Studio render jobs to finish.
+- `S3_MEDIA_BUCKET` and the AWS credentials must be configured on both the API and Reel worker services. The worker and API do not share a filesystem in production, so the local `.data` media fallback is development-only.
 
 ## Health Check
 
