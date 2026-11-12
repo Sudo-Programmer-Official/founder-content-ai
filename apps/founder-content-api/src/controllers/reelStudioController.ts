@@ -9,10 +9,16 @@ import type {
   ReelWorkflowActionRequest,
 } from "../../../../packages/shared-types/index.ts";
 import path from "node:path";
+import { Readable } from "node:stream";
 import type { Request, Response } from "express";
 import { ensureCurrentUser } from "../services/authBusinessService.ts";
 import { enforceWorkspaceReadAccess, enforceWorkspaceWriteAccess } from "../services/governanceService.ts";
-import { resolveSignedLocalReelMedia } from "../services/reelStudio/reelMediaStorage.ts";
+import {
+  fetchReelMediaFromStorage,
+  isReelS3StorageConfigured,
+  resolveLocalReelMediaPath,
+  resolveSignedReelMediaStorageKey,
+} from "../services/reelStudio/reelMediaStorage.ts";
 import {
   createReelYouTubeAuthorizationUrl,
   getReelYouTubeConnection,
@@ -335,10 +341,37 @@ export async function deleteReelProjectController(
   );
 }
 
-/** Streams locally stored reel media (development fallback when S3 is not configured). */
-export function getLocalReelMediaController(request: Request, response: Response<ApiError>): void {
+/** Streams signed reel media from private S3 or the local development fallback. */
+export async function getReelMediaController(request: Request, response: Response<ApiError>): Promise<void> {
   try {
-    const filePath = resolveSignedLocalReelMedia(request.query);
+    const storageKey = resolveSignedReelMediaStorageKey(request.query);
+
+    if (isReelS3StorageConfigured()) {
+      const range = typeof request.headers.range === "string" ? request.headers.range : undefined;
+      const upstream = await fetchReelMediaFromStorage({ storageKey, range });
+      const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+      const contentLength = upstream.headers.get("content-length");
+      const contentRange = upstream.headers.get("content-range");
+
+      response.status(upstream.status).set({
+        "Cache-Control": "private, max-age=3600",
+        "Content-Disposition": "inline",
+        "Content-Type": contentType,
+        "Accept-Ranges": "bytes",
+        ...(contentLength ? { "Content-Length": contentLength } : {}),
+        ...(contentRange ? { "Content-Range": contentRange } : {}),
+      });
+
+      if (!upstream.body) {
+        response.end();
+        return;
+      }
+
+      Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>).pipe(response);
+      return;
+    }
+
+    const filePath = resolveLocalReelMediaPath(storageKey);
     const extension = path.extname(filePath).toLowerCase();
     const contentType = extension === ".mp4" ? "video/mp4" : extension === ".jpg" || extension === ".jpeg" ? "image/jpeg" : undefined;
     const headers = {
@@ -353,7 +386,7 @@ export function getLocalReelMediaController(request: Request, response: Response
     });
   } catch (error) {
     handleApiError(response, error, {
-      statusCode: 400,
+      statusCode: 502,
       code: "reel_media_invalid",
       message: "Unable to load this media file.",
       logMessage: "Rejected reel media request.",

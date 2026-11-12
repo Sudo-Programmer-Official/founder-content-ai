@@ -95,6 +95,7 @@ Notes:
 - `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` must be configured on the API service; YouTube publishing is only enabled after human review.
 - The existing `foundercontent-worker` must use `npm run worker:all`; it runs the shared queues and Reel Studio renders together.
 - `S3_MEDIA_BUCKET` and the AWS credentials must be configured on both the API and existing worker services. The worker and API do not share a filesystem in production, so the local `.data` media fallback is development-only.
+- Reel Studio preview and download URLs are signed API URLs. The API streams private S3 media server-side, including byte-range requests, so the browser does not need direct S3 access or S3 CORS for rendered reels.
 
 ## Health Check
 

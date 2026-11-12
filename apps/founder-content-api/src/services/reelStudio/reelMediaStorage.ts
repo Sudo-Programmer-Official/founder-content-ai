@@ -140,11 +140,7 @@ export async function readReelMedia(storageKey: string): Promise<Buffer> {
     return fs.readFile(resolveLocalPath(storageKey));
   }
 
-  const url = createReelMediaUrl(storageKey);
-  if (!url) {
-    throw new HttpError(404, "reel_media_not_found", "Reel media is not available.");
-  }
-  const response = await fetch(url);
+  const response = await fetchReelMediaFromStorage({ storageKey });
   if (!response.ok) {
     throw new HttpError(502, "reel_media_read_failed", "Unable to read the rendered reel from storage.");
   }
@@ -160,14 +156,9 @@ export function createReelMediaUrl(storageKey: string | null | undefined): strin
     return undefined;
   }
 
-  // Keep the API from returning a local-disk URL in a deployed environment.
-  // Render's API and worker have separate filesystems, so that URL can never
-  // point to the worker's rendered file.
+  // Always return an API URL. In production the API streams the private S3
+  // object; in local development it streams the local fallback file.
   assertReelMediaStorageConfiguredForRuntime();
-
-  if (isReelS3StorageConfigured()) {
-    return createPostAssetDownloadUrl({ storageKey }, MEDIA_URL_TTL_SECONDS);
-  }
 
   const expiresAt = Math.floor(Date.now() / 1000) + MEDIA_URL_TTL_SECONDS;
   const query = new URLSearchParams({
@@ -178,8 +169,8 @@ export function createReelMediaUrl(storageKey: string | null | undefined): strin
   return `${resolveLocalMediaBaseUrl()}/reel-studio/media?${query.toString()}`;
 }
 
-/** Validates a signed local media URL and returns the file path to stream. */
-export function resolveSignedLocalReelMedia(query: { key?: unknown; exp?: unknown; sig?: unknown }): string {
+/** Validates a signed media URL and returns the storage key to stream. */
+export function resolveSignedReelMediaStorageKey(query: { key?: unknown; exp?: unknown; sig?: unknown }): string {
   const storageKey = typeof query.key === "string" ? query.key : "";
   const expiresAt = Number(query.exp);
   const signature = typeof query.sig === "string" ? query.sig : "";
@@ -199,5 +190,43 @@ export function resolveSignedLocalReelMedia(query: { key?: unknown; exp?: unknow
     throw new HttpError(403, "invalid_media_signature", "Media URL signature is invalid.");
   }
 
+  return storageKey;
+}
+
+/** Validates a signed local media URL and returns the file path to stream. */
+export function resolveSignedLocalReelMedia(query: { key?: unknown; exp?: unknown; sig?: unknown }): string {
+  return resolveLocalPath(resolveSignedReelMediaStorageKey(query));
+}
+
+/**
+ * Reads private S3 media on the server. The browser-facing URL is served by
+ * the API so video range requests do not depend on S3 CORS or browser support
+ * for the generated S3 signature.
+ */
+export async function fetchReelMediaFromStorage(input: {
+  storageKey: string;
+  range?: string;
+}): Promise<Response> {
+  if (!isReelS3StorageConfigured()) {
+    throw new HttpError(500, "media_storage_not_configured", "S3 media storage is not configured.");
+  }
+
+  const url = createPostAssetDownloadUrl({ storageKey: input.storageKey }, MEDIA_URL_TTL_SECONDS);
+  const response = await fetch(url, {
+    headers: input.range ? { Range: input.range } : undefined,
+  });
+
+  if (!response.ok) {
+    logWarn("S3 reel media read failed.", {
+      storageKey: input.storageKey,
+      statusCode: response.status,
+      requestId: response.headers.get("x-amz-request-id") || undefined,
+    });
+  }
+
+  return response;
+}
+
+export function resolveLocalReelMediaPath(storageKey: string): string {
   return resolveLocalPath(storageKey);
 }
