@@ -22,6 +22,14 @@ export interface SynthesizeSpeechResult {
 const OPENAI_AUDIO_SPEECH_URL = "https://api.openai.com/v1/audio/speech";
 export const SPEECH_PCM_SAMPLE_RATE = 24000;
 const PCM_BYTES_PER_SAMPLE = 2;
+const DEFAULT_SPEECH_REQUEST_TIMEOUT_MS = 60_000;
+
+function resolveSpeechRequestTimeoutMs(): number {
+  const configured = Number(process.env.OPENAI_TTS_REQUEST_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.min(Math.floor(configured), 300_000)
+    : DEFAULT_SPEECH_REQUEST_TIMEOUT_MS;
+}
 
 function resolveSpeechModels(): string[] {
   const configured = [process.env.OPENAI_TTS_MODEL ?? "", "gpt-4o-mini-tts", "tts-1"]
@@ -46,20 +54,29 @@ export async function synthesizeSpeech(options: SynthesizeSpeechOptions): Promis
 
   for (const model of resolveSpeechModels()) {
     const supportsInstructions = !model.startsWith("tts-1");
-    const response = await fetch(OPENAI_AUDIO_SPEECH_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        voice: options.voice,
-        input: options.text,
-        response_format: "pcm",
-        ...(supportsInstructions && options.instructions ? { instructions: options.instructions } : {}),
-      }),
-    });
+    let response: Response;
+
+    try {
+      response = await fetch(OPENAI_AUDIO_SPEECH_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          voice: options.voice,
+          input: options.text,
+          response_format: "pcm",
+          ...(supportsInstructions && options.instructions ? { instructions: options.instructions } : {}),
+        }),
+        signal: AbortSignal.timeout(resolveSpeechRequestTimeoutMs()),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "request failed";
+      lastError = new Error(`Speech synthesis request failed for model ${model}: ${message}`);
+      continue;
+    }
 
     if (!response.ok) {
       const payload = (await response.json().catch(() => ({}))) as OpenAISpeechErrorResponse;

@@ -79,6 +79,7 @@ Remotion Studio for designing scenes against the sample storyboard: `cd apps/ree
 | --- | --- |
 | `REEL_STORYBOARD_MODEL` | Model for the director (falls back to `OPENAI_MODEL`). A stronger model than `gpt-4o-mini` noticeably improves scripts. |
 | `OPENAI_TTS_MODEL` | Defaults to `gpt-4o-mini-tts` (supports accent/tone instructions), falls back to `tts-1`. |
+| `OPENAI_TTS_REQUEST_TIMEOUT_MS` | Per-model TTS request timeout; defaults to `60000` so a stalled voice request cannot hold a render forever. |
 | `REEL_RENDERER_DIR` | Path to `apps/reel-renderer` if not the sibling folder. |
 | `REEL_RENDER_CONCURRENCY` | Remotion render concurrency (defaults to `1` for small Render workers; increase only on a larger worker). |
 | `REEL_MEDIA_SIGNING_SECRET` | Signs local-dev media URLs (falls back to `SOCIAL_AUTH_STATE_SECRET`). |
@@ -98,10 +99,10 @@ Remotion Studio for designing scenes against the sample storyboard: `cd apps/ree
 - The IAM principal used by the API and Reel worker must be able to read rendered media. At minimum, grant
   `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::<bucket>/workspaces/*`; add `s3:DeleteObject` if the
   application should remove old media. `s3:ListBucket` on the bucket is optional and can be restricted to the
-  `workspaces/` prefix. Keep the bucket private; the API uses presigned URLs for browser playback.
+  `workspaces/` prefix. Keep the bucket private; the API streams Reel Studio media through signed URLs.
 - Fonts load from Google Fonts at render time, so the worker needs outbound internet (it already calls OpenAI).
-- S3 bucket CORS must allow `GET` from the frontend origin for the in-page download button; otherwise it opens the
-  file in a new tab.
+- Reel preview/download traffic is proxied through the API with signed URLs and byte-range support; S3 CORS is not
+  required for Reel Studio playback.
 - Remotion is free for individuals and small companies; check the current Remotion license before charging customers.
 
 ## Known limits (v1)

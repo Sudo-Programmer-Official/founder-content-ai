@@ -105,6 +105,11 @@ async function synthesizeNarration(
   let ttsModel = "";
 
   for (const [index, scene] of scenes.entries()) {
+    logInfo("Synthesizing reel scene narration.", {
+      projectId: project.id,
+      sceneIndex: index + 1,
+      sceneCount: scenes.length,
+    });
     const speech = await synthesizeSpeech({
       text: scene.narration,
       voice: project.settings.voice,
@@ -112,6 +117,13 @@ async function synthesizeNarration(
     });
     clips.push({ pcm: speech.pcm, durationMs: speech.durationMs });
     ttsModel = speech.model;
+    logInfo("Synthesized reel scene narration.", {
+      projectId: project.id,
+      sceneIndex: index + 1,
+      sceneCount: scenes.length,
+      model: speech.model,
+      durationMs: speech.durationMs,
+    });
     await onProgress(Math.round(((index + 1) / scenes.length) * 100));
   }
 
@@ -327,6 +339,9 @@ export async function processQueuedReelRenderJobs(): Promise<{ jobsClaimed: numb
     types: [REEL_RENDER_JOB_TYPE],
     batchSize: 1,
     lockedBy: `reel-render:${process.pid}`,
+    // A crashed/stalled render should become retryable before the default
+    // queue lease expires. Normal renders finish well within this window.
+    staleAfterMinutes: 10,
   });
   let jobsCompleted = 0;
   let jobsFailed = 0;

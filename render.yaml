@@ -30,6 +30,8 @@ services:
         sync: false
       - key: OPENAI_MODEL
         sync: false
+      - key: OPENAI_TTS_REQUEST_TIMEOUT_MS
+        value: "60000"
       - key: OPENAI_TRANSCRIBE_MODEL
         sync: false
       - key: OPENAI_TRANSCRIBE_FALLBACKS
@@ -140,6 +142,8 @@ services:
         sync: false
       - key: OPENAI_TTS_MODEL
         value: gpt-4o-mini-tts
+      - key: OPENAI_TTS_REQUEST_TIMEOUT_MS
+        value: "60000"
       - key: OPENAI_MODEL
         sync: false
       - key: OPENAI_TRANSCRIBE_MODEL
