@@ -9,6 +9,13 @@ const sections = [
     ],
   },
   {
+    title: "Operator information",
+    points: [
+      "Founder Content AI is a product operated by Sudo Programmer, Inc., a Delaware C Corporation.",
+      "Sudo Programmer, Inc. business address: 7350 Mcardle Road 159, Corpus Christi, TX 78412, US.",
+    ],
+  },
+  {
     title: "Accounts and workspaces",
     points: [
       "You must provide accurate account information and keep your login credentials secure.",
@@ -51,7 +58,7 @@ const sections = [
     title: "Changes and contact",
     points: [
       "We may update these terms from time to time. Continued use of the service after an update means you accept the revised terms.",
-      "Questions about these terms can be sent to hello@foundercontent.ai.",
+      "Questions about these terms can be sent to hello@sudoprogrammer.com. Product support is also available at hello@foundercontent.ai.",
     ],
   },
 ] as const;
@@ -65,7 +72,7 @@ const sections = [
       <p class="legal-summary">
         By using Founder Content, you agree to these terms for account access, workspace usage, billing, and connected platform publishing.
       </p>
-      <p class="legal-updated">Last updated: April 2, 2026</p>
+      <p class="legal-updated">Last updated: November 18, 2026</p>
     </section>
 
     <section v-for="section in sections" :key="section.title" class="legal-section">

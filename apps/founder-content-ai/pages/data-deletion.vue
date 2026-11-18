@@ -4,15 +4,15 @@
       <p class="legal-eyebrow">Data Deletion</p>
       <h1>How to request deletion of your Founder Content account, workspace data, or connected platform data.</h1>
       <p class="legal-summary">
-        Founder Content handles deletion requests manually right now so we can verify scope and prevent accidental deletion of the wrong workspace or connected account.
+        Founder Content handles deletion requests manually right now so we can verify scope and prevent accidental deletion of the wrong workspace or connected account. Founder Content AI is operated by Sudo Programmer, Inc., a Delaware C Corporation, at 7350 Mcardle Road 159, Corpus Christi, TX 78412, US.
       </p>
-      <p class="legal-updated">Last updated: April 2, 2026</p>
+      <p class="legal-updated">Last updated: November 18, 2026</p>
     </section>
 
     <section class="legal-section">
       <h2>How to submit a deletion request</h2>
       <ol>
-        <li>Email <a href="mailto:hello@foundercontent.ai">hello@foundercontent.ai</a> from the account you use in Founder Content.</li>
+        <li>Email <a href="mailto:hello@sudoprogrammer.com">hello@sudoprogrammer.com</a> from the account you use in Founder Content. Product support is also available at <a href="mailto:hello@foundercontent.ai">hello@foundercontent.ai</a>.</li>
         <li>Use the subject line <strong>Data Deletion Request</strong>.</li>
         <li>Include your account email, workspace name, and what you want deleted.</li>
       </ol>
