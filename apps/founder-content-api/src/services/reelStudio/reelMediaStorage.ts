@@ -17,10 +17,32 @@ const API_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const MEDIA_URL_TTL_SECONDS = 6 * 60 * 60;
 let hasWarnedAboutSigningSecret = false;
 
-export function isReelS3StorageConfigured(): boolean {
+type ReelMediaStorageMode = "auto" | "local" | "s3";
+
+function resolveConfiguredStorageMode(): ReelMediaStorageMode {
+  const configured = process.env.REEL_MEDIA_STORAGE_MODE?.trim().toLowerCase();
+
+  if (configured === "local" || configured === "s3") {
+    return configured;
+  }
+
+  return "auto";
+}
+
+function hasS3MediaCredentials(): boolean {
   return Boolean(
     process.env.S3_MEDIA_BUCKET?.trim() && process.env.AWS_ACCESS_KEY_ID?.trim() && process.env.AWS_SECRET_ACCESS_KEY?.trim(),
   );
+}
+
+export function isReelS3StorageConfigured(): boolean {
+  const configuredMode = resolveConfiguredStorageMode();
+
+  if (configuredMode === "local") {
+    return false;
+  }
+
+  return hasS3MediaCredentials();
 }
 
 function isProductionMediaRuntime(): boolean {
@@ -41,6 +63,7 @@ function isProductionMediaRuntime(): boolean {
  */
 export function getReelMediaStorageStatus(): {
   mode: "s3" | "local";
+  configuredMode: ReelMediaStorageMode;
   requiresS3: boolean;
   s3Configured: boolean;
   bucket: string | null;
@@ -54,6 +77,7 @@ export function getReelMediaStorageStatus(): {
 
   return {
     mode: s3Configured ? "s3" : "local",
+    configuredMode: resolveConfiguredStorageMode(),
     requiresS3: isProductionMediaRuntime(),
     s3Configured,
     bucket: process.env.S3_MEDIA_BUCKET?.trim() || null,
@@ -75,7 +99,10 @@ export function assertReelMediaStorageConfiguredForRuntime(): void {
 }
 
 function resolveLocalMediaDir(): string {
-  return process.env.REEL_LOCAL_MEDIA_DIR?.trim() || path.join(API_ROOT, ".data", "reel-media");
+  const configured = process.env.REEL_LOCAL_MEDIA_DIR?.trim();
+  return configured
+    ? (path.isAbsolute(configured) ? configured : path.resolve(API_ROOT, configured))
+    : path.join(API_ROOT, ".data", "reel-media");
 }
 
 /** Local media lives on this machine's disk, so links default to this API process rather than the public host. */

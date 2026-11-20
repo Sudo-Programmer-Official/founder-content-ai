@@ -2,6 +2,7 @@ import express from "express";
 import {
   getContentPlanController,
   getContentBatchController,
+  patchContentVariant,
   postApproveContentPlan,
   postGenerateContentPlan,
   postConfirmContentBatch,
@@ -13,6 +14,7 @@ export const contentOrchestrationRoute = express.Router();
 
 contentOrchestrationRoute.post("/api/content/batches/generate", requireAuth(), postGenerateContentBatch);
 contentOrchestrationRoute.get("/api/content/batches/:batchId", requireAuth(), getContentBatchController);
+contentOrchestrationRoute.patch("/api/content/variants/:variantId", requireAuth(), patchContentVariant);
 contentOrchestrationRoute.post("/api/content/batches/:batchId/confirm", requireAuth(), postConfirmContentBatch);
 contentOrchestrationRoute.post("/api/content/plan", requireAuth(), postGenerateContentPlan);
 contentOrchestrationRoute.get("/api/content/plan/:batchId", requireAuth(), getContentPlanController);

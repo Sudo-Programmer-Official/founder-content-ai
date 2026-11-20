@@ -26,6 +26,26 @@ services:
         sync: false
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
         sync: false
+      - key: MCP_MODE
+        value: disabled
+      - key: MCP_RESOURCE_URL
+        value: https://api.foundercontent.ai/mcp
+      - key: MCP_ISSUER_URL
+        value: https://dev-7qgrx7dzi24vtcvm.us.auth0.com/
+      - key: MCP_AUTHORIZATION_ENDPOINT
+        value: https://dev-7qgrx7dzi24vtcvm.us.auth0.com/authorize
+      - key: MCP_TOKEN_ENDPOINT
+        value: https://dev-7qgrx7dzi24vtcvm.us.auth0.com/oauth/token
+      - key: MCP_REGISTRATION_ENDPOINT
+        sync: false
+      - key: MCP_JWKS_URI
+        value: https://dev-7qgrx7dzi24vtcvm.us.auth0.com/.well-known/jwks.json
+      - key: MCP_AUDIENCE
+        value: https://api.foundercontent.ai/mcp
+      - key: MCP_USER_SUBJECT_CLAIM
+        value: sub
+      - key: MCP_READ_SCOPE
+        value: mcp:read
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL

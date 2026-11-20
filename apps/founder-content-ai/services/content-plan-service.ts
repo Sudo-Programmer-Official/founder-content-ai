@@ -4,8 +4,10 @@ import type {
   GenerateContentPlanRequest,
   GenerateContentPlanResponse,
   GetContentPlanResponse,
+  UpdateContentVariantRequest,
+  UpdateContentVariantResponse,
 } from "../../../packages/shared-types";
-import { apiGet, apiPost } from "./api-client";
+import { apiGet, apiPatch, apiPost } from "./api-client";
 
 export async function requestGenerateContentPlan(
   input: GenerateContentPlanRequest,
@@ -50,6 +52,15 @@ export async function requestApproveContentPlan(
 ): Promise<ApproveContentPlanResponse> {
   return apiPost<ApproveContentPlanRequest, ApproveContentPlanResponse>(
     `/content/plan/${encodeURIComponent(batchId)}/approve`,
+    input,
+  );
+}
+
+export async function requestUpdateContentVariant(
+  input: UpdateContentVariantRequest,
+): Promise<UpdateContentVariantResponse> {
+  return apiPatch<UpdateContentVariantRequest, UpdateContentVariantResponse>(
+    `/content/variants/${encodeURIComponent(input.variantId)}`,
     input,
   );
 }

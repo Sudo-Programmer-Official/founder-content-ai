@@ -12,12 +12,14 @@ import type {
   GetContentBatchResponse,
   SocialContentPlanDuration,
   SocialContentPlanPlatform,
+  UpdateContentVariantResponse,
 } from "../../../../packages/shared-types/index.ts";
 import type { Request, Response } from "express";
 import {
   confirmContentBatch,
   generateContentBatch,
   getContentBatch,
+  updateContentVariant,
 } from "../services/contentOrchestrationService.ts";
 import {
   approveSocialContentPlan,
@@ -152,6 +154,45 @@ export async function postConfirmContentBatch(
       code: "content_batch_confirm_failed",
       message: "Unable to confirm content batch.",
       logMessage: "Failed to confirm content batch.",
+    });
+  }
+}
+
+export async function patchContentVariant(
+  request: Request<
+    { variantId: string },
+    UpdateContentVariantResponse | ApiError,
+    { businessId?: string; title?: string; text?: string }
+  >,
+  response: Response<UpdateContentVariantResponse | ApiError>,
+): Promise<void> {
+  if (!request.auth) {
+    sendApiError(response, 401, "auth_required", "Authentication is required.");
+    return;
+  }
+
+  const businessId = request.body?.businessId?.trim();
+  const variantId = request.params.variantId?.trim();
+  const text = request.body?.text?.trim();
+
+  if (!businessId || !variantId || !text) {
+    sendApiError(response, 400, "bad_request", "businessId, variantId, and text are required.");
+    return;
+  }
+
+  try {
+    response.json(await updateContentVariant(request.auth, {
+      businessId,
+      variantId,
+      title: request.body?.title,
+      text,
+    }));
+  } catch (error) {
+    handleApiError(response, error, {
+      statusCode: 500,
+      code: "content_variant_update_failed",
+      message: "Unable to update content variant.",
+      logMessage: "Failed to update content variant.",
     });
   }
 }

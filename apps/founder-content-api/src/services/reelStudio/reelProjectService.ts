@@ -3,6 +3,8 @@ import {
   REEL_AUDIENCES,
   REEL_DURATIONS,
   REEL_LANGUAGES,
+  REEL_VIDEO_PROVIDERS,
+  REEL_VIDEO_QUALITIES,
   REEL_VISUAL_STYLES,
   REEL_VOICES,
   type ReelProject,
@@ -20,7 +22,23 @@ import { createReelMediaUrl } from "./reelMediaStorage.ts";
 import { generateReelStoryboard, normalizeStoryboard, regenerateReelScene } from "./reelStoryboardService.ts";
 
 export const REEL_RENDER_JOB_TYPE = "reel_render";
-const MAX_PROMPT_CHARS = 2000;
+export const REEL_RENDER_LOCAL_JOB_TYPE = "reel_render_local";
+// Long-form founder briefs and future YouTube outlines should survive the handoff intact.
+const MAX_PROMPT_CHARS = 12000;
+
+/**
+ * Local development shares the Postgres instance with the deployed worker.
+ * Use a separate job type locally so production cannot claim local renders.
+ */
+export function resolveReelRenderJobType(): string {
+  return process.env.REEL_RENDER_QUEUE_NAMESPACE?.trim()
+    ? REEL_RENDER_LOCAL_JOB_TYPE
+    : REEL_RENDER_JOB_TYPE;
+}
+
+export function resolveReelRenderJobKey(projectId: string): string {
+  return `${resolveReelRenderJobType()}:${projectId}`;
+}
 
 interface ReelProjectRow extends QueryResultRow {
   id: string;
@@ -65,6 +83,10 @@ export function normalizeReelSettings(
 ): ReelProjectSettings {
   const brandHandle =
     typeof input.brandHandle === "string" ? input.brandHandle.trim().slice(0, 32) : base?.brandHandle ?? "";
+  const sourcePostId =
+    typeof input.sourcePostId === "string" ? input.sourcePostId.trim().slice(0, 120) : base?.sourcePostId ?? "";
+  const sourceTitle =
+    typeof input.sourceTitle === "string" ? input.sourceTitle.trim().slice(0, 160) : base?.sourceTitle ?? "";
 
   return {
     language: pick(input.language, REEL_LANGUAGES, base?.language ?? "english"),
@@ -73,7 +95,11 @@ export function normalizeReelSettings(
     audience: pick(input.audience, REEL_AUDIENCES, base?.audience ?? "developers"),
     voice: pick(input.voice, REEL_VOICES, base?.voice ?? "nova"),
     showCaptions: typeof input.showCaptions === "boolean" ? input.showCaptions : base?.showCaptions ?? true,
+    videoProvider: pick(input.videoProvider, REEL_VIDEO_PROVIDERS, base?.videoProvider ?? "remotion"),
+    videoQuality: pick(input.videoQuality, REEL_VIDEO_QUALITIES, base?.videoQuality ?? "draft"),
     ...(brandHandle ? { brandHandle: brandHandle.startsWith("@") ? brandHandle : `@${brandHandle}` } : {}),
+    ...(sourcePostId ? { sourcePostId } : {}),
+    ...(sourceTitle ? { sourceTitle } : {}),
   };
 }
 
@@ -428,8 +454,8 @@ export async function queueReelRender(businessId: string, projectId: string): Pr
   try {
     await createJob({
       businessId,
-      jobKey: `reel_render:${projectId}`,
-      type: REEL_RENDER_JOB_TYPE,
+      jobKey: resolveReelRenderJobKey(projectId),
+      type: resolveReelRenderJobType(),
       priority: 50,
       payload: { projectId },
       // Rendering is expensive and failures are usually deterministic (bad input, missing deps).

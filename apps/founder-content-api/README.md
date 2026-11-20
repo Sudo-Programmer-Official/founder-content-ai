@@ -185,6 +185,37 @@ Optional envs:
 
 If these are missing, upload and generated-media attach flows will stay disabled and posts will remain text-only until storage is configured.
 
+### Local Reel rendering
+
+Reel Studio can use a shared local directory for development. Set the same values for the API and Reel Render Worker:
+
+```env
+REEL_MEDIA_STORAGE_MODE=local
+REEL_LOCAL_MEDIA_DIR=.data/reel-media
+API_PUBLIC_BASE_URL=http://localhost:3001/api
+```
+
+If local development points at the same Postgres database as the deployed API,
+also set `REEL_RENDER_QUEUE_NAMESPACE=local` for both processes. This puts local
+renders on the `reel_render_local` queue so the deployed worker cannot claim them.
+
+### Optional Gemini cinematic rendering
+
+Reel Studio defaults to the Remotion renderer because it keeps captions, branded
+typography, and UI text deterministic. To enable the optional Gemini cinematic
+engine, set the following on both the API and Reel Render Worker:
+
+```env
+GEMINI_API_KEY=your_server_side_gemini_key
+GEMINI_VIDEO_MODEL=gemini-omni-1.2-flash
+```
+
+The UI only enables Gemini Cinematic when the key is configured. It uses the
+approved storyboard as a multi-shot plan, keeps dense text out of generated
+footage, and uses Draft quality by default so previews stay cost-controlled.
+
+`REEL_MEDIA_STORAGE_MODE=auto` is the default and uses S3 whenever S3 credentials are present. Use `local` explicitly when testing the API and worker on the same machine. Production runtimes still require S3 and reject local mode.
+
 ## Source Docs
 
 Use the canonical docs in `../../docs/` as the source of truth:

@@ -14,6 +14,7 @@ import {
   reelYouTubeOAuthCallbackController,
   startReelYouTubeAuthController,
   updateReelStoryboardController,
+  getReelStudioCapabilitiesController,
 } from "../controllers/reelStudioController.ts";
 import { requireAuth } from "../middleware/auth.ts";
 
@@ -21,6 +22,7 @@ export const reelStudioRoute = Router();
 
 // Signed URL, no auth header: <video> and <img> tags load this directly.
 reelStudioRoute.get("/api/reel-studio/media", getReelMediaController);
+reelStudioRoute.get("/api/reel-studio/capabilities", requireAuth(), getReelStudioCapabilitiesController);
 reelStudioRoute.get("/api/reel-studio/projects", requireAuth(), listReelProjectsController);
 reelStudioRoute.post("/api/reel-studio/projects", requireAuth(), createReelStoryboardController);
 reelStudioRoute.get("/api/reel-studio/projects/:projectId", requireAuth(), getReelProjectController);

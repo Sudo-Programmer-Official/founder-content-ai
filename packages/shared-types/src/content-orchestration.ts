@@ -231,6 +231,17 @@ export interface GetContentPlanResponse extends GetContentBatchResponse {
   plan: SocialContentPlanEntry[];
 }
 
+export interface UpdateContentVariantRequest {
+  businessId: string;
+  variantId: string;
+  title?: string;
+  text: string;
+}
+
+export interface UpdateContentVariantResponse {
+  variant: ContentVariant;
+}
+
 export interface ApproveContentPlanRequest {
   businessId: string;
   batchId: string;

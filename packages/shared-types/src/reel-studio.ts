@@ -1,6 +1,8 @@
 export type ReelLanguage = "english" | "hindi" | "hinglish" | "spanish";
 export type ReelDurationSeconds = 15 | 30 | 45 | 60;
-export type ReelVisualStyle = "neon_tech" | "minimal_motion";
+export type ReelVisualStyle = "neon_tech" | "minimal_motion" | "real_world";
+export type ReelVideoProvider = "remotion" | "gemini_cinematic";
+export type ReelVideoQuality = "draft" | "standard" | "high";
 export type ReelAudience = "developers" | "beginners" | "students" | "general";
 export type ReelVoice = "alloy" | "ash" | "coral" | "echo" | "nova" | "onyx" | "sage" | "shimmer";
 export type ReelProjectStatus = "storyboard_ready" | "queued" | "rendering" | "ready" | "failed";
@@ -11,7 +13,9 @@ export type ReelRenderStage = "voice" | "compose" | "render" | "upload";
 
 export const REEL_LANGUAGES: ReelLanguage[] = ["english", "hindi", "hinglish", "spanish"];
 export const REEL_DURATIONS: ReelDurationSeconds[] = [15, 30, 45, 60];
-export const REEL_VISUAL_STYLES: ReelVisualStyle[] = ["neon_tech", "minimal_motion"];
+export const REEL_VISUAL_STYLES: ReelVisualStyle[] = ["neon_tech", "minimal_motion", "real_world"];
+export const REEL_VIDEO_PROVIDERS: ReelVideoProvider[] = ["remotion", "gemini_cinematic"];
+export const REEL_VIDEO_QUALITIES: ReelVideoQuality[] = ["draft", "standard", "high"];
 export const REEL_AUDIENCES: ReelAudience[] = ["developers", "beginners", "students", "general"];
 export const REEL_VOICES: ReelVoice[] = ["alloy", "ash", "coral", "echo", "nova", "onyx", "sage", "shimmer"];
 
@@ -44,6 +48,9 @@ export const REEL_ICON_NAMES = [
   "brain",
   "check",
   "alert",
+  "car",
+  "map_pin",
+  "clock",
 ] as const;
 
 export type ReelIconName = (typeof REEL_ICON_NAMES)[number];
@@ -79,6 +86,23 @@ export interface ReelFlowEdge {
   label?: string;
 }
 
+/** Renderer-safe concrete story objects for a Real World flow scene. */
+export interface ReelRealWorldObject {
+  id: string;
+  label: string;
+  icon: ReelIconName;
+  detail: string;
+  role: string;
+}
+
+export interface ReelRealWorldPlan {
+  title: string;
+  status: string;
+  action: string;
+  result: string;
+  objects: ReelRealWorldObject[];
+}
+
 export interface ReelFlowScene extends ReelSceneBase {
   type: "flow";
   heading: string;
@@ -86,6 +110,8 @@ export interface ReelFlowScene extends ReelSceneBase {
   layout: "chain" | "hub";
   nodes: ReelFlowNode[];
   edges: ReelFlowEdge[];
+  /** Optional concrete story world used by the Real World renderer. */
+  realWorld?: ReelRealWorldPlan;
 }
 
 export interface ReelStatScene extends ReelSceneBase {
@@ -185,7 +211,16 @@ export interface ReelProjectSettings {
   audience: ReelAudience;
   voice: ReelVoice;
   showCaptions: boolean;
+  videoProvider?: ReelVideoProvider;
+  videoQuality?: ReelVideoQuality;
   brandHandle?: string;
+  /** Optional lineage back to the founder-content draft that seeded this reel. */
+  sourcePostId?: string;
+  sourceTitle?: string;
+}
+
+export interface ReelStudioCapabilitiesResponse {
+  cinematicAvailable: boolean;
 }
 
 export interface ReelRenderProgress {

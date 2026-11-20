@@ -97,6 +97,7 @@ export const navigationIcons = {
   email: Mail,
   blog: NotebookText,
   analytics: BarChart3,
+  channels: Share2,
   settings: Settings2,
   admin: ShieldCheck,
   billing: CreditCard,

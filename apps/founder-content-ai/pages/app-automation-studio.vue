@@ -1,10 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
+import type {
+  BusinessMembership,
+  GenerateContentPlanResponse,
+  SocialContentPlanEntry,
+  SocialContentPlanDuration,
+  SocialContentPlanPlatform,
+} from "../../../packages/shared-types";
+import { useProductAccessContext } from "../access/product-access-context";
+import { requestMyBusinesses } from "../services/admin-analytics-service";
+import {
+  requestApproveContentPlan,
+  requestGenerateContentPlan,
+  requestUpdateContentVariant,
+} from "../services/content-plan-service";
 import { appRoutes } from "../utils/routes";
 
 type CampaignGoal = "bookings" | "awareness" | "leads" | "event" | "services" | "education";
-type CampaignDuration = "7_days" | "14_days" | "30_days" | "autopilot";
-type CampaignPlatform = "linkedin" | "instagram" | "facebook" | "x" | "google_business";
+type CampaignDuration = SocialContentPlanDuration;
+type CampaignPlatform = SocialContentPlanPlatform;
 type CreativeDirection =
   | "luxury"
   | "modern"
@@ -21,16 +35,24 @@ interface PipelineStep {
 
 interface CampaignDayPreview {
   day: number;
-  strategy: string;
-  hook: string;
-  cta: string;
-  platform: CampaignPlatform;
-  status: "ready" | "running" | "pending";
+  dateKey: string;
+  entries: SocialContentPlanEntry[];
 }
 
 const isRunning = ref(false);
 const progressDone = ref(0);
 const progressTotal = ref(0);
+const isApproving = ref(false);
+const businesses = ref<BusinessMembership[]>([]);
+const activeBusinessId = ref("");
+const generatedPlan = ref<GenerateContentPlanResponse | null>(null);
+const errorMessage = ref("");
+const feedbackMessage = ref("");
+const isLoadingWorkspace = ref(true);
+const editingVariantId = ref("");
+const variantDraftText = ref("");
+const isSavingVariant = ref(false);
+const { bootstrap, setActiveBusinessId } = useProductAccessContext();
 
 const automationForm = reactive<{
   goal: CampaignGoal;
@@ -59,15 +81,12 @@ const DURATION_OPTIONS: Array<{ value: CampaignDuration; label: string }> = [
   { value: "7_days", label: "7 days" },
   { value: "14_days", label: "14 days" },
   { value: "30_days", label: "30 days" },
-  { value: "autopilot", label: "Ongoing autopilot" },
 ];
 
 const PLATFORM_OPTIONS: Array<{ value: CampaignPlatform; label: string }> = [
   { value: "linkedin", label: "LinkedIn" },
   { value: "instagram", label: "Instagram" },
   { value: "facebook", label: "Facebook" },
-  { value: "x", label: "X" },
-  { value: "google_business", label: "Google Business" },
 ];
 
 const CREATIVE_OPTIONS: Array<{ value: CreativeDirection; label: string }> = [
@@ -91,11 +110,10 @@ const pipelineSteps = ref<PipelineStep[]>([
 ]);
 
 const agentFeed = ref<string[]>([
-  "Waiting for campaign mission start.",
+  "Ready to turn one idea into a reviewable campaign.",
 ]);
 
 const dayCards = ref<CampaignDayPreview[]>([]);
-let pipelineRunTimer: number | null = null;
 
 const selectedGoalMeta = computed(
   () => GOAL_OPTIONS.find((option) => option.value === automationForm.goal) ?? GOAL_OPTIONS[0],
@@ -106,6 +124,58 @@ const selectedPlatformsLabel = computed(() =>
     .map((platform) => PLATFORM_OPTIONS.find((option) => option.value === platform)?.label ?? platform)
     .join(" · "),
 );
+const campaignStartDate = computed(() => {
+  const today = new Date();
+  today.setDate(today.getDate() + 1);
+  return today.toISOString().slice(0, 10);
+});
+const canRunCampaign = computed(
+  () => Boolean(activeBusinessId.value) && automationForm.platforms.length > 0 && !isRunning.value,
+);
+const approvalStartDate = computed(
+  () => generatedPlan.value?.plan[0]?.dateKey ?? campaignStartDate.value,
+);
+
+function startVariantEdit(entry: SocialContentPlanEntry): void {
+  editingVariantId.value = entry.variantId;
+  variantDraftText.value = entry.content;
+}
+
+function cancelVariantEdit(): void {
+  editingVariantId.value = "";
+  variantDraftText.value = "";
+}
+
+async function saveVariantEdit(entry: SocialContentPlanEntry): Promise<void> {
+  if (!activeBusinessId.value || !variantDraftText.value.trim()) {
+    errorMessage.value = "Add some content before saving the edit.";
+    return;
+  }
+
+  isSavingVariant.value = true;
+  errorMessage.value = "";
+
+  try {
+    const response = await requestUpdateContentVariant({
+      businessId: activeBusinessId.value,
+      variantId: entry.variantId,
+      text: variantDraftText.value,
+    });
+    entry.content = response.variant.text;
+    const persistedVariant = generatedPlan.value?.variants.find((variant) => variant.id === entry.variantId);
+    if (persistedVariant) {
+      persistedVariant.text = response.variant.text;
+      persistedVariant.isCustomized = true;
+      persistedVariant.source = "manual";
+    }
+    feedbackMessage.value = `${entry.platform} draft updated. The campaign remains unapproved.`;
+    cancelVariantEdit();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to save this draft edit.";
+  } finally {
+    isSavingVariant.value = false;
+  }
+}
 
 function togglePlatform(value: CampaignPlatform): void {
   if (automationForm.platforms.includes(value)) {
@@ -119,32 +189,43 @@ function togglePlatform(value: CampaignPlatform): void {
   automationForm.platforms = [...automationForm.platforms, value];
 }
 
-function buildDayCards(): CampaignDayPreview[] {
-  const durationCount = automationForm.duration === "7_days"
-    ? 7
-    : automationForm.duration === "14_days"
-      ? 14
-      : automationForm.duration === "30_days"
-        ? 30
-        : 10;
+function groupPlanByDay(plan: SocialContentPlanEntry[]): CampaignDayPreview[] {
+  const grouped = new Map<number, CampaignDayPreview>();
 
-  return Array.from({ length: Math.min(durationCount, 10) }, (_value, index) => {
-    const day = index + 1;
-    const platform = automationForm.platforms[index % automationForm.platforms.length] ?? "linkedin";
+  for (const entry of plan) {
+    const existing = grouped.get(entry.day);
 
-    return {
-      day,
-      strategy: `Day ${day}: ${selectedGoalMeta.value.label} content focused on proof + trust.`,
-      hook: `Hook ${day}: The simplest shift that improves ${selectedGoalMeta.value.label.toLowerCase()}.`,
-      cta: "Reply 'PLAN' and we’ll send the execution playbook.",
-      platform,
-      status: day <= 2 ? "ready" : day === 3 ? "running" : "pending",
-    };
-  });
+    if (existing) {
+      existing.entries.push(entry);
+      continue;
+    }
+
+    grouped.set(entry.day, {
+      day: entry.day,
+      dateKey: entry.dateKey,
+      entries: [entry],
+    });
+  }
+
+  return [...grouped.values()].sort((left, right) => left.day - right.day);
 }
 
-function startCampaignRun(): void {
+async function startCampaignRun(): Promise<void> {
+  if (!activeBusinessId.value) {
+    errorMessage.value = "Choose a workspace before starting a campaign.";
+    return;
+  }
+
+  if (automationForm.platforms.length === 0) {
+    errorMessage.value = "Select at least one publishing channel.";
+    return;
+  }
+
   isRunning.value = true;
+  errorMessage.value = "";
+  feedbackMessage.value = "";
+  generatedPlan.value = null;
+  dayCards.value = [];
   progressDone.value = 0;
   progressTotal.value = pipelineSteps.value.length;
 
@@ -154,69 +235,95 @@ function startCampaignRun(): void {
   }));
 
   agentFeed.value = [
-    "Brand analysis complete.",
+    "Reading the workspace brand profile.",
     `Goal locked: ${selectedGoalMeta.value.label}.`,
     `Platform plan ready: ${selectedPlatformsLabel.value}.`,
-    "Starting sequential pipeline execution...",
+    "Generating a reviewable campaign batch...",
   ];
 
-  dayCards.value = buildDayCards();
+  pipelineSteps.value = pipelineSteps.value.map((step, index) => ({
+    ...step,
+    state: index === 0 ? "running" : "pending",
+  }));
 
-  if (pipelineRunTimer !== null && typeof window !== "undefined") {
-    window.clearInterval(pipelineRunTimer);
+  try {
+    const reference = automationForm.referenceInput.trim();
+    const response = await requestGenerateContentPlan({
+      businessId: activeBusinessId.value,
+      duration: automationForm.duration,
+      goal: [selectedGoalMeta.value.label, reference].filter(Boolean).join(". "),
+      platforms: automationForm.platforms,
+      tone: automationForm.creativeDirection || undefined,
+      startDate: campaignStartDate.value,
+      defaultScheduledTime: "09:00",
+    });
+
+    generatedPlan.value = response;
+    dayCards.value = groupPlanByDay(response.plan);
+    progressDone.value = pipelineSteps.value.length;
+    pipelineSteps.value = pipelineSteps.value.map((step) => ({ ...step, state: "completed" }));
+    agentFeed.value = [
+      ...agentFeed.value,
+      `Generated ${response.plan.length} channel-ready entries across ${dayCards.value.length} days.`,
+      "Campaign pack ready. Review it before approving into the planner.",
+    ].slice(-8);
+    feedbackMessage.value = "Campaign generated. Review the entries below before they enter your publishing queue.";
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to generate the campaign.";
+    agentFeed.value = [...agentFeed.value, "Campaign generation stopped. Nothing was scheduled."];
+    pipelineSteps.value = pipelineSteps.value.map((step) => ({ ...step, state: "pending" }));
+  } finally {
+    isRunning.value = false;
   }
+}
 
-  if (typeof window === "undefined") {
+async function approveCampaign(): Promise<void> {
+  if (!activeBusinessId.value || !generatedPlan.value) {
+    errorMessage.value = "Generate a campaign before approving it.";
     return;
   }
 
-  let currentStepIndex = 0;
-  pipelineRunTimer = window.setInterval(() => {
-    if (currentStepIndex >= pipelineSteps.value.length) {
-      if (pipelineRunTimer !== null) {
-        window.clearInterval(pipelineRunTimer);
-        pipelineRunTimer = null;
-      }
-      progressDone.value = pipelineSteps.value.length;
-      pipelineSteps.value = pipelineSteps.value.map((step) => ({ ...step, state: "completed" }));
-      isRunning.value = false;
-      agentFeed.value = [
-        ...agentFeed.value,
-        "Campaign pack ready. Review day cards and push approved items into planner.",
-      ];
-      return;
-    }
+  isApproving.value = true;
+  errorMessage.value = "";
 
-    pipelineSteps.value = pipelineSteps.value.map((step, index) => {
-      if (index < currentStepIndex) {
-        return { ...step, state: "completed" };
-      }
-      if (index === currentStepIndex) {
-        return { ...step, state: "running" };
-      }
-      return { ...step, state: "pending" };
+  try {
+    const response = await requestApproveContentPlan(generatedPlan.value.batch.id, {
+      businessId: activeBusinessId.value,
+      batchId: generatedPlan.value.batch.id,
+      startDate: approvalStartDate.value,
+      defaultScheduledTime: "09:00",
+      platforms: automationForm.platforms,
     });
-
-    const runningStep = pipelineSteps.value[currentStepIndex];
-    agentFeed.value = [
-      ...agentFeed.value,
-      `Day batch: ${runningStep.label}...`,
-    ].slice(-8);
-
-    progressDone.value = currentStepIndex;
-    currentStepIndex += 1;
-
-    if (currentStepIndex > pipelineSteps.value.length) {
-      progressDone.value = pipelineSteps.value.length;
-    }
-  }, 1100);
+    feedbackMessage.value = `Approved ${response.scheduleItems.length} items into the planner.`;
+    agentFeed.value = [...agentFeed.value, "Approval complete. The planner now owns the publishing queue."];
+    generatedPlan.value = null;
+    dayCards.value = [];
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to approve the campaign.";
+  } finally {
+    isApproving.value = false;
+  }
 }
 
-onBeforeUnmount(() => {
-  if (pipelineRunTimer !== null && typeof window !== "undefined") {
-    window.clearInterval(pipelineRunTimer);
-    pipelineRunTimer = null;
+async function loadWorkspace(): Promise<void> {
+  try {
+    const response = await requestMyBusinesses();
+    businesses.value = response.businesses;
+    const preferredBusinessId = bootstrap.value?.activeBusinessId?.trim() || response.businesses[0]?.businessId || "";
+    activeBusinessId.value = preferredBusinessId;
+
+    if (preferredBusinessId && bootstrap.value?.activeBusinessId !== preferredBusinessId) {
+      await setActiveBusinessId(preferredBusinessId);
+    }
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "Unable to load your workspace.";
+  } finally {
+    isLoadingWorkspace.value = false;
   }
+}
+
+onMounted(() => {
+  void loadWorkspace();
 });
 </script>
 
@@ -224,11 +331,16 @@ onBeforeUnmount(() => {
   <main class="automation-shell">
     <section class="automation-hero">
       <p class="automation-eyebrow">Automation Studio</p>
-      <h1>Campaign Automation Engine</h1>
+      <h1>Turn one idea into a campaign.</h1>
       <p class="automation-copy">
-        Run goal-driven orchestration separately from planner editing. Generate a complete campaign pack, review by day,
-        then send approved output into Planner.
+        Give the system a goal, a few channels, and optional context. It will generate a reviewable campaign batch;
+        nothing enters your publishing queue until you approve it.
       </p>
+      <p v-if="isLoadingWorkspace" class="automation-status">Loading your workspace…</p>
+      <p v-else-if="activeBusinessId" class="automation-status">
+        Workspace ready · {{ businesses.find((business) => business.businessId === activeBusinessId)?.business.name }}
+      </p>
+      <p v-else class="automation-status error">Create or select a workspace before generating a campaign.</p>
     </section>
 
     <section class="automation-layout">
@@ -293,18 +405,29 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="action-row">
-          <button type="button" class="primary-button" @click="startCampaignRun">
-            {{ isRunning ? "Re-run campaign mission" : "Start campaign mission" }}
+          <button type="button" class="primary-button" :disabled="!canRunCampaign" @click="void startCampaignRun()">
+            {{ isRunning ? "Generating campaign…" : generatedPlan ? "Generate a new version" : "Generate campaign" }}
+          </button>
+          <button
+            v-if="generatedPlan"
+            type="button"
+            class="secondary-button approval-button"
+            :disabled="isApproving"
+            @click="void approveCampaign()"
+          >
+            {{ isApproving ? "Approving…" : "Approve into planner" }}
           </button>
           <router-link class="secondary-button" :to="appRoutes.appPlanner">Back to planner</router-link>
         </div>
+        <p v-if="errorMessage" class="automation-feedback error">{{ errorMessage }}</p>
+        <p v-else-if="feedbackMessage" class="automation-feedback">{{ feedbackMessage }}</p>
       </article>
 
       <article class="automation-card">
         <div class="mission-status">
           <div>
             <p class="automation-eyebrow">Mission control</p>
-            <h2>{{ isRunning ? "Execution in progress" : "Awaiting mission start" }}</h2>
+            <h2>{{ isRunning ? "Generation in progress" : generatedPlan ? "Review before approval" : "Ready for a campaign brief" }}</h2>
           </div>
           <span class="status-pill">{{ progressLabel }}</span>
         </div>
@@ -340,22 +463,45 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-if="dayCards.length === 0" class="empty-pack">
-        Start a campaign mission to generate day-by-day strategy, hooks, CTAs, and creative direction.
+        Generate a campaign to preview channel-specific content by day. The planner stays untouched until you approve it.
       </div>
 
       <div v-else class="day-grid">
-        <article v-for="card in dayCards" :key="card.day" class="day-card" :data-state="card.status">
+        <article v-for="card in dayCards" :key="card.day" class="day-card">
           <div class="day-top">
             <strong>Day {{ card.day }}</strong>
-            <span>{{ card.status }}</span>
+            <span>{{ card.dateKey }}</span>
           </div>
-          <p>{{ card.strategy }}</p>
-          <p><strong>Hook:</strong> {{ card.hook }}</p>
-          <p><strong>CTA:</strong> {{ card.cta }}</p>
-          <p><strong>Platform:</strong> {{ card.platform.replace("_", " ") }}</p>
-          <div class="day-actions">
-            <button type="button" class="secondary-button">Regenerate day</button>
-            <button type="button" class="secondary-button">Open editor</button>
+          <div v-for="entry in card.entries" :key="entry.variantId" class="campaign-entry">
+            <div class="campaign-entry-topline">
+              <strong>{{ entry.platform }}</strong>
+              <span>
+                {{ entry.type.replace("_", " ") }}
+                <span v-if="generatedPlan?.variants.find((variant) => variant.id === entry.variantId)?.isCustomized" class="customized-label">Edited</span>
+              </span>
+            </div>
+            <textarea
+              v-if="editingVariantId === entry.variantId"
+              v-model="variantDraftText"
+              class="campaign-entry-editor"
+              rows="7"
+            />
+            <p v-else>{{ entry.content }}</p>
+            <p><strong>CTA:</strong> {{ entry.cta }}</p>
+            <p v-if="entry.angle"><strong>Angle:</strong> {{ entry.angle }}</p>
+            <div class="campaign-entry-actions">
+              <template v-if="editingVariantId === entry.variantId">
+                <button type="button" class="secondary-button" :disabled="isSavingVariant" @click="void saveVariantEdit(entry)">
+                  {{ isSavingVariant ? "Saving…" : "Save edit" }}
+                </button>
+                <button type="button" class="secondary-button" :disabled="isSavingVariant" @click="cancelVariantEdit">
+                  Cancel
+                </button>
+              </template>
+              <button v-else type="button" class="secondary-button" @click="startVariantEdit(entry)">
+                Edit draft
+              </button>
+            </div>
           </div>
         </article>
       </div>
@@ -382,6 +528,30 @@ onBeforeUnmount(() => {
   margin: 0.65rem 0 0;
   color: #4b5563;
   max-width: 76ch;
+}
+
+.automation-status,
+.automation-feedback {
+  margin: 0.65rem 0 0;
+  color: #4b5563;
+  font-size: 0.9rem;
+}
+
+.automation-status.error,
+.automation-feedback.error {
+  color: #b42318;
+}
+
+.automation-feedback {
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #d8e8df;
+  border-radius: 0.7rem;
+  background: #f0fdf4;
+}
+
+.automation-feedback.error {
+  border-color: #f4c7c3;
+  background: #fff5f5;
 }
 
 .automation-eyebrow {
@@ -499,6 +669,17 @@ onBeforeUnmount(() => {
   color: #fff;
 }
 
+.primary-button:disabled,
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.approval-button {
+  border-color: #15803d;
+  color: #166534;
+}
+
 .secondary-button {
   background: #fff;
   color: #1f2937;
@@ -588,25 +769,53 @@ onBeforeUnmount(() => {
   color: #374151;
 }
 
+.campaign-entry {
+  display: grid;
+  gap: 0.4rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid #efe4da;
+}
+
+.campaign-entry-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  color: #6b7280;
+  font-size: 0.78rem;
+  text-transform: capitalize;
+}
+
+.customized-label {
+  margin-left: 0.35rem;
+  color: #166534;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.campaign-entry-editor {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.6rem;
+  padding: 0.65rem;
+  color: #1f2937;
+  font: inherit;
+  line-height: 1.55;
+  box-sizing: border-box;
+}
+
+.campaign-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
 .day-top {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
 }
 
-.day-card[data-state="ready"] {
-  background: #ecfdf5;
-}
-
-.day-card[data-state="running"] {
-  background: #fff7ed;
-}
-
-.day-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem;
-}
 
 @media (max-width: 980px) {
   .automation-layout {

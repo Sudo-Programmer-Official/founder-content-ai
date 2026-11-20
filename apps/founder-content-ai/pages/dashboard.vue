@@ -589,9 +589,9 @@ const fallbackNextActionState = computed(() => {
   }
 
   return {
-    heading: "Today still needs a post",
-    description: "Create one clear post and move it into the planner. That is the whole job.",
-    primaryLabel: "Create post",
+    heading: "Today still needs a campaign",
+    description: "Turn one clear idea into the next approved piece of content and move it into execution.",
+    primaryLabel: "Create campaign",
     primaryAction: "create_post",
     secondaryLabel: "Open planner",
     secondaryAction: "open_planner",
@@ -1761,12 +1761,12 @@ onBeforeUnmount(() => {
             <strong>{{ ideaFeedback }}</strong>
           </div>
 
-          <section class="os-command-center" aria-label="Social media OS overview">
+          <section class="os-command-center" aria-label="Content-to-revenue command center">
             <div class="os-command-copy">
-              <p class="dashboard-eyebrow">Social media OS</p>
+              <p class="dashboard-eyebrow">Content-to-revenue OS</p>
               <h1>{{ currentBusiness?.business.name ?? "Control Dashboard" }}</h1>
               <p class="dashboard-description">
-                Capture signals, shape posts, schedule the next move, and keep every channel moving from one command center.
+                Capture one idea, turn it into a branded campaign, and keep every channel moving from one command center.
               </p>
 
               <div class="os-command-actions">
@@ -1778,7 +1778,7 @@ onBeforeUnmount(() => {
                   {{ dashboardNextAction.primaryLabel }}
                 </button>
                 <router-link class="dashboard-button secondary" :to="appRoutes.appPlanner">
-                  Open planner
+                  Open content plan
                 </router-link>
               </div>
             </div>

@@ -20,7 +20,12 @@ import type {
 import { claimQueuedJobs, markJobCompleted, markJobFailed, markJobTerminalFailed } from "../jobQueueService.ts";
 import { logError, logInfo } from "../../utils/logger.ts";
 import { buildReelStorageKey, storeReelMedia } from "./reelMediaStorage.ts";
-import { REEL_RENDER_JOB_TYPE, loadReelProjectForRender, updateReelRenderState } from "./reelProjectService.ts";
+import { produceCinematicReelFiles } from "./reelCinematicService.ts";
+import {
+  loadReelProjectForRender,
+  resolveReelRenderJobType,
+  updateReelRenderState,
+} from "./reelProjectService.ts";
 
 const API_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const FPS = 30;
@@ -227,6 +232,10 @@ export interface ProducedReelFiles {
   posterPath: string;
   durationInFrames: number;
   ttsModel: string;
+  videoProvider: "remotion" | "gemini_cinematic";
+  videoModel?: string;
+  videoResolution?: string;
+  videoShotCount?: number;
 }
 
 /**
@@ -238,6 +247,24 @@ export async function produceReelFiles(
   workDir: string,
   onProgress: (progress: ReelRenderProgress) => Promise<void> | void,
 ): Promise<ProducedReelFiles> {
+  if (project.settings.videoProvider === "gemini_cinematic") {
+    const cinematic = await produceCinematicReelFiles({
+      project,
+      workDir,
+      quality: project.settings.videoQuality ?? "draft",
+      onProgress: (percent) => onProgress({ stage: "render", percent }),
+    });
+
+    return {
+      ...cinematic,
+      ttsModel: "",
+      videoProvider: "gemini_cinematic",
+      videoModel: cinematic.model,
+      videoResolution: cinematic.resolution,
+      videoShotCount: cinematic.shotCount,
+    };
+  }
+
   const narration = await synthesizeNarration(project, async (percent) => onProgress({ stage: "voice", percent }));
 
   await onProgress({ stage: "compose", percent: 0 });
@@ -270,7 +297,13 @@ export async function produceReelFiles(
     },
   });
 
-  return { videoPath, posterPath, durationInFrames: narration.durationInFrames, ttsModel: narration.ttsModel };
+  return {
+    videoPath,
+    posterPath,
+    durationInFrames: narration.durationInFrames,
+    ttsModel: narration.ttsModel,
+    videoProvider: "remotion",
+  };
 }
 
 async function renderReelProject(project: ReelProject): Promise<void> {
@@ -297,7 +330,11 @@ async function renderReelProject(project: ReelProject): Promise<void> {
   };
 
   try {
-    await updateReelRenderState(project.id, { status: "rendering", progress: { stage: "voice", percent: 0 }, errorMessage: null });
+    await updateReelRenderState(project.id, {
+      status: "rendering",
+      progress: { stage: project.settings.videoProvider === "gemini_cinematic" ? "render" : "voice", percent: 0 },
+      errorMessage: null,
+    });
     const produced = await produceReelFiles(project, tempDir, reportProgress);
     await reportProgress({ stage: "upload", percent: 0 });
 
@@ -323,6 +360,10 @@ async function renderReelProject(project: ReelProject): Promise<void> {
         height: HEIGHT,
         sceneCount: project.storyboard.scenes.length,
         ttsModel: produced.ttsModel,
+        videoProvider: produced.videoProvider,
+        videoModel: produced.videoModel,
+        videoResolution: produced.videoResolution,
+        videoShotCount: produced.videoShotCount,
         renderMs: Date.now() - startedAt,
       },
     });
@@ -336,7 +377,7 @@ async function renderReelProject(project: ReelProject): Promise<void> {
 export async function processQueuedReelRenderJobs(): Promise<{ jobsClaimed: number; jobsCompleted: number; jobsFailed: number }> {
   // One at a time: a render saturates the CPU on its own.
   const jobs = await claimQueuedJobs<ReelRenderJobPayload>({
-    types: [REEL_RENDER_JOB_TYPE],
+    types: [resolveReelRenderJobType()],
     batchSize: 1,
     lockedBy: `reel-render:${process.pid}`,
     // A crashed/stalled render should become retryable before the default
@@ -367,7 +408,7 @@ export async function processQueuedReelRenderJobs(): Promise<{ jobsClaimed: numb
       await markJobFailed(job.id, message);
       await updateReelRenderState(projectId, {
         status: willRetry ? "queued" : "failed",
-        progress: willRetry ? { stage: "voice", percent: 0 } : null,
+        progress: willRetry ? { stage: loaded.project.settings.videoProvider === "gemini_cinematic" ? "render" : "voice", percent: 0 } : null,
         errorMessage: willRetry ? `Retrying after error: ${message.slice(0, 300)}` : message.slice(0, 1000),
       });
       jobsFailed += 1;

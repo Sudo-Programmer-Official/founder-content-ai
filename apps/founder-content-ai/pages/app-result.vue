@@ -88,6 +88,7 @@ import {
   toTimeValueInTimezone,
 } from "../utils/timezone";
 import { saveRepurposeSeed } from "../utils/repurpose-loop";
+import { saveReelSeed } from "../utils/reel-seed";
 import {
   DEFAULT_REPURPOSE_STRATEGY,
   REPURPOSE_STRATEGY_OPTIONS,
@@ -6441,6 +6442,36 @@ async function goToOutreach(): Promise<void> {
   });
 }
 
+async function goToReelStudio(): Promise<void> {
+  if (!draft.value) {
+    return;
+  }
+
+  if (!(await flushComposerAutosaves())) {
+    feedbackMessage.value = "We could not save the latest edits before opening Reel Studio.";
+    return;
+  }
+
+  const sourceText = editablePostContent.value.trim() || postContent.value.trim();
+  const sourceTitle = draft.value.result.idea.title.trim();
+
+  saveReelSeed({
+    prompt: [
+      "Turn this founder-content draft into a polished, understandable video explainer.",
+      "Preserve the central point of view and concrete examples. Build a clear hook, explanation, and takeaway.",
+      "Use short on-screen text, readable captions, and narration that adds context instead of repeating every word.",
+      sourceTitle ? `Working title: ${sourceTitle}` : "",
+      `Founder draft:\n${sourceText}`,
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
+    sourcePostId: draft.value.result.asset?.id || draft.value.id,
+    sourceTitle,
+  });
+
+  await router.push({ path: appRoutes.appReelStudio, query: { from: "founder-content" } });
+}
+
 async function goToPlanner(): Promise<void> {
   if (!(await flushComposerAutosaves())) {
     feedbackMessage.value = "We could not save the latest edits before opening planner.";
@@ -8005,6 +8036,9 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="result-primary-actions publish-launch-actions">
+            <button type="button" class="secondary-action" @click="void goToReelStudio">
+              Turn into a video
+            </button>
             <button type="button" class="primary-action" @click="openPublishDrawer">
               Open publish drawer
             </button>

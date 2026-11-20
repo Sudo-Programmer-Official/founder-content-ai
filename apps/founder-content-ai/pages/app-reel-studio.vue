@@ -12,6 +12,8 @@ import type {
   ReelSceneType,
   ReelStoryboard,
   ReelVisualStyle,
+  ReelVideoProvider,
+  ReelVideoQuality,
   ReelVoice,
   ReelYouTubeConnection,
   ReelYouTubeVisibility,
@@ -21,6 +23,7 @@ import {
   requestReelProject,
   requestReelProjectDelete,
   requestReelProjects,
+  requestReelStudioCapabilities,
   requestReelRender,
   requestReelApproval,
   requestReelReview,
@@ -32,6 +35,7 @@ import {
   requestReelYouTubePublish,
 } from "../services/reel-studio-service";
 import { actionIcons, aiFeatureIcons, iconSizes, iconStrokeWidth } from "../src/icons";
+import { consumeReelSeed, type ReelSeedPayload } from "../utils/reel-seed";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -45,6 +49,16 @@ const DURATION_OPTIONS: ReelDurationSeconds[] = [15, 30, 45, 60];
 const STYLE_OPTIONS: Array<{ value: ReelVisualStyle; label: string; hint: string }> = [
   { value: "neon_tech", label: "Neon Tech", hint: "Dark, glowing system-design look" },
   { value: "minimal_motion", label: "Minimal Motion", hint: "Clean light canvas, bold type" },
+  { value: "real_world", label: "Real World Scenes", hint: "Animated maps, vehicles, and live app states" },
+];
+const VIDEO_PROVIDER_OPTIONS: Array<{ value: ReelVideoProvider; label: string; hint: string }> = [
+  { value: "remotion", label: "Brand Motion", hint: "Fast, text-safe scenes and captions" },
+  { value: "gemini_cinematic", label: "Gemini Cinematic", hint: "AI-generated footage with native audio" },
+];
+const VIDEO_QUALITY_OPTIONS: Array<{ value: ReelVideoQuality; label: string; hint: string }> = [
+  { value: "draft", label: "Draft · 360p", hint: "Lowest-cost preview" },
+  { value: "standard", label: "Standard · 720p", hint: "Publish-ready default" },
+  { value: "high", label: "High · 1080p", hint: "Sharper final export" },
 ];
 const AUDIENCE_OPTIONS: Array<{ value: ReelAudience; label: string }> = [
   { value: "developers", label: "Developers" },
@@ -88,12 +102,15 @@ const { activeBusinessId, isFeatureEnabled } = useProductAccessContext();
 
 const prompt = ref("");
 const language = ref<ReelLanguage>("english");
-const durationSeconds = ref<ReelDurationSeconds>(30);
+// Educational explainers benefit from enough time for a diagram and a real example.
+const durationSeconds = ref<ReelDurationSeconds>(60);
 const style = ref<ReelVisualStyle>("neon_tech");
 const audience = ref<ReelAudience>("developers");
 const voice = ref<ReelVoice>("nova");
 const showCaptions = ref(true);
 const brandHandle = ref("");
+const videoProvider = ref<ReelVideoProvider>("remotion");
+const videoQuality = ref<ReelVideoQuality>("draft");
 
 const projects = ref<ReelProjectSummary[]>([]);
 const project = ref<ReelProject | null>(null);
@@ -105,6 +122,8 @@ const isQueueing = ref(false);
 const isYouTubeConnecting = ref(false);
 const isPublishingYouTube = ref(false);
 const isLoadingProjects = ref(false);
+const isLoadingCapabilities = ref(false);
+const cinematicAvailable = ref(false);
 const regeneratingSceneId = ref("");
 const sceneInstructions = ref<Record<string, string>>({});
 const errorMessage = ref("");
@@ -112,6 +131,7 @@ const noticeMessage = ref("");
 const youtubeConnection = ref<ReelYouTubeConnection>({ connected: false });
 const youtubeVisibility = ref<ReelYouTubeVisibility>("public");
 const youtubeVideoUrl = ref("");
+const seededFounderContent = ref<ReelSeedPayload | null>(null);
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 
 const businessId = computed(() => activeBusinessId.value?.trim() || "");
@@ -263,6 +283,22 @@ async function loadProjects(): Promise<void> {
   }
 }
 
+async function loadCapabilities(): Promise<void> {
+  if (!canUseReelStudio.value) {
+    cinematicAvailable.value = false;
+    return;
+  }
+
+  isLoadingCapabilities.value = true;
+  try {
+    cinematicAvailable.value = (await requestReelStudioCapabilities(businessId.value)).cinematicAvailable;
+  } catch {
+    cinematicAvailable.value = false;
+  } finally {
+    isLoadingCapabilities.value = false;
+  }
+}
+
 async function loadYouTubeConnection(): Promise<void> {
   if (!businessId.value) {
     youtubeConnection.value = { connected: false };
@@ -295,6 +331,8 @@ async function openProject(projectId: string): Promise<void> {
     voice.value = response.project.settings.voice;
     showCaptions.value = response.project.settings.showCaptions;
     brandHandle.value = response.project.settings.brandHandle ?? "";
+    videoProvider.value = response.project.settings.videoProvider ?? "remotion";
+    videoQuality.value = response.project.settings.videoQuality ?? "draft";
 
     if (route.query.project !== projectId) {
       void router.replace({ query: { ...route.query, project: projectId } });
@@ -339,7 +377,11 @@ async function generateStoryboard(): Promise<void> {
       audience: audience.value,
       voice: voice.value,
       showCaptions: showCaptions.value,
+      videoProvider: videoProvider.value,
+      videoQuality: videoQuality.value,
       brandHandle: brandHandle.value.trim() || undefined,
+      sourcePostId: seededFounderContent.value?.sourcePostId,
+      sourceTitle: seededFounderContent.value?.sourceTitle,
     });
     applyProject(response.project, { resetDraft: true });
     void router.replace({ query: { ...route.query, project: response.project.id } });
@@ -631,13 +673,24 @@ watch(
     if (next && next !== previous) {
       startNew();
       await loadProjects();
+      await loadCapabilities();
       await loadYouTubeConnection();
     }
   },
 );
 
 onMounted(async () => {
+  const seed = consumeReelSeed();
+  if (seed && !route.query.project) {
+    seededFounderContent.value = seed;
+    prompt.value = seed.prompt;
+    noticeMessage.value = seed.sourceTitle
+      ? `Founder draft loaded: ${seed.sourceTitle}. Choose the length, then generate the storyboard.`
+      : "Founder draft loaded. Choose the length, then generate the storyboard.";
+  }
+
   await loadProjects();
+  await loadCapabilities();
   await loadYouTubeConnection();
   if (route.query.youtube === "connected") {
     noticeMessage.value = "YouTube connected. Reviewed reels can now be published.";
@@ -689,10 +742,14 @@ onBeforeUnmount(stopPolling);
             v-model="prompt"
             class="reel-prompt"
             rows="4"
-            maxlength="2000"
+            maxlength="12000"
             placeholder="Describe anything you want to explain…"
             :disabled="isGenerating || isRendering"
           />
+          <div class="reel-prompt-meta">
+            <span>Long briefs are supported for deeper explainers and future YouTube cuts.</span>
+            <span>{{ prompt.length.toLocaleString() }} / 12,000</span>
+          </div>
           <div v-if="!project" class="reel-examples">
             <button v-for="example in PROMPT_EXAMPLES" :key="example" type="button" class="reel-chip" @click="prompt = example">
               {{ example }}
@@ -733,6 +790,9 @@ onBeforeUnmount(stopPolling);
               <span>Burn-in captions</span>
             </label>
           </div>
+          <p v-if="!project && durationSeconds >= 45" class="reel-hint">
+            Longer explainers use diagram-led scenes and fewer checklists so the viewer can follow the idea.
+          </p>
 
           <div class="reel-styles">
             <button
@@ -748,6 +808,40 @@ onBeforeUnmount(stopPolling);
               <strong>{{ option.label }}</strong>
               <small>{{ option.hint }}</small>
             </button>
+          </div>
+
+          <div class="reel-engine-panel">
+            <div class="reel-engine-heading">
+              <div>
+                <span class="reel-engine-label">Video engine</span>
+                <p class="reel-hint">Use Brand Motion for text-heavy explainers. Use Gemini when cinematic footage matters more than exact on-screen typography.</p>
+              </div>
+              <span v-if="isLoadingCapabilities" class="reel-engine-status">Checking…</span>
+              <span v-else-if="cinematicAvailable" class="reel-engine-status reel-engine-status-ready">Gemini ready</span>
+              <span v-else class="reel-engine-status">Brand Motion ready</span>
+            </div>
+            <div class="reel-engine-options">
+              <button
+                v-for="option in VIDEO_PROVIDER_OPTIONS"
+                :key="option.value"
+                type="button"
+                class="reel-engine-option"
+                :class="{ 'reel-engine-option-active': videoProvider === option.value }"
+                :disabled="Boolean(project) || (option.value === 'gemini_cinematic' && !cinematicAvailable)"
+                @click="videoProvider = option.value"
+              >
+                <strong>{{ option.label }}</strong>
+                <small>{{ option.hint }}</small>
+                <em v-if="option.value === 'gemini_cinematic' && !cinematicAvailable">Configure Gemini API key</em>
+              </button>
+            </div>
+            <label v-if="videoProvider === 'gemini_cinematic'" class="reel-field reel-engine-quality">
+              <span>Gemini quality</span>
+              <select v-model="videoQuality" :disabled="Boolean(project)">
+                <option v-for="option in VIDEO_QUALITY_OPTIONS" :key="option.value" :value="option.value">{{ option.label }}</option>
+              </select>
+              <small>{{ VIDEO_QUALITY_OPTIONS.find((option) => option.value === videoQuality)?.hint }}</small>
+            </label>
           </div>
 
           <div class="reel-actions">
@@ -1201,6 +1295,15 @@ onBeforeUnmount(stopPolling);
   font-size: 1rem;
 }
 
+.reel-prompt-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: -0.35rem;
+  color: var(--fc-text-muted);
+  font-size: 0.78rem;
+}
+
 .reel-examples {
   display: flex;
   flex-wrap: wrap;
@@ -1250,7 +1353,7 @@ onBeforeUnmount(stopPolling);
 
 .reel-styles {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.75rem;
 }
 
@@ -1291,6 +1394,94 @@ onBeforeUnmount(stopPolling);
 .reel-history-thumb.reel-style-minimal_motion {
   background: radial-gradient(circle at 85% 20%, #ff5a3640, transparent 50%), #f6f3ec;
   border: 1px solid var(--fc-border);
+}
+
+.reel-style-real_world .reel-style-swatch,
+.reel-history-thumb.reel-style-real_world {
+  background:
+    linear-gradient(135deg, transparent 46%, #5eead455 47% 50%, transparent 51%),
+    radial-gradient(circle at 22% 30%, #fb923c88, transparent 28%),
+    linear-gradient(135deg, #07111d, #123047 65%, #0b665f);
+}
+
+.reel-engine-panel {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem;
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-control);
+  background: var(--fc-surface-muted);
+}
+
+.reel-engine-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.reel-engine-label {
+  font-weight: 700;
+}
+
+.reel-engine-heading .reel-hint {
+  margin: 0.25rem 0 0;
+}
+
+.reel-engine-status {
+  flex: 0 0 auto;
+  color: var(--fc-text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.reel-engine-status-ready {
+  color: var(--fc-success-text);
+}
+
+.reel-engine-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.reel-engine-option {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.7rem;
+  border: 1px solid var(--fc-border);
+  border-radius: var(--fc-radius-control);
+  background: var(--fc-surface-strong);
+  color: var(--fc-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reel-engine-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.reel-engine-option-active {
+  border-color: var(--fc-accent);
+  box-shadow: 0 0 0 1px var(--fc-accent);
+}
+
+.reel-engine-option small,
+.reel-engine-option em,
+.reel-engine-quality small {
+  color: var(--fc-text-muted);
+  font-size: 0.75rem;
+  font-style: normal;
+}
+
+.reel-engine-option em {
+  color: var(--fc-error-text, #b42318);
+}
+
+.reel-engine-quality {
+  max-width: 260px;
 }
 
 .reel-actions {
@@ -1657,7 +1848,8 @@ onBeforeUnmount(stopPolling);
   }
 
   .reel-styles,
-  .reel-compare {
+  .reel-compare,
+  .reel-engine-options {
     grid-template-columns: 1fr;
   }
 

@@ -14,6 +14,7 @@ import type {
   GetContentBatchResponse,
   ScheduleItem,
   SocialContentPlanPlatform,
+  UpdateContentVariantResponse,
 } from "../../../../packages/shared-types/index.ts";
 import type { AuthenticatedPrincipal } from "../middleware/auth.ts";
 import { generatePostsWithAI } from "./aiService.ts";
@@ -1060,6 +1061,81 @@ export async function getContentBatch(
 ): Promise<GetContentBatchResponse> {
   await enforceWorkspaceReadAccess(principal, businessId, "content_generation");
   return loadBatchDetail(businessId, batchId);
+}
+
+export async function updateContentVariant(
+  principal: AuthenticatedPrincipal,
+  input: {
+    businessId: string;
+    variantId: string;
+    title?: string;
+    text: string;
+  },
+): Promise<UpdateContentVariantResponse> {
+  const businessId = input.businessId.trim();
+  const variantId = input.variantId.trim();
+  const text = input.text.trim();
+  const title = input.title?.trim() || null;
+
+  if (!variantId || !text) {
+    throw new HttpError(400, "bad_request", "variantId and text are required.");
+  }
+
+  await enforceWorkspaceWriteAccess({
+    principal,
+    businessId,
+    featureKey: "content_generation",
+    usageMetric: "generations",
+  });
+
+  const result = await queryDb<ContentVariantRow>(
+    `
+      update content_variants cv
+      set
+        title = coalesce($3, cv.title),
+        text_content = $4,
+        source = 'manual',
+        is_customized = true,
+        updated_at = now()
+      from content_items ci
+      join content_batches cb on cb.id = ci.batch_id
+      where cv.id = $1
+        and cv.content_item_id = ci.id
+        and cv.business_id = $2
+        and cb.status = 'draft'
+      returning
+        cv.id,
+        cv.business_id,
+        cv.user_id,
+        cv.content_item_id,
+        cv.source_asset_id,
+        cv.channel,
+        cv.lane,
+        cv.title,
+        cv.text_content,
+        cv.html_content,
+        cv.media_json,
+        cv.source,
+        cv.status,
+        cv.is_customized,
+        cv.metadata_json,
+        cv.created_at,
+        cv.updated_at
+    `,
+    [variantId, businessId, title, text],
+  );
+
+  const row = result.rows[0];
+
+  if (!row) {
+    throw new HttpError(
+      409,
+      "content_variant_not_editable",
+      "This content variant is unavailable or the campaign has already been approved.",
+    );
+  }
+
+  return { variant: mapContentVariant(row) };
 }
 
 export async function confirmContentBatch(

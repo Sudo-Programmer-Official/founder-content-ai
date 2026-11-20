@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import type {
   AiAssistLevel,
@@ -195,7 +195,7 @@ const isLoadingBrandSources = ref(false);
 const isSavingBrandSources = ref(false);
 const brandSourcesFeedback = ref("");
 const brandSourcesError = ref("");
-const showAdvancedSettings = ref(false);
+const showAdvancedSettings = ref(route.query.section === "channels");
 const brandSourceWarnings = ref<string[]>([]);
 const workspaceKnowledgeProfile = ref<WorkspaceKnowledgeProfile | null>(null);
 const workspaceKnowledgeSources = ref<WorkspaceKnowledgeSource[]>([]);
@@ -1700,6 +1700,20 @@ watch(
 );
 
 watch(
+  () => route.query.section,
+  async (section) => {
+    if (section !== "channels") {
+      return;
+    }
+
+    showAdvancedSettings.value = true;
+    await nextTick();
+    document.getElementById("workspace-channels")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  },
+  { immediate: true },
+);
+
+watch(
   currentUserFullName,
   (nextValue) => {
     accountFullNameInput.value = nextValue;
@@ -1901,7 +1915,7 @@ watch(
       </button>
     </section>
 
-    <section v-if="showAdvancedSettings" class="dashboard-panel channels-panel">
+    <section v-if="showAdvancedSettings" id="workspace-channels" class="dashboard-panel channels-panel">
       <div class="channels-panel-header">
         <div>
           <p class="panel-meta">Workspace Channels</p>

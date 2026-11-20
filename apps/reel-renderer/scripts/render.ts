@@ -15,6 +15,9 @@ import { sampleRenderProps } from "../src/sample.ts";
 import { ensureBundle } from "./bundle-cache.ts";
 
 const COMPOSITION_ID = "Reel";
+// Let Remotion choose an available local port so the renderer does not collide
+// with the API's development server (which commonly uses port 3001).
+const RENDER_SERVER_PORT = null;
 
 function readArg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -52,13 +55,19 @@ async function main(): Promise<void> {
   }
 
   try {
-    const composition = await selectComposition({ serveUrl, id: COMPOSITION_ID, inputProps: { ...inputProps } });
+    const composition = await selectComposition({
+      serveUrl,
+      id: COMPOSITION_ID,
+      port: RENDER_SERVER_PORT,
+      inputProps: { ...inputProps },
+    });
     await fs.mkdir(path.dirname(outPath), { recursive: true });
     let lastReported = -1;
 
     await renderMedia({
       composition,
       serveUrl,
+      port: RENDER_SERVER_PORT,
       codec: "h264",
       crf: 20,
       audioCodec: "aac",
@@ -83,6 +92,7 @@ async function main(): Promise<void> {
       await renderStill({
         composition,
         serveUrl,
+        port: RENDER_SERVER_PORT,
         output: path.resolve(posterPath),
         frame: Math.min(45, composition.durationInFrames - 1),
         imageFormat: "jpeg",

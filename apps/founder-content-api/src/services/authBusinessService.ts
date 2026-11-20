@@ -413,6 +413,50 @@ async function ensureUserRecord(
   return createdUser;
 }
 
+export async function requireLinkedUser(
+  principal: AuthenticatedPrincipal,
+): Promise<AppUser> {
+  const result = await queryDb<UserRow>(
+    `
+      select
+        id,
+        auth_subject,
+        email,
+        full_name,
+        avatar_url,
+        welcome_email_sent_at,
+        status,
+        created_at,
+        updated_at
+      from users
+      where auth_subject = $1
+        or exists (
+          select 1
+          from auth_identities
+          where auth_identities.user_id = users.id
+            and auth_identities.provider = 'oauth'
+            and auth_identities.provider_user_id = $1
+        )
+      order by case when auth_subject = $1 then 0 else 1 end
+      limit 1
+    `,
+    [principal.subject],
+  );
+
+  const user = result.rows[0];
+
+  if (!user || user.status !== "active") {
+    throw new HttpError(
+      403,
+      "mcp_identity_not_linked",
+      "This MCP identity is not linked to an active Founder Content user.",
+    );
+  }
+
+  principal.userId = user.id;
+  return mapUser(user);
+}
+
 export async function ensureCurrentUser(principal: AuthenticatedPrincipal): Promise<AppUser> {
   const user = await ensureUserRecord(principal);
   principal.userId = user.id;

@@ -5,8 +5,12 @@
   "description": "Express API for FounderContent AI",
   "main": "server.ts",
   "dependencies": {
+    "@modelcontextprotocol/express": "^2.0.2",
+    "@modelcontextprotocol/node": "^2.1.2",
+    "@modelcontextprotocol/server": "^2.4.0",
     "express": "^4.21.2",
     "firebase-admin": "^13.4.0",
+    "jose": "^6.2.18",
     "pg": "^8.13.1",
     "sharp": "^0.34.5"
   },
@@ -23,6 +27,7 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx scripts/applyMigrations.ts",
     "db:migrate:status": "tsx scripts/applyMigrations.ts --status",
+    "mcp:link-auth0": "tsx scripts/linkMcpAuth0Identity.ts",
     "db:bootstrap-ledger": "tsx scripts/applyMigrations.ts --bootstrap-ledger",
     "stripe:bootstrap-catalog": "tsx scripts/bootstrapStripeCatalog.ts",
     "stripe:bootstrap-email": "tsx scripts/bootstrapStripeCatalog.ts --scope=email",

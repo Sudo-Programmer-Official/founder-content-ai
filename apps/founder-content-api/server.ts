@@ -20,6 +20,7 @@ import { growthIntelligenceRoute } from "./src/routes/growthIntelligence.ts";
 import { ingestionRoute } from "./src/routes/ingestion.ts";
 import { meRoute } from "./src/routes/me.ts";
 import { mediaIntelligenceRoute } from "./src/routes/mediaIntelligence.ts";
+import { mcpRoute } from "./src/routes/mcp.ts";
 import { onboardingRoute } from "./src/routes/onboarding.ts";
 import { outreachAdminRoute, outreachRoute } from "./src/routes/outreach.ts";
 import { revenueAgentRoute } from "./src/routes/revenue-agent.ts";
@@ -103,8 +104,9 @@ export function createServerApp(): Express {
 
     response.header(
       "Access-Control-Allow-Headers",
-      "Content-Type, Authorization, X-Dev-User-Id, X-Dev-User-Email, X-Dev-User-Name, X-Dev-User-Avatar, X-Dev-Super-Admin",
+      "Content-Type, Authorization, MCP-Protocol-Version, Last-Event-ID, X-Dev-User-Id, X-Dev-User-Email, X-Dev-User-Name, X-Dev-User-Avatar, X-Dev-Super-Admin",
     );
+    response.header("Access-Control-Expose-Headers", "WWW-Authenticate, MCP-Protocol-Version");
     response.header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
 
     if (request.method === "OPTIONS") {
@@ -130,6 +132,8 @@ export function createServerApp(): Express {
   app.get("/api/health", (_request, response) => {
     response.json({ status: "ok" });
   });
+
+  app.use(mcpRoute);
 
   app.use(generateIdeasRoute);
   app.use(generateHookRoute);

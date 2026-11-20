@@ -3,6 +3,7 @@ import type {
   ReelProjectListResponse,
   ReelProjectResponse,
   ReelProjectSettings,
+  ReelStudioCapabilitiesResponse,
   ReelYouTubeConnection,
   ReelYouTubePublishRequest,
   ReelYouTubePublishResponse,
@@ -37,6 +38,7 @@ import {
   updateReelStoryboard,
 } from "../services/reelStudio/reelProjectService.ts";
 import { safeCreateSystemErrorLog } from "../services/systemErrorLogService.ts";
+import { isCinematicReelConfigured } from "../services/reelStudio/reelCinematicService.ts";
 import { handleApiError, sendApiError } from "../utils/http.ts";
 
 // Reel Studio is gated by the same feature flag and generation quota as visual generation.
@@ -59,7 +61,11 @@ function readSettings(body: unknown): Partial<ReelProjectSettings> {
     audience: source.audience as ReelProjectSettings["audience"],
     voice: source.voice as ReelProjectSettings["voice"],
     showCaptions: source.showCaptions as boolean,
+    videoProvider: source.videoProvider as ReelProjectSettings["videoProvider"],
+    videoQuality: source.videoQuality as ReelProjectSettings["videoQuality"],
     brandHandle: source.brandHandle as string,
+    sourcePostId: source.sourcePostId as string,
+    sourceTitle: source.sourceTitle as string,
   };
 }
 
@@ -122,6 +128,18 @@ export async function listReelProjectsController(
     response,
     { errorCode: "reel_projects_list_failed", errorMessage: "Unable to load your reels." },
     async ({ businessId }) => ({ projects: await listReelProjects(businessId) }),
+  );
+}
+
+export async function getReelStudioCapabilitiesController(
+  request: Request,
+  response: Response<ReelStudioCapabilitiesResponse | ApiError>,
+): Promise<void> {
+  await withReelAccess(
+    request,
+    response,
+    { errorCode: "reel_capabilities_lookup_failed", errorMessage: "Unable to load Reel Studio capabilities." },
+    async () => ({ cinematicAvailable: isCinematicReelConfigured() }),
   );
 }
 

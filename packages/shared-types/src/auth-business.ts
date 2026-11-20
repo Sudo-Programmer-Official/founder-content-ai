@@ -7,6 +7,7 @@ export type AuthIdentityProvider =
   | "firebase_password"
   | "google"
   | "otp_email"
+  | "oauth"
   | "stub";
 
 export interface AppUser {

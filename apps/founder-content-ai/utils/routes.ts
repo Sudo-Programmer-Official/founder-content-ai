@@ -17,6 +17,7 @@ export const appRoutes = {
   appRevenueAgent: "/app/revenue-agent",
   appReelStudio: "/app/reels",
   appOutreach: "/app/outreach",
+  appChannels: "/settings/preferences?section=channels",
   admin: "/admin",
   adminFeatures: "/admin/features",
   adminMediaRegistry: "/admin/media-registry",

@@ -5,6 +5,8 @@ import {
   Braces,
   Brain,
   CircleCheck,
+  CarFront,
+  Clock3,
   Cloud,
   Code,
   CreditCard,
@@ -13,6 +15,7 @@ import {
   Layers,
   Lock,
   Mail,
+  MapPin,
   MemoryStick,
   Router,
   Search,
@@ -52,6 +55,9 @@ const ICONS: Record<ReelIconName, LucideIcon> = {
   brain: Brain,
   check: CircleCheck,
   alert: TriangleAlert,
+  car: CarFront,
+  map_pin: MapPin,
+  clock: Clock3,
 };
 
 export function ReelIcon(props: { name: ReelIconName; size: number; color: string; strokeWidth?: number }) {

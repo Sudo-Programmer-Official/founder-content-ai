@@ -13,6 +13,7 @@ const { bootstrap, activeBusinessId, isFeatureEnabled, isReady: productAccessRea
 const auth = useAuthContext();
 const mobileMenuOpen = ref(false);
 const accountMenuOpen = ref(false);
+const moreNavigationOpen = ref(false);
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "founder-content:sidebar-collapsed";
 const sidebarCollapsed = ref(false);
 const lastKnownPlatformAdminUserId = ref("");
@@ -67,6 +68,11 @@ interface AppNavLink {
   visible?: boolean;
 }
 
+interface AppNavSection {
+  label: string;
+  links: AppNavLink[];
+}
+
 const visibleAppLinks = computed<AppNavLink[]>(() => {
   const hasWorkspaceContext = Boolean(currentWorkspaceId.value);
   const canUsePlanner = hasWorkspaceContext && isFeatureEnabled("scheduler");
@@ -92,19 +98,96 @@ const visibleAppLinks = computed<AppNavLink[]>(() => {
     { to: appRoutes.appEmail, label: "Email", shortLabel: "E", icon: navigationIcons.email, visible: canUseEmail },
     { to: appRoutes.appBlog, label: "Blog", shortLabel: "BL", icon: navigationIcons.blog, visible: canUseBlogPublishing },
     { to: appRoutes.dashboardAnalytics, label: "Analytics", shortLabel: "A", icon: navigationIcons.analytics, visible: canUseDashboard },
+    { to: appRoutes.appChannels, label: "Channels", shortLabel: "CH", icon: navigationIcons.channels, visible: hasWorkspaceContext },
     { to: appRoutes.settingsPreferences, label: "Settings", shortLabel: "S", icon: navigationIcons.settings, visible: true },
     { to: appRoutes.admin, label: "Admin", shortLabel: "AD", icon: navigationIcons.admin, visible: canAccessAdmin.value },
   ].filter((link) => link.visible === true) as AppNavLink[];
 });
 
+const navigationSections = computed<AppNavSection[]>(() => {
+  const linkByRoute = new Map(visibleAppLinks.value.map((link) => [link.to, link]));
+  const sections: Array<{ label: string; routes: string[] }> = [
+    {
+      label: "Operate",
+      routes: [appRoutes.dashboard, appRoutes.appPlanner, appRoutes.appAutomationStudio],
+    },
+    {
+      label: "Create",
+      routes: [appRoutes.appIdeas, appRoutes.appReelStudio, appRoutes.appAssets, appRoutes.appBrandStudio],
+    },
+    {
+      label: "Grow",
+      routes: [
+        appRoutes.appGrowth,
+        appRoutes.appOutreach,
+        appRoutes.appEmail,
+        appRoutes.appBlog,
+        appRoutes.appRevenueAgent,
+        appRoutes.dashboardAnalytics,
+      ],
+    },
+    {
+      label: "System",
+      routes: [appRoutes.appHistory, appRoutes.appChannels, appRoutes.settingsPreferences],
+    },
+  ];
+
+  return sections
+    .map((section) => ({
+      label: section.label,
+      links: section.routes
+        .map((route) => linkByRoute.get(route))
+        .filter((link): link is AppNavLink => Boolean(link)),
+    }))
+    .filter((section) => section.links.length > 0);
+});
+
+const primaryNavigationRoutes: Set<string> = new Set([
+  appRoutes.dashboard,
+  appRoutes.appIdeas,
+  appRoutes.appReelStudio,
+  appRoutes.appPlanner,
+  appRoutes.appAutomationStudio,
+  appRoutes.dashboardAnalytics,
+  appRoutes.appChannels,
+]);
+
+const primaryNavigationSections = computed<AppNavSection[]>(() =>
+  navigationSections.value
+    .map((section) => ({
+      ...section,
+      links: section.links.filter((link) => primaryNavigationRoutes.has(link.to)),
+    }))
+    .filter((section) => section.links.length > 0),
+);
+
+const moreNavigationSections = computed<AppNavSection[]>(() =>
+  navigationSections.value
+    .map((section) => ({
+      ...section,
+      links: section.links.filter((link) => !primaryNavigationRoutes.has(link.to)),
+    }))
+    .filter((section) => section.links.length > 0),
+);
+
+const moreNavigationHasActiveRoute = computed(() =>
+  moreNavigationSections.value.some((section) =>
+    section.links.some((link) => link.to === route.path),
+  ),
+);
+
+const isMoreNavigationOpen = computed(
+  () => moreNavigationOpen.value || moreNavigationHasActiveRoute.value,
+);
+
 const mobileDockLinks = computed(() => {
   const findLink = (to: string) => visibleAppLinks.value.find((link) => link.to === to) ?? null;
 
   return [
-    findLink(appRoutes.appIdeas),
+    findLink(appRoutes.dashboard),
     { to: appRoutes.appGenerate, label: "Create", shortLabel: "C", icon: aiFeatureIcons.generate },
     findLink(appRoutes.appPlanner),
-    findLink(appRoutes.appEmail),
+    findLink(appRoutes.dashboardAnalytics),
     findLink(appRoutes.settingsPreferences),
   ].filter(Boolean) as Array<Pick<AppNavLink, "to" | "label" | "shortLabel" | "icon">>;
 });
@@ -117,20 +200,20 @@ const pageTitleMap: Record<string, string> = {
   "admin-usage": "Usage control",
   "admin-users": "Admin users",
   "admin-workspaces": "Admin workspaces",
-  "app-dashboard": "Dashboard",
+  "app-dashboard": "Command center",
   "app-assets": "Assets",
   "app-automation-studio": "Automation Studio",
   "app-blog": "Blog publishing",
   "app-billing": "Billing",
   "app-brand-studio": "Brand Studio",
   "app-email": "Email",
-  "app-create": "Create new post",
+  "app-create": "Create campaign",
   "app-growth": "Growth",
   "app-history": "History",
   "app-ideas": "Idea Inbox",
-  "app-planner": "Planner",
+  "app-planner": "Content plan",
   "app-outreach": "Outreach",
-  "app-revenue-agent": "Revenue Agent",
+  "app-revenue-agent": "Revenue signals",
   "app-reel-studio": "Reel Studio",
   "app-result": "Generated content",
   "dashboard-analytics": "Analytics",
@@ -140,6 +223,10 @@ const pageTitleMap: Record<string, string> = {
 };
 
 const currentPageTitle = computed(() => {
+  if (route.query.section === "channels") {
+    return "Channels";
+  }
+
   const routeName = typeof route.name === "string" ? route.name : "";
   return pageTitleMap[routeName] ?? "FounderContent AI";
 });
@@ -294,6 +381,10 @@ function toggleAccountMenu(): void {
   accountMenuOpen.value = !accountMenuOpen.value;
 }
 
+function toggleMoreNavigation(): void {
+  moreNavigationOpen.value = !moreNavigationOpen.value;
+}
+
 async function goToAdmin(): Promise<void> {
   accountMenuOpen.value = false;
   await router.push(appRoutes.admin);
@@ -367,7 +458,7 @@ async function goToAdmin(): Promise<void> {
             <button class="header-secondary-button" type="button" @click="handleLogout">
               Logout
             </button>
-            <router-link class="header-cta" :to="appRoutes.appGenerate">New Post</router-link>
+            <router-link class="header-cta" :to="appRoutes.appGenerate">Create campaign</router-link>
           </template>
         </div>
       </header>
@@ -479,27 +570,66 @@ async function goToAdmin(): Promise<void> {
           class="sidebar-primary-cta"
           :class="{ compact: sidebarCollapsed }"
           :to="appRoutes.appGenerate"
-          :title="sidebarCollapsed ? 'New Post' : undefined"
+          :title="sidebarCollapsed ? 'Create campaign' : undefined"
         >
           <span class="sidebar-primary-cta-icon">
             <component :is="aiFeatureIcons.generate" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
           </span>
-          <span class="sidebar-primary-cta-copy">New Post</span>
+          <span class="sidebar-primary-cta-copy">Create campaign</span>
         </router-link>
 
         <nav class="sidebar-nav" aria-label="Workspace navigation">
-          <router-link
-            v-for="link in visibleAppLinks"
-            :key="link.to"
-            :to="link.to"
-            class="sidebar-link"
-            :title="sidebarCollapsed ? link.label : undefined"
+          <section v-for="section in primaryNavigationSections" :key="section.label" class="sidebar-nav-section">
+            <p v-if="!sidebarCollapsed" class="sidebar-nav-section-label">{{ section.label }}</p>
+            <router-link
+              v-for="link in section.links"
+              :key="link.to"
+              :to="link.to"
+              class="sidebar-link"
+              :title="sidebarCollapsed ? link.label : undefined"
+            >
+              <span class="sidebar-link-icon">
+                <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+              </span>
+              <span class="sidebar-link-copy">{{ link.label }}</span>
+            </router-link>
+          </section>
+
+          <button
+            type="button"
+            class="sidebar-more-toggle"
+            :class="{ open: isMoreNavigationOpen }"
+            :title="sidebarCollapsed ? 'More tools' : undefined"
+            :aria-expanded="isMoreNavigationOpen"
+            @click="toggleMoreNavigation"
           >
-            <span class="sidebar-link-icon">
-              <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+            <span class="sidebar-more-toggle-icon">
+              <component
+                :is="sidebarCollapsed ? actionIcons.menu : actionIcons.chevronDown"
+                :size="iconSizes.dense"
+                :stroke-width="iconStrokeWidth"
+              />
             </span>
-            <span class="sidebar-link-copy">{{ link.label }}</span>
-          </router-link>
+            <span class="sidebar-more-toggle-copy">More tools</span>
+          </button>
+
+          <template v-if="isMoreNavigationOpen">
+            <section v-for="section in moreNavigationSections" :key="`more-${section.label}`" class="sidebar-nav-section sidebar-more-section">
+              <p v-if="!sidebarCollapsed" class="sidebar-nav-section-label">{{ section.label }}</p>
+              <router-link
+                v-for="link in section.links"
+                :key="link.to"
+                :to="link.to"
+                class="sidebar-link"
+                :title="sidebarCollapsed ? link.label : undefined"
+              >
+                <span class="sidebar-link-icon">
+                  <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                </span>
+                <span class="sidebar-link-copy">{{ link.label }}</span>
+              </router-link>
+            </section>
+          </template>
         </nav>
 
         <div class="sidebar-footer">
@@ -614,22 +744,56 @@ async function goToAdmin(): Promise<void> {
               <span class="sidebar-primary-cta-icon">
                 <component :is="aiFeatureIcons.generate" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
               </span>
-              <span class="sidebar-primary-cta-copy">New Post</span>
+              <span class="sidebar-primary-cta-copy">Create campaign</span>
             </router-link>
 
             <nav class="sidebar-nav" aria-label="Mobile workspace navigation">
-              <router-link
-                v-for="link in visibleAppLinks"
-                :key="link.to"
-                :to="link.to"
-                class="sidebar-link"
-                @click="mobileMenuOpen = false"
+              <section v-for="section in primaryNavigationSections" :key="section.label" class="sidebar-nav-section">
+                <p class="sidebar-nav-section-label">{{ section.label }}</p>
+                <router-link
+                  v-for="link in section.links"
+                  :key="link.to"
+                  :to="link.to"
+                  class="sidebar-link"
+                  @click="mobileMenuOpen = false"
+                >
+                  <span class="sidebar-link-icon">
+                    <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                  </span>
+                  <span class="sidebar-link-copy">{{ link.label }}</span>
+                </router-link>
+              </section>
+
+              <button
+                type="button"
+                class="sidebar-more-toggle"
+                :class="{ open: isMoreNavigationOpen }"
+                :aria-expanded="isMoreNavigationOpen"
+                @click="toggleMoreNavigation"
               >
-                <span class="sidebar-link-icon">
-                  <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                <span class="sidebar-more-toggle-icon">
+                  <component :is="actionIcons.chevronDown" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
                 </span>
-                <span class="sidebar-link-copy">{{ link.label }}</span>
-              </router-link>
+                <span class="sidebar-more-toggle-copy">More tools</span>
+              </button>
+
+              <template v-if="isMoreNavigationOpen">
+                <section v-for="section in moreNavigationSections" :key="`mobile-more-${section.label}`" class="sidebar-nav-section sidebar-more-section">
+                  <p class="sidebar-nav-section-label">{{ section.label }}</p>
+                  <router-link
+                    v-for="link in section.links"
+                    :key="link.to"
+                    :to="link.to"
+                    class="sidebar-link"
+                    @click="mobileMenuOpen = false"
+                  >
+                    <span class="sidebar-link-icon">
+                      <component :is="link.icon" :size="iconSizes.dense" :stroke-width="iconStrokeWidth" />
+                    </span>
+                    <span class="sidebar-link-copy">{{ link.label }}</span>
+                  </router-link>
+                </section>
+              </template>
             </nav>
 
             <div class="sidebar-footer">
@@ -1045,7 +1209,22 @@ async function goToAdmin(): Promise<void> {
 
 .sidebar-nav {
   display: grid;
-  gap: 10px;
+  gap: 18px;
+}
+
+.sidebar-nav-section {
+  display: grid;
+  gap: 6px;
+}
+
+.sidebar-nav-section-label {
+  margin: 0 12px 2px;
+  color: var(--fc-text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  line-height: 1.2;
+  text-transform: uppercase;
 }
 
 .sidebar-link {
@@ -1103,6 +1282,55 @@ async function goToAdmin(): Promise<void> {
   align-items: center;
   min-width: 0;
   font-weight: 700;
+}
+
+.sidebar-more-toggle {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--fc-text-muted);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.sidebar-more-toggle:hover,
+.sidebar-more-toggle.open {
+  border-color: var(--fc-border);
+  background: color-mix(in srgb, var(--fc-panel-bg) 78%, var(--fc-surface-muted));
+  color: var(--fc-text);
+}
+
+.sidebar-more-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: var(--fc-surface-muted);
+  transition: transform 160ms ease;
+}
+
+.sidebar-more-toggle.open .sidebar-more-toggle-icon {
+  transform: rotate(180deg);
+}
+
+.sidebar-more-toggle-copy {
+  white-space: nowrap;
+}
+
+.sidebar-more-section {
+  padding-top: 4px;
+  border-top: 1px solid color-mix(in srgb, var(--fc-border) 72%, transparent);
 }
 
 .sidebar-footer {
@@ -1408,6 +1636,14 @@ async function goToAdmin(): Promise<void> {
   width: 100%;
 }
 
+.sidebar-collapsed .sidebar-nav {
+  gap: 12px;
+}
+
+.sidebar-collapsed .sidebar-nav-section {
+  gap: 6px;
+}
+
 .sidebar-collapsed .sidebar-primary-cta {
   width: 100%;
 }
@@ -1424,6 +1660,16 @@ async function goToAdmin(): Promise<void> {
 }
 
 .sidebar-collapsed .sidebar-link-copy {
+  display: none;
+}
+
+.sidebar-collapsed .sidebar-more-toggle {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: 10px;
+}
+
+.sidebar-collapsed .sidebar-more-toggle-copy {
   display: none;
 }
 

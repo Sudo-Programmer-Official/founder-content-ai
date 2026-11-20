@@ -2,6 +2,7 @@ import type {
   ReelProjectListResponse,
   ReelProjectResponse,
   ReelProjectSettings,
+  ReelStudioCapabilitiesResponse,
   ReelSceneRegenerateRequest,
   ReelStoryboard,
   ReelStoryboardCreateRequest,
@@ -27,6 +28,10 @@ function projectPath(projectId: string): string {
 
 export async function requestReelProjects(businessId: string): Promise<ReelProjectListResponse> {
   return apiGet<ReelProjectListResponse>(`/reel-studio/projects${businessQueryString(businessId)}`);
+}
+
+export async function requestReelStudioCapabilities(businessId: string): Promise<ReelStudioCapabilitiesResponse> {
+  return apiGet<ReelStudioCapabilitiesResponse>(`/reel-studio/capabilities${businessQueryString(businessId)}`);
 }
 
 export async function requestReelProject(businessId: string, projectId: string): Promise<ReelProjectResponse> {

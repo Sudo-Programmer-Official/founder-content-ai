@@ -5,6 +5,7 @@ import { BulletsScene } from "./scenes/BulletsScene";
 import { CodeScene } from "./scenes/CodeScene";
 import { ComparisonScene } from "./scenes/ComparisonScene";
 import { FlowScene } from "./scenes/FlowScene";
+import { RealWorldFlowScene } from "./scenes/RealWorldFlowScene";
 import { OutroScene } from "./scenes/OutroScene";
 import { StatScene } from "./scenes/StatScene";
 import { TitleScene } from "./scenes/TitleScene";
@@ -19,7 +20,11 @@ function SceneSwitch(props: { scene: ReelScene; theme: ReelTheme; durationInFram
     case "bullets":
       return <BulletsScene scene={scene} theme={theme} durationInFrames={durationInFrames} />;
     case "flow":
-      return <FlowScene scene={scene} theme={theme} durationInFrames={durationInFrames} />;
+      return theme.id === "real_world" ? (
+        <RealWorldFlowScene scene={scene} theme={theme} durationInFrames={durationInFrames} />
+      ) : (
+        <FlowScene scene={scene} theme={theme} durationInFrames={durationInFrames} />
+      );
     case "stat":
       return <StatScene scene={scene} theme={theme} durationInFrames={durationInFrames} />;
     case "comparison":

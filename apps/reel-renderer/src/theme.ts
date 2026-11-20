@@ -63,6 +63,23 @@ export const THEMES: Record<ReelVisualStyle, ReelTheme> = {
     monoFont: `${mono.fontFamily}, monospace`,
     codeBackground: "#14161c",
   },
+  real_world: {
+    id: "real_world",
+    dark: true,
+    background: "#07111d",
+    text: "#f7fbff",
+    textMuted: "#9fb1c7",
+    accent: "#5eead4",
+    accentSecondary: "#fb923c",
+    accentText: "#05201f",
+    surface: "rgba(14, 28, 44, 0.9)",
+    surfaceBorder: "rgba(148, 200, 220, 0.28)",
+    glow: (color) => `0 0 18px ${color}, 0 0 38px ${color}44`,
+    headingFont: `${spaceGrotesk.fontFamily}, ${devanagari.fontFamily}, sans-serif`,
+    bodyFont: `${spaceGrotesk.fontFamily}, ${devanagari.fontFamily}, sans-serif`,
+    monoFont: `${mono.fontFamily}, monospace`,
+    codeBackground: "rgba(5, 14, 24, 0.94)",
+  },
 };
 
 export function getTheme(style: ReelVisualStyle): ReelTheme {
